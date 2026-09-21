@@ -764,7 +764,10 @@ pub(crate) fn append_action_refused(
 /// self-answering client and an operator at a keyboard produced
 /// identical logs.
 ///
-/// `answer` is `approved` / `declined` / `unanswered`. `elapsed_ms` is
+/// `answer` is one of `approved` / `declined` / `unanswered` /
+/// `unconfirmed` / `unsupported` — the set `AskOutcome::answer_label`
+/// emits, pinned by its own test. Not `not_asked` or `undeliverable`:
+/// those mean no question was put, and this stage asserts one was. `elapsed_ms` is
 /// recorded because it is the cheapest discriminator available between
 /// a person and a model: a human reading a foreclosure line takes
 /// seconds, and something answering in twenty milliseconds is not

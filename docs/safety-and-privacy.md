@@ -36,7 +36,7 @@
   `dlq_purge` additionally require the environment name typed into the
   dialog.
 
-- **`ebman mcp serve` writes only with a human in the loop.** If your
+- **`ebman mcp serve` writes only after a confirmation is answered.** If your
   MCP client declared **elicitation** at handshake, the write tools are
   available and every confirmation is put to you as a dialog naming the
   action, what it forecloses, and the identity it would use — nothing

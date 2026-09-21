@@ -2178,7 +2178,14 @@ impl Server {
         // `docs/design/protection-levels.md` asked for it: a client
         // that declares elicitation and answers its own dialogs
         // otherwise produces a cleaner record than an honest one.
-        if outcome != AskOutcome::NotAsked && !matches!(self.backend, Backend::Demo) {
+        // Excludes every outcome where no question reached anybody:
+        // `NotAsked` (client cannot elicit) and `Undeliverable` (no
+        // channel, or the send failed). `stage=asked` asserts a
+        // question was put; writing one for a frame that never left is
+        // the same false record pointed the other way.
+        let was_actually_asked =
+            !matches!(outcome, AskOutcome::NotAsked | AskOutcome::Undeliverable);
+        if was_actually_asked && !matches!(self.backend, Backend::Demo) {
             crate::audit::append_action_asked(
                 None,
                 pending.profile.as_deref(),

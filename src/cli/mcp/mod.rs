@@ -111,6 +111,19 @@ pub(crate) enum AskOutcome {
     Declined,
     /// Asked, and nobody answered within the budget. Denies.
     Unanswered,
+    /// The question never left ebman — no channel, or the send
+    /// failed. Denies exactly as `Unanswered` does, and is separate
+    /// only so the audit does not claim a question was put to somebody
+    /// when none was sent. `stage=asked` means "this was asked"; a
+    /// line saying `unanswered, elapsed_ms=0` for a frame that never
+    /// reached a client is the over-claiming twin of the false record
+    /// that stage exists to prevent.
+    Undeliverable,
+    /// The client answered with a JSON-RPC error: it could not put
+    /// the question at all. Denies, like every other non-answer, but
+    /// it is not a refusal and must not be reported as one — nobody
+    /// was asked.
+    Unsupported,
     /// The operator accepted, but the text they typed did not match
     /// what was required — or the client returned no text at all,
     /// which is what a client that cannot render an input field does.
@@ -139,7 +152,11 @@ impl AskOutcome {
     pub(crate) fn refuses(self) -> bool {
         matches!(
             self,
-            AskOutcome::Declined | AskOutcome::Unanswered | AskOutcome::Unconfirmed
+            AskOutcome::Declined
+                | AskOutcome::Unanswered
+                | AskOutcome::Unconfirmed
+                | AskOutcome::Unsupported
+                | AskOutcome::Undeliverable
         )
     }
 
@@ -154,6 +171,8 @@ impl AskOutcome {
             AskOutcome::Declined => "declined",
             AskOutcome::Unanswered => "unanswered",
             AskOutcome::Unconfirmed => "unconfirmed",
+            AskOutcome::Unsupported => "unsupported",
+            AskOutcome::Undeliverable => "undeliverable",
             // Never reaches the audit — the caller skips `NotAsked`,
             // because no question was put and a line claiming one was
             // is exactly the false record this stage exists to avoid.
@@ -204,6 +223,19 @@ impl AskOutcome {
                  same capability and declines automatically with nobody present, and \
                  that is indistinguishable from here."
             }
+            AskOutcome::Undeliverable => {
+                "The plan is spent. The confirmation could not be delivered — your \
+                 client is gone or its channel is closed, so NOBODY was asked. Not a \
+                 decline. Say the connection dropped before the operator could be \
+                 asked."
+            }
+            AskOutcome::Unsupported => {
+                "The plan is spent. Your client could not present the confirmation — \
+                 it answered with an error, so NOBODY was asked and nobody refused. \
+                 Do not report this as a decline. Tell the operator their client \
+                 cannot show ebman's confirmations, and that writes need either a \
+                 client that can or `--allow-writes` on one that cannot be asked."
+            }
             AskOutcome::Unconfirmed => {
                 "The plan is spent. Nobody declined — the confirmation text did not \
                  match, which for this verb is required and is typed by the OPERATOR, \
@@ -240,6 +272,10 @@ impl AskOutcome {
             AskOutcome::Unconfirmed => {
                 "the typed confirmation did not match (or your client returned none)"
             }
+            AskOutcome::Unsupported => {
+                "your client could not present the confirmation and returned an error"
+            }
+            AskOutcome::Undeliverable => "the confirmation could not be delivered to your client",
             AskOutcome::NotAsked => "not asked",
         }
     }
@@ -255,7 +291,19 @@ impl AskOutcome {
 /// standing yes.
 pub(crate) fn ask_outcome_from(reply: &Value) -> AskOutcome {
     if reply.get("error").is_some() {
-        return AskOutcome::Declined;
+        // NOT `Declined`. An error response means the client could not
+        // present the question — an unsupported method, a schema it
+        // cannot render, a transport fault. Nobody refused anything,
+        // and reporting a decline puts a decision in the mouth of
+        // whoever was not asked. That is the same false attribution
+        // the decline wording was just rewritten to stop, and it was
+        // still live on the adjacent branch: the changelog claimed a
+        // client that cannot render a text field "returns no content",
+        // which is one of at least two ways it can fail and the only
+        // one that was handled.
+        //
+        // Still denies. Only the label changes.
+        return AskOutcome::Unsupported;
     }
     match reply
         .get("result")
@@ -552,11 +600,15 @@ const OPENED_BY_ASK_NOTE: &str = "\n\nWORTH SAYING ONCE, EARLY: writes are \
 ///
 /// Kept whole rather than inlined twice: the two grant arms said the
 /// same thing about confirmation and drifted apart once already.
-const ASK_NOTE: &str = "\n\nEach confirmation is put to the OPERATOR, who sees the \
-     action and answers it. Expect `confirm_action` to take as long as a person takes. \
-     A decline is a final answer from a human — not an error, not a missing permission: \
-     do not re-plan the same action, do not ask for the grant to be widened, and do not \
-     report it as a fault. Say the operator declined, and stop.\n\nSURFACE THE PLAN; \
+const ASK_NOTE: &str = "\n\nEach confirmation is sent to your CLIENT to put to the \
+     operator. Expect `confirm_action` to take as long as a person takes — or to come \
+     back at once, which is what a non-interactive client does when it answers for \
+     itself. A decline is FINAL — not an error, not a missing permission: do not \
+     re-plan the same action, do not ask for the grant to be widened, and do not \
+     report it as a fault. Say the confirmation was declined, and stop. Do NOT tell \
+     your user a person refused unless you independently know one was there: ebman \
+     cannot tell an operator answering a dialog from a client answering for itself, \
+     and saying otherwise puts a decision in someone's mouth.\n\nSURFACE THE PLAN; \
      DO NOT RESTATE THE CASE FOR IT. The confirmation already names the action, the \
      targets, the identity and what it forecloses, and the operator is about to read \
      it. Re-deriving the reasoning in your own message — especially reasoning you and \
@@ -1018,7 +1070,7 @@ impl Server {
         // to fall back to: the ask IS the gate. That path dispatched
         // an unapproved terminate. `Unanswered` denies.
         let Some(tx) = self.outbound.lock().ok().and_then(|g| g.clone()) else {
-            return AskOutcome::Unanswered;
+            return AskOutcome::Undeliverable;
         };
 
         let id = self
@@ -1061,7 +1113,7 @@ impl Server {
             self.forget_ask(id);
             // Same: the question could not be delivered to a client
             // that should have been able to answer it.
-            return AskOutcome::Unanswered;
+            return AskOutcome::Undeliverable;
         }
 
         match tokio::time::timeout(std::time::Duration::from_secs(ASK_WAIT_SECS), reply_rx).await {
@@ -1591,8 +1643,11 @@ pub async fn run(args: &[String]) -> Result<()> {
         // method that does not exist.
         // A response carries `result` or `error`. A frame with an id
         // and NEITHER, and no method, is a malformed request, and
-        // JSON-RPC says that gets `-32600` — so it must fall through
-        // rather than vanish. The first cut dropped on
+        // JSON-RPC says that is an invalid request — so it must fall
+        // through and be answered rather than vanish. (What it
+        // actually gets is `-32601` from `handle_request`'s catch-all,
+        // since the method extracts as "". Visible either way, which
+        // is the property that matters here.) The first cut dropped on
         // "no method + has id" alone and would have swallowed it
         // silently, which is a behaviour change beyond the fix.
         if req.get("method").is_none()
@@ -4510,7 +4565,6 @@ mod tests {
             json!({"jsonrpc":"2.0","id":1,"result":{"action":true}}),
             json!({"jsonrpc":"2.0","id":1,"result":{}}),
             json!({"jsonrpc":"2.0","id":1,"result":"accept"}),
-            json!({"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"no"}}),
             json!({"jsonrpc":"2.0","id":1}),
         ] {
             assert_eq!(
@@ -4519,6 +4573,21 @@ mod tests {
                 "not an explicit accept, so not an approval: {reply}"
             );
         }
+
+        // An ERROR reply is not a decline. The client could not put
+        // the question at all; nobody refused. It still denies — only
+        // the label changes, and the label is what an agent repeats to
+        // its user.
+        let errored = json!({"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"no"}});
+        assert_eq!(
+            ask_outcome_from(&errored),
+            AskOutcome::Unsupported,
+            "a client that could not present the question has not declined it"
+        );
+        assert!(
+            ask_outcome_from(&errored).refuses(),
+            "and it must still deny"
+        );
     }
 
     /// Not-asked and unanswered have opposite consequences.
@@ -4815,16 +4884,23 @@ mod tests {
             let asked = scope.agent_summary(None, true, false);
             let silent = scope.agent_summary(None, false, false);
             assert!(
-                asked.contains("OPERATOR"),
+                asked.contains("put to the operator") || asked.contains("put to the"),
                 "a granted scope on an ask-capable client must say the confirmation \
                  reaches a person: {asked}"
+            );
+            assert!(
+                !asked.contains("a final answer from a human"),
+                "and must NOT pre-load the agent with an attribution ebman cannot \
+                 make. That sentence sat in the instructions block — read at connect, \
+                 before any refusal text — and taught the exact false record the \
+                 decline wording was rewritten to stop: {asked}"
             );
             assert!(
                 asked.contains("decline"),
                 "and must say what a decline means, or it reads as an error: {asked}"
             );
             assert!(
-                !silent.contains("OPERATOR"),
+                !silent.contains("put to the"),
                 "but must NOT promise an ask that cannot happen — on a client that \
                  can't elicit, nobody is reachable and the agent would wait for a \
                  human who is never shown anything: {silent}"
@@ -5117,7 +5193,7 @@ mod tests {
         // clears it, and a confirm already in flight sees this.
         assert_eq!(
             s.ask_operator("terminate poly-prod", None).await,
-            AskOutcome::Unanswered,
+            AskOutcome::Undeliverable,
             "a client that can be asked but cannot be reached must DENY — \
              `NotAsked` would fall back to a flag that was never given"
         );
@@ -5130,7 +5206,7 @@ mod tests {
         }
         assert_eq!(
             s.ask_operator("terminate poly-prod", None).await,
-            AskOutcome::Unanswered,
+            AskOutcome::Undeliverable,
             "a send that cannot be delivered is an unanswered ask, not an absent one"
         );
 
@@ -5550,14 +5626,32 @@ mod tests {
             .find("append_action_asked")
             .expect("the confirm path must audit the ask");
         let guard = body[..call]
-            .rfind("outcome != AskOutcome::NotAsked")
+            .rfind("if was_actually_asked")
             .expect("and must exclude the case where no question was put");
         assert!(
             call - guard < 400,
-            "the NotAsked guard must be the condition on THIS call — a line saying \
-             a question was asked when none was is the false record this stage \
-             exists to prevent"
+            "the guard must be the condition on THIS call — a line saying a question \
+             was asked when none was is the false record this stage exists to prevent"
         );
+        // And it must exclude EVERY outcome where nothing was put to
+        // anyone, not just the first one anybody thought of. A
+        // mutation dropping `Undeliverable` from the set passed until
+        // this existed: the guard checked that an exclusion was
+        // present, never which cases it covered.
+        // From the BINDING, not the `if` — the variant list lives in
+        // the `let`, and a window starting at the condition misses it
+        // entirely.
+        let binding = body[..call]
+            .rfind("let was_actually_asked")
+            .expect("the exclusion must be a named binding");
+        let cond = &body[binding..call];
+        for never_asked in ["AskOutcome::NotAsked", "AskOutcome::Undeliverable"] {
+            assert!(
+                cond.contains(never_asked),
+                "{never_asked} means no question reached anybody, so it must not \
+                 produce a `stage=asked` line: {cond}"
+            );
+        }
     }
 
     /// Terminate and purge demand a TYPED name; nothing else does.
@@ -5675,6 +5769,20 @@ mod tests {
         s.client_supports_elicitation
             .store(true, std::sync::atomic::Ordering::Relaxed);
         let d = doctor(&s).await;
+        // PARSED, not substring-matched. This note was pushed through
+        // `json_string` and then re-encoded by the notes renderer, so
+        // its array element carried literal quote characters inside
+        // the string — valid JSON, garbled content. A `contains()` on
+        // the raw payload matched anyway and the test passed.
+        let body: Value = serde_json::from_str(&d).unwrap_or_else(|e| panic!("{d}: {e}"));
+        let note = body["notes"]
+            .as_array()
+            .and_then(|n| n.iter().find_map(Value::as_str))
+            .unwrap_or_else(|| panic!("no notes in {body}"));
+        assert!(
+            !note.starts_with('"') && !note.ends_with('"'),
+            "a note must not carry its own quotes — that is a double encode: {note:?}"
+        );
         assert!(
             d.contains("not proof a person saw"),
             "the limit must be stated where an agent reads it: {d}"

@@ -1288,7 +1288,7 @@ impl Server {
         // this" would be asserting something neither of them can
         // check.
         if elicits {
-            notes.push(util::json_string(
+            notes.push(String::from(
                 "Writes here are gated on an elicitation your CLIENT said it \
                  supports. That is the client's word, not proof a person saw \
                  anything: ebman cannot distinguish an operator answering a dialog \

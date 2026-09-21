@@ -72,6 +72,40 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- **The instructions block taught the very attribution this release
+  removes.** `ASK_NOTE`, delivered at connect on every elicit-capable
+  connection, said *"A decline is a final answer from a human… Say the
+  operator declined, and stop."* — read before any refusal text
+  arrives, so an agent was pre-loaded with the claim the decline
+  wording had just been rewritten to prevent. The measured headless
+  auto-decline would have reproduced verbatim, alongside its own fix.
+
+- **An error reply is not a decline.** A client that cannot present a
+  confirmation — an unsupported method, a schema it cannot render —
+  answers with a JSON-RPC error, and that mapped to `Declined`. Nobody
+  refused. It is now `Unsupported`, and the guidance tells the agent
+  to say the client could not show the confirmation rather than that
+  someone said no. Still denies; only the label changes, and the label
+  is what an agent repeats to a user.
+
+  The previous entry claimed such a client "returns no content", which
+  was one of at least two ways it can fail and the only one handled —
+  a claim written wider than what was checked.
+
+- **An undeliverable ask is no longer logged as one that was put.**
+  `stage=asked` asserts a question reached somebody. It was written
+  for every outcome except `NotAsked`, which included a dead channel
+  and a failed send — frames that never left ebman. Those are now
+  `Undeliverable` and write no line, leaving `elapsed_ms≈0` as
+  something nobody has to interpret.
+
+- **`ebman mcp serve` no longer promises a human in the loop** in the
+  safety doc's heading, fifteen lines above the bullet explaining that
+  ebman cannot know one is there. And `doctor`'s elicitation note was
+  double-JSON-encoded, so its text carried literal quote characters —
+  valid JSON, garbled content, and the test passed because it matched
+  a substring of the raw payload.
+
 - **A resend whose delete half failed reported nothing useful.** Send
   before delete is deliberate — the other order can lose the message,
   this one can at worst duplicate it. But when the delete fails the
