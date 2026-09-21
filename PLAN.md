@@ -540,6 +540,39 @@ one never happens. If that stops being true, the stage is wrong.
 - **A policy language.** Declining this remains the best decision in the
   design note.
 
+### From the scheduled mutation sweep, 2026-09-21
+
+The nightly whole-tree run finished (6h25m, 2118 survivors overall,
+76 in `cli/mcp`). Triaged against the week's new code:
+
+- **Fixed:** `succeeded += 1` in `dispatch_dlq_and_audit` survived
+  `-=` and `*=`. The batch test asserting `"succeeded":2` runs in
+  demo, and the demo branch renders that field from
+  `dlq_targets.len()` rather than from the counter — so the live
+  counter was never incremented by any test. Demo and live computing
+  the same field two ways with only demo covered is the divergence
+  this cycle kept finding elsewhere. Now covered by a mock-client
+  batch that deletes two messages for real.
+- **Fixed:** the confirm-time re-read depth (`DLQ_BATCH_CAP * 3`)
+  survived being divided. Under-fetching means a full batch cannot be
+  found, so messages the operator approved report as "not among those
+  returned" while the rest dispatch. Pinned on the REQUEST — the first
+  call must ask SQS for its per-call maximum of 10 — rather than by
+  simulating SQS sampling, which would be testing the mock.
+- **Accepted equivalent:** `ask_outcome_from`'s
+  `Some("decline") | Some("cancel")` arm can be deleted with no
+  behaviour change, because the catch-all is also `Declined` — the
+  fail-closed default is deliberate. The explicit arm states intent;
+  it does not carry behaviour. Recorded so nobody re-investigates.
+- **Accepted:** `forget_ask` replaced with `()` survives. It leaks one
+  `pending_asks` entry per timed-out ask, bounded by connection
+  lifetime, and no observable behaviour changes — the ask has already
+  been answered by its own timeout. Worth a drop-guard if
+  `pending_asks` ever grows unbounded; not now.
+- **Not chased:** the remaining `cli/mcp` survivors are in `run`, the
+  frame loop that owns stdin. `src/ui/` survivors remain deliberately
+  uncovered, as recorded below.
+
 ### Also open
 
 - 17 backlog items, mostly design rulings and accepted seam.

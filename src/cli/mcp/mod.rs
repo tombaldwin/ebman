@@ -3261,6 +3261,157 @@ mod tests {
         ///
         /// Here the message is gone by confirm time, which is ordinary:
         /// something else consumed, redrove or removed it in the token
+        /// The LIVE batch counters, which demo does not exercise.
+        ///
+        /// Found by the scheduled mutation sweep: `succeeded += 1` in
+        /// `dispatch_dlq_and_audit` survived being changed to `-=` and
+        /// `*=`. The batch test that asserts `"succeeded":2` runs in
+        /// demo, and the demo branch renders that field from
+        /// `dlq_targets.len()` rather than from the counter — so the
+        /// counter itself was never incremented by any test.
+        ///
+        /// Demo and live computing the same field two ways, with only
+        /// the demo one covered, is the exact divergence this cycle
+        /// kept finding elsewhere.
+        #[tokio::test]
+        async fn a_live_batch_counts_what_it_actually_deleted() {
+            use aws_sdk_elasticbeanstalk::operation::describe_environment_resources::DescribeEnvironmentResourcesOutput;
+            use aws_sdk_elasticbeanstalk::types::{EnvironmentResourceDescription, Queue};
+            use aws_sdk_sqs::operation::get_queue_attributes::GetQueueAttributesOutput;
+            use aws_sdk_sqs::operation::receive_message::ReceiveMessageOutput;
+            use aws_sdk_sqs::types::{Message, QueueAttributeName};
+
+            let resources = aws_smithy_mocks::mock!(EbClient::describe_environment_resources)
+                .then_output(|| {
+                    DescribeEnvironmentResourcesOutput::builder()
+                        .environment_resources(
+                            EnvironmentResourceDescription::builder()
+                                .queues(
+                                    Queue::builder()
+                                        .name("WorkerQueue")
+                                        .url("https://sqs/main")
+                                        .build(),
+                                )
+                                .queues(
+                                    Queue::builder()
+                                        .name("WorkerDeadLetterQueue")
+                                        .url("https://sqs/main-dlq")
+                                        .build(),
+                                )
+                                .build(),
+                        )
+                        .build()
+                });
+            let attrs =
+                aws_smithy_mocks::mock!(SqsClient::get_queue_attributes).then_output(|| {
+                    GetQueueAttributesOutput::builder()
+                        .attributes(QueueAttributeName::ApproximateNumberOfMessages, "2")
+                        .build()
+                });
+            // The confirm-time re-read must ASK for enough depth to
+            // find a whole batch. `dispatch_dlq_batch` requests
+            // `DLQ_BATCH_CAP * 3`, and `peek_messages` pages that in
+            // SQS's per-call maximum of 10 — so the first request asks
+            // for 10. Shrinking the multiplier (the sweep mutated
+            // `* 3` to `/ 3`) makes it ask for 3, and a 10-message
+            // batch would then report seven of the messages the
+            // operator approved as "not among those returned" while
+            // dispatching the other three.
+            //
+            // Asserted on the REQUEST, because simulating SQS's
+            // sampling would be testing the mock.
+            let asked_for = std::sync::Arc::new(std::sync::atomic::AtomicI32::new(0));
+            let seen = std::sync::Arc::clone(&asked_for);
+            let peek = aws_smithy_mocks::mock!(SqsClient::receive_message)
+                .match_requests(move |req| {
+                    seen.fetch_max(
+                        req.max_number_of_messages().unwrap_or(0),
+                        std::sync::atomic::Ordering::SeqCst,
+                    );
+                    true
+                })
+                .then_output(|| {
+                    ReceiveMessageOutput::builder()
+                        .messages(
+                            Message::builder()
+                                .message_id("m-1")
+                                .receipt_handle("rh-1")
+                                .body("a")
+                                .build(),
+                        )
+                        .messages(
+                            Message::builder()
+                                .message_id("m-2")
+                                .receipt_handle("rh-2")
+                                .body("b")
+                                .build(),
+                        )
+                        .build()
+                });
+            let del = aws_smithy_mocks::mock!(SqsClient::delete_message).then_output(|| {
+                aws_sdk_sqs::operation::delete_message::DeleteMessageOutput::builder().build()
+            });
+            let events = aws_smithy_mocks::mock!(EbClient::describe_events).then_output(|| {
+                aws_sdk_elasticbeanstalk::operation::describe_events::DescribeEventsOutput::builder(
+                )
+                .build()
+            });
+            let eb = aws_smithy_mocks::mock_client!(
+                aws_sdk_elasticbeanstalk,
+                aws_smithy_mocks::RuleMode::MatchAny,
+                [&env_listing(), &resources, &events]
+            );
+            let sqs = aws_smithy_mocks::mock_client!(
+                aws_sdk_sqs,
+                aws_smithy_mocks::RuleMode::MatchAny,
+                [&attrs, &peek, &del]
+            );
+            let s = Server::with_injected_client(
+                WriteScope::All,
+                crate::config::Config::default(),
+                client_with(eb, sqs),
+            );
+
+            let plan = s
+                .call_tool(
+                    "dlq_delete",
+                    &json!({"env": "poly-prod-wk", "message_ids": ["m-1", "m-2"]}),
+                )
+                .await
+                .expect("both are present at plan time");
+            let token = plan
+                .split("\"confirm_token\":\"")
+                .nth(1)
+                .and_then(|r| r.split('"').next())
+                .expect("a token")
+                .to_string();
+
+            let out = s
+                .call_tool("confirm_action", &json!({"confirm_token": token}))
+                .await
+                .expect("both deletes succeed");
+            let body: Value = serde_json::from_str(&out).unwrap_or_else(|e| panic!("{out}: {e}"));
+
+            assert_eq!(
+                body["succeeded"],
+                json!(2),
+                "the live counter must count what was actually deleted: {out}"
+            );
+            assert_eq!(body["failed"], json!(0), "{out}");
+            assert_eq!(body["dispatched"], json!(true), "{out}");
+            assert_eq!(
+                body["results"].as_array().map(Vec::len),
+                Some(2),
+                "one result per message: {out}"
+            );
+            assert_eq!(
+                asked_for.load(std::sync::atomic::Ordering::SeqCst),
+                10,
+                "the re-read must ask SQS for its per-call maximum, or a full batch \
+                 cannot be found and approved messages report as missing"
+            );
+        }
+
         /// A resend whose delete half fails says a duplicate exists.
         ///
         /// Send-before-delete is deliberate: the other order can lose
