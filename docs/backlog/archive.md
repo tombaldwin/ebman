@@ -4016,3 +4016,22 @@ gets shipped.
   still type a policy refusal as `Invalid`. The type converts an
   invisible omission into a visible miscategorisation; it is not a
   proof.
+
+## Route every AWS call site through the error-context boundary (2026-09-22)
+
+Opened and closed the same cycle. `SdkError`'s `Display` for a
+modelled service failure is the literal string `"service error"`, so
+any call finished with a bare `?` or a plain `wrap_err` reported the
+operation and discarded the service's own sentence — the one naming
+which permission was missing.
+
+78 of 80 call sites took the lossy form, because `.wrap_err("Op
+failed")?` was shorter than the correct form. Fixed with a postfix
+trait (`.aws_ctx("Op failed")?`), so the correct call is now the
+shortest one, and pinned by
+`every_sdk_call_that_propagates_goes_through_aws_ctx`.
+
+Deferred for one day as a 13-module sweep past the stop condition,
+then done in full because the guard could not exist without it — the
+alternative was an allowlist naming the unconverted modules, which is
+the shape CLAUDE.md names as the cheapest wrong path.
