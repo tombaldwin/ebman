@@ -375,12 +375,21 @@ fn the_keymap_puts_guarded_key_arms_first() {
     // Parsed per file and merged — concatenating two modules is not
     // valid Rust and the parser rightly refuses it, which is the
     // failure mode this guard's own panic exists to make loud.
-    let mut violations = Vec::new();
+    // Formatted per file, so each line number keeps the path it came
+    // from. Merging the raw `Shadowed` values first lost that — the
+    // report said "keymap line 546" across two files, which sends the
+    // reader to the wrong place or to both.
+    let mut violations: Vec<String> = Vec::new();
     let mut both_forms = std::collections::BTreeSet::new();
     for path in KEYMAPS {
         let src = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{path}: {e}"));
         let (v, f) = shadowed_key_arms(&src);
-        violations.extend(v);
+        violations.extend(v.iter().map(|s| {
+            format!(
+                "'{}' unguarded at {}:{} shadows the guard at :{}",
+                s.ch, path, s.unguarded_line, s.guarded_line
+            )
+        }));
         both_forms.extend(f);
     }
 
@@ -389,14 +398,7 @@ fn the_keymap_puts_guarded_key_arms_first() {
         "ARCHITECTURE rule 4: an unguarded KeyCode::Char arm precedes the \
          guarded arm for the same character, so the chord is unreachable. \
          Move the guarded arm above it. {}",
-        violations
-            .iter()
-            .map(|s| format!(
-                "'{}' unguarded at keymap line {} shadows the guard at line {}",
-                s.ch, s.unguarded_line, s.guarded_line
-            ))
-            .collect::<Vec<_>>()
-            .join("; ")
+        violations.join("; ")
     );
 
     // Non-vacuous: if the keymap ever stops having chars in both forms, this
@@ -512,7 +514,26 @@ fn overlay_key_routing_has_no_wildcard_arm() {
     let start = body
         .find("fn key_route(&self) -> OverlayRoute {")
         .expect("the routing classification must exist");
-    let end = body[start..].find("\n    }").expect("its body ends") + start;
+    // Brace-counted, not `find("\n    }")`. That worked only because
+    // every interior line happens to be more deeply indented; a
+    // rustfmt reflow could end the slice early, and the wildcard check
+    // would then scan a truncated region and pass.
+    let mut depth = 0i32;
+    let mut end = start;
+    for (i, c) in body[start..].char_indices() {
+        match c {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    end = start + i + 1;
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    assert!(end > start, "could not find the end of `key_route`");
     let m = &body[start..end];
 
     for wildcard in ["_ =>", "_=>"] {
