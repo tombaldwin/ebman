@@ -921,14 +921,13 @@ impl App {
                             region = %self.context.region,
                             "env transitioned into Red",
                         );
-                        crate::audit::append_raw(
+                        crate::audit::append_red_transition(
                             self.context.account_id.as_deref(),
                             self.context.profile.as_deref(),
                             &self.context.region,
-                            &format!(
-                                "stage=event kind=red_transition env={} application={} health={}",
-                                e.name, e.application, e.health
-                            ),
+                            &e.name,
+                            &e.application,
+                            &e.health,
                         );
                     }
                 }
