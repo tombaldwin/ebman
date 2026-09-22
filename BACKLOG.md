@@ -39,9 +39,11 @@ Tier definitions:
 #### Tier 0 — fixture hygiene (2026-09-16)
 
 - [ ] **A test that fails the build when a fixture looks real.** `cargo
-  package` ships everything git tracks bar `exclude`, so all 26 files under
-  `src/app/tests/` and the 62 inline `#[cfg(test)]` modules go to crates.io
-  verbatim, and docs.rs then renders them as browsable HTML. A placeholder
+  package` ships everything git tracks bar `exclude`, so every dedicated
+  test file — 21 under `src/app/tests/`, 3 under `src/cli/mcp/tests/`,
+  plus `src/cli/mcp/tests.rs` — and every inline `#[cfg(test)]` module
+  across the 66 files that carry one go to crates.io verbatim, and
+  docs.rs then renders them as browsable HTML. A placeholder
   that isn't one is therefore published, indexed, and — since a crates.io
   version cannot be unpublished, only yanked, and a yanked version stays
   downloadable — permanent.
