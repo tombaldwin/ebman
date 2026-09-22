@@ -2767,17 +2767,38 @@ pub(crate) fn flatten_err_to_string(e: &color_eyre::eyre::Report) -> String {
     // yields that wrapper rather than our struct and a per-link
     // downcast finds nothing.
     if let Some(meta) = e.downcast_ref::<crate::aws::AwsErrorMeta>() {
+        // `display` is the outermost wrap — the operation name
+        // (`"DeleteMessage failed"`). Useful, and on its own useless:
+        // `SdkError`'s own `Display` for a modelled service failure is
+        // the literal `"service error"`, so before the message was
+        // carried an IAM denial rendered as `AccessDenied: service
+        // error`. The class was right and the sentence naming the
+        // missing permission was gone.
+        let detail = match meta.message.as_deref() {
+            Some(m) => format!("{display}: {m}"),
+            None => display.clone(),
+        };
+        let detail = match meta.request_id.as_deref() {
+            Some(r) => format!("{detail} (request id {r})"),
+            None => detail,
+        };
         if let Some(code) = meta.code.as_deref() {
             let lower = code.to_ascii_lowercase();
             if lower.contains("throttl") || lower.contains("requestlimitexceeded") {
-                return format!("ThrottlingException: {display}");
+                return format!("ThrottlingException: {detail}");
             }
             if lower.contains("accessdenied") || lower.contains("unauthorized") {
-                return format!("AccessDenied: {display}");
+                return format!("AccessDenied: {detail}");
             }
             if lower.contains("notfound") || lower.contains("nosuch") {
-                return format!("NotFound: {display}");
+                return format!("NotFound: {detail}");
             }
+            // A code we do not classify still names the failure better
+            // than the operation alone does.
+            return format!("{code}: {detail}");
+        }
+        if meta.message.is_some() {
+            return detail;
         }
     }
     let dbg_lower = format!("{e:?}").to_lowercase();

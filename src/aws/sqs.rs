@@ -132,7 +132,8 @@ impl AwsClient {
             .attribute_names(Q::ApproximateNumberOfMessagesNotVisible)
             .attribute_names(Q::ApproximateNumberOfMessagesDelayed)
             .send()
-            .await?;
+            .await;
+        let resp = super::wrap_aws(resp, "GetQueueAttributes failed")?;
         let attrs = resp.attributes.unwrap_or_default();
         let parse = |k: Q| -> i64 {
             attrs
@@ -196,8 +197,8 @@ impl AwsClient {
                 // by sqsd cron is not silently truncated.
                 .message_attribute_names("All")
                 .send()
-                .await
-                .wrap_err("ReceiveMessage failed")?;
+                .await;
+            let resp = super::wrap_aws(resp, "ReceiveMessage failed")?;
             let batch = resp.messages.unwrap_or_default();
             if batch.is_empty() {
                 empty_in_a_row += 1;
@@ -278,22 +279,28 @@ impl AwsClient {
                     .build()?,
             );
         }
-        req.send().await?;
+        super::wrap_aws(req.send().await, "SendMessage failed")?;
         Ok(())
     }
 
     pub(crate) async fn delete_message(&self, queue_url: &str, receipt_handle: &str) -> Result<()> {
-        self.sqs
-            .delete_message()
-            .queue_url(queue_url)
-            .receipt_handle(receipt_handle)
-            .send()
-            .await?;
+        super::wrap_aws(
+            self.sqs
+                .delete_message()
+                .queue_url(queue_url)
+                .receipt_handle(receipt_handle)
+                .send()
+                .await,
+            "DeleteMessage failed",
+        )?;
         Ok(())
     }
 
     pub(crate) async fn purge_queue(&self, queue_url: &str) -> Result<()> {
-        self.sqs.purge_queue().queue_url(queue_url).send().await?;
+        super::wrap_aws(
+            self.sqs.purge_queue().queue_url(queue_url).send().await,
+            "PurgeQueue failed",
+        )?;
         Ok(())
     }
 }

@@ -4669,3 +4669,104 @@ async fn list_environments_labels_rows_with_the_resolved_region() {
          MCP tool advertises the field"
     );
 }
+
+/// An SQS failure must name the action AWS refused, not just its class.
+///
+/// `SdkError`'s `Display` for a modelled service failure is the literal
+/// string **"service error"**. Every SQS call took it with a bare `?`,
+/// so an operator denied a DLQ delete by an IAM policy saw
+/// `AccessDenied: service error` — the class right, and the one
+/// sentence naming the missing permission thrown away by the boundary.
+///
+/// Measured before the fix, not assumed: the probe printed exactly
+/// that string.
+#[cfg(test)]
+mod sqs_error_surfacing {
+    use super::*;
+
+    fn client_with_sqs(sqs: SqsClient) -> AwsClient {
+        let cfg = aws_config::SdkConfig::builder()
+            .region(Region::new("us-east-1"))
+            .behavior_version(aws_config::BehaviorVersion::latest())
+            .build();
+        AwsClient::for_tests(
+            Client::new(&cfg),
+            sqs,
+            CwClient::new(&cfg),
+            CwLogsClient::new(&cfg),
+            S3Client::new(&cfg),
+            Ec2Client::new(&cfg),
+        )
+    }
+
+    fn denied_delete_client() -> AwsClient {
+        let rule = aws_smithy_mocks::mock!(SqsClient::delete_message).then_error(|| {
+            aws_sdk_sqs::operation::delete_message::DeleteMessageError::generic(
+                aws_smithy_types::error::ErrorMetadata::builder()
+                    .code("AccessDeniedException")
+                    .message("User is not authorized to perform sqs:DeleteMessage")
+                    .build(),
+            )
+        });
+        client_with_sqs(aws_smithy_mocks::mock_client!(
+            aws_sdk_sqs,
+            aws_smithy_mocks::RuleMode::MatchAny,
+            [&rule]
+        ))
+    }
+
+    #[tokio::test]
+    async fn a_denied_delete_names_the_action_and_the_reason() {
+        let c = denied_delete_client();
+        let e = c
+            .delete_message("https://sqs/q", "rh")
+            .await
+            .expect_err("mocked failure");
+        let flat = crate::app::flatten_err_to_string(&e);
+
+        assert!(
+            flat.contains("sqs:DeleteMessage"),
+            "the service's own sentence is the only thing that says WHICH \
+             permission is missing: {flat}"
+        );
+        assert!(
+            flat.starts_with("AccessDenied:"),
+            "the class still leads, so existing routing is unaffected: {flat}"
+        );
+        assert!(
+            flat.contains("DeleteMessage failed"),
+            "and the operation is named: {flat}"
+        );
+        assert!(
+            !flat.contains("service error"),
+            "`service error` is the SDK Display this exists to replace: {flat}"
+        );
+    }
+
+    /// A code we do not classify must still beat the operation name
+    /// alone — the old path fell through to the `Debug` sniff and
+    /// surfaced nothing.
+    #[tokio::test]
+    async fn an_unclassified_code_still_reaches_the_operator() {
+        let rule = aws_smithy_mocks::mock!(SqsClient::delete_message).then_error(|| {
+            aws_sdk_sqs::operation::delete_message::DeleteMessageError::generic(
+                aws_smithy_types::error::ErrorMetadata::builder()
+                    .code("ReceiptHandleIsInvalid")
+                    .message("The receipt handle has expired")
+                    .build(),
+            )
+        });
+        let c = client_with_sqs(aws_smithy_mocks::mock_client!(
+            aws_sdk_sqs,
+            aws_smithy_mocks::RuleMode::MatchAny,
+            [&rule]
+        ));
+        let e = c
+            .delete_message("https://sqs/q", "rh")
+            .await
+            .expect_err("mocked failure");
+        let flat = crate::app::flatten_err_to_string(&e);
+        assert!(flat.contains("ReceiptHandleIsInvalid"), "{flat}");
+        assert!(flat.contains("The receipt handle has expired"), "{flat}");
+    }
+}
