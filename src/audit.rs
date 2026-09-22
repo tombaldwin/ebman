@@ -476,11 +476,15 @@ pub(crate) fn append_action_dispatched(
     target: &str,
     extras: &[(&str, &str)],
 ) {
-    let mut detail = format!(
-        "stage=dispatched action={action_label} {}",
-        field_token("target", target)
-    );
-    append_extras(&mut detail, extras);
+    // Extras join the same field list, so they are escaped by the
+    // same code rather than by a second near-copy of it —
+    // `append_extras` was that copy.
+    let mut fields: Vec<(&str, Field<'_>)> = vec![
+        ("action", Field::Text(action_label)),
+        ("target", Field::Text(target)),
+    ];
+    fields.extend(extras.iter().map(|(k, v)| (*k, Field::Text(v))));
+    let detail = detail_from("dispatched", &fields);
     write_audit_line(account, profile, region, &detail);
 }
 
@@ -503,15 +507,19 @@ pub(crate) fn append_action_completed(
     result: Result<(), &str>,
     extras: &[(&str, &str)],
 ) {
-    let mut detail = format!(
-        "stage=completed action={action_label} {}",
-        field_token("target", target)
-    );
-    append_extras(&mut detail, extras);
+    let mut fields: Vec<(&str, Field<'_>)> = vec![
+        ("action", Field::Text(action_label)),
+        ("target", Field::Text(target)),
+    ];
+    fields.extend(extras.iter().map(|(k, v)| (*k, Field::Text(v))));
     match result {
-        Ok(()) => detail.push_str(" outcome=ok"),
-        Err(e) => detail.push_str(&format!(" outcome=err err=\"{}\"", escape_value(e))),
+        Ok(()) => fields.push(("outcome", Field::Token("ok"))),
+        Err(e) => {
+            fields.push(("outcome", Field::Token("err")));
+            fields.push(("err", Field::Text(e)));
+        }
     }
+    let detail = detail_from("completed", &fields);
     write_audit_line(account, profile, region, &detail);
 }
 
@@ -529,6 +537,57 @@ pub(crate) fn append_action_completed(
 /// future caller passing free text would have split lines / forged
 /// fields (parse_audit_line treats an embedded newline as a new,
 /// replayable entry).
+/// One field of an audit line, carrying how it must be escaped.
+///
+/// Escaping used to be per-writer discipline across ten `append_*`
+/// functions, each hand-building its own `format!`. The forge guard
+/// exists because that is a replay-injection path — `parse_audit_line`
+/// treats an embedded newline as a new entry and `ebman audit replay`
+/// re-dispatches parsed entries — and that guard's "EVERY writer" was
+/// a hand-maintained enumeration whose own comment records it once
+/// claiming the word while covering three of eight.
+///
+/// A writer now says what kind of field it has and the chokepoint
+/// escapes it. No writer touches the wire string, so none can be
+/// written that bypasses escaping — which is a property of the type
+/// rather than of the list being kept up to date.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Field<'a> {
+    /// Free text: quoted when it contains whitespace, a quote or an
+    /// `=`, and escaped either way. Operator-chosen names, error
+    /// strings, remedies.
+    Text(&'a str),
+    /// A constrained vocabulary word — a rule id, an outcome label.
+    /// Reduced to characters that cannot break the format, never
+    /// quoted, because consumers filter on these and a quoted token
+    /// would not match.
+    Token(&'a str),
+    /// A number. Rendered bare; nothing to escape.
+    Num(u128),
+}
+
+impl Field<'_> {
+    fn render(self, key: &str) -> String {
+        let key = sanitise_token(key);
+        match self {
+            Field::Text(v) => field_token(&key, v),
+            Field::Token(v) => format!("{key}={}", sanitise_token(v)),
+            Field::Num(n) => format!("{key}={n}"),
+        }
+    }
+}
+
+/// Render a `stage=` line's tail from fields. The ONE place a detail
+/// string is built.
+pub(crate) fn detail_from(stage: &str, fields: &[(&str, Field<'_>)]) -> String {
+    let mut out = format!("stage={}", sanitise_token(stage));
+    for (k, f) in fields {
+        out.push(' ');
+        out.push_str(&f.render(k));
+    }
+    out
+}
+
 fn field_token(key: &str, value: &str) -> String {
     if value.is_empty() || value.contains(|c: char| c.is_whitespace() || c == '"' || c == '=') {
         format!("{key}=\"{}\"", escape_value(value))
@@ -616,13 +675,23 @@ fn rollout_line(
     // pre-existing in the header opener, which is fixed the same way
     // below — adding a new field to a shape with this flaw means fixing
     // the class rather than shipping the precedent.
+    // Header fields still spelled here — this line shape carries a
+    // `rollout_id` where the others carry `account` — but the TAIL
+    // goes through the one renderer, so its escaping is not a second
+    // copy of the rule.
     format!(
-        "\t{}\t{}\t{}\tstage={stage} action=Rollout {} {}{outcome_suffix}",
+        "\t{}\t{}\t{}\t{}{outcome_suffix}",
         field_token("rollout_id", rollout_id),
         field_token("profile", profile.unwrap_or("-")),
         field_token("region", region),
-        field_token("target", env),
-        field_token("version", version)
+        detail_from(
+            stage,
+            &[
+                ("action", Field::Token("Rollout")),
+                ("target", Field::Text(env)),
+                ("version", Field::Text(version)),
+            ],
+        )
     )
 }
 
@@ -658,7 +727,6 @@ pub(crate) fn append_lint_fix(
     value: &str,
     err: Option<&str>,
 ) {
-    let q_value = escape_value(value);
     let suffix = match err {
         None => " outcome=ok".to_string(),
         Some(e) => format!(" outcome=err err=\"{}\"", escape_value(e)),
@@ -671,12 +739,19 @@ pub(crate) fn append_lint_fix(
     // wrong — but "currently impossible by accident" is not the same
     // property as "escaped".
     let line = format!(
-        "\tregion={}\tstage=fix action=SetOption {} {} {} {} value=\"{q_value}\"{suffix}",
-        escape_value(region),
-        field_token("target", env),
-        field_token("rule_id", rule_id),
-        field_token("namespace", namespace),
-        field_token("name", name),
+        "\t{}\t{}{suffix}",
+        field_token("region", region),
+        detail_from(
+            "fix",
+            &[
+                ("action", Field::Token("SetOption")),
+                ("target", Field::Text(env)),
+                ("rule_id", Field::Text(rule_id)),
+                ("namespace", Field::Text(namespace)),
+                ("name", Field::Text(name)),
+                ("value", Field::Text(value)),
+            ],
+        )
     );
     write_audit_line_raw(&line);
 }
@@ -694,10 +769,13 @@ pub(crate) fn append_action_skipped(
     target: &str,
     reason: &str,
 ) {
-    let detail = format!(
-        "stage=skipped action={action_label} {} reason=\"{}\"",
-        field_token("target", target),
-        escape_value(reason)
+    let detail = detail_from(
+        "skipped",
+        &[
+            ("action", Field::Text(action_label)),
+            ("target", Field::Text(target)),
+            ("reason", Field::Text(reason)),
+        ],
     );
     write_audit_line(account, profile, region, &detail);
 }
@@ -733,17 +811,16 @@ pub(crate) fn append_action_refused(
     // every consumer reads instead of the real one. Same forge path
     // `field_token`'s own comment exists to close for the header
     // fields.
-    let detail = format!(
-        "stage=refused {} {} rule={} remedy=\"{}\"",
-        field_token("action", action_label),
-        field_token("target", target),
-        // `rule` comes from `Refusal::rule()`, a fixed set of
-        // `&'static str` — but "no writer can forge a line" is not
-        // supposed to depend on who the callers happen to be today.
-        // Escaping `action` and `target` and leaving this raw is
-        // exactly the gap the widened forge guard found.
-        sanitise_token(rule),
-        escape_value(remedy)
+    let detail = detail_from(
+        "refused",
+        &[
+            ("action", Field::Text(action_label)),
+            ("target", Field::Text(target)),
+            // `rule` is a fixed vocabulary consumers filter on, so it
+            // stays an unquoted token rather than becoming quoted text.
+            ("rule", Field::Token(rule)),
+            ("remedy", Field::Text(remedy)),
+        ],
     );
     write_audit_line(account, profile, region, &detail);
 }
@@ -784,14 +861,14 @@ pub(crate) fn append_action_asked(
     answer: &str,
     elapsed_ms: u128,
 ) {
-    let detail = format!(
-        "stage=asked {} {} answer={} elapsed_ms={elapsed_ms}",
-        field_token("action", action_label),
-        field_token("target", target),
-        // Same forge path the refusal writer closes: a fixed set
-        // today, escaped anyway, because "no writer can forge a line"
-        // must not depend on who the callers happen to be.
-        sanitise_token(answer),
+    let detail = detail_from(
+        "asked",
+        &[
+            ("action", Field::Text(action_label)),
+            ("target", Field::Text(target)),
+            ("answer", Field::Token(answer)),
+            ("elapsed_ms", Field::Num(elapsed_ms)),
+        ],
     );
     write_audit_line(account, profile, region, &detail);
 }
@@ -806,9 +883,12 @@ pub(crate) fn append_action_undone(
     action_label: &str,
     target: &str,
 ) {
-    let detail = format!(
-        "stage=undone action={action_label} {}",
-        field_token("target", target)
+    let detail = detail_from(
+        "undone",
+        &[
+            ("action", Field::Text(action_label)),
+            ("target", Field::Text(target)),
+        ],
     );
     write_audit_line(account, profile, region, &detail);
 }
@@ -1453,6 +1533,44 @@ mod tests {
         // appeared to.
         let _: serde_json::Value = serde_json::from_str(&body)
             .expect("webhook body must be parseable JSON / YAML-superset");
+    }
+
+    /// Only one place builds a `stage=` line.
+    ///
+    /// The forge guard below drives every writer end to end, and its
+    /// own comment records that "EVERY writer" was once claimed while
+    /// covering three of eight — because the enumeration was
+    /// hand-maintained and a new writer joined without joining the
+    /// list. This asks the structural question instead: a writer that
+    /// formats its own `stage=` has escaped the chokepoint, and no
+    /// enumeration has to be kept current to notice.
+    #[test]
+    fn only_the_renderer_builds_a_stage_line() {
+        let src = include_str!("audit.rs");
+        let prod = crate::app::tests::scan::production_half(src);
+        let code: String = prod
+            .lines()
+            .map(crate::app::tests::scan::strip_line_comment)
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        // `detail_from` is the renderer and is allowed to say it.
+        let renderer = code
+            .find("pub(crate) fn detail_from")
+            .expect("the renderer must exist");
+        let renderer_end = code[renderer..]
+            .find("\n}")
+            .map_or(code.len(), |i| renderer + i);
+        let mut elsewhere = code.clone();
+        elsewhere.replace_range(renderer..renderer_end, "");
+
+        assert!(
+            !elsewhere.contains("stage="),
+            "a writer is building its own `stage=` line instead of going through \
+             `detail_from`, so its escaping is a second copy of the rule — which is \
+             how the forge guard came to cover three writers of eight while claiming \
+             every one"
+        );
     }
 
     #[test]
