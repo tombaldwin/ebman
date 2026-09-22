@@ -25,7 +25,7 @@ impl AwsClient {
             if let Some(t) = token {
                 req = req.next_token(t);
             }
-            let resp = req.send().await.wrap_err("ListCertificates failed")?;
+            let resp = req.send().await.aws_ctx("ListCertificates failed")?;
             Ok((
                 resp.certificate_summary_list.unwrap_or_default(),
                 resp.next_token,

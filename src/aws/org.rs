@@ -51,7 +51,7 @@ impl AwsClient {
                 let resp = req
                     .send()
                     .await
-                    .wrap_err("organizations:ListAccounts failed")?;
+                    .aws_ctx("organizations:ListAccounts failed")?;
                 Ok((resp.accounts.unwrap_or_default(), resp.next_token))
             },
         )

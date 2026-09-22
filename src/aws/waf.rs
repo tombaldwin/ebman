@@ -16,7 +16,7 @@ impl AwsClient {
             .resource_arn(resource_arn)
             .send()
             .await
-            .wrap_err("GetWebACLForResource failed")?;
+            .aws_ctx("GetWebACLForResource failed")?;
         Ok(resp.web_acl.map(|a| a.arn))
     }
 }

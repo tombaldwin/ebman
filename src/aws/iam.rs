@@ -69,7 +69,7 @@ impl AwsClient {
             .instance_profile_name(name)
             .send()
             .await
-            .wrap_err("GetInstanceProfile failed")?;
+            .aws_ctx("GetInstanceProfile failed")?;
         Ok(resp
             .instance_profile
             .and_then(|p| p.roles.into_iter().next())
@@ -132,10 +132,7 @@ impl AwsClient {
             if let Some(m) = marker.take() {
                 req = req.marker(m);
             }
-            let resp = req
-                .send()
-                .await
-                .wrap_err("SimulatePrincipalPolicy failed")?;
+            let resp = req.send().await.aws_ctx("SimulatePrincipalPolicy failed")?;
             raw.extend(resp.evaluation_results.unwrap_or_default());
             pages += 1;
             match resp.marker {

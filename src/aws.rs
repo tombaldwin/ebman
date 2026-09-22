@@ -288,7 +288,7 @@ impl AwsClient {
         if let Some(eid) = spec.external_id.as_ref() {
             req = req.external_id(eid.clone());
         }
-        let resp = req.send().await.wrap_err("sts:AssumeRole failed")?;
+        let resp = req.send().await.aws_ctx("sts:AssumeRole failed")?;
         let creds = resp
             .credentials
             .ok_or_else(|| eyre!("sts:AssumeRole returned no credentials"))?;
@@ -429,7 +429,7 @@ impl AwsClient {
             .get_caller_identity()
             .send()
             .await
-            .wrap_err("sts get-caller-identity failed")?;
+            .aws_ctx("sts get-caller-identity failed")?;
         Ok(Identity {
             account_id: ident.account,
             caller_arn: ident.arn,
@@ -1064,12 +1064,46 @@ impl std::fmt::Display for AwsErrorMeta {
 
 impl std::error::Error for AwsErrorMeta {}
 
+/// `.send().await.aws_ctx("Op failed")?` — the shortest correct way to
+/// finish an SDK call.
+///
+/// Same job as [`wrap_aws`], in postfix position. That is the whole
+/// point: the wrong form was `.wrap_err("Op failed")?`, which is
+/// shorter than wrapping the call in `wrap_aws(...)` and reads as if it
+/// did the same thing. Seventy-eight of eighty call sites took it, and
+/// each one silently discarded the service's own message.
+///
+/// A rule that asks for more typing than the mistake loses. This one
+/// asks for less.
+pub(crate) trait SdkResultExt<T> {
+    /// Attach the operation name, and pull the service's error code,
+    /// message and request id out of the SDK error before they are
+    /// erased into `dyn Error`.
+    fn aws_ctx(self, op: &str) -> Result<T>;
+}
+
+impl<T, E, R> SdkResultExt<T>
+    for std::result::Result<T, aws_sdk_elasticbeanstalk::error::SdkError<E, R>>
+where
+    E: aws_sdk_elasticbeanstalk::error::ProvideErrorMetadata
+        + std::error::Error
+        + Send
+        + Sync
+        + 'static,
+    R: std::fmt::Debug + Send + Sync + 'static,
+    aws_sdk_elasticbeanstalk::error::SdkError<E, R>: aws_sdk_elasticbeanstalk::operation::RequestId,
+{
+    fn aws_ctx(self, op: &str) -> Result<T> {
+        wrap_aws(self, op)
+    }
+}
+
 /// Capture the code + request id off an SDK error and push them into the
 /// chain, then wrap with `op` the way every other boundary site does.
 ///
 /// The `E: ProvideErrorMetadata` bound is what makes this typed: it is
 /// the SDK's own accessor, not a guess about how `Debug` renders.
-pub(crate) fn wrap_aws<T, E, R>(
+fn wrap_aws<T, E, R>(
     r: std::result::Result<T, aws_sdk_elasticbeanstalk::error::SdkError<E, R>>,
     op: &str,
 ) -> Result<T>

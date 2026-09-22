@@ -42,7 +42,7 @@ impl AwsClient {
             if let Some(t) = token {
                 req = req.next_token(t);
             }
-            let resp = req.send().await.wrap_err("DescribeSubnets failed")?;
+            let resp = req.send().await.aws_ctx("DescribeSubnets failed")?;
             Ok((resp.subnets.unwrap_or_default(), resp.next_token))
         })
         .await?
@@ -100,7 +100,7 @@ impl AwsClient {
             if let Some(t) = token {
                 req = req.next_token(t);
             }
-            let resp = req.send().await.wrap_err("DescribeSecurityGroups failed")?;
+            let resp = req.send().await.aws_ctx("DescribeSecurityGroups failed")?;
             Ok((resp.security_groups.unwrap_or_default(), resp.next_token))
         })
         .await?
@@ -127,7 +127,7 @@ impl AwsClient {
             .instance_ids(instance_id)
             .send()
             .await
-            .wrap_err("ec2:TerminateInstances failed")?;
+            .aws_ctx("ec2:TerminateInstances failed")?;
         Ok(())
     }
 }

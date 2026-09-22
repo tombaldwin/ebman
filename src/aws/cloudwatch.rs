@@ -86,7 +86,7 @@ impl AwsClient {
                 if let Some(t) = token {
                     req = req.next_token(t);
                 }
-                let resp = req.send().await.wrap_err("DescribeAlarms failed")?;
+                let resp = req.send().await.aws_ctx("DescribeAlarms failed")?;
                 Ok((resp.metric_alarms.unwrap_or_default(), resp.next_token))
             },
         )
@@ -173,7 +173,7 @@ impl AwsClient {
             .treat_missing_data("notBreaching")
             .send()
             .await
-            .wrap_err("PutMetricAlarm failed")?;
+            .aws_ctx("PutMetricAlarm failed")?;
         Ok(())
     }
 
@@ -196,7 +196,7 @@ impl AwsClient {
             .max_records(max_records)
             .send()
             .await
-            .wrap_err("DescribeAlarmHistory failed")?;
+            .aws_ctx("DescribeAlarmHistory failed")?;
         let mut out = Vec::new();
         for item in resp.alarm_history_items.unwrap_or_default() {
             let at = item
@@ -221,7 +221,7 @@ impl AwsClient {
         for n in names {
             req = req.alarm_names(n);
         }
-        req.send().await.wrap_err("DeleteAlarms failed")?;
+        req.send().await.aws_ctx("DeleteAlarms failed")?;
         Ok(())
     }
 
@@ -266,7 +266,8 @@ impl AwsClient {
             .metric_data_queries(make_query("req5xx", "ApplicationRequests5xx", "Sum"))
             .metric_data_queries(make_query("p90", "ApplicationLatencyP90", "Average"))
             .send()
-            .await?;
+            .await
+            .aws_ctx("GetMetricData failed")?;
 
         let order = ["health", "req4xx", "req5xx", "p90"];
         let labels: std::collections::HashMap<&str, (&str, &str)> = [
@@ -365,7 +366,7 @@ impl AwsClient {
                 req.metric_data_queries(MetricDataQuery::builder().id(id).metric_stat(ms).build());
         }
 
-        let resp = req.send().await?;
+        let resp = req.send().await.aws_ctx("GetMetricData failed")?;
         let mut by_id: std::collections::HashMap<String, MetricSeries> =
             std::collections::HashMap::new();
         for r in resp.metric_data_results.unwrap_or_default() {

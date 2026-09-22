@@ -112,7 +112,7 @@ impl AwsClient {
             if let Some(t) = next_page.take() {
                 req = req.next_page_token(t);
             }
-            let resp = req.send().await.wrap_err("GetCostAndUsage failed")?;
+            let resp = req.send().await.aws_ctx("GetCostAndUsage failed")?;
             for period in resp.results_by_time.unwrap_or_default() {
                 for group in period.groups.unwrap_or_default() {
                     let raw_key = match group.keys.as_ref().and_then(|k| k.first()) {

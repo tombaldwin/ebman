@@ -64,11 +64,14 @@ impl AwsClient {
             .upload_id(upload_id)
             .send()
             .await
+            .aws_ctx("AbortMultipartUpload failed")
         {
+            // `{e:#}` walks the chain. `%e` rendered the outermost
+            // layer only, which is the operation name.
             tracing::warn!(
                 target: "ebman::aws",
                 bucket, key, upload_id,
-                error = %e,
+                error = %format!("{e:#}"),
                 "AbortMultipartUpload failed — uploaded parts may be left billed"
             );
         }
@@ -121,7 +124,7 @@ impl AwsClient {
                 .body(body)
                 .send()
                 .await
-                .wrap_err_with(|| format!("S3 PutObject {bucket}/{key} failed"))?;
+                .aws_ctx(&format!("S3 PutObject {bucket}/{key} failed"))?;
             return Ok(());
         }
         // Multipart path.
@@ -132,7 +135,7 @@ impl AwsClient {
             .key(key)
             .send()
             .await
-            .wrap_err_with(|| format!("S3 CreateMultipartUpload {bucket}/{key} failed"))?;
+            .aws_ctx(&format!("S3 CreateMultipartUpload {bucket}/{key} failed"))?;
         let upload_id = create
             .upload_id()
             .ok_or_else(|| eyre!("CreateMultipartUpload returned no UploadId"))?
@@ -175,13 +178,13 @@ impl AwsClient {
                 .body(ByteStream::from(buf))
                 .send()
                 .await
-            {
+                .aws_ctx(&format!(
+                    "S3 UploadPart {part_number} of {bucket}/{key} failed"
+                )) {
                 Ok(r) => r,
                 Err(e) => {
                     self.abort_multipart(bucket, key, &upload_id).await;
-                    return Err(e).wrap_err_with(|| {
-                        format!("S3 UploadPart {part_number} of {bucket}/{key} failed")
-                    });
+                    return Err(e);
                 }
             };
             // S3 omits the ETag in some configurations (SSE-C header
@@ -218,10 +221,10 @@ impl AwsClient {
             .multipart_upload(completed)
             .send()
             .await
+            .aws_ctx(&format!("S3 CompleteMultipartUpload {bucket}/{key} failed"))
         {
             self.abort_multipart(bucket, key, &upload_id).await;
-            return Err(e)
-                .wrap_err_with(|| format!("S3 CompleteMultipartUpload {bucket}/{key} failed"));
+            return Err(e);
         }
         Ok(())
     }
