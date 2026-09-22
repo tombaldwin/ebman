@@ -1047,175 +1047,25 @@ where
                 }
             }
 
-            if fix && !issues.is_empty() {
-                // Through the shared gate, not `pin_reason` alone.
-                // `active_freeze: None` because the freeze is
-                // handled once up front for the whole run — a
-                // per-env freeze check would print the same refusal
-                // N times, and this loop skips the env rather than
-                // exiting. Passing it explicitly rather than
-                // reaching for `pin_reason` keeps this path on the
-                // shared decision even so.
-                // A `--dry-run` preview goes through the pure
-                // half: it dispatched nothing, so filing
-                // `stage=refused` would fill the log with refusals
-                // of writes that were never going to happen. Same
-                // reasoning the exit-code branch below already
-                // applies.
-                let refusal = if yes {
-                    crate::cli::write_refusal(
-                        safety_cfg,
-                        &env.name,
-                        active_profile_for_safety,
-                        None,
-                        region_opt.as_deref(),
-                        // The label the fix DISPATCH logs, so a
-                        // refusal correlates with it under `ebman
-                        // audit --action SetOption`.
-                        "SetOption",
-                    )
-                } else {
-                    crate::cli::write_refusal_unaudited(
-                        safety_cfg,
-                        &env.name,
-                        active_profile_for_safety,
-                        None,
-                    )
-                    .map(|(_, message, _)| message)
-                };
-                if let Some(reason) = refusal {
-                    if !quiet {
-                        eprintln!("ebman lint --fix: {reason}");
-                    }
-                    // Only a real (--yes) run treats the refusal as
-                    // a dispatch failure — a --dry-run preview
-                    // dispatched nothing and must not exit 1.
-                    if yes {
-                        report.fix_dispatch_failed = true;
-                    }
-                    report.issues.extend(issues);
-                    continue;
-                }
-                let region_label = region_opt.as_deref().unwrap_or("default").to_string();
-                // Rebuild the (cheap, borrowing) context for the
-                // fix pass — `run_rules_for_env` consumed its own.
-                let ctx = build_lint_context(env, &inputs, &safety_cfg.required_tags);
-                let mut to_set: Vec<(String, String, String)> = Vec::new();
-                let mut planned: Vec<(String, lint::FixAction)> = Vec::new();
-                let mut planned_set_indices: Vec<usize> = Vec::new();
-                for issue in &issues {
-                    if fix_disabled.contains(&issue.rule_id) {
-                        if !quiet && !json {
-                            println!("skip {} ({}): in lint.fix_disable", issue.rule_id, env.name);
-                        }
-                        continue;
-                    }
-                    let Some(rule) = rules.iter().find(|r| r.id() == issue.rule_id) else {
-                        continue;
-                    };
-                    let Some(action) = rule.fix(&ctx) else {
-                        if !quiet && !json {
-                            println!(
-                                "no-fix {} ({}): rule has no auto-remediation",
-                                issue.rule_id, env.name
-                            );
-                        }
-                        continue;
-                    };
-                    if let lint::FixAction::SetOption {
-                        namespace,
-                        name,
-                        value,
-                        ..
-                    } = &action
-                    {
-                        planned_set_indices.push(planned.len());
-                        to_set.push((namespace.clone(), name.clone(), value.clone()));
-                    }
-                    planned.push((issue.rule_id.clone(), action));
-                }
-                // Plan lines respect --quiet and stay off stdout
-                // under --json (prose interleaved with the JSON
-                // document broke every piped consumer).
-                if !quiet && !json {
-                    for (rule_id, action) in &planned {
-                        match action {
-                            lint::FixAction::SetOption { description, .. } => {
-                                println!("fix {rule_id} ({}): {description}", env.name);
-                            }
-                            lint::FixAction::Manual { instructions } => {
-                                println!(
-                                "fix {rule_id} ({}) MANUAL — operator action required:\n  {instructions}",
-                                env.name
-                            );
-                            }
-                        }
-                    }
-                }
-                if fix_may_dispatch(yes, to_set.len()) {
-                    match aws
-                        .update_env_option_settings(&env.name, &to_set, &[])
-                        .await
-                    {
-                        Ok(()) => {
-                            for &idx in &planned_set_indices {
-                                let (rule_id, action) = &planned[idx];
-                                if let lint::FixAction::SetOption {
-                                    namespace,
-                                    name,
-                                    value,
-                                    ..
-                                } = action
-                                {
-                                    audit::append_lint_fix(
-                                        &region_label,
-                                        &env.name,
-                                        rule_id,
-                                        namespace,
-                                        name,
-                                        value,
-                                        None,
-                                    );
-                                }
-                            }
-                            if !quiet && !json {
-                                println!(
-                                    "ok ({}): applied {} fix(es)",
-                                    env.name,
-                                    planned_set_indices.len()
-                                );
-                            }
-                        }
-                        Err(e) => {
-                            eprintln!(
-                                "ebman lint --fix: dispatch failed for {} in {region_label}: {e}",
-                                env.name
-                            );
-                            let err_str = e.to_string();
-                            for &idx in &planned_set_indices {
-                                let (rule_id, action) = &planned[idx];
-                                if let lint::FixAction::SetOption {
-                                    namespace,
-                                    name,
-                                    value,
-                                    ..
-                                } = action
-                                {
-                                    audit::append_lint_fix(
-                                        &region_label,
-                                        &env.name,
-                                        rule_id,
-                                        namespace,
-                                        name,
-                                        value,
-                                        Some(&err_str),
-                                    );
-                                }
-                            }
-                            report.fix_dispatch_failed = true;
-                        }
-                    }
-                }
+            if fix
+                && !issues.is_empty()
+                && apply_fixes_for_env(
+                    &aws,
+                    env,
+                    &inputs,
+                    &issues,
+                    &rules,
+                    yes,
+                    quiet,
+                    json,
+                    fix_disabled,
+                    safety_cfg,
+                    active_profile_for_safety,
+                    region_opt,
+                )
+                .await
+            {
+                report.fix_dispatch_failed = true;
             }
 
             report.issues.extend(issues);
@@ -2627,11 +2477,213 @@ mod webhook_gate_tests {
 }
 
 /// The seam exists to be driven. This drives it.
+/// Plan and dispatch `--fix` for one environment. Returns whether a
+/// dispatch failed (or a `--yes` run was refused), which is what
+/// decides `lint`'s exit code.
+///
+/// Extracted from `run_cycle` in 0.45. It was ~170 lines inline and
+/// the seam's tests could not reach any of it: `run_with` hardcoded
+/// `fix = false`, so the refusal accounting and the dispatch-failure
+/// flag were exactly as untested after the extraction that was
+/// supposed to expose them as before it. `fix_dispatch_failed` was
+/// asserted once, as `false`.
+#[allow(clippy::too_many_arguments)]
+async fn apply_fixes_for_env(
+    aws: &aws::AwsClient,
+    env: &aws::Environment,
+    inputs: &EnvLintInputs,
+    issues: &[lint::Issue],
+    rules: &[Box<dyn lint::Rule>],
+    yes: bool,
+    quiet: bool,
+    json: bool,
+    fix_disabled: &[String],
+    safety_cfg: &config::Config,
+    active_profile_for_safety: &Option<String>,
+    region_opt: &Option<String>,
+) -> bool {
+    let mut dispatch_failed = false;
+    // Through the shared gate, not `pin_reason` alone.
+    // `active_freeze: None` because the freeze is
+    // handled once up front for the whole run — a
+    // per-env freeze check would print the same refusal
+    // N times, and this loop skips the env rather than
+    // exiting. Passing it explicitly rather than
+    // reaching for `pin_reason` keeps this path on the
+    // shared decision even so.
+    // A `--dry-run` preview goes through the pure
+    // half: it dispatched nothing, so filing
+    // `stage=refused` would fill the log with refusals
+    // of writes that were never going to happen. Same
+    // reasoning the exit-code branch below already
+    // applies.
+    let refusal = if yes {
+        crate::cli::write_refusal(
+            safety_cfg,
+            &env.name,
+            active_profile_for_safety,
+            None,
+            region_opt.as_deref(),
+            // The label the fix DISPATCH logs, so a
+            // refusal correlates with it under `ebman
+            // audit --action SetOption`.
+            "SetOption",
+        )
+    } else {
+        crate::cli::write_refusal_unaudited(safety_cfg, &env.name, active_profile_for_safety, None)
+            .map(|(_, message, _)| message)
+    };
+    if let Some(reason) = refusal {
+        if !quiet {
+            eprintln!("ebman lint --fix: {reason}");
+        }
+        // Only a real (--yes) run treats the refusal as a dispatch
+        // failure — a --dry-run preview dispatched nothing and must
+        // not exit 1. `return yes`, not `return true`: the extraction
+        // first wrote the latter, which would have made a refused
+        // preview exit 1. Caught by clippy noticing the assignment it
+        // made dead.
+        return yes;
+    }
+    let region_label = region_opt.as_deref().unwrap_or("default").to_string();
+    // Rebuild the (cheap, borrowing) context for the
+    // fix pass — `run_rules_for_env` consumed its own.
+    let ctx = build_lint_context(env, inputs, &safety_cfg.required_tags);
+    let mut to_set: Vec<(String, String, String)> = Vec::new();
+    let mut planned: Vec<(String, lint::FixAction)> = Vec::new();
+    let mut planned_set_indices: Vec<usize> = Vec::new();
+    for issue in issues {
+        if fix_disabled.contains(&issue.rule_id) {
+            if !quiet && !json {
+                println!("skip {} ({}): in lint.fix_disable", issue.rule_id, env.name);
+            }
+            continue;
+        }
+        let Some(rule) = rules.iter().find(|r| r.id() == issue.rule_id) else {
+            continue;
+        };
+        let Some(action) = rule.fix(&ctx) else {
+            if !quiet && !json {
+                println!(
+                    "no-fix {} ({}): rule has no auto-remediation",
+                    issue.rule_id, env.name
+                );
+            }
+            continue;
+        };
+        if let lint::FixAction::SetOption {
+            namespace,
+            name,
+            value,
+            ..
+        } = &action
+        {
+            planned_set_indices.push(planned.len());
+            to_set.push((namespace.clone(), name.clone(), value.clone()));
+        }
+        planned.push((issue.rule_id.clone(), action));
+    }
+    // Plan lines respect --quiet and stay off stdout
+    // under --json (prose interleaved with the JSON
+    // document broke every piped consumer).
+    if !quiet && !json {
+        for (rule_id, action) in &planned {
+            match action {
+                lint::FixAction::SetOption { description, .. } => {
+                    println!("fix {rule_id} ({}): {description}", env.name);
+                }
+                lint::FixAction::Manual { instructions } => {
+                    println!(
+                        "fix {rule_id} ({}) MANUAL — operator action required:\n  {instructions}",
+                        env.name
+                    );
+                }
+            }
+        }
+    }
+    if fix_may_dispatch(yes, to_set.len()) {
+        match aws
+            .update_env_option_settings(&env.name, &to_set, &[])
+            .await
+        {
+            Ok(()) => {
+                for &idx in &planned_set_indices {
+                    let (rule_id, action) = &planned[idx];
+                    if let lint::FixAction::SetOption {
+                        namespace,
+                        name,
+                        value,
+                        ..
+                    } = action
+                    {
+                        audit::append_lint_fix(
+                            &region_label,
+                            &env.name,
+                            rule_id,
+                            namespace,
+                            name,
+                            value,
+                            None,
+                        );
+                    }
+                }
+                if !quiet && !json {
+                    println!(
+                        "ok ({}): applied {} fix(es)",
+                        env.name,
+                        planned_set_indices.len()
+                    );
+                }
+            }
+            Err(e) => {
+                eprintln!(
+                    "ebman lint --fix: dispatch failed for {} in {region_label}: {e}",
+                    env.name
+                );
+                let err_str = e.to_string();
+                for &idx in &planned_set_indices {
+                    let (rule_id, action) = &planned[idx];
+                    if let lint::FixAction::SetOption {
+                        namespace,
+                        name,
+                        value,
+                        ..
+                    } = action
+                    {
+                        audit::append_lint_fix(
+                            &region_label,
+                            &env.name,
+                            rule_id,
+                            namespace,
+                            name,
+                            value,
+                            Some(&err_str),
+                        );
+                    }
+                }
+                dispatch_failed = true;
+            }
+        }
+    }
+    dispatch_failed
+}
+
 #[cfg(test)]
 mod cycle_wiring {
     use super::*;
 
+    /// Like `mock_client`, but `UpdateEnvironment` is rejected — the
+    /// shape a `--fix` run hits when the role can read the fleet and
+    /// not change it.
+    fn client_with_failing_update(envs: Vec<String>) -> aws::AwsClient {
+        mock_client_inner(envs, true)
+    }
+
     fn mock_client(envs: Vec<String>) -> aws::AwsClient {
+        mock_client_inner(envs, false)
+    }
+
+    fn mock_client_inner(envs: Vec<String>, failing_update: bool) -> aws::AwsClient {
         use aws_sdk_elasticbeanstalk::operation::describe_environments::DescribeEnvironmentsOutput;
         use aws_sdk_elasticbeanstalk::types::EnvironmentDescription;
         let listing =
@@ -2659,11 +2711,39 @@ mod cycle_wiring {
         .then_output(|| {
             aws_sdk_elasticbeanstalk::operation::list_available_solution_stacks::ListAvailableSolutionStacksOutput::builder().build()
         });
+        // With `failing_update`, hand back the option settings EBL001
+        // fires on — `AllAtOnce` on a multi-instance env — so the fix
+        // pass has something to PLAN and therefore something to
+        // dispatch. An empty settings response yields issues with no
+        // `SetOption` fix, which reaches the planner and stops there.
         let cfgsettings = aws_smithy_mocks::mock!(
             aws_sdk_elasticbeanstalk::Client::describe_configuration_settings
         )
-        .then_output(|| {
-            aws_sdk_elasticbeanstalk::operation::describe_configuration_settings::DescribeConfigurationSettingsOutput::builder().build()
+        .then_output(move || {
+            use aws_sdk_elasticbeanstalk::types::{
+                ConfigurationOptionSetting, ConfigurationSettingsDescription,
+            };
+            let mut out = aws_sdk_elasticbeanstalk::operation::describe_configuration_settings::DescribeConfigurationSettingsOutput::builder();
+            if failing_update {
+                let opt = |ns: &str, name: &str, value: &str| {
+                    ConfigurationOptionSetting::builder()
+                        .namespace(ns)
+                        .option_name(name)
+                        .value(value)
+                        .build()
+                };
+                out = out.configuration_settings(
+                    ConfigurationSettingsDescription::builder()
+                        .option_settings(opt(
+                            "aws:elasticbeanstalk:command",
+                            "DeploymentPolicy",
+                            "AllAtOnce",
+                        ))
+                        .option_settings(opt("aws:autoscaling:asg", "MaxSize", "4"))
+                        .build(),
+                );
+            }
+            out.build()
         });
         let tags = aws_smithy_mocks::mock!(
             aws_sdk_elasticbeanstalk::Client::list_tags_for_resource
@@ -2693,18 +2773,33 @@ mod cycle_wiring {
         .then_output(|| {
             aws_sdk_elasticbeanstalk::operation::list_platform_versions::ListPlatformVersionsOutput::builder().build()
         });
+        let update = aws_smithy_mocks::mock!(
+            aws_sdk_elasticbeanstalk::Client::update_environment
+        )
+        .then_error(|| {
+            aws_sdk_elasticbeanstalk::operation::update_environment::UpdateEnvironmentError::generic(
+                aws_smithy_types::error::ErrorMetadata::builder()
+                    .code("AccessDeniedException")
+                    .message("User is not authorized to perform elasticbeanstalk:UpdateEnvironment")
+                    .build(),
+            )
+        });
+        let mut rules: Vec<&aws_smithy_mocks::Rule> = vec![
+            &listing,
+            &stacks,
+            &cfgsettings,
+            &tags,
+            &health,
+            &resources,
+            &platforms,
+        ];
+        if failing_update {
+            rules.push(&update);
+        }
         let eb = aws_smithy_mocks::mock_client!(
             aws_sdk_elasticbeanstalk,
             aws_smithy_mocks::RuleMode::MatchAny,
-            [
-                &listing,
-                &stacks,
-                &cfgsettings,
-                &tags,
-                &health,
-                &resources,
-                &platforms
-            ]
+            rules
         );
         let cfg = aws_config::SdkConfig::builder()
             .region(aws_config::Region::new("us-west-1"))
@@ -2780,6 +2875,99 @@ mod cycle_wiring {
             test_clock(),
         )
         .await
+    }
+
+    /// A `--fix` dispatch that AWS rejects sets `fix_dispatch_failed`,
+    /// which is what makes `lint --fix` exit 1.
+    ///
+    /// The flag existed before 0.45 and was asserted exactly once, as
+    /// `false`. `run_with` hardcoded `fix = false`, so the ~170 lines
+    /// holding the refusal accounting and this flag were as unreachable
+    /// after the extraction meant to expose them as before it. Named by
+    /// the pre-0.44 architecture review; this is the test it asked for.
+    #[tokio::test]
+    async fn a_rejected_fix_dispatch_fails_the_cycle() {
+        let report = run_with_opts(
+            vec![None],
+            CycleOpts {
+                fix: true,
+                yes: true,
+                ..CycleOpts::default()
+            },
+            |_| async { Ok(client_with_failing_update(vec!["poly-prod-web".into()])) },
+        )
+        .await;
+
+        assert!(
+            report.fix_dispatch_failed,
+            "a rejected UpdateEnvironment must fail the cycle, or `lint --fix` \
+             exits 0 having changed nothing ({} issues seen)",
+            report.issues.len()
+        );
+        assert!(
+            !report.degraded(),
+            "the fleet WAS seen — a rejected write is not incomplete coverage: {:?}",
+            report.degrade_reasons
+        );
+    }
+
+    /// The same rejection under a preview (no `--yes`) must NOT fail
+    /// the cycle: nothing was dispatched.
+    #[tokio::test]
+    async fn a_preview_never_fails_the_cycle() {
+        let report = run_with_opts(
+            vec![None],
+            CycleOpts {
+                fix: true,
+                yes: false,
+                ..CycleOpts::default()
+            },
+            |_| async { Ok(client_with_failing_update(vec!["poly-prod-web".into()])) },
+        )
+        .await;
+        assert!(
+            !report.fix_dispatch_failed,
+            "a preview dispatched nothing and must not exit 1"
+        );
+    }
+
+    fn read_only_cfg(env: &str) -> config::Config {
+        let mut cfg = config::Config::default();
+        cfg.safety_envs.insert(env.to_string(), true);
+        cfg
+    }
+
+    /// A safety-pinned env REFUSES the fix, and the refusal counts as
+    /// a dispatch failure only on a real run.
+    ///
+    /// The pair matters, and one arm alone would not have caught the
+    /// bug that prompted it: extracting the fix block turned
+    /// `if yes { failed = true }` into an unconditional `return true`,
+    /// which would have made a refused PREVIEW exit 1. Clippy noticed
+    /// the assignment it made dead; nothing in the suite did, because
+    /// no test reached the refusal branch at all.
+    #[tokio::test]
+    async fn a_refused_fix_fails_the_cycle_only_on_a_real_run() {
+        let env = "poly-prod-web";
+        for (yes, expect_failed) in [(true, true), (false, false)] {
+            let report = run_with_opts(
+                vec![None],
+                CycleOpts {
+                    fix: true,
+                    yes,
+                    safety_cfg: read_only_cfg(env),
+                    ..CycleOpts::default()
+                },
+                |_| async { Ok(client_with_failing_update(vec![env.to_string()])) },
+            )
+            .await;
+            assert_eq!(
+                report.fix_dispatch_failed,
+                expect_failed,
+                "a refusal with --yes={yes} must {} the cycle",
+                if expect_failed { "fail" } else { "not fail" }
+            );
+        }
     }
 
     /// `--env NAME` where NAME is not in the only context being
