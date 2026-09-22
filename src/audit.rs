@@ -247,10 +247,12 @@ pub(crate) fn parse_kv_pairs(text: &str) -> Vec<(String, String)> {
 ///   one audit entry into two on disk (the parser reads line-by-line,
 ///   so an embedded newline corrupts the next entry's RFC3339 prefix).
 ///
-/// Used by `append_action_completed`, `append_rollout`, and
-/// `append_lint_fix` (and the typed wrappers in `app.rs` that
-/// route to them) so the escape rules stay consistent across every
-/// writer.
+/// Not called by writers. Both quoting variants — [`field_token`] for
+/// conditional, [`Field::Quoted`] for pinned — route through here, so
+/// the escape rules are shared by construction rather than by every
+/// writer remembering to call it. The list of callers this doc used to
+/// carry named three of them and was stale as soon as a fourth writer
+/// existed.
 pub(crate) fn escape_value(s: &str) -> String {
     s.chars()
         .map(|c| match c {
@@ -523,20 +525,6 @@ pub(crate) fn append_action_completed(
     write_audit_line(account, profile, region, &detail);
 }
 
-/// Append `extras` to a detail string. Pure helper so the
-/// dispatched + completed paths share the encoding (and so the
-/// tests cover it once). Auto-quotes values that contain
-/// whitespace, `=`, or `"`; leaves simple values unquoted to match
-/// the existing hand-rolled audit-line shape
-/// (`namespace=ns name=opt value="..."`).
-/// Render one `key=value` token with the same auto-quoting
-/// `append_extras` applies: quote + escape when the value is empty or
-/// contains whitespace / `"` / `=` / newline. Free-text fields
-/// (target env names, version labels) previously interpolated raw —
-/// today's inputs are AWS-constrained so no forge path existed, but a
-/// future caller passing free text would have split lines / forged
-/// fields (parse_audit_line treats an embedded newline as a new,
-/// replayable entry).
 /// One field of an audit line, carrying how it must be escaped.
 ///
 /// Escaping used to be per-writer discipline across ten `append_*`
@@ -597,29 +585,38 @@ impl Field<'_> {
 /// string is built.
 pub(crate) fn detail_from(stage: &str, fields: &[(&str, Field<'_>)]) -> String {
     let mut out = format!("stage={}", sanitise_token(stage));
+    push_fields(&mut out, fields);
+    out
+}
+
+/// Append space-separated rendered fields to a detail string.
+///
+/// Split out of `detail_from` for the one writer whose lines carry no
+/// `stage=` — a DLQ op leads with a bare verb. It got its own copy of
+/// the quoting rule instead (`append_extras`), character-identical to
+/// `field_token`'s and therefore invisible until one of the two was
+/// edited.
+fn push_fields(out: &mut String, fields: &[(&str, Field<'_>)]) {
     for (k, f) in fields {
         out.push(' ');
         out.push_str(&f.render(k));
     }
-    out
 }
 
+/// Render one `key=value` token with conditional quoting: quote +
+/// escape when the value is empty or contains whitespace / `"` / `=`
+/// / a newline, otherwise emit it bare.
+///
+/// The conditional part is load-bearing for consumers. These values
+/// are what an operator greps for (`target=prod-web`), and a token
+/// that is sometimes quoted and sometimes not is worse than either —
+/// so the rule is by content, not by field. Fields whose wire shape
+/// is pinned to always-quoted use [`Field::Quoted`] instead.
 fn field_token(key: &str, value: &str) -> String {
     if value.is_empty() || value.contains(|c: char| c.is_whitespace() || c == '"' || c == '=') {
         format!("{key}=\"{}\"", escape_value(value))
     } else {
         format!("{key}={value}")
-    }
-}
-
-fn append_extras(detail: &mut String, extras: &[(&str, &str)]) {
-    for (k, v) in extras {
-        let k = sanitise_token(k);
-        if v.is_empty() || v.contains(|c: char| c.is_whitespace() || c == '"' || c == '=') {
-            detail.push_str(&format!(" {k}=\"{}\"", escape_value(v)));
-        } else {
-            detail.push_str(&format!(" {k}={v}"));
-        }
     }
 }
 
@@ -780,7 +777,7 @@ pub(crate) fn append_lint_fix(
 
 /// Append a `stage=skipped` line — an action that was deliberately not
 /// dispatched (e.g. a batch member whose env vanished from the current
-/// view mid-run). `reason` is quoted via [`escape_value`]. Same wire
+/// view mid-run). `reason` is always quoted. Same wire
 /// shape the batch paths used to hand-roll; lifted here so the format
 /// lives in one place alongside the other typed audit helpers.
 pub(crate) fn append_action_skipped(
@@ -940,8 +937,10 @@ fn dlq_op_detail(op: &str, env: &str, extras: &[(&str, &str)]) -> String {
     // the line. `op` is a bare leading token with no key, so it is
     // sanitised rather than quoted; `env` goes through `field_token`
     // like every other value.
-    let mut detail = format!("{} {}", sanitise_token(op), field_token("env", env));
-    append_extras(&mut detail, extras);
+    let mut detail = sanitise_token(op);
+    let mut fields: Vec<(&str, Field<'_>)> = vec![("env", Field::Text(env))];
+    fields.extend(extras.iter().map(|(k, v)| (*k, Field::Text(v))));
+    push_fields(&mut detail, &fields);
     detail
 }
 
@@ -1245,14 +1244,16 @@ mod tests {
         // A newline-bearing target must stay ONE parseable entry —
         // an embedded newline used to become a second (replayable)
         // audit line.
-        let mut detail = format!(
-            "stage=dispatched action=Deploy {}",
-            super::field_token(
-                "target",
-                "evil\nstage=completed action=Terminate target=prod"
-            )
+        let detail = super::detail_from(
+            "dispatched",
+            &[
+                ("action", super::Field::Token("Deploy")),
+                (
+                    "target",
+                    super::Field::Text("evil\nstage=completed action=Terminate target=prod"),
+                ),
+            ],
         );
-        super::append_extras(&mut detail, &[]);
         assert!(!detail.contains('\n'), "newline must be escaped: {detail}");
         let line = format!("2026-08-20T00:00:00+00:00\taccount=1\tprofile=-\tregion=r\t{detail}");
         let entry = super::parse_audit_line(&line).expect("one entry");
@@ -2077,35 +2078,38 @@ mod tests {
         // source-of-truth log.)
     }
 
-    /// **Golden pin** for `append_extras` — pins the exact wire shape
-    /// of the `key=value` / `key="..."` encoding so a future quoting-
-    /// policy change becomes a deliberate decision. Audit-log
+    /// **Golden pin** for the extras encoding — pins the exact wire
+    /// shape of the `key=value` / `key="..."` rule so a future
+    /// quoting-policy change becomes a deliberate decision. Audit-log
     /// consumers (incident reviewers running `awk '$5 == "stage=…"'`)
     /// depend on this shape; silent changes invalidate their tooling.
     ///
-    /// If this test fails: the change to `append_extras` is a wire-
-    /// breaking change. Document the new format in the CHANGELOG,
-    /// bump audit-shape version notes, and update this golden — or
-    /// revert the change.
+    /// If this test fails: the change is wire-breaking. Document the
+    /// new format in the CHANGELOG, bump audit-shape version notes,
+    /// and update this golden — or revert.
     ///
-    /// Pinned in 0.19 (was a 0.18 review item).
+    /// Pinned in 0.19 (was a 0.18 review item). Repointed at
+    /// `detail_from` when `append_extras` was folded into it: the
+    /// golden pinned the copy, and the copy is what production had
+    /// stopped using.
     #[test]
-    fn append_extras_golden_wire_shape() {
-        let mut detail = String::from("stage=dispatched action=Demo target=env-1");
-        append_extras(
-            &mut detail,
+    fn extras_golden_wire_shape() {
+        let detail = detail_from(
+            "dispatched",
             &[
-                ("simple", "abc"),      // unquoted: no whitespace / quote / equals
-                ("with_space", "a b"),  // quoted: contains whitespace
-                ("with_quote", "a\"b"), // quoted + escaped
-                ("with_equals", "a=b"), // quoted: contains '='
-                ("empty", ""),          // quoted: empty value (distinguishable from omitted)
+                ("action", Field::Token("Demo")),
+                ("target", Field::Text("env-1")),
+                ("simple", Field::Text("abc")), // unquoted: no whitespace / quote / equals
+                ("with_space", Field::Text("a b")), // quoted: contains whitespace
+                ("with_quote", Field::Text("a\"b")), // quoted + escaped
+                ("with_equals", Field::Text("a=b")), // quoted: contains '='
+                ("empty", Field::Text("")),     // quoted: empty (distinguishable from omitted)
             ],
         );
         assert_eq!(
             detail,
             r#"stage=dispatched action=Demo target=env-1 simple=abc with_space="a b" with_quote="a'b" with_equals="a=b" empty="""#,
-            "append_extras wire format changed — see test docstring before updating this constant"
+            "extras wire format changed — see test docstring before updating this constant"
         );
     }
 }
@@ -2557,12 +2561,14 @@ mod drain_tests {
     /// key to any of them.
     #[test]
     fn an_extras_key_cannot_forge_a_field() {
-        let mut detail = String::from("stage=dispatched");
-        super::append_extras(
-            &mut detail,
+        let detail = super::detail_from(
+            "dispatched",
             &[
-                ("ok\nstage=completed action=Terminate", "v"),
-                ("version", "b1"),
+                (
+                    "ok\nstage=completed action=Terminate",
+                    super::Field::Text("v"),
+                ),
+                ("version", super::Field::Text("b1")),
             ],
         );
         assert!(
