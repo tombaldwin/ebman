@@ -2573,3 +2573,207 @@ mod webhook_gate_tests {
         );
     }
 }
+
+/// The seam exists to be driven. This drives it.
+#[cfg(test)]
+mod cycle_wiring {
+    use super::*;
+
+    fn mock_client(envs: Vec<String>) -> aws::AwsClient {
+        use aws_sdk_elasticbeanstalk::operation::describe_environments::DescribeEnvironmentsOutput;
+        use aws_sdk_elasticbeanstalk::types::EnvironmentDescription;
+        let listing =
+            aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::describe_environments)
+                .then_output(move || {
+                    let mut b = DescribeEnvironmentsOutput::builder();
+                    for e in &envs {
+                        b = b.environments(
+                            EnvironmentDescription::builder()
+                                .environment_name(e)
+                                .application_name("poly")
+                                .status("Ready".into())
+                                .health("Green".into())
+                                .build(),
+                        );
+                    }
+                    b.build()
+                });
+        // The per-region solution-stack fetch is allowed to fail: the
+        // cycle skips EBL008 for the region rather than aborting, and
+        // that tolerance is part of what this test pins.
+        let stacks = aws_smithy_mocks::mock!(
+            aws_sdk_elasticbeanstalk::Client::list_available_solution_stacks
+        )
+        .then_output(|| {
+            aws_sdk_elasticbeanstalk::operation::list_available_solution_stacks::ListAvailableSolutionStacksOutput::builder().build()
+        });
+        let cfgsettings = aws_smithy_mocks::mock!(
+            aws_sdk_elasticbeanstalk::Client::describe_configuration_settings
+        )
+        .then_output(|| {
+            aws_sdk_elasticbeanstalk::operation::describe_configuration_settings::DescribeConfigurationSettingsOutput::builder().build()
+        });
+        let tags = aws_smithy_mocks::mock!(
+            aws_sdk_elasticbeanstalk::Client::list_tags_for_resource
+        )
+        .then_output(|| {
+            aws_sdk_elasticbeanstalk::operation::list_tags_for_resource::ListTagsForResourceOutput::builder().build()
+        });
+        let health = aws_smithy_mocks::mock!(
+            aws_sdk_elasticbeanstalk::Client::describe_environment_health
+        )
+        .then_output(|| {
+            aws_sdk_elasticbeanstalk::operation::describe_environment_health::DescribeEnvironmentHealthOutput::builder().build()
+        });
+        let resources = aws_smithy_mocks::mock!(
+            aws_sdk_elasticbeanstalk::Client::describe_environment_resources
+        )
+        .then_output(|| {
+            aws_sdk_elasticbeanstalk::operation::describe_environment_resources::DescribeEnvironmentResourcesOutput::builder().build()
+        });
+        // The EBL015 account-level pass. An EMPTY list, not an error:
+        // the error path is the one the previous commit fixed, and a
+        // test that always degrades could not tell a degraded cycle
+        // from a clean one.
+        let platforms = aws_smithy_mocks::mock!(
+            aws_sdk_elasticbeanstalk::Client::list_platform_versions
+        )
+        .then_output(|| {
+            aws_sdk_elasticbeanstalk::operation::list_platform_versions::ListPlatformVersionsOutput::builder().build()
+        });
+        let eb = aws_smithy_mocks::mock_client!(
+            aws_sdk_elasticbeanstalk,
+            aws_smithy_mocks::RuleMode::MatchAny,
+            [
+                &listing,
+                &stacks,
+                &cfgsettings,
+                &tags,
+                &health,
+                &resources,
+                &platforms
+            ]
+        );
+        let cfg = aws_config::SdkConfig::builder()
+            .region(aws_config::Region::new("us-west-1"))
+            .behavior_version(aws_config::BehaviorVersion::latest())
+            .build();
+        aws::AwsClient::for_tests(
+            eb,
+            aws_sdk_sqs::Client::new(&cfg),
+            aws_sdk_cloudwatch::Client::new(&cfg),
+            aws_sdk_cloudwatchlogs::Client::new(&cfg),
+            aws_sdk_s3::Client::new(&cfg),
+            aws_sdk_ec2::Client::new(&cfg),
+        )
+    }
+
+    async fn run_with<F, Fut>(regions: Vec<Option<String>>, client_for: F) -> CycleReport
+    where
+        F: Fn(Option<String>) -> Fut,
+        Fut: std::future::Future<Output = color_eyre::eyre::Result<aws::AwsClient>>,
+    {
+        run_cycle(
+            &regions,
+            &None,
+            &[],
+            false,
+            false,
+            false,
+            true,
+            false,
+            None,
+            &[],
+            &config::Config::default(),
+            &[],
+            &None,
+            client_for,
+        )
+        .await
+    }
+
+    /// A region whose client cannot be built degrades the cycle, and
+    /// says which region and why.
+    ///
+    /// This is the wiring the refactor exists to expose. Before it,
+    /// the only way to reach this path was to run the binary against
+    /// real AWS with broken credentials and read an exit code.
+    #[tokio::test]
+    async fn a_region_that_will_not_connect_degrades_the_cycle() {
+        let report = run_with(vec![Some("eu-west-2".into())], |_| async {
+            Err(color_eyre::eyre::eyre!("no credentials"))
+        })
+        .await;
+
+        assert!(
+            report.degraded(),
+            "a region that never answered means the issue set is not a full picture"
+        );
+        assert_eq!(
+            report.degrade_reasons.len(),
+            1,
+            "{:?}",
+            report.degrade_reasons
+        );
+        let reason = &report.degrade_reasons[0];
+        assert!(
+            reason.contains("eu-west-2"),
+            "the reason must name WHICH region: {reason}"
+        );
+        assert!(
+            reason.contains("no credentials"),
+            "and carry the cause, or an operator cannot act on it: {reason}"
+        );
+        assert!(report.issues.is_empty());
+        assert!(!report.fix_dispatch_failed, "nothing was dispatched");
+    }
+
+    /// One region failing does not abandon the others, and the report
+    /// carries both halves.
+    #[tokio::test]
+    async fn a_partial_outage_reports_both_what_worked_and_what_did_not() {
+        let report = run_with(
+            vec![Some("eu-west-2".into()), Some("us-east-1".into())],
+            |region| async move {
+                if region.as_deref() == Some("eu-west-2") {
+                    Err(color_eyre::eyre::eyre!("no credentials"))
+                } else {
+                    Ok(mock_client(vec!["poly-prod".to_string()]))
+                }
+            },
+        )
+        .await;
+
+        assert!(
+            report.degraded(),
+            "a cycle that skipped a region is incomplete even though the other \
+             region answered — this is the distinction the whole type exists for"
+        );
+        assert_eq!(
+            report.degrade_reasons.len(),
+            1,
+            "{:?}",
+            report.degrade_reasons
+        );
+        assert!(report.degrade_reasons[0].contains("eu-west-2"));
+        assert!(
+            !report.degrade_reasons[0].contains("us-east-1"),
+            "the region that worked must not appear as a failure"
+        );
+    }
+
+    /// A clean cycle is not degraded — or `degraded()` is satisfied by
+    /// returning true always.
+    #[tokio::test]
+    async fn a_cycle_where_every_region_answers_is_not_degraded() {
+        let report = run_with(vec![Some("us-east-1".into())], |_| async {
+            Ok(mock_client(vec!["poly-prod".to_string()]))
+        })
+        .await;
+        assert!(
+            !report.degraded(),
+            "every region answered: {:?}",
+            report.degrade_reasons
+        );
+    }
+}
