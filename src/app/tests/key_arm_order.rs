@@ -494,3 +494,41 @@ fn the_key_arm_rule_can_see_a_violation() {
          patterns, which is exactly how this rule goes quiet: {chars_seen:?}"
     );
 }
+
+/// Overlay key routing must stay exhaustive.
+///
+/// `Overlay::key_route` replaced an if-chain whose precedence lived in
+/// statement order and which a new variant could silently miss. The
+/// protection is that the match names every variant, so adding one
+/// without classifying it fails to compile — and the single edit that
+/// removes that protection while still compiling is a `_` arm.
+///
+/// Found its own justification on the way in: a hand-written list of
+/// the variants missed `About`, and the compiler named it in seconds.
+#[test]
+fn overlay_key_routing_has_no_wildcard_arm() {
+    let src = std::fs::read_to_string("src/app/input.rs").expect("input.rs");
+    let body = super::scan::production_half(&src);
+    let start = body
+        .find("fn key_route(&self) -> OverlayRoute {")
+        .expect("the routing classification must exist");
+    let end = body[start..].find("\n    }").expect("its body ends") + start;
+    let m = &body[start..end];
+
+    for wildcard in ["_ =>", "_=>"] {
+        assert!(
+            !m.contains(wildcard),
+            "a wildcard arm routes every future overlay to one branch by default, \
+             which is the forgetting this classification exists to prevent — name \
+             the variant instead: {m}"
+        );
+    }
+
+    // Non-vacuous: the slice must actually be the match.
+    assert!(
+        m.matches("Overlay::").count() >= 10,
+        "expected the classification to name every variant; found {} — the slice \
+         is probably not the match body",
+        m.matches("Overlay::").count()
+    );
+}

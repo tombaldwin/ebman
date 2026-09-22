@@ -24,6 +24,57 @@ pub(crate) fn table_row_at(
     offset + (lines_below_top / row_height.max(1)) as usize
 }
 
+/// Which handler owns the keys while an overlay is open.
+///
+/// This was an if-chain of `matches!` tests whose precedence lived in
+/// statement order, and it was non-exhaustive by construction: a new
+/// `Overlay` variant needing its own keys relied on somebody
+/// remembering to insert a branch, at the right point, in a
+/// hundred-line block. A missed one is a dead key — or worse, a key
+/// leaking through the overlay into Normal mode.
+///
+/// The same move ARCHITECTURE.md rule 3 makes for `AppMsg::generation`:
+/// the compiler FORCES a new variant to be classified, and the answer
+/// is a word rather than a position in a list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OverlayRoute {
+    SavedConfigsInteractive,
+    LogTail,
+    EventTail,
+    AppsActionMenu,
+    ReportBug,
+    /// The shared path: `:why` cursor navigation and drill-in, the
+    /// universal Esc/q dismiss, and each variant's extra dismiss key.
+    /// Most overlays are read-only popups and want exactly this.
+    Generic,
+}
+
+impl Overlay {
+    /// Exhaustive on purpose. Adding a variant without deciding this
+    /// is a compile error, which is the entire point.
+    fn key_route(&self) -> OverlayRoute {
+        match self {
+            Overlay::SavedConfigsInteractive { .. } => OverlayRoute::SavedConfigsInteractive,
+            Overlay::LogTail { .. } => OverlayRoute::LogTail,
+            Overlay::EventTail { .. } => OverlayRoute::EventTail,
+            Overlay::AppsActionMenu { .. } => OverlayRoute::AppsActionMenu,
+            Overlay::ReportBug { .. } => OverlayRoute::ReportBug,
+            // Named individually rather than caught by `_`. A wildcard
+            // would silently route a new variant to Generic and
+            // reintroduce the forgetting this exists to prevent.
+            Overlay::About(_)
+            | Overlay::Describe(_)
+            | Overlay::Whatsnew(_)
+            | Overlay::History(_)
+            | Overlay::Alarms { .. }
+            | Overlay::Diff(_)
+            | Overlay::SavedConfigs(_)
+            | Overlay::TextDump { .. }
+            | Overlay::WhyRed { .. } => OverlayRoute::Generic,
+        }
+    }
+}
+
 impl App {
     pub(crate) fn handle_event(&mut self, event: Event) {
         // First-run hint dismisses on any input. The renderer
@@ -184,37 +235,34 @@ impl App {
         // Falls through to the `match self.mode` block below where
         // Mode::Picker has its own arm.
         if !matches!(self.mode, Mode::Picker) {
-            if matches!(
-                self.current_overlay.as_ref(),
-                Some(Overlay::SavedConfigsInteractive { .. })
-            ) {
-                self.handle_saved_configs_interactive_key(key);
-                return;
-            }
-            if matches!(self.current_overlay.as_ref(), Some(Overlay::LogTail { .. })) {
-                self.handle_log_tail_key(key);
-                return;
-            }
-            if matches!(
-                self.current_overlay.as_ref(),
-                Some(Overlay::EventTail { .. })
-            ) {
-                self.handle_event_tail_key(key);
-                return;
-            }
-            if matches!(
-                self.current_overlay.as_ref(),
-                Some(Overlay::AppsActionMenu { .. })
-            ) {
-                self.handle_apps_action_menu_key(key);
-                return;
-            }
-            if matches!(
-                self.current_overlay.as_ref(),
-                Some(Overlay::ReportBug { .. })
-            ) {
-                self.handle_report_bug_key(key);
-                return;
+            // One exhaustive classification, not five ordered tests.
+            // `Generic` falls through to the shared path below, which
+            // is where `:why` navigation and the universal dismiss
+            // live — same order, same behaviour, but a new overlay
+            // variant now has to say which of these it is.
+            match self.current_overlay.as_ref().map(Overlay::key_route) {
+                Some(OverlayRoute::SavedConfigsInteractive) => {
+                    self.handle_saved_configs_interactive_key(key);
+                    return;
+                }
+                Some(OverlayRoute::LogTail) => {
+                    self.handle_log_tail_key(key);
+                    return;
+                }
+                Some(OverlayRoute::EventTail) => {
+                    self.handle_event_tail_key(key);
+                    return;
+                }
+                Some(OverlayRoute::AppsActionMenu) => {
+                    self.handle_apps_action_menu_key(key);
+                    return;
+                }
+                Some(OverlayRoute::ReportBug) => {
+                    self.handle_report_bug_key(key);
+                    return;
+                }
+                // No overlay, or one the shared path handles.
+                None | Some(OverlayRoute::Generic) => {}
             }
             // `:why` cursor navigation — handled before the generic overlay
             // close logic so j/k/↑/↓ in the overlay scroll its items
