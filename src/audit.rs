@@ -516,7 +516,7 @@ pub(crate) fn append_action_completed(
         Ok(()) => fields.push(("outcome", Field::Token("ok"))),
         Err(e) => {
             fields.push(("outcome", Field::Token("err")));
-            fields.push(("err", Field::Text(e)));
+            fields.push(("err", Field::Quoted(e)));
         }
     }
     let detail = detail_from("completed", &fields);
@@ -562,6 +562,21 @@ pub(crate) enum Field<'a> {
     /// quoted, because consumers filter on these and a quoted token
     /// would not match.
     Token(&'a str),
+    /// Free text whose wire shape is pinned to ALWAYS quoted,
+    /// regardless of content.
+    ///
+    /// `Text` drops the quotes when a value happens to be a single
+    /// token, which is right for a field that was always conditional.
+    /// These fields were not: `err`, `reason`, `remedy` and the lint
+    /// `value` have been emitted as `key="V"` since they were
+    /// introduced, and the module doc above pins `value="V"`. Real
+    /// values are frequently single tokens (`value=Rolling`,
+    /// `value=360`), so letting them fall through to `Text` rewrites
+    /// every line an operator's grep or log shipper already matches.
+    /// The parser reads both, so this is compatibility, not
+    /// correctness — which is exactly why it must be a deliberate
+    /// change and not a side effect of a refactor.
+    Quoted(&'a str),
     /// A number. Rendered bare; nothing to escape.
     Num(u128),
 }
@@ -572,6 +587,7 @@ impl Field<'_> {
         match self {
             Field::Text(v) => field_token(&key, v),
             Field::Token(v) => format!("{key}={}", sanitise_token(v)),
+            Field::Quoted(v) => format!("{key}=\"{}\"", escape_value(v)),
             Field::Num(n) => format!("{key}={n}"),
         }
     }
@@ -647,12 +663,24 @@ fn rollout_line(
     stage: &str,
     err: Option<&str>,
 ) -> String {
-    let outcome_suffix = match (stage, err) {
-        ("completed", None) => " outcome=ok".to_string(),
-        ("completed", Some(e)) => format!(" outcome=err err=\"{}\"", escape_value(e)),
-        (_, Some(e)) => format!(" err=\"{}\"", escape_value(e)),
-        (_, None) => String::new(),
-    };
+    let mut tail: Vec<(&str, Field<'_>)> = vec![
+        ("action", Field::Token("Rollout")),
+        ("target", Field::Text(env)),
+        ("version", Field::Text(version)),
+    ];
+    // A rollout `dispatched` line carries an error without an
+    // `outcome` — the dispatch itself failed, there is no completion
+    // pair to come, and `outcome=` on a dispatched line would read as
+    // a finished write. Only `completed` gets an outcome.
+    match (stage, err) {
+        ("completed", None) => tail.push(("outcome", Field::Token("ok"))),
+        ("completed", Some(e)) => {
+            tail.push(("outcome", Field::Token("err")));
+            tail.push(("err", Field::Quoted(e)));
+        }
+        (_, Some(e)) => tail.push(("err", Field::Quoted(e))),
+        (_, None) => {}
+    }
     // `profile` rides along even though this shape does not use the
     // standard `account=/profile=/region=` opener.
     //
@@ -680,18 +708,11 @@ fn rollout_line(
     // goes through the one renderer, so its escaping is not a second
     // copy of the rule.
     format!(
-        "\t{}\t{}\t{}\t{}{outcome_suffix}",
+        "\t{}\t{}\t{}\t{}",
         field_token("rollout_id", rollout_id),
         field_token("profile", profile.unwrap_or("-")),
         field_token("region", region),
-        detail_from(
-            stage,
-            &[
-                ("action", Field::Token("Rollout")),
-                ("target", Field::Text(env)),
-                ("version", Field::Text(version)),
-            ],
-        )
+        detail_from(stage, &tail)
     )
 }
 
@@ -727,10 +748,21 @@ pub(crate) fn append_lint_fix(
     value: &str,
     err: Option<&str>,
 ) {
-    let suffix = match err {
-        None => " outcome=ok".to_string(),
-        Some(e) => format!(" outcome=err err=\"{}\"", escape_value(e)),
-    };
+    let mut tail: Vec<(&str, Field<'_>)> = vec![
+        ("action", Field::Token("SetOption")),
+        ("target", Field::Text(env)),
+        ("rule_id", Field::Text(rule_id)),
+        ("namespace", Field::Text(namespace)),
+        ("name", Field::Text(name)),
+        ("value", Field::Quoted(value)),
+    ];
+    match err {
+        None => tail.push(("outcome", Field::Token("ok"))),
+        Some(e) => {
+            tail.push(("outcome", Field::Token("err")));
+            tail.push(("err", Field::Quoted(e)));
+        }
+    }
     // Every free-text field through `field_token`, like the other two
     // writers. These were the last raw interpolations: `parse_audit_line`
     // treats an embedded newline as a new, REPLAYABLE entry, so a value
@@ -739,19 +771,9 @@ pub(crate) fn append_lint_fix(
     // wrong — but "currently impossible by accident" is not the same
     // property as "escaped".
     let line = format!(
-        "\t{}\t{}{suffix}",
+        "\t{}\t{}",
         field_token("region", region),
-        detail_from(
-            "fix",
-            &[
-                ("action", Field::Token("SetOption")),
-                ("target", Field::Text(env)),
-                ("rule_id", Field::Text(rule_id)),
-                ("namespace", Field::Text(namespace)),
-                ("name", Field::Text(name)),
-                ("value", Field::Text(value)),
-            ],
-        )
+        detail_from("fix", &tail)
     );
     write_audit_line_raw(&line);
 }
@@ -774,7 +796,7 @@ pub(crate) fn append_action_skipped(
         &[
             ("action", Field::Text(action_label)),
             ("target", Field::Text(target)),
-            ("reason", Field::Text(reason)),
+            ("reason", Field::Quoted(reason)),
         ],
     );
     write_audit_line(account, profile, region, &detail);
@@ -819,7 +841,7 @@ pub(crate) fn append_action_refused(
             // `rule` is a fixed vocabulary consumers filter on, so it
             // stays an unquoted token rather than becoming quoted text.
             ("rule", Field::Token(rule)),
-            ("remedy", Field::Text(remedy)),
+            ("remedy", Field::Quoted(remedy)),
         ],
     );
     write_audit_line(account, profile, region, &detail);
@@ -1571,6 +1593,84 @@ mod tests {
              how the forge guard came to cover three writers of eight while claiming \
              every one"
         );
+    }
+
+    #[test]
+    fn pinned_fields_stay_quoted_even_when_the_value_is_one_token() {
+        // `value=Rolling`, `value=360`, `reason=vanished`, `err=timeout`
+        // — real values, all single tokens, so `Field::Text` renders
+        // them BARE. These fields have been `key="V"` on the wire since
+        // they were introduced and the module doc pins `value="V"`, so
+        // an operator grep or a log-shipper pattern matching `value="`
+        // stops matching with nothing to see in the diff.
+        //
+        // `parse_kv_pairs` reads quoted and bare identically, which is
+        // why the 82 other audit tests would not have noticed: the
+        // round-trip is intact and only the bytes changed. That makes
+        // this a pin on the wire, not on behaviour — the one thing a
+        // parse-level test cannot express.
+        const ENV: &str = "quoting-pin-probe-env";
+        let path = crate::util::cache_dir().join("audit.log");
+
+        super::append_lint_fix(
+            "eu-west-1",
+            ENV,
+            "EBL001",
+            "aws:elasticbeanstalk:updatepolicy:rollingupdate",
+            "RollingUpdateType",
+            "Rolling",
+            None,
+        );
+        super::append_action_skipped(
+            Some("1"),
+            Some("p"),
+            "eu-west-1",
+            "Restart",
+            ENV,
+            "vanished",
+        );
+        super::append_action_refused(
+            Some("1"),
+            Some("p"),
+            "eu-west-1",
+            "Restart",
+            ENV,
+            "deny_write",
+            "unset",
+        );
+        super::append_action_completed(
+            Some("1"),
+            Some("p"),
+            "eu-west-1",
+            "Restart",
+            ENV,
+            Err("timeout"),
+            &[],
+        );
+
+        // `audit.log` is process-global and other tests append in
+        // parallel; ENV is unique to this test, so these four lines are
+        // exactly ours.
+        let body = std::fs::read_to_string(&path).expect("audit log written");
+        let ours: Vec<&str> = body.lines().filter(|l| l.contains(ENV)).collect();
+        assert_eq!(ours.len(), 4, "expected our four lines, got: {ours:?}");
+
+        for (needle, bare) in [
+            ("value=\"Rolling\"", "value=Rolling"),
+            ("reason=\"vanished\"", "reason=vanished"),
+            ("remedy=\"unset\"", "remedy=unset"),
+            ("err=\"timeout\"", "err=timeout"),
+        ] {
+            let line = ours
+                .iter()
+                .find(|l| l.contains(needle) || l.contains(bare))
+                .unwrap_or_else(|| panic!("no line carries {needle}: {ours:?}"));
+            assert!(
+                line.contains(needle),
+                "`{bare}` lost its quotes — the wire shape moved under \
+                 every consumer already matching `{needle}`: {line}"
+            );
+        }
     }
 
     #[test]
