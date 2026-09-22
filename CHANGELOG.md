@@ -8,6 +8,60 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- **Every AWS error said what failed and not why.** `SdkError`'s
+  `Display` for a modelled service failure is the literal string
+  `service error`, and 78 of 80 call sites finished with a bare `?` or
+  a plain `wrap_err` — so the operation name survived and the
+  service's own sentence did not. A permissions gap on the main path
+  read as
+
+  ```
+  AccessDenied: DescribeConfigurationSettings(env) failed
+  ```
+
+  naming the *family* of failure and never which permission was
+  missing. It now reads
+
+  ```
+  AccessDenied: DescribeConfigurationSettings(env) failed: User is not
+  authorized to perform elasticbeanstalk:DescribeConfigurationSettings
+  ```
+
+  Request ids are surfaced too, so there is something to give AWS
+  support. An error whose code ebman does not classify no longer falls
+  through to a `Debug` sniff that surfaced nothing — `ReceiptHandle
+  IsInvalid` on a DLQ delete now reaches the operator.
+
+  The cause was ergonomic, not an oversight at 78 separate sites:
+  `.wrap_err("Op failed")?` was shorter than the correct form. The fix
+  makes the correct form the shortest one, and a guard keeps it that
+  way.
+
+- **A dead-letter operation refused by IAM reported `service error`.**
+  The DLQ paths were the sharpest case of the above: an operator
+  denied a delete or a resend was told the class of the failure and
+  nothing else, on the one workflow where the next step depends on
+  knowing which permission is missing.
+
+- **Four audit writers could not escape the action they recorded.**
+  `dispatched`, `completed`, `skipped` and `undone` interpolated
+  `action=` raw. `parse_audit_line` reads an embedded newline as a
+  new, replayable entry, so a value carrying one was a forge path into
+  `ebman audit replay`. Every action label in the tree is
+  AWS-constrained or a literal, so nothing has gone wrong — but
+  "impossible by accident" is not the property this needs. Escaping
+  now happens in one place that every writer must pass through, rather
+  than at each writer's discretion.
+
+  The wire format is unchanged for every real input.
+
+- **A passive health-log line interpolated an EB application name
+  raw.** The `stage=event kind=red_transition` line built its own
+  string through a lower-level entry point whose documentation made
+  escaping the caller's job; the caller escaped nothing. Application
+  names are far looser than environment names, which made it the
+  widest-charset field on the line. That entry point no longer exists.
+
 - **An EBL015 fetch failure left `lint` reporting clean.** The
   account-level pass printed `warning: EBL015 skipped` behind
   `!quiet` and returned, instead of going through `degrade` like every

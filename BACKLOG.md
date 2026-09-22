@@ -38,44 +38,6 @@ Tier definitions:
 
 #### Tier 0 — fixture hygiene (2026-09-16)
 
-- [ ] **Route the remaining 76 AWS call sites through `wrap_aws`.**
-  `SdkError`'s `Display` for a modelled service failure is the literal
-  string `"service error"`, so any call taking it with a bare `?`
-  reports the class and discards the sentence naming what AWS actually
-  refused. SQS was fixed 2026-09-22 and the plumbing (`AwsErrorMeta`
-  now carries `message`; `flatten_err_to_string` renders it) is shared,
-  so each remaining conversion is one line.
-
-  Measured 2026-09-22: **77** `.send()` call sites outside
-  `aws/sqs.rs`, of which exactly one — `DescribeEnvironments` at
-  `src/aws/eb.rs:2139` — already goes through `wrap_aws`. By file:
-  `eb.rs` 48, `cloudwatch.rs` 6, `logs.rs` 5, `s3.rs` 5, `ec2.rs` 3,
-  `iam.rs`/`secrets.rs`/`ssm.rs` 2 each, `acm.rs`/`cost.rs`/`org.rs`/
-  `waf.rs` 1 each.
-
-  Not done in the same pass on purpose: 13 modules is past CLAUDE.md's
-  "more than ~3 modules and not clearly required by the current task"
-  stop condition, and the scoped item was SQS. `eb.rs` alone is worth
-  its own sitting.
-
-- [ ] **Move the last 13 `include_str!` guards onto
-  `scan::production_source`.** Not a defect today — each crosses a
-  directory boundary explicitly, so none can resolve to its own file
-  the way `cli/mcp` ones did. Two latent properties remain: they
-  re-point silently if the test file moves, and they read the target
-  RAW, so a "this appears nowhere" check also searches the target's
-  test module and can be satisfied by a fixture.
-
-  `src/app/tests/parsing.rs:377-382, 400`;
-  `src/app/tests/lint.rs:155-157`; `src/terraform.rs:1150-1152`;
-  `src/commands.rs:1063, 1129, 1198`.
-
-  Scoped out of the 2026-09-22 relocation on purpose — the architect's
-  brief was the three mcp files, not a repo-wide sweep — and each
-  conversion needs its guard re-proven against a planted violation,
-  which is the actual cost. Recorded as its own item rather than a
-  sentence inside a finished one.
-
 - [ ] **A test that fails the build when a fixture looks real.** `cargo
   package` ships everything git tracks bar `exclude`, so every dedicated
   test file — 21 under `src/app/tests/`, 3 under `src/cli/mcp/tests/`,
