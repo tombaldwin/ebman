@@ -480,16 +480,16 @@ mod tests {
                 "self.safety_cfg.terraform_state_path.as_deref()",
             ),
         ] {
-            let src = std::fs::read_to_string(file).unwrap_or_else(|e| panic!("{file}: {e}"));
-            // Split at a test MODULE, not at any `#[cfg(test)]`. A
-            // `#[cfg(test)]` on a statement inside production code —
-            // the injected-client seam in `tools.rs` is one — truncated
-            // the slice above everything after it, and this guard
-            // failed reporting a missing wiring that was there all
-            // along. A scan that cannot see the code it checks is worse
-            // than no scan: this one cried wolf, but the same cut would
-            // silently hide a real violation below it.
-            let prod = src.split("\n#[cfg(test)]\nmod ").next().unwrap_or_default();
+            // `production_source`, not a hand-rolled split. The split
+            // this replaced had already been fixed once: an inline
+            // `#[cfg(test)]` statement — the injected-client seam in
+            // `tools.rs` is one — truncated the slice and this guard
+            // cried wolf over wiring that was there. The narrowed
+            // version then missed the `#[path]` and `pub(crate) mod`
+            // spellings, and being a PREFIX split it still dropped
+            // everything after a mid-file test module. Third time
+            // through, it goes to the shared helper.
+            let prod = crate::app::tests::scan::production_source(file);
             assert!(
                 prod.contains("resolve_state_path("),
                 "{file} must resolve through the shared precedence"
@@ -516,8 +516,7 @@ mod tests {
     /// exits; the same shape as its sibling guard below.
     #[test]
     fn an_explicit_tfdir_outranks_the_configured_state_path() {
-        let src = std::fs::read_to_string("src/cli/drift.rs").expect("read own source");
-        let prod = src.split("\n#[cfg(test)]\nmod ").next().unwrap_or_default();
+        let prod = crate::app::tests::scan::production_source("cli/drift.rs");
         assert!(
             prod.contains("if tfdir.is_some() { None } else { configured }"),
             "an explicit --tfdir must suppress the config default, or a \
@@ -554,8 +553,7 @@ mod tests {
         assert!(v["envs"].as_array().is_some_and(|e| e.is_empty()));
 
         // And the CLI must emit exactly that, not a literal of its own.
-        let src = std::fs::read_to_string("src/cli/drift.rs").expect("read own source");
-        let prod = src.split("\n#[cfg(test)]\nmod ").next().unwrap_or_default();
+        let prod = crate::app::tests::scan::production_source("cli/drift.rs");
         assert!(
             !prod.contains(r#""tfstate\":null,\"envs\":[]"#),
             "the hand-written literal is back and will drift from the \

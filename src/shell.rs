@@ -426,12 +426,11 @@ mod key_bytes_tests {
     /// and the same limit.
     #[test]
     fn forwarded_covers_every_arm_that_emits_bytes() {
-        let src = std::fs::read_to_string("src/shell.rs").expect("read shell.rs");
+        let src = crate::app::tests::scan::production_source("src/shell.rs");
         let body = src
             .split_once("\npub(crate) fn key_event_to_bytes")
             .expect("key_event_to_bytes moved or was renamed")
             .1;
-        let body = body.split("\n#[cfg(test)]").next().unwrap_or(body);
         assert!(
             !body.contains("mod key_bytes_tests"),
             "the slice ran past the function into this test module"

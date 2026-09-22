@@ -1514,12 +1514,11 @@ mod rollout_freeze_tests {
     /// records as not worth building for its own sake.
     #[test]
     fn the_yes_gate_guards_the_dispatch() {
-        let src = std::fs::read_to_string("src/cli/action.rs").expect("read action.rs");
+        let src = crate::app::tests::scan::production_source("cli/action.rs");
         let body = src
             .split_once("\nasync fn run_rollout")
             .expect("run_rollout moved or was renamed")
             .1;
-        let body = body.split("\n#[cfg(test)]").next().unwrap_or(body);
         assert!(
             !body.contains("mod rollout_freeze_tests"),
             "the slice ran past the function into this test module"
@@ -1600,12 +1599,11 @@ mod rollout_freeze_tests {
     /// itself was correct and its exit code was not.
     #[test]
     fn a_freeze_halt_is_tracked_separately_from_failures() {
-        let src = std::fs::read_to_string("src/cli/action.rs").expect("read action.rs");
+        let src = crate::app::tests::scan::production_source("cli/action.rs");
         let body = src
             .split_once("\nasync fn run_rollout")
             .expect("run_rollout moved or was renamed")
             .1;
-        let body = body.split("\n#[cfg(test)]").next().unwrap_or(body);
 
         // Both halt sites set it...
         assert_eq!(
@@ -1631,14 +1629,13 @@ mod rollout_freeze_tests {
     /// production never takes. This pins the wiring.
     #[test]
     fn both_dispatch_loops_consult_the_freeze() {
-        let src = std::fs::read_to_string("src/cli/action.rs").expect("read action.rs");
+        let src = crate::app::tests::scan::production_source("cli/action.rs");
         let body = src
             .split_once("\nasync fn run_rollout")
             .expect("run_rollout moved or was renamed")
             .1;
         // Stop at the next top-level item so the test module below
         // cannot pad the count.
-        let body = body.split("\n#[cfg(test)]").next().unwrap_or(body);
         let calls = body.matches("rollout_freeze_halt()").count();
         assert_eq!(
             calls, 2,

@@ -33,10 +33,19 @@
 //!
 //! # Conventions
 //!
-//! Errors use `wrap_err` rather than `eyre!("...: {e}")` so the SDK error
-//! survives as a source in the chain — `app::flatten_err_to_string`
-//! peeks at it to recognise throttling, and flattening early would disarm the
-//! refresh back-off.
+//! Every SDK call is finished with `.aws_ctx("Op failed")?`, never a
+//! bare `?` or a plain `wrap_err`. It lifts the service's error code,
+//! message and request id off the typed error into `AwsErrorMeta`
+//! before the error is erased into `dyn Error`, and keeps the SDK
+//! error as a source in the chain — `app::flatten_err_to_string`
+//! reads the code to recognise throttling, and flattening early would
+//! disarm the refresh back-off.
+//!
+//! Enforced by `every_sdk_call_that_propagates_goes_through_aws_ctx`.
+//! Read the code back with `aws::error_code`, not by substring-matching
+//! a rendered chain: the SDK's typed error variants do not render their
+//! own wire code, so a substring check can pass against a test fixture
+//! built with `::generic` and fail against production.
 
 use aws_config::{Region, SdkConfig};
 use aws_sdk_acm::Client as AcmClient;
@@ -1047,22 +1056,57 @@ pub(crate) struct AwsErrorMeta {
     pub request_id: Option<String>,
 }
 
+impl AwsErrorMeta {
+    /// Append the service's message and request id to `head`.
+    ///
+    /// Two callers with different heads: this type's `Display` leads
+    /// with the error CODE, and `app::flatten_err_to_string` leads with
+    /// the OPERATION name because it has already lifted the code into a
+    /// class prefix. Same fields, same order, same separators — which
+    /// is why they were previously two hand-built copies of the tail,
+    /// two places to change the operator-facing format and nothing
+    /// pinning them to agree.
+    pub(crate) fn detail_after(&self, head: &str) -> String {
+        let mut out = match (head.is_empty(), self.message.as_deref()) {
+            (false, Some(m)) => format!("{head}: {m}"),
+            (false, None) => head.to_string(),
+            (true, Some(m)) => m.to_string(),
+            (true, None) => "AWS error".to_string(),
+        };
+        if let Some(r) = &self.request_id {
+            out = format!("{out} (request id {r})");
+        }
+        out
+    }
+}
+
 impl std::fmt::Display for AwsErrorMeta {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let head = match (&self.code, &self.message) {
-            (Some(c), Some(m)) => format!("{c}: {m}"),
-            (Some(c), None) => c.clone(),
-            (None, Some(m)) => m.clone(),
-            (None, None) => "AWS error".to_string(),
-        };
-        match &self.request_id {
-            Some(r) => write!(f, "{head} (request id {r})"),
-            None => write!(f, "{head}"),
-        }
+        write!(
+            f,
+            "{}",
+            self.detail_after(self.code.as_deref().unwrap_or(""))
+        )
     }
 }
 
 impl std::error::Error for AwsErrorMeta {}
+
+/// The service's own error code for a failure, if it carried one.
+///
+/// Typed lookup instead of substring-matching a rendered chain. The
+/// worker-queue discovery used `format!("{e:#}").contains(
+/// "NonExistentQueue")` to tell "this env has no dead-letter queue"
+/// from a real failure — and the SDK's TYPED `QueueDoesNotExist`
+/// variant renders as `QueueDoesNotExist`, never containing that
+/// string. The check only ever matched in tests, whose fixtures build
+/// the error with `::generic` and so produce the `Unhandled` variant,
+/// whose rendering does contain the code. Production and the fixture
+/// disagreed about the shape, and the test agreed with the fixture.
+pub(crate) fn error_code(e: &color_eyre::eyre::Report) -> Option<&str> {
+    e.downcast_ref::<AwsErrorMeta>()
+        .and_then(|m| m.code.as_deref())
+}
 
 /// `.send().await.aws_ctx("Op failed")?` — the shortest correct way to
 /// finish an SDK call.
@@ -1093,42 +1137,24 @@ where
     R: std::fmt::Debug + Send + Sync + 'static,
     aws_sdk_elasticbeanstalk::error::SdkError<E, R>: aws_sdk_elasticbeanstalk::operation::RequestId,
 {
+    /// The `E: ProvideErrorMetadata` bound is what makes this typed:
+    /// it is the SDK's own accessor, not a guess about how `Debug`
+    /// renders.
     fn aws_ctx(self, op: &str) -> Result<T> {
-        wrap_aws(self, op)
-    }
-}
-
-/// Capture the code + request id off an SDK error and push them into the
-/// chain, then wrap with `op` the way every other boundary site does.
-///
-/// The `E: ProvideErrorMetadata` bound is what makes this typed: it is
-/// the SDK's own accessor, not a guess about how `Debug` renders.
-fn wrap_aws<T, E, R>(
-    r: std::result::Result<T, aws_sdk_elasticbeanstalk::error::SdkError<E, R>>,
-    op: &str,
-) -> Result<T>
-where
-    E: aws_sdk_elasticbeanstalk::error::ProvideErrorMetadata
-        + std::error::Error
-        + Send
-        + Sync
-        + 'static,
-    R: std::fmt::Debug + Send + Sync + 'static,
-    aws_sdk_elasticbeanstalk::error::SdkError<E, R>: aws_sdk_elasticbeanstalk::operation::RequestId,
-{
-    use aws_sdk_elasticbeanstalk::error::ProvideErrorMetadata;
-    use aws_sdk_elasticbeanstalk::operation::RequestId;
-    match r {
-        Ok(v) => Ok(v),
-        Err(e) => {
-            let meta = AwsErrorMeta {
-                code: e.code().map(str::to_string),
-                message: e.message().map(str::to_string),
-                request_id: e.request_id().map(str::to_string),
-            };
-            Err(color_eyre::eyre::Report::new(e))
-                .wrap_err(meta)
-                .wrap_err_with(|| op.to_string())
+        use aws_sdk_elasticbeanstalk::error::ProvideErrorMetadata;
+        use aws_sdk_elasticbeanstalk::operation::RequestId;
+        match self {
+            Ok(v) => Ok(v),
+            Err(e) => {
+                let meta = AwsErrorMeta {
+                    code: e.code().map(str::to_string),
+                    message: e.message().map(str::to_string),
+                    request_id: e.request_id().map(str::to_string),
+                };
+                Err(color_eyre::eyre::Report::new(e))
+                    .wrap_err(meta)
+                    .wrap_err_with(|| op.to_string())
+            }
         }
     }
 }

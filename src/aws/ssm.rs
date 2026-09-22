@@ -90,13 +90,23 @@ impl AwsClient {
                 // One chunk failing must not discard the others: with
                 // 200 instances a single throttled call would have
                 // thrown away three successful sends. The affected
-                // instances are reported as failures by name, which is
-                // strictly more than the operator got before.
+                // instances are reported as failures by name, with the
+                // service's own reason attached.
                 Err(e) => {
+                    // `{e:#}`, not `{e}`. `aws_ctx` returns a Report
+                    // whose plain `Display` is the OUTERMOST wrap
+                    // only — here the literal "SendCommand failed" —
+                    // so `{e}` renders strictly LESS than the
+                    // `eyre!("SendCommand failed: {e}")` it replaced,
+                    // which at least reached the SDK's "service
+                    // error". The alternate form walks the chain to
+                    // the service's own sentence. Same fix as
+                    // `s3.rs`'s abort log, which this site missed.
+                    let detail = format!("{e:#}");
                     tracing::warn!(
                         target: "ebman::aws",
                         instances = chunk.len(),
-                        error = %e,
+                        error = %detail,
                         "SendCommand chunk failed"
                     );
                     send_errors.extend(chunk.iter().map(|i| SsmRunResult {
@@ -104,14 +114,23 @@ impl AwsClient {
                         status: "SendFailed".into(),
                         exit_code: -1,
                         stdout: String::new(),
-                        stderr: format!("{e}"),
+                        stderr: detail.clone(),
                     }));
                 }
             }
         }
         if command_for.is_empty() {
+            // WITH the reason. This branch is the common case for a
+            // permissions problem — every chunk fails the same way —
+            // and it used to discard the per-instance detail it had
+            // just collected, so the one path most likely to be hit by
+            // a missing IAM action was the one that explained least.
+            let why = send_errors
+                .first()
+                .map(|r| format!(": {}", r.stderr))
+                .unwrap_or_default();
             return Err(eyre!(
-                "SendCommand failed for every instance ({} attempted)",
+                "SendCommand failed for every instance ({} attempted){why}",
                 instance_ids.len()
             ));
         }
