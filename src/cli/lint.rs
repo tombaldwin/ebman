@@ -20,13 +20,6 @@ use color_eyre::eyre::Result;
 
 use crate::{audit, aws, config, lint, project};
 
-/// Tracks whether any `--fix` dispatch failed during the run. Single
-/// process-wide flag — CLI exits after `run` returns, so cross-run
-/// state isn't a concern. Lives next to its sole reader/writer
-/// (`run`).
-static FIX_DISPATCH_FAILED: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
-
 /// Print `--against-baseline --json` diff body. Hand-rolled to
 /// avoid pulling serde_json; uses `crate::util::json_string` for
 /// the value escapes. Shape:
@@ -706,23 +699,47 @@ fn parse_lint_args(args: &[String]) -> Result<LintArgs, String> {
     })
 }
 
-/// Record why a lint cycle degraded.
+/// Everything one lint cycle produced, including what it failed to do.
 ///
-/// Print it, keep it for `--json`, set the flag — all three together,
-/// because they were three separate statements and two of them kept
-/// getting missed. Every site gated its message on `!quiet` while still
-/// setting the flag, so `--quiet` produced a non-zero exit with an empty
-/// log; and none of them reached the JSON payload, so a machine consumer
-/// could not tell a degraded run from a clean one.
-///
-/// `--quiet` suppresses per-env chatter. It was never meant to suppress
-/// the reason a run failed, and a CI step that exits non-zero with
-/// nothing in the log is the one outcome nobody can act on. Pinned by
-/// `every_degrade_goes_through_the_helper`.
-fn degrade(reasons: &mut Vec<String>, degraded: &mut bool, reason: String) {
-    eprintln!("warning: {reason}");
-    reasons.push(reason);
-    *degraded = true;
+/// ARCHITECTURE.md rule 6 as a type. The cycle reported through four
+/// mutable locals and one process-global, read a page or more from
+/// where they were written — and all three lint defects this file has
+/// shipped lived in that wiring rather than in the pure helpers, which
+/// were tested. A fetch that fails now has to put its failure
+/// somewhere, instead of choosing between `degrade` and an `eprintln!`
+/// that leaves the cycle looking clean. One arm chose the second, and
+/// nothing noticed until an architecture review read it.
+#[derive(Debug, Default)]
+pub(crate) struct CycleReport {
+    pub issues: Vec<lint::Issue>,
+    /// WHY the cycle is incomplete, not just that it is. Printed
+    /// unconditionally and carried into `--json`: gating these on
+    /// `!quiet` produced a non-zero exit with an empty log, the one
+    /// combination a CI step cannot act on.
+    pub degrade_reasons: Vec<String>,
+    /// A `--fix` dispatch failed. Distinct from degraded: the cycle
+    /// saw the fleet correctly and could not change it.
+    pub fix_dispatch_failed: bool,
+}
+
+impl CycleReport {
+    /// Incomplete coverage: some region, environment or account-level
+    /// pass did not answer, so the issue set is not a full picture —
+    /// the webhook must not page on it and `--baseline` must not adopt
+    /// it.
+    ///
+    /// Derived, never stored. A caller cannot mark the cycle degraded
+    /// without saying why, and the flag cannot drift from the reason.
+    pub(crate) fn degraded(&self) -> bool {
+        !self.degrade_reasons.is_empty()
+    }
+
+    /// Record a failure that makes this cycle incomplete. The only way
+    /// to reach that state.
+    pub(crate) fn degrade(&mut self, reason: String) {
+        eprintln!("warning: {reason}");
+        self.degrade_reasons.push(reason);
+    }
 }
 
 /// Should this `lint --watch` cycle post to the webhook?
@@ -869,6 +886,369 @@ pub(crate) fn watch_sleep(
         .saturating_sub(cycle_elapsed.to_std().unwrap_or_default())
 }
 
+/// Run one lint cycle: every region, every environment, the
+/// account-level pass, and the `--fix` dispatch.
+///
+/// Extracted from `run`'s watch loop. The pure decision helpers here
+/// were always testable — `lint_exit_code`, `should_post_webhook`,
+/// `filter_issues`, `fix_may_dispatch` — and all three defects this
+/// file has shipped lived in the WIRING between them, which no test
+/// could reach because the loop built its own AWS clients inline.
+///
+/// `client_for` is that seam. Production passes
+/// `AwsClient::with(None, region)`; a test passes a closure over mock
+/// SDK clients and can then assert on the returned `CycleReport`
+/// rather than on a process exit code. Extraction without this
+/// parameter would have made the function shorter and no more
+/// testable, which is a readability change wearing a defect-risk
+/// argument — the two were worth separating.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn run_cycle<F, Fut>(
+    regions: &[Option<String>],
+    env_name: &Option<String>,
+    disabled: &[String],
+    probe_live: bool,
+    fix: bool,
+    yes: bool,
+    quiet: bool,
+    json: bool,
+    severity_filter: Option<lint::Severity>,
+    rule_filter: &[String],
+    // Ambient and disk-derived state arrives as arguments so a test
+    // touches neither the developer's config nor their environment —
+    // which is what makes the wiring reachable at all.
+    safety_cfg: &config::Config,
+    fix_disabled: &[String],
+    active_profile_for_safety: &Option<String>,
+    client_for: F,
+) -> CycleReport
+where
+    F: Fn(Option<String>) -> Fut,
+    Fut: std::future::Future<Output = color_eyre::eyre::Result<aws::AwsClient>>,
+{
+    let mut report = CycleReport::default();
+    // Pure, so computed here rather than threaded in.
+    let rules = lint::default_rules(disabled);
+    let multi_region = regions.len() > 1;
+    for region_opt in regions {
+        // Through the seam, not `AwsClient::with` directly — the
+        // latter is what made this loop unreachable from a test.
+        let aws = match client_for(region_opt.clone()).await {
+            Ok(c) => c,
+            Err(e) => {
+                let region_label = region_opt.as_deref().unwrap_or("default");
+                report.degrade(format!(
+                    "skipping region '{region_label}' — AwsClient::with: {e}"
+                ));
+                continue;
+            }
+        };
+        let envs = match aws.list_environments().await {
+            Ok(envs) => envs,
+            Err(e) => {
+                let region_label = region_opt.as_deref().unwrap_or("default");
+                report.degrade(format!(
+                    "skipping region '{region_label}' — list_environments: {e}"
+                ));
+                continue;
+            }
+        };
+        // Per-region one-shot fetch for EBL008 (stale platform):
+        // `ListAvailableSolutionStacks` is region-scoped + cheap
+        // (single call, no pagination). On failure we just skip
+        // EBL008 for the region rather than aborting lint — same
+        // tolerance pattern the per-env opts/tags/health fetches
+        // use below. Added in 0.18 to close the TUI/CLI parity
+        // gap noted in the 0.17.1 CHANGELOG.
+        let latest_stacks = match aws.list_solution_stacks().await {
+            Ok(s) => aws::latest_stack_versions(&s),
+            Err(e) => {
+                if !quiet {
+                    let region_label = region_opt.as_deref().unwrap_or("default");
+                    eprintln!(
+                        "warning: region '{region_label}' — list_solution_stacks failed: {e} (EBL008 skipped)"
+                    );
+                }
+                std::collections::HashMap::new()
+            }
+        };
+
+        let targets: Vec<&aws::Environment> = match env_name.as_deref() {
+            Some(name) => match envs.iter().find(|e| e.name == name) {
+                Some(env) => vec![env],
+                None => {
+                    if multi_region && !quiet {
+                        let region_label = region_opt.as_deref().unwrap_or("default");
+                        eprintln!(
+                            "warning: env '{name}' not in region '{region_label}' — skipping"
+                        );
+                    } else if !multi_region {
+                        eprintln!("ebman lint: env '{name}' not found in current context");
+                        crate::cli::exit_after_drain(2).await;
+                    }
+                    continue;
+                }
+            },
+            None => envs.iter().collect(),
+        };
+
+        for env in targets {
+            // Fetch + build + run via the shared assembly path
+            // (`fetch_env_lint_inputs` / `run_rules_for_env`) —
+            // the same pair the MCP `lint` tool calls.
+            let inputs = match fetch_env_lint_inputs(
+                &aws,
+                env,
+                &latest_stacks,
+                probe_live,
+                disabled,
+            )
+            .await
+            {
+                Ok(inputs) => inputs,
+                Err(e) => {
+                    report.degrade(format!(
+                        "skipping {} — fetch_env_option_settings: {e}",
+                        env.name
+                    ));
+                    continue;
+                }
+            };
+            // A probe that could not run is not a clean result. The
+            // rule still skips — a failed probe must never become a
+            // false positive — but silence here made an
+            // AccessDenied on iam:SimulatePrincipalPolicy look
+            // identical to a passing check, in output that gates CI.
+            for w in &inputs.coverage_warnings {
+                report.degrade(w.clone());
+            }
+            let mut issues = run_rules_for_env(&rules, env, &inputs, &safety_cfg.required_tags);
+            filter_issues(&mut issues, severity_filter, rule_filter);
+            if let Some(region) = region_opt {
+                for issue in &mut issues {
+                    issue.fields.insert("region".into(), region.clone());
+                }
+            }
+
+            if fix && !issues.is_empty() {
+                // Through the shared gate, not `pin_reason` alone.
+                // `active_freeze: None` because the freeze is
+                // handled once up front for the whole run — a
+                // per-env freeze check would print the same refusal
+                // N times, and this loop skips the env rather than
+                // exiting. Passing it explicitly rather than
+                // reaching for `pin_reason` keeps this path on the
+                // shared decision even so.
+                // A `--dry-run` preview goes through the pure
+                // half: it dispatched nothing, so filing
+                // `stage=refused` would fill the log with refusals
+                // of writes that were never going to happen. Same
+                // reasoning the exit-code branch below already
+                // applies.
+                let refusal = if yes {
+                    crate::cli::write_refusal(
+                        safety_cfg,
+                        &env.name,
+                        active_profile_for_safety,
+                        None,
+                        region_opt.as_deref(),
+                        // The label the fix DISPATCH logs, so a
+                        // refusal correlates with it under `ebman
+                        // audit --action SetOption`.
+                        "SetOption",
+                    )
+                } else {
+                    crate::cli::write_refusal_unaudited(
+                        safety_cfg,
+                        &env.name,
+                        active_profile_for_safety,
+                        None,
+                    )
+                    .map(|(_, message, _)| message)
+                };
+                if let Some(reason) = refusal {
+                    if !quiet {
+                        eprintln!("ebman lint --fix: {reason}");
+                    }
+                    // Only a real (--yes) run treats the refusal as
+                    // a dispatch failure — a --dry-run preview
+                    // dispatched nothing and must not exit 1.
+                    if yes {
+                        report.fix_dispatch_failed = true;
+                    }
+                    report.issues.extend(issues);
+                    continue;
+                }
+                let region_label = region_opt.as_deref().unwrap_or("default").to_string();
+                // Rebuild the (cheap, borrowing) context for the
+                // fix pass — `run_rules_for_env` consumed its own.
+                let ctx = build_lint_context(env, &inputs, &safety_cfg.required_tags);
+                let mut to_set: Vec<(String, String, String)> = Vec::new();
+                let mut planned: Vec<(String, lint::FixAction)> = Vec::new();
+                let mut planned_set_indices: Vec<usize> = Vec::new();
+                for issue in &issues {
+                    if fix_disabled.contains(&issue.rule_id) {
+                        if !quiet && !json {
+                            println!("skip {} ({}): in lint.fix_disable", issue.rule_id, env.name);
+                        }
+                        continue;
+                    }
+                    let Some(rule) = rules.iter().find(|r| r.id() == issue.rule_id) else {
+                        continue;
+                    };
+                    let Some(action) = rule.fix(&ctx) else {
+                        if !quiet && !json {
+                            println!(
+                                "no-fix {} ({}): rule has no auto-remediation",
+                                issue.rule_id, env.name
+                            );
+                        }
+                        continue;
+                    };
+                    if let lint::FixAction::SetOption {
+                        namespace,
+                        name,
+                        value,
+                        ..
+                    } = &action
+                    {
+                        planned_set_indices.push(planned.len());
+                        to_set.push((namespace.clone(), name.clone(), value.clone()));
+                    }
+                    planned.push((issue.rule_id.clone(), action));
+                }
+                // Plan lines respect --quiet and stay off stdout
+                // under --json (prose interleaved with the JSON
+                // document broke every piped consumer).
+                if !quiet && !json {
+                    for (rule_id, action) in &planned {
+                        match action {
+                            lint::FixAction::SetOption { description, .. } => {
+                                println!("fix {rule_id} ({}): {description}", env.name);
+                            }
+                            lint::FixAction::Manual { instructions } => {
+                                println!(
+                                "fix {rule_id} ({}) MANUAL — operator action required:\n  {instructions}",
+                                env.name
+                            );
+                            }
+                        }
+                    }
+                }
+                if fix_may_dispatch(yes, to_set.len()) {
+                    match aws
+                        .update_env_option_settings(&env.name, &to_set, &[])
+                        .await
+                    {
+                        Ok(()) => {
+                            for &idx in &planned_set_indices {
+                                let (rule_id, action) = &planned[idx];
+                                if let lint::FixAction::SetOption {
+                                    namespace,
+                                    name,
+                                    value,
+                                    ..
+                                } = action
+                                {
+                                    audit::append_lint_fix(
+                                        &region_label,
+                                        &env.name,
+                                        rule_id,
+                                        namespace,
+                                        name,
+                                        value,
+                                        None,
+                                    );
+                                }
+                            }
+                            if !quiet && !json {
+                                println!(
+                                    "ok ({}): applied {} fix(es)",
+                                    env.name,
+                                    planned_set_indices.len()
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!(
+                                "ebman lint --fix: dispatch failed for {} in {region_label}: {e}",
+                                env.name
+                            );
+                            let err_str = e.to_string();
+                            for &idx in &planned_set_indices {
+                                let (rule_id, action) = &planned[idx];
+                                if let lint::FixAction::SetOption {
+                                    namespace,
+                                    name,
+                                    value,
+                                    ..
+                                } = action
+                                {
+                                    audit::append_lint_fix(
+                                        &region_label,
+                                        &env.name,
+                                        rule_id,
+                                        namespace,
+                                        name,
+                                        value,
+                                        Some(&err_str),
+                                    );
+                                }
+                            }
+                            report.fix_dispatch_failed = true;
+                        }
+                    }
+                }
+            }
+
+            report.issues.extend(issues);
+        }
+
+        // EBL015 — account-level pass (stale custom platforms) via
+        // the assembly shared with the MCP lint tool. Outside the
+        // per-env registry, so `lint.disable` is honoured here;
+        // skipped when linting a single --env (the operator scoped
+        // the run) and in the common zero-custom-platform account
+        // the extra cost is one empty list call.
+        if should_run_account_pass(env_name.is_some(), disabled) {
+            match fetch_stale_platform_issues(&aws, chrono::Utc::now()).await {
+                Ok((mut issues, warnings)) => {
+                    if !quiet {
+                        for w in warnings {
+                            eprintln!("warning: {w}");
+                        }
+                    }
+                    filter_issues(&mut issues, severity_filter, rule_filter);
+                    if let Some(region) = region_opt {
+                        for issue in &mut issues {
+                            issue.fields.insert("region".into(), region.clone());
+                        }
+                    }
+                    report.issues.extend(issues);
+                }
+                Err(e) => {
+                    // Through `degrade`, like every other fetch
+                    // failure in this cycle. It printed and
+                    // returned, so an EBL015 fetch failure left
+                    // the cycle looking CLEAN: exit 0, and
+                    // `--baseline` would snapshot a run whose
+                    // account-level pass never happened. `--quiet`
+                    // suppressed the only evidence, which is the
+                    // exact pairing the `--quiet` bug taught
+                    // (a non-zero exit with an empty log).
+                    //
+                    // `every_degrade_goes_through_the_helper`
+                    // could not catch this: it checks that sites
+                    // which DO degrade use the helper, and cannot
+                    // see a site that should and does not.
+                    report.degrade(format!("EBL015 skipped — ListPlatformVersions: {e}"));
+                }
+            }
+        }
+    }
+    report
+}
+
 /// `ebman lint` — run the diagnostic rule engine over the fleet.
 ///
 /// Exit 2 on a usage error, 1 when `--baseline` refuses to snapshot a
@@ -906,13 +1286,15 @@ pub async fn run(args: &[String]) -> Result<()> {
 
     let mut disabled: Vec<String> = config::load_lint_disables();
     disabled.extend(project::load_lint_disables_from_cwd());
-    let rules = lint::default_rules(&disabled);
 
     let mut fix_disabled: Vec<String> = config::load_lint_fix_disables();
     fix_disabled.extend(project::load_lint_fix_disables_from_cwd());
 
     let safety_cfg = config::load();
     let active_profile_for_safety = std::env::var("AWS_PROFILE").ok();
+    // `run_cycle` computes its own; this one is for the printing
+    // and baseline branches below, which stayed in `run`.
+    let multi_region = regions.len() > 1;
     // Cross-process fleet freeze: a real fix dispatch (--fix --yes)
     // must refuse while a live TUI session holds :freeze-deploys /
     // :incident (a --dry-run plans nothing, so it stays allowed).
@@ -926,7 +1308,6 @@ pub async fn run(args: &[String]) -> Result<()> {
         audit::webhook_errors_to_stderr();
     }
 
-    let multi_region = regions.len() > 1;
     // `--watch` wraps the existing one-shot body in a polling loop
     // that emits each cycle's issues and sleeps `interval_secs`.
     // Ctrl-C breaks; the exit code reflects the LAST cycle's state
@@ -944,6 +1325,12 @@ pub async fn run(args: &[String]) -> Result<()> {
     // documented AWS-error code), not 0 — expired credentials in a
     // CI gate previously produced a silent green pass.
     let mut last_cycle_degraded;
+    // Survives the watch loop the same way `last_cycle_degraded` does.
+    // This was a process-global `AtomicBool` written three loops deep
+    // and read once at exit — a static only because the failure had no
+    // other way out of the nesting. The report carries it out, so the
+    // static dissolves.
+    let mut last_fix_failed = false;
     // `--webhook` change-guard: identity set of the last cycle POSTed.
     // `None` until the first cycle, so the first findings (or first
     // clean state) always fire once.
@@ -960,344 +1347,23 @@ pub async fn run(args: &[String]) -> Result<()> {
         if watch && !quiet && !json {
             println!("--- {} ---", cycle_started.to_rfc3339());
         }
-        let mut all_issues: Vec<lint::Issue> = Vec::new();
-        // A cycle that skipped any region/env (transient AWS failure)
-        // has an incomplete issue set — the webhook change-guard must
-        // neither page on it (a shrunk set reads as a false all-clear
-        // mid-outage) nor adopt it as the new baseline.
-        let mut cycle_degraded = false;
-        // Why the cycle degraded, not just that it did.
-        //
-        // Every site that sets `cycle_degraded` used to gate its message
-        // on `!quiet` — so `--quiet` produced a NON-ZERO exit with an
-        // empty log, which is the one combination a CI step cannot act
-        // on. `--quiet` is for suppressing per-env chatter; it was never
-        // meant to suppress the reason a run failed. These are collected
-        // here so they can be printed unconditionally AND carried into
-        // the `--json` payload, which had no degraded field at all.
-        let mut degrade_reasons: Vec<String> = Vec::new();
-        for region_opt in &regions {
-            let aws = match aws::AwsClient::with(None, region_opt.clone()).await {
-                Ok(c) => c,
-                Err(e) => {
-                    let region_label = region_opt.as_deref().unwrap_or("default");
-                    degrade(
-                        &mut degrade_reasons,
-                        &mut cycle_degraded,
-                        format!("skipping region '{region_label}' — AwsClient::with: {e}"),
-                    );
-                    continue;
-                }
-            };
-            let envs = match aws.list_environments().await {
-                Ok(envs) => envs,
-                Err(e) => {
-                    let region_label = region_opt.as_deref().unwrap_or("default");
-                    degrade(
-                        &mut degrade_reasons,
-                        &mut cycle_degraded,
-                        format!("skipping region '{region_label}' — list_environments: {e}"),
-                    );
-                    continue;
-                }
-            };
-            // Per-region one-shot fetch for EBL008 (stale platform):
-            // `ListAvailableSolutionStacks` is region-scoped + cheap
-            // (single call, no pagination). On failure we just skip
-            // EBL008 for the region rather than aborting lint — same
-            // tolerance pattern the per-env opts/tags/health fetches
-            // use below. Added in 0.18 to close the TUI/CLI parity
-            // gap noted in the 0.17.1 CHANGELOG.
-            let latest_stacks = match aws.list_solution_stacks().await {
-                Ok(s) => aws::latest_stack_versions(&s),
-                Err(e) => {
-                    if !quiet {
-                        let region_label = region_opt.as_deref().unwrap_or("default");
-                        eprintln!(
-                            "warning: region '{region_label}' — list_solution_stacks failed: {e} (EBL008 skipped)"
-                        );
-                    }
-                    std::collections::HashMap::new()
-                }
-            };
-
-            let targets: Vec<&aws::Environment> = match env_name.as_deref() {
-                Some(name) => match envs.iter().find(|e| e.name == name) {
-                    Some(env) => vec![env],
-                    None => {
-                        if multi_region && !quiet {
-                            let region_label = region_opt.as_deref().unwrap_or("default");
-                            eprintln!(
-                                "warning: env '{name}' not in region '{region_label}' — skipping"
-                            );
-                        } else if !multi_region {
-                            eprintln!("ebman lint: env '{name}' not found in current context");
-                            crate::cli::exit_after_drain(2).await;
-                        }
-                        continue;
-                    }
-                },
-                None => envs.iter().collect(),
-            };
-
-            for env in targets {
-                // Fetch + build + run via the shared assembly path
-                // (`fetch_env_lint_inputs` / `run_rules_for_env`) —
-                // the same pair the MCP `lint` tool calls.
-                let inputs =
-                    match fetch_env_lint_inputs(&aws, env, &latest_stacks, probe_live, &disabled)
-                        .await
-                    {
-                        Ok(inputs) => inputs,
-                        Err(e) => {
-                            degrade(
-                                &mut degrade_reasons,
-                                &mut cycle_degraded,
-                                format!("skipping {} — fetch_env_option_settings: {e}", env.name),
-                            );
-                            continue;
-                        }
-                    };
-                // A probe that could not run is not a clean result. The
-                // rule still skips — a failed probe must never become a
-                // false positive — but silence here made an
-                // AccessDenied on iam:SimulatePrincipalPolicy look
-                // identical to a passing check, in output that gates CI.
-                for w in &inputs.coverage_warnings {
-                    degrade(&mut degrade_reasons, &mut cycle_degraded, w.clone());
-                }
-                let mut issues = run_rules_for_env(&rules, env, &inputs, &safety_cfg.required_tags);
-                filter_issues(&mut issues, severity_filter, &rule_filter);
-                if let Some(region) = region_opt {
-                    for issue in &mut issues {
-                        issue.fields.insert("region".into(), region.clone());
-                    }
-                }
-
-                if fix && !issues.is_empty() {
-                    // Through the shared gate, not `pin_reason` alone.
-                    // `active_freeze: None` because the freeze is
-                    // handled once up front for the whole run — a
-                    // per-env freeze check would print the same refusal
-                    // N times, and this loop skips the env rather than
-                    // exiting. Passing it explicitly rather than
-                    // reaching for `pin_reason` keeps this path on the
-                    // shared decision even so.
-                    // A `--dry-run` preview goes through the pure
-                    // half: it dispatched nothing, so filing
-                    // `stage=refused` would fill the log with refusals
-                    // of writes that were never going to happen. Same
-                    // reasoning the exit-code branch below already
-                    // applies.
-                    let refusal = if yes {
-                        crate::cli::write_refusal(
-                            &safety_cfg,
-                            &env.name,
-                            &active_profile_for_safety,
-                            None,
-                            region_opt.as_deref(),
-                            // The label the fix DISPATCH logs, so a
-                            // refusal correlates with it under `ebman
-                            // audit --action SetOption`.
-                            "SetOption",
-                        )
-                    } else {
-                        crate::cli::write_refusal_unaudited(
-                            &safety_cfg,
-                            &env.name,
-                            &active_profile_for_safety,
-                            None,
-                        )
-                        .map(|(_, message, _)| message)
-                    };
-                    if let Some(reason) = refusal {
-                        if !quiet {
-                            eprintln!("ebman lint --fix: {reason}");
-                        }
-                        // Only a real (--yes) run treats the refusal as
-                        // a dispatch failure — a --dry-run preview
-                        // dispatched nothing and must not exit 1.
-                        if yes {
-                            FIX_DISPATCH_FAILED.store(true, std::sync::atomic::Ordering::Relaxed);
-                        }
-                        all_issues.extend(issues);
-                        continue;
-                    }
-                    let region_label = region_opt.as_deref().unwrap_or("default").to_string();
-                    // Rebuild the (cheap, borrowing) context for the
-                    // fix pass — `run_rules_for_env` consumed its own.
-                    let ctx = build_lint_context(env, &inputs, &safety_cfg.required_tags);
-                    let mut to_set: Vec<(String, String, String)> = Vec::new();
-                    let mut planned: Vec<(String, lint::FixAction)> = Vec::new();
-                    let mut planned_set_indices: Vec<usize> = Vec::new();
-                    for issue in &issues {
-                        if fix_disabled.contains(&issue.rule_id) {
-                            if !quiet && !json {
-                                println!(
-                                    "skip {} ({}): in lint.fix_disable",
-                                    issue.rule_id, env.name
-                                );
-                            }
-                            continue;
-                        }
-                        let Some(rule) = rules.iter().find(|r| r.id() == issue.rule_id) else {
-                            continue;
-                        };
-                        let Some(action) = rule.fix(&ctx) else {
-                            if !quiet && !json {
-                                println!(
-                                    "no-fix {} ({}): rule has no auto-remediation",
-                                    issue.rule_id, env.name
-                                );
-                            }
-                            continue;
-                        };
-                        if let lint::FixAction::SetOption {
-                            namespace,
-                            name,
-                            value,
-                            ..
-                        } = &action
-                        {
-                            planned_set_indices.push(planned.len());
-                            to_set.push((namespace.clone(), name.clone(), value.clone()));
-                        }
-                        planned.push((issue.rule_id.clone(), action));
-                    }
-                    // Plan lines respect --quiet and stay off stdout
-                    // under --json (prose interleaved with the JSON
-                    // document broke every piped consumer).
-                    if !quiet && !json {
-                        for (rule_id, action) in &planned {
-                            match action {
-                                lint::FixAction::SetOption { description, .. } => {
-                                    println!("fix {rule_id} ({}): {description}", env.name);
-                                }
-                                lint::FixAction::Manual { instructions } => {
-                                    println!(
-                                    "fix {rule_id} ({}) MANUAL — operator action required:\n  {instructions}",
-                                    env.name
-                                );
-                                }
-                            }
-                        }
-                    }
-                    if fix_may_dispatch(yes, to_set.len()) {
-                        match aws
-                            .update_env_option_settings(&env.name, &to_set, &[])
-                            .await
-                        {
-                            Ok(()) => {
-                                for &idx in &planned_set_indices {
-                                    let (rule_id, action) = &planned[idx];
-                                    if let lint::FixAction::SetOption {
-                                        namespace,
-                                        name,
-                                        value,
-                                        ..
-                                    } = action
-                                    {
-                                        audit::append_lint_fix(
-                                            &region_label,
-                                            &env.name,
-                                            rule_id,
-                                            namespace,
-                                            name,
-                                            value,
-                                            None,
-                                        );
-                                    }
-                                }
-                                if !quiet && !json {
-                                    println!(
-                                        "ok ({}): applied {} fix(es)",
-                                        env.name,
-                                        planned_set_indices.len()
-                                    );
-                                }
-                            }
-                            Err(e) => {
-                                eprintln!(
-                                "ebman lint --fix: dispatch failed for {} in {region_label}: {e}",
-                                env.name
-                            );
-                                let err_str = e.to_string();
-                                for &idx in &planned_set_indices {
-                                    let (rule_id, action) = &planned[idx];
-                                    if let lint::FixAction::SetOption {
-                                        namespace,
-                                        name,
-                                        value,
-                                        ..
-                                    } = action
-                                    {
-                                        audit::append_lint_fix(
-                                            &region_label,
-                                            &env.name,
-                                            rule_id,
-                                            namespace,
-                                            name,
-                                            value,
-                                            Some(&err_str),
-                                        );
-                                    }
-                                }
-                                FIX_DISPATCH_FAILED
-                                    .store(true, std::sync::atomic::Ordering::Relaxed);
-                            }
-                        }
-                    }
-                }
-
-                all_issues.extend(issues);
-            }
-
-            // EBL015 — account-level pass (stale custom platforms) via
-            // the assembly shared with the MCP lint tool. Outside the
-            // per-env registry, so `lint.disable` is honoured here;
-            // skipped when linting a single --env (the operator scoped
-            // the run) and in the common zero-custom-platform account
-            // the extra cost is one empty list call.
-            if should_run_account_pass(env_name.is_some(), &disabled) {
-                match fetch_stale_platform_issues(&aws, chrono::Utc::now()).await {
-                    Ok((mut issues, warnings)) => {
-                        if !quiet {
-                            for w in warnings {
-                                eprintln!("warning: {w}");
-                            }
-                        }
-                        filter_issues(&mut issues, severity_filter, &rule_filter);
-                        if let Some(region) = region_opt {
-                            for issue in &mut issues {
-                                issue.fields.insert("region".into(), region.clone());
-                            }
-                        }
-                        all_issues.extend(issues);
-                    }
-                    Err(e) => {
-                        // Through `degrade`, like every other fetch
-                        // failure in this cycle. It printed and
-                        // returned, so an EBL015 fetch failure left
-                        // the cycle looking CLEAN: exit 0, and
-                        // `--baseline` would snapshot a run whose
-                        // account-level pass never happened. `--quiet`
-                        // suppressed the only evidence, which is the
-                        // exact pairing the `--quiet` bug taught
-                        // (a non-zero exit with an empty log).
-                        //
-                        // `every_degrade_goes_through_the_helper`
-                        // could not catch this: it checks that sites
-                        // which DO degrade use the helper, and cannot
-                        // see a site that should and does not.
-                        degrade(
-                            &mut degrade_reasons,
-                            &mut cycle_degraded,
-                            format!("EBL015 skipped — ListPlatformVersions: {e}"),
-                        );
-                    }
-                }
-            }
-        }
+        let report = run_cycle(
+            &regions,
+            &env_name,
+            &disabled,
+            probe_live,
+            fix,
+            yes,
+            quiet,
+            json,
+            severity_filter,
+            &rule_filter,
+            &safety_cfg,
+            &fix_disabled,
+            &active_profile_for_safety,
+            |region| async move { aws::AwsClient::with(None, region).await },
+        )
+        .await;
 
         // `--webhook URL` (watch mode): POST the cycle's findings when
         // the issue SET changed since the last post — a 60s interval
@@ -1306,7 +1372,7 @@ pub async fn run(args: &[String]) -> Result<()> {
         // immediately. Identity comes from `lint::issue_identity`, the
         // same key the baseline machinery uses.
         if let Some(url) = webhook.as_deref() {
-            if cycle_degraded {
+            if report.degraded() {
                 // Incomplete data: don't page, don't move the baseline.
                 // The next full cycle compares against the last GOOD
                 // state, so a real change during the outage still fires.
@@ -1315,13 +1381,13 @@ pub async fn run(args: &[String]) -> Result<()> {
                 }
             } else {
                 let identities: std::collections::BTreeSet<String> =
-                    all_issues.iter().map(lint::issue_identity).collect();
+                    report.issues.iter().map(lint::issue_identity).collect();
                 // A first cycle that's already clean posts nothing —
                 // the all-clear body claims issues cleared, and none
                 // did. Only a change from a KNOWN previous state (or
                 // first findings) is worth a page.
                 if should_post_webhook(last_webhook_identities.as_ref(), &identities) {
-                    let detail = webhook_summary(&all_issues);
+                    let detail = webhook_summary(&report.issues);
                     audit::fire_webhook(
                         url,
                         None,
@@ -1346,12 +1412,12 @@ pub async fn run(args: &[String]) -> Result<()> {
             if json {
                 println!(
                     "{}",
-                    lint::render_report_json(&all_issues, &degrade_reasons)
+                    lint::render_report_json(&report.issues, &report.degrade_reasons)
                 );
-            } else if all_issues.is_empty() {
+            } else if report.issues.is_empty() {
                 println!("✓ No issues found");
             } else {
-                for issue in &all_issues {
+                for issue in &report.issues {
                     let sev = issue.severity.as_str();
                     let env_str = issue.env_name.as_deref().unwrap_or("-");
                     if multi_region {
@@ -1386,14 +1452,14 @@ pub async fn run(args: &[String]) -> Result<()> {
             // whatever the outage hid, and the next --against-baseline
             // run would report the reappeared issues as NEW (or worse,
             // a fully-failed run writes an empty baseline).
-            if cycle_degraded {
+            if report.degraded() {
                 eprintln!(
                     "ebman lint --baseline: refusing to snapshot a degraded run \
                      (fetch failures above) — fix access and re-run"
                 );
                 std::process::exit(1);
             }
-            let body = lint::render_issues_json(&all_issues);
+            let body = lint::render_issues_json(&report.issues);
             if let Err(e) = std::fs::write(path, &body) {
                 eprintln!("ebman lint --baseline: write {path}: {e}");
                 std::process::exit(1);
@@ -1401,7 +1467,7 @@ pub async fn run(args: &[String]) -> Result<()> {
             if !quiet {
                 eprintln!(
                     "ebman lint --baseline: wrote {} issue(s) to {path}",
-                    all_issues.len()
+                    report.issues.len()
                 );
             }
             last_cycle_clean = true; // snapshot ALWAYS exits 0
@@ -1428,7 +1494,7 @@ pub async fn run(args: &[String]) -> Result<()> {
                 new_issues,
                 cleared,
                 baseline_count,
-            } = baseline_drift(&all_issues, &baseline_issues);
+            } = baseline_drift(&report.issues, &baseline_issues);
 
             if !quiet {
                 if json {
@@ -1456,9 +1522,14 @@ pub async fn run(args: &[String]) -> Result<()> {
 
             last_cycle_clean = new_issues.is_empty();
         } else {
-            last_cycle_clean = all_issues.is_empty();
+            last_cycle_clean = report.issues.is_empty();
         }
-        last_cycle_degraded = cycle_degraded;
+        last_cycle_degraded = report.degraded();
+        // Sticky across cycles: a `--watch` run whose fix failed once
+        // must not exit 0 because a later cycle had nothing to fix.
+        // The static behaved this way by accident of being global;
+        // here it is deliberate.
+        last_fix_failed |= report.fix_dispatch_failed;
 
         if !watch {
             break;
@@ -1487,12 +1558,7 @@ pub async fn run(args: &[String]) -> Result<()> {
     // --watch --webhook cycle posts) before the process ends —
     // fire-and-forget tasks are cancelled at runtime drop.
     audit::drain_webhooks(std::time::Duration::from_secs(12)).await;
-    let code = lint_exit_code(
-        fix,
-        FIX_DISPATCH_FAILED.load(std::sync::atomic::Ordering::Relaxed),
-        last_cycle_degraded,
-        last_cycle_clean,
-    );
+    let code = lint_exit_code(fix, last_fix_failed, last_cycle_degraded, last_cycle_clean);
     if code != 0 {
         std::process::exit(code);
     }
@@ -1983,27 +2049,62 @@ mod degrade_guard {
             }
         }
 
-        // Assembled, so this line is not itself a match.
-        let needle = format!("cycle_degraded{}true", " = ");
-        let bare = prod.matches(needle.as_str()).count();
-        assert_eq!(
-            bare, 0,
-            "found {bare} bare assignment(s) to the degraded flag; route it \
-             through `degrade(&mut degrade_reasons, &mut cycle_degraded, reason)` \
-             so the reason reaches stderr and --json, not just the exit code"
-        );
-        // And the helper must still do all three things.
-        let helper = prod
-            .split("fn degrade(")
+        // The degraded state must stay DERIVED, never stored.
+        //
+        // This used to check that the helper set a flag, and that
+        // nothing assigned that flag directly — policing a drift that
+        // could still happen, because the flag and the reason were two
+        // things. They are one thing now: `degraded()` reads the
+        // reasons, so a cycle cannot be degraded without saying why,
+        // and cannot say why without being degraded. Reintroducing a
+        // stored flag is what this guards.
+        // Scoped to the STRUCT. `lint_exit_code` takes a `degraded:
+        // bool` parameter, which is fine — it is told the answer. What
+        // must not exist is a field storing it next to the reasons.
+        let decl = prod
+            .split("pub(crate) struct CycleReport {")
             .nth(1)
-            .expect("the `degrade` helper must exist");
-        let body = &helper[..helper.find("\n}").unwrap_or(helper.len())];
+            .and_then(|r| r.split('}').next())
+            .expect("CycleReport is declared here");
+        // Comments stripped: a field's own doc comment says "Distinct
+        // from degraded", and a raw search reads that as the field it
+        // forbids. Third time this week a source guard has matched
+        // prose — `strip_line_comment` exists for exactly this and
+        // handles a `//` inside a string literal, which hand-rolled
+        // strippers here did not.
+        let decl: String = decl
+            .lines()
+            .map(crate::app::tests::scan::strip_line_comment)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !decl.contains("degraded"),
+            "the degraded state must be DERIVED from `degrade_reasons`, not stored \
+             beside them — a stored flag can disagree with the reasons, which is how \
+             a run exited non-zero with an empty log: {decl}"
+        );
+        let derived = prod
+            .split("fn degraded(&self) -> bool {")
+            .nth(1)
+            .expect("`CycleReport::degraded` must exist");
+        assert!(
+            derived[..derived.find("\n    }").unwrap_or(derived.len())]
+                .contains("degrade_reasons.is_empty()"),
+            "`degraded()` must read the reasons, or it is a stored flag wearing a \
+             method's clothes"
+        );
+
+        // And the recorder must still do both halves.
+        let helper = prod
+            .split("fn degrade(&mut self, reason: String) {")
+            .nth(1)
+            .expect("`CycleReport::degrade` must exist");
+        let body = &helper[..helper.find("\n    }").unwrap_or(helper.len())];
         assert!(body.contains("eprintln!"), "degrade must print the reason");
         assert!(
             body.contains("push(reason)"),
             "degrade must keep the reason for --json"
         );
-        assert!(body.contains("*degraded"), "degrade must set the flag");
     }
 }
 
@@ -2449,8 +2550,14 @@ mod webhook_gate_tests {
             "the option-write dispatch must go through the tested gate, \
              or `--fix` can write without `--yes` again"
         );
+        // Matched without the borrow form. The needle was
+        // `(env_name.is_some(), &disabled)` and a clippy fix removing
+        // the `&` broke it — a guard coupled to incidental syntax
+        // fails for a reason that has nothing to do with what it
+        // guards, and the next person reads that as the guard being
+        // wrong rather than the code.
         assert!(
-            prod.contains("should_run_account_pass(env_name.is_some(), &disabled)"),
+            prod.contains("should_run_account_pass(env_name.is_some(),"),
             "the EBL015 account pass must go through the tested gate"
         );
         // Canary: the production slice must be real, or both `contains`
