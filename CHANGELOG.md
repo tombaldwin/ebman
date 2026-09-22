@@ -4,6 +4,25 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **An EBL015 fetch failure left `lint` reporting clean.** The
+  account-level pass printed `warning: EBL015 skipped` behind
+  `!quiet` and returned, instead of going through `degrade` like every
+  other fetch failure in the cycle. So a run whose account pass never
+  happened still exited 0, `lint --baseline` would have snapshotted it
+  as a good baseline, and `--quiet` suppressed the only evidence —
+  the same pairing that produced the earlier "non-zero exit with an
+  empty log" bug, pointed the other way.
+
+  Found by an architecture review reading the file for a refactor,
+  not by any guard. `every_degrade_goes_through_the_helper` checks
+  that sites which DO degrade use the helper; it cannot see a site
+  that should and does not. It now also refuses a `warning: … skipped`
+  written straight to stderr, which is the shape this took.
+
 ## [0.43.0] - 2026-09-22
 
 ### Added
