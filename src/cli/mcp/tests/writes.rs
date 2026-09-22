@@ -298,7 +298,7 @@ fn the_confirm_window_outlives_a_receipt_handle() {
     // constant-folded, so clippy rightly calls it an assertion that
     // cannot fail — the "test that is worse than none" shape this
     // repo keeps finding.
-    let sqs = std::fs::read_to_string("src/aws/sqs.rs").expect("sqs.rs");
+    let sqs = crate::app::tests::scan::production_source("aws/sqs.rs");
     let visibility: u64 = sqs
         .split(".visibility_timeout(")
         .nth(1)
@@ -314,7 +314,7 @@ fn the_confirm_window_outlives_a_receipt_handle() {
              before simplifying anything."
     );
     // And the plan type must not be able to carry a handle.
-    let src = std::fs::read_to_string("src/cli/mcp/writes.rs").expect("own source");
+    let src = crate::app::tests::scan::production_source("cli/mcp/writes.rs");
     let decl = src
         .split("pub(super) struct PendingWrite {")
         .nth(1)

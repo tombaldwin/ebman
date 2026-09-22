@@ -11,6 +11,15 @@
 //! reference inside still resolves to `crate::cli::mcp` with nothing
 //! rewritten. Code motion with a path rewrite is two changes, and only
 //! one of them is checkable by the test names still being there.
+//!
+//! **Do not add `mod writes;` / `mod tools;` / `mod tools_renderer;`
+//! here.** Those three files live at `tests/`, which is exactly where
+//! rustc would auto-resolve such a declaration — but they are already
+//! compiled, as CHILDREN of `writes` / `tools`, via `#[path]` in those
+//! files. Declaring them here compiles each a second time under a
+//! different parent, where `use super::*` resolves to this module and
+//! the private-item access fails, producing an error a long way from
+//! its cause.
 
 /// The `ask` question, answered with data rather than a guess.
 ///
@@ -2043,8 +2052,12 @@ mod orchestration {
 /// it, which contradicts the tool's own description.
 #[test]
 fn mcp_drift_discovery_starts_from_an_absolute_path() {
-    let src = std::fs::read_to_string("src/cli/mcp/tools.rs").expect("read source");
-    let prod = src.split("\n#[cfg(test)]\nmod ").next().unwrap_or_default();
+    // Was a raw read plus a hand-rolled split on
+    // `"\n#[cfg(test)]\nmod "`. That split went decorative the moment
+    // `tools.rs` started spelling its test modules with `#[path]` — it
+    // matched nothing and returned the whole file, tests included.
+    let prod = crate::app::tests::scan::production_source("cli/mcp/tools.rs");
+    let prod = prod.as_str();
     assert!(
         prod.contains("std::env::current_dir()"),
         "drift discovery must start from the absolute cwd, or it \
@@ -2804,7 +2817,7 @@ fn only_the_call_that_asks_a_human_gets_a_humans_budget() {
 fn the_frame_loop_times_calls_by_the_computed_budget() {
     let src = crate::app::tests::scan::production_source("cli/mcp/mod.rs");
     let src = src.as_str();
-    let prod = crate::app::tests::scan::production_half(src);
+    let prod = src;
     let call = prod
         .split("let outcome = tokio::time::timeout(")
         .nth(1)
@@ -3140,7 +3153,7 @@ async fn an_unclaimed_reply_would_be_answered_as_a_bad_method() {
 fn take_ask_reply_precedes_the_dispatch() {
     let src = crate::app::tests::scan::production_source("cli/mcp/mod.rs");
     let src = src.as_str();
-    let body = crate::app::tests::scan::production_half(src);
+    let body = src;
     let claim = body
         .find("if server.take_ask_reply(&req)")
         .expect("the frame loop must route ask replies");
@@ -3778,7 +3791,7 @@ async fn a_timed_out_ask_tells_the_client_to_withdraw_it() {
 fn a_reply_to_a_forgotten_ask_is_dropped_not_answered() {
     let src = crate::app::tests::scan::production_source("cli/mcp/mod.rs");
     let src = src.as_str();
-    let body = crate::app::tests::scan::production_half(src);
+    let body = src;
     let claim = body
         .find("if server.take_ask_reply(&req)")
         .expect("the loop routes ask replies");
@@ -3909,7 +3922,7 @@ fn the_ask_audit_vocabulary_is_stable_and_excludes_the_unasked() {
 fn a_connection_that_was_never_asked_writes_no_ask_line() {
     let src = crate::app::tests::scan::production_source("cli/mcp/writes.rs");
     let src = src.as_str();
-    let body = crate::app::tests::scan::production_half(src);
+    let body = src;
     let call = body
         .find("append_action_asked")
         .expect("the confirm path must audit the ask");
@@ -4028,7 +4041,7 @@ async fn terminate_and_purge_require_the_operator_to_type_the_name() {
 fn the_typed_confirm_is_scoped_to_terminate_and_purge() {
     let src = crate::app::tests::scan::production_source("cli/mcp/writes.rs");
     let src = src.as_str();
-    let body = crate::app::tests::scan::production_half(src);
+    let body = src;
     let arm = body
         .find("WriteVerb::Terminate | WriteVerb::DlqPurge => Some(pending.env.as_str())")
         .expect("terminate and purge demand a typed name");
