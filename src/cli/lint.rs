@@ -720,6 +720,16 @@ pub(crate) struct CycleReport {
     /// A `--fix` dispatch failed. Distinct from degraded: the cycle
     /// saw the fleet correctly and could not change it.
     pub fix_dispatch_failed: bool,
+    /// The operator asked for something that cannot be done — today,
+    /// `--env NAME` where NAME is not in the only context being
+    /// linted. Returned rather than exited.
+    ///
+    /// `run_cycle` used to call `exit_after_drain(2)` here, inside the
+    /// function extracted to make the cycle testable. No test can
+    /// cover a branch that kills the test binary, so the single most
+    /// likely `ebman lint --env X` mistake was the one path the seam
+    /// could not reach. `run` owns the exit; the cycle reports.
+    pub usage_error: Option<String>,
 }
 
 impl CycleReport {
@@ -921,6 +931,7 @@ pub(crate) async fn run_cycle<F, Fut>(
     fix_disabled: &[String],
     active_profile_for_safety: &Option<String>,
     client_for: F,
+    now: chrono::DateTime<chrono::Utc>,
 ) -> CycleReport
 where
     F: Fn(Option<String>) -> Fut,
@@ -988,8 +999,9 @@ where
                             "warning: env '{name}' not in region '{region_label}' — skipping"
                         );
                     } else if !multi_region {
-                        eprintln!("ebman lint: env '{name}' not found in current context");
-                        crate::cli::exit_after_drain(2).await;
+                        report.usage_error =
+                            Some(format!("env '{name}' not found in current context"));
+                        return report;
                     }
                     continue;
                 }
@@ -1216,7 +1228,11 @@ where
         // the run) and in the common zero-custom-platform account
         // the extra cost is one empty list call.
         if should_run_account_pass(env_name.is_some(), disabled) {
-            match fetch_stale_platform_issues(&aws, chrono::Utc::now()).await {
+            // The cycle's clock, passed in. EBL015's staleness threshold is
+            // date-dependent, so reading the wall clock here meant the
+            // account-level pass could not be tested at a fixed time —
+            // inside the function extracted to make the cycle testable.
+            match fetch_stale_platform_issues(&aws, now).await {
                 Ok((mut issues, warnings)) => {
                     if !quiet {
                         for w in warnings {
@@ -1367,8 +1383,18 @@ pub async fn run(args: &[String]) -> Result<()> {
             &fix_disabled,
             &active_profile_for_safety,
             |region| async move { aws::AwsClient::with(None, region).await },
+            cycle_started,
         )
         .await;
+
+        // The cycle reports a usage error; `run` owns the exit. Same
+        // message and same exit code 2 as the `exit_after_drain` call
+        // this replaced — moved out so the branch is reachable from a
+        // test.
+        if let Some(msg) = report.usage_error.as_deref() {
+            eprintln!("ebman lint: {msg}");
+            crate::cli::exit_after_drain(2).await;
+        }
 
         // `--webhook URL` (watch mode): POST the cycle's findings when
         // the issue SET changed since the last post — a 60s interval
@@ -2694,28 +2720,122 @@ mod cycle_wiring {
         )
     }
 
+    /// The knobs `run_cycle` takes, so a test can set the one it
+    /// cares about and leave the rest.
+    ///
+    /// `run_with` used to hardcode all fourteen arguments — `fix`
+    /// false, `env_name` none, default safety config — which meant the
+    /// seam's tests drove the region loop and nothing else. The
+    /// ~165-line `--fix` block, holding the refusal accounting and the
+    /// dispatch-failure flag, was exactly as unreachable as it had
+    /// been before the extraction. Named by the pre-0.44 architecture
+    /// review.
+    #[derive(Default)]
+    struct CycleOpts {
+        env_name: Option<String>,
+        fix: bool,
+        yes: bool,
+        safety_cfg: config::Config,
+        fix_disabled: Vec<String>,
+    }
+
+    /// A fixed clock, so EBL015's date-dependent staleness threshold
+    /// is deterministic.
+    fn test_clock() -> chrono::DateTime<chrono::Utc> {
+        "2026-09-22T12:00:00Z".parse().expect("a valid instant")
+    }
+
     async fn run_with<F, Fut>(regions: Vec<Option<String>>, client_for: F) -> CycleReport
+    where
+        F: Fn(Option<String>) -> Fut,
+        Fut: std::future::Future<Output = color_eyre::eyre::Result<aws::AwsClient>>,
+    {
+        run_with_opts(regions, CycleOpts::default(), client_for).await
+    }
+
+    async fn run_with_opts<F, Fut>(
+        regions: Vec<Option<String>>,
+        opts: CycleOpts,
+        client_for: F,
+    ) -> CycleReport
     where
         F: Fn(Option<String>) -> Fut,
         Fut: std::future::Future<Output = color_eyre::eyre::Result<aws::AwsClient>>,
     {
         run_cycle(
             &regions,
-            &None,
+            &opts.env_name,
             &[],
             false,
-            false,
-            false,
+            opts.fix,
+            opts.yes,
             true,
             false,
             None,
             &[],
-            &config::Config::default(),
-            &[],
+            &opts.safety_cfg,
+            &opts.fix_disabled,
             &None,
             client_for,
+            test_clock(),
         )
         .await
+    }
+
+    /// `--env NAME` where NAME is not in the only context being
+    /// linted is a USAGE error, reported rather than exited.
+    ///
+    /// Unreachable from a test until 0.45: `run_cycle` called
+    /// `exit_after_drain(2)` here, inside the function extracted to
+    /// make the cycle testable, so the single most likely
+    /// `ebman lint --env X` mistake was the one branch the seam could
+    /// not reach. A test that covers a `process::exit` kills the test
+    /// binary; there is no version of this assertion that works
+    /// without moving the exit out.
+    #[tokio::test]
+    async fn an_unknown_env_is_a_usage_error_not_an_exit() {
+        let report = run_with_opts(
+            vec![None],
+            CycleOpts {
+                env_name: Some("no-such-env".into()),
+                ..CycleOpts::default()
+            },
+            |_| async { Ok(mock_client(vec!["real-env".into()])) },
+        )
+        .await;
+
+        let msg = report
+            .usage_error
+            .as_deref()
+            .expect("an unknown env must be reported as a usage error");
+        assert!(msg.contains("no-such-env"), "{msg}");
+        assert!(
+            !report.degraded(),
+            "a typo is not a degraded cycle — degraded means the fleet was not \
+             seen, and it was: {:?}",
+            report.degrade_reasons
+        );
+        assert!(report.issues.is_empty(), "{:?}", report.issues);
+    }
+
+    /// The same mistake under multi-region is a WARNING, not a usage
+    /// error: the env may legitimately live in another region.
+    #[tokio::test]
+    async fn an_unknown_env_under_multi_region_is_not_a_usage_error() {
+        let report = run_with_opts(
+            vec![Some("eu-west-1".into()), Some("eu-west-2".into())],
+            CycleOpts {
+                env_name: Some("no-such-env".into()),
+                ..CycleOpts::default()
+            },
+            |_| async { Ok(mock_client(vec!["real-env".into()])) },
+        )
+        .await;
+        assert!(
+            report.usage_error.is_none(),
+            "a multi-region sweep must keep looking: {:?}",
+            report.usage_error
+        );
     }
 
     /// A region whose client cannot be built degrades the cycle, and
