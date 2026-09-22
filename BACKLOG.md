@@ -38,6 +38,26 @@ Tier definitions:
 
 #### Tier 0 — fixture hygiene (2026-09-16)
 
+- [ ] **Route the remaining 76 AWS call sites through `wrap_aws`.**
+  `SdkError`'s `Display` for a modelled service failure is the literal
+  string `"service error"`, so any call taking it with a bare `?`
+  reports the class and discards the sentence naming what AWS actually
+  refused. SQS was fixed 2026-09-22 and the plumbing (`AwsErrorMeta`
+  now carries `message`; `flatten_err_to_string` renders it) is shared,
+  so each remaining conversion is one line.
+
+  Measured 2026-09-22: **77** `.send()` call sites outside
+  `aws/sqs.rs`, of which exactly one — `DescribeEnvironments` at
+  `src/aws/eb.rs:2139` — already goes through `wrap_aws`. By file:
+  `eb.rs` 48, `cloudwatch.rs` 6, `logs.rs` 5, `s3.rs` 5, `ec2.rs` 3,
+  `iam.rs`/`secrets.rs`/`ssm.rs` 2 each, `acm.rs`/`cost.rs`/`org.rs`/
+  `waf.rs` 1 each.
+
+  Not done in the same pass on purpose: 13 modules is past CLAUDE.md's
+  "more than ~3 modules and not clearly required by the current task"
+  stop condition, and the scoped item was SQS. `eb.rs` alone is worth
+  its own sitting.
+
 - [ ] **Move the last 13 `include_str!` guards onto
   `scan::production_source`.** Not a defect today — each crosses a
   directory boundary explicitly, so none can resolve to its own file

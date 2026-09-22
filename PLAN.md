@@ -237,12 +237,29 @@ name the first two as deliberate gaps, so they are debts, not ideas.
    tested both branches: a delete-half failure on `dlq_delete` must
    NOT claim a duplicate, because nothing was sent.
 
-   **Found while testing, not yet fixed:** an SQS failure surfaces as
-   the SDK's bare `"service error"` with no code or message. That is
-   `DeleteMessageError`'s `Display`, not something the DLQ path adds,
-   so it affects every SQS error ebman reports. Worth a small item of
-   its own — pull `ErrorMetadata`'s code and message through — rather
-   than widening the one above.
+   ~~**Found while testing, not yet fixed:** an SQS failure surfaces as
+   the SDK's bare `"service error"`~~ — **done 2026-09-22.** Measured
+   before touching anything: a mocked IAM denial on `delete_message`
+   rendered as `AccessDenied: service error`. The class was right and
+   the sentence naming the missing permission — `sqs:DeleteMessage` —
+   was gone.
+
+   `AwsErrorMeta` now carries the service's `message` alongside the
+   code and request id, `flatten_err_to_string` renders it, and the
+   five SQS calls go through `wrap_aws`. Same denial now reads
+   `AccessDenied: DeleteMessage failed: User is not authorized to
+   perform sqs:DeleteMessage`. An unclassified code (`ReceiptHandle
+   IsInvalid`) reaches the operator too, where it previously fell
+   through to the `Debug` sniff and surfaced nothing.
+
+   All three layers proven separately — drop the capture, drop the
+   render, or make the call site a pass-through: CAUGHT each time.
+
+   **The class is wider than SQS and was left alone deliberately.** 77
+   `.send()` call sites outside `aws/sqs.rs` still take the bare `?`,
+   exactly one of which is already converted. 13 modules is past the
+   stop condition; it is now its own backlog item with the per-file
+   counts.
 
    *Original entry:*
 

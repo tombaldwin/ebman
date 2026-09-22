@@ -1526,6 +1526,7 @@ fn a_typed_error_code_beats_sniffing_the_debug_dump() {
     // stability contract — and handed out false positives for free.
     let meta = AwsErrorMeta {
         code: Some("ThrottlingException".into()),
+        message: None,
         request_id: Some("abc-123".into()),
     };
     let report = Err::<(), _>(color_eyre::eyre::eyre!("service error"))
@@ -1555,6 +1556,7 @@ fn an_env_named_throttling_does_not_arm_the_back_off() {
     // problem that back-off cannot fix.
     let meta = AwsErrorMeta {
         code: Some("AccessDeniedException".into()),
+        message: None,
         request_id: None,
     };
     let report = Err::<(), _>(color_eyre::eyre::eyre!(
@@ -1581,6 +1583,7 @@ fn the_request_id_survives_to_the_log() {
     use crate::aws::AwsErrorMeta;
     let meta = AwsErrorMeta {
         code: Some("ThrottlingException".into()),
+        message: None,
         request_id: Some("req-9f3c".into()),
     };
     assert!(meta.to_string().contains("req-9f3c"), "{meta}");

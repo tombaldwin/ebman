@@ -1032,16 +1032,32 @@ mod tests;
 pub(crate) struct AwsErrorMeta {
     /// The service's error code, e.g. `ThrottlingException`.
     pub code: Option<String>,
+    /// The service's own sentence about what went wrong, e.g. "User is
+    /// not authorized to perform sqs:DeleteMessage".
+    ///
+    /// Added 2026-09-22 because it was being thrown away at every
+    /// boundary. `SdkError`'s `Display` for a modelled service failure
+    /// is the literal string **"service error"** — so an operator
+    /// denied a DLQ delete by an IAM policy saw `AccessDenied: service
+    /// error`, with the class right and the one sentence naming the
+    /// missing permission discarded. The code alone does not replace
+    /// it: `AccessDeniedException` says which family, not which
+    /// action.
+    pub message: Option<String>,
     pub request_id: Option<String>,
 }
 
 impl std::fmt::Display for AwsErrorMeta {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match (&self.code, &self.request_id) {
-            (Some(c), Some(r)) => write!(f, "{c} (request id {r})"),
-            (Some(c), None) => write!(f, "{c}"),
-            (None, Some(r)) => write!(f, "request id {r}"),
-            (None, None) => write!(f, "AWS error"),
+        let head = match (&self.code, &self.message) {
+            (Some(c), Some(m)) => format!("{c}: {m}"),
+            (Some(c), None) => c.clone(),
+            (None, Some(m)) => m.clone(),
+            (None, None) => "AWS error".to_string(),
+        };
+        match &self.request_id {
+            Some(r) => write!(f, "{head} (request id {r})"),
+            None => write!(f, "{head}"),
         }
     }
 }
@@ -1073,6 +1089,7 @@ where
         Err(e) => {
             let meta = AwsErrorMeta {
                 code: e.code().map(str::to_string),
+                message: e.message().map(str::to_string),
                 request_id: e.request_id().map(str::to_string),
             };
             Err(color_eyre::eyre::Report::new(e))
