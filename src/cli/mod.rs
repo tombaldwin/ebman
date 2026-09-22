@@ -476,44 +476,59 @@ mod write_gate_guard {
         // into `cli/mcp/tests/` it started reporting fixtures as
         // offenders. `is_test_path` is where that question is answered
         // once for every guard.
+        let mut scanned = 0usize;
         for (path, text) in crate::app::tests::scan::source_files() {
-            {
-                if !path.starts_with("src/cli") {
-                    continue;
-                }
-                if crate::app::tests::scan::is_test_path(&path) {
-                    continue;
-                }
-                // `mod.rs` defines the shared gate; it is allowed to
-                // reach the safety config because it IS the composition.
-                if std::path::Path::new(&path)
-                    .file_name()
-                    .and_then(|f| f.to_str())
-                    == Some("mod.rs")
-                {
-                    continue;
-                }
-                // Stop at the inline test module — fixtures legitimately
-                // exercise `pin_reason` directly.
-                let prod = crate::app::tests::scan::production_half(&text);
-                for (n, line) in prod.lines().enumerate() {
-                    let code = crate::app::tests::scan::strip_line_comment(line);
-                    // Widened when `pin_reason` was folded into
-                    // `write_gate::decide`. The old form scanned for a
-                    // single method name, which would have become
-                    // decorative the moment that method was deleted —
-                    // a guard that cannot fire reads as coverage.
-                    //
-                    // These are what a CLI write path must not touch:
-                    // the raw pin maps, or the decision function
-                    // directly (which would skip this module's wording
-                    // and its freeze composition).
-                    if reaches_past_the_gate(code) {
-                        offenders.push(format!("{path}:{}", n + 1));
-                    }
+            if !path.starts_with("src/cli") {
+                continue;
+            }
+            if crate::app::tests::scan::is_test_path(&path) {
+                continue;
+            }
+            scanned += 1;
+            // THIS file defines the shared gate; it is allowed to
+            // reach the safety config because it IS the composition.
+            //
+            // Exactly this file. The exemption used to be any
+            // `mod.rs`, which is broader than the sentence above and
+            // silently excused all 1,715 lines of `cli/mcp/mod.rs` —
+            // CLI-write-adjacent code, and the largest single file the
+            // guard covers. Clean today; exempted for no stated
+            // reason.
+            if path == "src/cli/mod.rs" {
+                continue;
+            }
+            // Stop at the inline test module — fixtures legitimately
+            // exercise `pin_reason` directly.
+            let prod = crate::app::tests::scan::production_half(&text);
+            for (n, line) in prod.lines().enumerate() {
+                let code = crate::app::tests::scan::strip_line_comment(line);
+                // Widened when `pin_reason` was folded into
+                // `write_gate::decide`. The old form scanned for a
+                // single method name, which would have become
+                // decorative the moment that method was deleted —
+                // a guard that cannot fire reads as coverage.
+                //
+                // These are what a CLI write path must not touch:
+                // the raw pin maps, or the decision function
+                // directly (which would skip this module's wording
+                // and its freeze composition).
+                if reaches_past_the_gate(code) {
+                    offenders.push(format!("{path}:{}", n + 1));
                 }
             }
         }
+        // A floor, because filtering a list has no bottom of its own.
+        // The hand-rolled walk this replaced opened with
+        // `read_dir("src/cli").expect(..)` and PANICKED if the tree
+        // moved; a filter that matches nothing just leaves `offenders`
+        // empty and reports clean. That is the wrong failure for a
+        // guard whose whole job is stopping a CLI write path from
+        // bypassing `write_refusal`.
+        assert!(
+            scanned > 10,
+            "only {scanned} CLI sources scanned — the filter has stopped \
+             matching and this guard is passing over nothing"
+        );
         assert!(
             offenders.is_empty(),
             "these CLI paths reach the safety config directly instead of going \
