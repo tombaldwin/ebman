@@ -15,11 +15,12 @@
 //! - `append_dlq_op` — one-shot DLQ ops (delete / resend / purge /
 //!   replay), recorded at fire time.
 //!
-//! Plus `append_raw` — the lower-level "I already have a detail
-//! string" entry point. As of 0.24 the hand-rolled `append_raw` action
-//! sites have all moved to the typed siblings above; the only remaining
-//! caller is the passive `stage=event kind=red_transition` health-log
-//! line, which is genuinely an event, not an action.
+//! - `append_red_transition` — the one passive line, a health
+//!   observation rather than an action.
+//!
+//! There is no "I already have a detail string" entry point. There was
+//! (`append_raw`), its rustdoc made escaping the caller's job, and its
+//! last caller did not escape a thing.
 //!
 //! All paths funnel into the same private `write_audit_line`
 //! helper (or its `_raw` sibling) so file rotation + webhook
@@ -975,14 +976,40 @@ pub(crate) fn build_webhook_body(
     )
 }
 
-/// Append a raw audit-log line with a caller-built `detail` string.
-/// Used by sites that emit non-action lines (red-transition events,
-/// notifications, etc.) where the typed `append_action_*` APIs
-/// don't fit. The `detail` string is appended verbatim after the
-/// `account/profile/region` opener — caller is responsible for the
-/// `key=value` shape + escaping.
-pub(crate) fn append_raw(account: Option<&str>, profile: Option<&str>, region: &str, detail: &str) {
-    write_audit_line(account, profile, region, detail);
+/// Append a `stage=event kind=red_transition` line — an environment
+/// observed crossing into Red by the background refresh. Passive: an
+/// observation, not an action, which is why it carries no `action=`
+/// and has no dispatched/completed pair.
+///
+/// This was the last `append_raw` caller, and `append_raw` asked the
+/// caller to own "the `key=value` shape + escaping" in its own
+/// rustdoc. The caller owned neither: it interpolated the env name,
+/// the APPLICATION name and the health string raw. EB application
+/// names are far looser than env names, and `parse_audit_line` reads
+/// an embedded newline as a new, replayable entry — so the field with
+/// the widest charset on the line was the unescaped one.
+///
+/// Typed rather than "pass a built string" precisely so there is no
+/// second way to reach the log. `append_raw` existed to be that second
+/// way.
+pub(crate) fn append_red_transition(
+    account: Option<&str>,
+    profile: Option<&str>,
+    region: &str,
+    env: &str,
+    application: &str,
+    health: &str,
+) {
+    let detail = detail_from(
+        "event",
+        &[
+            ("kind", Field::Token("red_transition")),
+            ("env", Field::Text(env)),
+            ("application", Field::Text(application)),
+            ("health", Field::Text(health)),
+        ],
+    );
+    write_audit_line(account, profile, region, &detail);
 }
 
 fn write_audit_line(account: Option<&str>, profile: Option<&str>, region: &str, detail: &str) {
@@ -1596,6 +1623,56 @@ mod tests {
         );
     }
 
+    /// No audit writer accepts a pre-built line.
+    ///
+    /// The sibling guard above says that inside this module only
+    /// `detail_from` builds a `stage=` string. That was never the whole
+    /// property, and the commit that introduced it claimed it was: a
+    /// writer taking `detail: &str` moves the line-building OUT of this
+    /// file, where no scan of `audit.rs` can see it.
+    ///
+    /// `append_raw` was exactly that door. Its own rustdoc handed the
+    /// caller responsibility for "the `key=value` shape + escaping",
+    /// and its one caller — the red-transition health line — escaped
+    /// nothing, interpolating an EB application name (the loosest
+    /// charset on the line) straight into the wire.
+    ///
+    /// Scanning the tree for `stage=` instead would not work: the
+    /// replay READER names stages in its error messages
+    /// (`cli/audit_replay.rs`), so the string is not the signal. The
+    /// parameter is.
+    #[test]
+    fn no_audit_writer_accepts_a_prebuilt_line() {
+        let src = include_str!("audit.rs");
+        let prod = crate::app::tests::scan::production_half(src);
+        let code: String = prod
+            .lines()
+            .map(crate::app::tests::scan::strip_line_comment)
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let mut offenders = Vec::new();
+        for (i, _) in code.match_indices("pub(crate) fn append_") {
+            let sig_end = code[i..].find(") {").map_or(code.len(), |n| i + n);
+            let sig = &code[i..sig_end];
+            if sig.contains("detail: &str") {
+                let name: String = code[i + "pub(crate) fn ".len()..]
+                    .chars()
+                    .take_while(|c| c.is_alphanumeric() || *c == '_')
+                    .collect();
+                offenders.push(name);
+            }
+        }
+
+        assert!(
+            offenders.is_empty(),
+            "{offenders:?} take a caller-built detail string, which puts the \
+             line-building outside this file and outside every guard in it — \
+             the shape `append_raw` had when its only caller shipped three \
+             unescaped fields. Take typed `Field`s instead."
+        );
+    }
+
     #[test]
     fn pinned_fields_stay_quoted_even_when_the_value_is_one_token() {
         // `value=Rolling`, `value=360`, `reason=vanished`, `err=timeout`
@@ -1763,6 +1840,21 @@ mod tests {
             FORGE,
             FORGE,
         );
+        // `asked` and the red-transition event. The comment above says
+        // EVERY writer and this guard has now twice been the thing that
+        // proved a hand-maintained enumeration cannot hold the word: it
+        // drove three of eight, was widened, and still missed `asked` —
+        // whose `answer` and `action` are both operator-adjacent.
+        super::append_action_asked(
+            Some(FORGE),
+            Some(FORGE),
+            FORGE,
+            "Terminate",
+            FORGE,
+            FORGE,
+            12,
+        );
+        super::append_red_transition(Some(FORGE), Some(FORGE), FORGE, FORGE, FORGE, FORGE);
 
         let body = std::fs::read_to_string(&path).expect("audit log written");
         let mut ours = 0usize;
