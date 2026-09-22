@@ -614,7 +614,38 @@ From the software-architect pass. Reviewed after each stage, as asked.
    `src/app/tests/` precedent. `mod.rs`, `writes.rs`, `tools.rs` only —
    explicitly not a repo-wide sweep. Each self-scanning guard must be
    re-pointed at the `scan.rs` helpers and re-proven with a planted
-   violation. **In progress.**
+   violation. **Done, reviewed.**
+
+   Production halves: `mod.rs` 5,841 -> 1,715, `writes.rs`
+   4,305 -> 2,652, `tools.rs` 2,759 -> 1,862, with the 168 MCP test
+   names byte-identical across all three moves.
+
+   Two parenting strategies, because one does not fit both: `mod.rs`'s
+   tests keep their path exactly (`mcp::tests`), while `writes.rs`'s
+   and `tools.rs`'s stay CHILDREN of their parents via `#[path]` —
+   re-parenting them compiled and then failed on visibility, and the
+   only way through would have been `pub(crate)` on a dozen private
+   items of the module that owns the write gate.
+
+   **What it found, which is the point:**
+
+   - `a_resend_sends_before_it_deletes` had been asserting on its own
+     source since a rename in `beae2bd`. The `.expect()` that should
+     have caught it was satisfied by the guard's own literal, sitting
+     in the file it read. Its `send < del` also compared `Option`s,
+     where `None < Some(_)` — a missing send SATISFIED the ordering
+     check.
+   - `production_half` was deleting 27 lines of `src/aws.rs`,
+     including `pub(crate) struct AwsErrorMeta`, because an
+     out-of-line `mod tests;` has no body to skip past. A scan helper
+     reporting clean over code it never saw.
+   - The write-gate guard could pass over zero files, and its
+     "`mod.rs` is the gate" exemption silently excused all 1,715 lines
+     of `cli/mcp/mod.rs`.
+
+   Three of these predate the refactor by months. The relocation did
+   not cause them; it is what made them visible, which is the argument
+   for doing this kind of move at all.
 
 ### Also open
 
