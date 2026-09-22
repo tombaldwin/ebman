@@ -94,14 +94,15 @@ The loop itself is `App::run`: it selects over terminal input, the `AppMsg`
 channel, and timers, mutates `App`, and redraws. AWS work never blocks it —
 every call is a spawned task that reports back as an `AppMsg`.
 
-## The six rules
+## The seven rules
 
 The compiler won't catch you breaking these, so each has something else
 behind it. Rule 1 is enforced by the type system — the story of how that came
-about is in `src/app/view_state.rs`. Rules 2, 3, 4 and 5 each have a test that
-walks the tree (`every_spawn_declares_whether_it_is_per_env`,
-`generation_guard.rs`, `key_arm_order.rs`, `no_tui_stdout.rs`). Five of the
-six have bitten — and rule 6 has bitten more often than any of them.
+about is in `src/app/view_state.rs`. Rules 2, 3, 4, 5 and 7 each have a test
+that walks the tree (`every_spawn_declares_whether_it_is_per_env`,
+`generation_guard.rs`, `key_arm_order.rs`, `no_tui_stdout.rs`,
+`every_sdk_call_that_propagates_goes_through_aws_ctx`). Every one of them has
+bitten — and rule 6 has bitten more often than any of them.
 
 Rule 6 is the odd one: it has no single guard, because what it forbids is
 shaped differently at every surface. It is stated here so the next
@@ -169,9 +170,15 @@ This one is checked by
 the tree with `syn` and compares arm positions *within each `match`*. It parses
 rather than greps for a reason: judging order means knowing which `match` an
 arm belongs to. A line-level scan can't tell, and the one written first
-reported four violations in `input.rs`, every one of them false. Six
-characters currently carry both forms (`r g y ] [ k`), so the rule has real
-surface to police.
+reported four violations in `input.rs`, every one of them false.
+
+It scans both keymap files (`app/input.rs`, `app/mode_keys.rs`) and is the
+source of truth for how much surface the rule has. This paragraph used to
+name a count and a character list; both had rotted, and re-deriving them by
+hand produced three different answers depending on whether "carries both
+forms" meant any guard or a modifier guard, and whether the two arms had to
+be in the same `match`. That ambiguity is the reason the rule needs a parser
+rather than a sentence — so the sentence no longer tries.
 
 **5. Never print to stdout from the running app.**
 The alternate screen swallows `println!`/`eprintln!` and they corrupt the
@@ -262,6 +269,29 @@ So when adding a result shape, ask what it cannot see and give that a field.
 Absence is not nothing; it is a claim, and an unstated claim is the one that
 gets believed.
 
+**7. An SDK call is finished with `aws_ctx`, never a bare `?`.**
+`SdkError`'s `Display` for a modelled service failure is the literal string
+`service error`. A call ending in `?` or `wrap_err` therefore propagates the
+operation name and discards the service's own sentence — the one naming which
+permission is missing. `.aws_ctx("Op failed")?` pulls the code, message and
+request id off the typed error before it is erased into `dyn Error`.
+
+The interesting part is why 78 of 80 call sites got it wrong. Not
+carelessness at 78 separate moments: the lossy form was *shorter*. Wrapping
+the call in `wrap_aws(...)` meant editing both ends of an expression, and
+`.wrap_err("Op failed")?` read as though it did the same job. A convention
+that costs more keystrokes than the mistake it prevents will lose every time,
+however well documented — so the fix was a postfix trait, not a rule. `aws_ctx`
+is now the shortest way to finish the call.
+
+Checked by `every_sdk_call_that_propagates_goes_through_aws_ctx`. It is
+deliberately not an allowlist: the rule is expressed in terms of what the code
+does, so the legitimate shapes fall out of it rather than being named — a
+discarded result has no `?`, a stored future has no `.await` in its statement,
+and `ssm`'s deliberate `as_service_error()` inspection never becomes a
+`Report`. Each of those would otherwise have needed a name on a list, and a
+list is what turns "the guard fired" into "add the name".
+
 ## Writes and safety
 
 The **decision** is one function; the **wording** is not. That split is
@@ -317,9 +347,28 @@ what finally fires them.
 
 ## Testing
 
-Tests live beside the code in `#[cfg(test)] mod tests` blocks; `app`'s are in
+Tests live beside the code in `#[cfg(test)] mod tests` blocks. Two modules
+carry enough of them to need their own directory: `app`'s are in
 [`src/app/tests/`](src/app/tests/), one module per surface, with the shared
-fixtures in [`support.rs`](src/app/tests/support.rs). AWS is stubbed via
+fixtures in [`support.rs`](src/app/tests/support.rs); the MCP server's are in
+[`src/cli/mcp/tests.rs`](src/cli/mcp/tests.rs) and
+[`src/cli/mcp/tests/`](src/cli/mcp/tests/).
+
+The MCP ones are attached two different ways, and the difference is
+load-bearing. `mod.rs`'s tests are a plain `mod tests;` at the same path the
+inline module had. `writes.rs`'s and `tools.rs`'s use `#[path]` so they stay
+*children* of the module they test — they reach private items (`WriteVerb`,
+`CONFIRM_TOOL`, `CONFIRM_TTL_SECS`), and re-parenting them would have meant
+widening a dozen items to `pub(crate)` to pay for a file move.
+
+A source-scanning guard must therefore locate its subject with
+`scan::production_source`, never `include_str!`. `include_str!` resolves
+relative to the file that writes it, so moving a test re-points every guard
+inside it — silently, when the new directory holds a file of the same name.
+That is not hypothetical: one guard in `cli/mcp/writes.rs` spent months
+asserting on its own source after a rename, because the stale symbol it
+searched for was still present in the file it was reading — in the line doing
+the search. AWS is stubbed via
 `AwsClient::stub()`, and `App::for_tests` builds an `App` without touching the
 network or the filesystem. Pure logic — parsers, formatters, the sorting and
 diffing helpers — is deliberately extracted out of UI and event handlers so it
