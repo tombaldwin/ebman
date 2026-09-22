@@ -118,6 +118,37 @@ pub(crate) fn find_in_production(needle: &str) -> Vec<String> {
     hits
 }
 
+/// The production half of ONE source file, located by path suffix from
+/// the crate root.
+///
+/// `include_str!` resolves relative to the file that writes it, so
+/// moving a test re-points every guard inside it — and re-points them
+/// SILENTLY when the new directory happens to contain a file of the
+/// same name. `include_str!("writes.rs")` from `cli/mcp/tests/writes.rs`
+/// reads the test file itself, and the guard then scans its own source
+/// and passes. A path that stops existing fails loudly; a path that
+/// resolves to the wrong file does not.
+///
+/// Locating from the root instead means the subject cannot move out
+/// from under a guard, and an ambiguous or missing name is an assertion
+/// rather than a wrong answer. Test sources are excluded, so a guard
+/// can never end up reading itself.
+pub(crate) fn production_source(suffix: &str) -> String {
+    let hits: Vec<(String, String)> = source_files()
+        .into_iter()
+        .filter(|(p, _)| !is_test_path(p) && p.ends_with(suffix))
+        .collect();
+    assert_eq!(
+        hits.len(),
+        1,
+        "`{suffix}` names {} production files ({:?}) — a guard must name exactly one \
+         subject, so qualify the suffix with enough of its directory to be unique",
+        hits.len(),
+        hits.iter().map(|(p, _)| p).collect::<Vec<_>>()
+    );
+    production_half(&hits[0].1)
+}
+
 /// Is this path test-only source? Kept beside the scan so every guard
 /// agrees on the answer.
 pub(crate) fn is_test_path(path: &str) -> bool {
@@ -424,6 +455,44 @@ pub(crate) fn production_half(src: &str) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod production_source_tests {
+    use super::*;
+
+    /// The helper must read the PRODUCTION file, not a same-named test
+    /// file — the failure it exists to prevent.
+    #[test]
+    fn locates_production_not_the_same_named_test_file() {
+        // `cli/mcp/writes.rs` and `cli/mcp/tests/writes.rs` both end
+        // with `writes.rs`; only one of them is the subject.
+        let src = production_source("cli/mcp/writes.rs");
+        assert!(
+            src.contains("pub(super) enum WriteVerb"),
+            "production writes.rs must carry the write verbs"
+        );
+        assert!(
+            !src.contains("#[test]"),
+            "the production half must not be the test file"
+        );
+    }
+
+    /// An ambiguous name is an assertion, not a coin flip over which
+    /// file a guard ends up scanning.
+    #[test]
+    #[should_panic(expected = "a guard must name exactly one subject")]
+    fn an_ambiguous_suffix_panics() {
+        // Two production `mod.rs` under `src/` is the common case; pick
+        // a suffix that cannot be unique.
+        let _ = production_source("mod.rs");
+    }
+
+    #[test]
+    #[should_panic(expected = "names 0 production files")]
+    fn a_missing_subject_panics() {
+        let _ = production_source("no-such-file-anywhere.rs");
+    }
 }
 
 #[cfg(test)]

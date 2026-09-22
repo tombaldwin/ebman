@@ -470,23 +470,29 @@ mod write_gate_guard {
     #[test]
     fn cli_write_paths_do_not_reach_past_the_shared_gate() {
         let mut offenders: Vec<String> = Vec::new();
-        let mut stack = vec![std::path::PathBuf::from("src/cli")];
-        while let Some(dir) = stack.pop() {
-            for entry in std::fs::read_dir(&dir).expect("src/cli") {
-                let path = entry.expect("entry").path();
-                if path.is_dir() {
-                    stack.push(path);
+        // Through `scan::source_files`, not a hand-rolled walk. This
+        // one skipped inline test modules via `production_half` but had
+        // no notion of a test FILE, so the moment the mcp tests moved
+        // into `cli/mcp/tests/` it started reporting fixtures as
+        // offenders. `is_test_path` is where that question is answered
+        // once for every guard.
+        for (path, text) in crate::app::tests::scan::source_files() {
+            {
+                if !path.starts_with("src/cli") {
                     continue;
                 }
-                if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                if crate::app::tests::scan::is_test_path(&path) {
                     continue;
                 }
                 // `mod.rs` defines the shared gate; it is allowed to
                 // reach the safety config because it IS the composition.
-                if path.file_name().and_then(|f| f.to_str()) == Some("mod.rs") {
+                if std::path::Path::new(&path)
+                    .file_name()
+                    .and_then(|f| f.to_str())
+                    == Some("mod.rs")
+                {
                     continue;
                 }
-                let text = std::fs::read_to_string(&path).expect("read");
                 // Stop at the inline test module — fixtures legitimately
                 // exercise `pin_reason` directly.
                 let prod = crate::app::tests::scan::production_half(&text);
@@ -503,7 +509,7 @@ mod write_gate_guard {
                     // directly (which would skip this module's wording
                     // and its freeze composition).
                     if reaches_past_the_gate(code) {
-                        offenders.push(format!("{}:{}", path.display(), n + 1));
+                        offenders.push(format!("{path}:{}", n + 1));
                     }
                 }
             }
