@@ -1390,8 +1390,16 @@ async fn demo_mode_refuses_without_writing_an_audit_line() {
 
     let after = std::fs::read_to_string(&path).unwrap_or_default();
     let delta = after.strip_prefix(&before).unwrap_or(&after);
+    // Matched as a whole FIELD, not a substring. `mcp-demo-refusal-probe-env`
+    // in src/cli/mcp/writes.rs contains this test's env name, so a
+    // bare `contains` failed whenever that test wrote first — a
+    // cross-test false failure that looked exactly like demo mode
+    // leaking an audit line, which is the one thing this asserts.
+    let needle = format!("target={env_name}");
     assert!(
-        !delta.contains(env_name),
+        !delta
+            .split_whitespace()
+            .any(|tok| tok == needle || tok == format!("target=\"{env_name}\"")),
         "demo mode writes NO audit lines: {delta}"
     );
 }
