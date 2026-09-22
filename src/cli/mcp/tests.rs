@@ -2802,7 +2802,8 @@ fn only_the_call_that_asks_a_human_gets_a_humans_budget() {
 /// `the_extracted_gates_are_wired_into_run`.
 #[test]
 fn the_frame_loop_times_calls_by_the_computed_budget() {
-    let src = include_str!("mod.rs");
+    let src = crate::app::tests::scan::production_source("cli/mcp/mod.rs");
+    let src = src.as_str();
     let prod = crate::app::tests::scan::production_half(src);
     let call = prod
         .split("let outcome = tokio::time::timeout(")
@@ -3137,7 +3138,8 @@ async fn an_unclaimed_reply_would_be_answered_as_a_bad_method() {
 /// ...and that the source actually intercepts before dispatching.
 #[test]
 fn take_ask_reply_precedes_the_dispatch() {
-    let src = include_str!("mod.rs");
+    let src = crate::app::tests::scan::production_source("cli/mcp/mod.rs");
+    let src = src.as_str();
     let body = crate::app::tests::scan::production_half(src);
     let claim = body
         .find("if server.take_ask_reply(&req)")
@@ -3774,7 +3776,8 @@ async fn a_timed_out_ask_tells_the_client_to_withdraw_it() {
 /// not exist. JSON-RPC says a response is not answered at all.
 #[test]
 fn a_reply_to_a_forgotten_ask_is_dropped_not_answered() {
-    let src = include_str!("mod.rs");
+    let src = crate::app::tests::scan::production_source("cli/mcp/mod.rs");
+    let src = src.as_str();
     let body = crate::app::tests::scan::production_half(src);
     let claim = body
         .find("if server.take_ask_reply(&req)")
@@ -3904,7 +3907,8 @@ fn the_ask_audit_vocabulary_is_stable_and_excludes_the_unasked() {
 /// The unasked case must not produce a line claiming a question.
 #[test]
 fn a_connection_that_was_never_asked_writes_no_ask_line() {
-    let src = include_str!("writes.rs");
+    let src = crate::app::tests::scan::production_source("cli/mcp/writes.rs");
+    let src = src.as_str();
     let body = crate::app::tests::scan::production_half(src);
     let call = body
         .find("append_action_asked")
@@ -4022,7 +4026,8 @@ async fn terminate_and_purge_require_the_operator_to_type_the_name() {
 /// Only the two destructive-and-irreversible verbs demand it.
 #[test]
 fn the_typed_confirm_is_scoped_to_terminate_and_purge() {
-    let src = include_str!("writes.rs");
+    let src = crate::app::tests::scan::production_source("cli/mcp/writes.rs");
+    let src = src.as_str();
     let body = crate::app::tests::scan::production_half(src);
     let arm = body
         .find("WriteVerb::Terminate | WriteVerb::DlqPurge => Some(pending.env.as_str())")
