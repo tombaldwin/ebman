@@ -430,26 +430,74 @@ mod write_gate_convergence {
 /// Test modules are excised wherever they appear and the remainder is
 /// joined.
 pub(crate) fn production_half(src: &str) -> String {
+    /// Is this line a top-level `mod` declaration? Accepts the
+    /// visibility forms that actually occur (`pub(crate) mod tests;`
+    /// in `app.rs`), because missing one leaks the declaration into
+    /// the production half — or worse, see below.
+    fn mod_decl(line: &str) -> Option<&str> {
+        let rest = line
+            .strip_prefix("pub(crate) ")
+            .or_else(|| line.strip_prefix("pub(super) "))
+            .or_else(|| line.strip_prefix("pub "))
+            .unwrap_or(line);
+        rest.starts_with("mod ").then_some(rest)
+    }
+
+    let lines: Vec<&str> = src.lines().collect();
     let mut out = String::with_capacity(src.len());
-    let mut lines = src.lines().peekable();
-    while let Some(line) = lines.next() {
+    let mut i = 0;
+    while i < lines.len() {
         // A top-level test MODULE, which rustfmt guarantees sits at
         // column 0. An inline `#[cfg(test)]` item is one declaration
         // and stays in view — treating it as a boundary is the bug
         // this function exists to remove.
-        let opens_test_mod = line.trim_end() == "#[cfg(test)]"
-            && lines.peek().is_some_and(|n| n.starts_with("mod "));
-        if !opens_test_mod {
-            out.push_str(line);
+        if lines[i].trim_end() != "#[cfg(test)]" {
+            out.push_str(lines[i]);
             out.push('\n');
+            i += 1;
             continue;
         }
-        // Skip to the module's closing brace: column 0, because the
-        // module is at column 0. Brace COUNTING was tried and is
-        // wrong — a `{` inside a format string unbalances it, and this
-        // codebase is full of `"{{\"pending\":true"`-shaped literals.
-        for body in lines.by_ref() {
-            if body == "}" {
+        // `#[path = "..."]` may sit between the attribute and the
+        // `mod`, which is how the relocated mcp tests are spelled.
+        let mut j = i + 1;
+        if lines
+            .get(j)
+            .is_some_and(|l| l.trim_start().starts_with("#[path"))
+        {
+            j += 1;
+        }
+        let Some(decl) = lines.get(j).and_then(|l| mod_decl(l)) else {
+            out.push_str(lines[i]);
+            out.push('\n');
+            i += 1;
+            continue;
+        };
+        if decl.trim_end().ends_with(';') {
+            // OUT-OF-LINE: `mod tests;`. There is no body here, so
+            // there is nothing to skip past — and skipping to the next
+            // column-0 `}` eats whatever production code follows.
+            //
+            // It did. `src/aws.rs` declares its tests mid-file, and
+            // this function was silently deleting the 27 lines after
+            // it — including the whole `pub(crate) struct
+            // AwsErrorMeta`. Every guard reading that production half
+            // was blind to a public type, and would have passed over a
+            // violation inside it. The three other files with this
+            // spelling happen to sit at EOF, which is the only reason
+            // it cost nothing there.
+            i = j + 1;
+            continue;
+        }
+        // INLINE: skip to the module's closing brace at column 0,
+        // because the module is at column 0. Brace COUNTING was tried
+        // and is wrong — a `{` inside a format string unbalances it,
+        // and this codebase is full of `"{{\"pending\":true"`-shaped
+        // literals.
+        i = j + 1;
+        while i < lines.len() {
+            let closes = lines[i] == "}";
+            i += 1;
+            if closes {
                 break;
             }
         }
@@ -497,6 +545,62 @@ mod production_source_tests {
 
 #[cfg(test)]
 mod production_half_tests {
+
+    /// An OUT-OF-LINE test module declaration has no body here, so
+    /// nothing after it may be dropped.
+    ///
+    /// This was live: `src/aws.rs` declares `mod tests;` mid-file and
+    /// the old implementation skipped to the next column-0 `}`,
+    /// deleting 27 lines of production code including a public struct.
+    #[test]
+    fn an_out_of_line_test_module_does_not_eat_what_follows() {
+        let src = "fn before() {\n}\n\n#[cfg(test)]\nmod tests;\n\n\
+                   pub(crate) struct KeepMe {\n    pub a: u8,\n}\n";
+        let prod = super::production_half(src);
+        assert!(prod.contains("fn before()"), "{prod}");
+        assert!(
+            prod.contains("pub(crate) struct KeepMe"),
+            "everything after an out-of-line declaration is production: {prod}"
+        );
+        assert!(!prod.contains("mod tests;"), "the declaration goes: {prod}");
+    }
+
+    /// The real file the bug was found in, so the case cannot drift
+    /// away from its subject.
+    #[test]
+    fn aws_rs_keeps_the_type_declared_after_its_test_module() {
+        let prod = super::production_source("aws.rs");
+        assert!(
+            prod.contains("pub(crate) struct AwsErrorMeta"),
+            "`AwsErrorMeta` is declared after `mod tests;` in aws.rs and must \
+             survive the split"
+        );
+    }
+
+    /// The `#[path]` spelling the relocated mcp tests use is a test
+    /// module too, and must be excised rather than left in the
+    /// production half.
+    #[test]
+    fn a_path_attributed_test_module_is_excised() {
+        let src = "fn before() {\n}\n\n#[cfg(test)]\n#[path = \"tests/x.rs\"]\nmod tests;\n\n\
+                   fn after() {\n}\n";
+        let prod = super::production_half(src);
+        assert!(prod.contains("fn before()"));
+        assert!(prod.contains("fn after()"), "{prod}");
+        assert!(!prod.contains("#[path"), "the declaration goes: {prod}");
+        assert!(!prod.contains("mod tests;"), "{prod}");
+    }
+
+    /// A `pub(crate) mod tests;` — the spelling `app.rs` uses — is
+    /// still a test module.
+    #[test]
+    fn a_visibility_qualified_test_module_is_excised() {
+        let src = "fn before() {\n}\n\n#[cfg(test)]\npub(crate) mod tests;\n\nfn after() {\n}\n";
+        let prod = super::production_half(src);
+        assert!(prod.contains("fn after()"), "{prod}");
+        assert!(!prod.contains("mod tests;"), "{prod}");
+    }
+
     /// The splitter six guards hand-rolled, and the blind spot they
     /// all shared.
     ///
