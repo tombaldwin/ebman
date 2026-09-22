@@ -38,6 +38,24 @@ Tier definitions:
 
 #### Tier 0 — fixture hygiene (2026-09-16)
 
+- [ ] **Move the last 13 `include_str!` guards onto
+  `scan::production_source`.** Not a defect today — each crosses a
+  directory boundary explicitly, so none can resolve to its own file
+  the way `cli/mcp` ones did. Two latent properties remain: they
+  re-point silently if the test file moves, and they read the target
+  RAW, so a "this appears nowhere" check also searches the target's
+  test module and can be satisfied by a fixture.
+
+  `src/app/tests/parsing.rs:377-382, 400`;
+  `src/app/tests/lint.rs:155-157`; `src/terraform.rs:1150-1152`;
+  `src/commands.rs:1063, 1129, 1198`.
+
+  Scoped out of the 2026-09-22 relocation on purpose — the architect's
+  brief was the three mcp files, not a repo-wide sweep — and each
+  conversion needs its guard re-proven against a planted violation,
+  which is the actual cost. Recorded as its own item rather than a
+  sentence inside a finished one.
+
 - [ ] **A test that fails the build when a fixture looks real.** `cargo
   package` ships everything git tracks bar `exclude`, so every dedicated
   test file — 21 under `src/app/tests/`, 3 under `src/cli/mcp/tests/`,
