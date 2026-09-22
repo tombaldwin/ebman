@@ -361,9 +361,28 @@ fn unparseable_source_is_loud() {
 /// The rule itself, against the real keymap.
 #[test]
 fn the_keymap_puts_guarded_key_arms_first() {
-    let src =
-        std::fs::read_to_string("src/app/input.rs").expect("the keymap lives at src/app/input.rs");
-    let (violations, both_forms) = shadowed_key_arms(&src);
+    // Every file the keymap lives in, not one hard-coded path.
+    //
+    // This read `src/app/input.rs` alone. Five modes already delegate
+    // to `mode_keys.rs`, and moving the last two there would have left
+    // this test passing while policing an emptier file — a guard clean
+    // against the violation it exists to stop, which this repo has
+    // shipped before. The tree-wide sweep below would still have
+    // caught a violation; what would have been lost silently is the
+    // NON-VACUITY check at the end, which is the half that notices the
+    // rule has gone quiet.
+    const KEYMAPS: [&str; 2] = ["src/app/input.rs", "src/app/mode_keys.rs"];
+    // Parsed per file and merged — concatenating two modules is not
+    // valid Rust and the parser rightly refuses it, which is the
+    // failure mode this guard's own panic exists to make loud.
+    let mut violations = Vec::new();
+    let mut both_forms = std::collections::BTreeSet::new();
+    for path in KEYMAPS {
+        let src = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{path}: {e}"));
+        let (v, f) = shadowed_key_arms(&src);
+        violations.extend(v);
+        both_forms.extend(f);
+    }
 
     assert!(
         violations.is_empty(),
@@ -373,7 +392,7 @@ fn the_keymap_puts_guarded_key_arms_first() {
         violations
             .iter()
             .map(|s| format!(
-                "'{}' unguarded at input.rs:{} shadows the guard at :{}",
+                "'{}' unguarded at keymap line {} shadows the guard at line {}",
                 s.ch, s.unguarded_line, s.guarded_line
             ))
             .collect::<Vec<_>>()
