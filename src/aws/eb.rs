@@ -834,7 +834,7 @@ impl AwsClient {
             if let Some(t) = next_token.take() {
                 req = req.next_token(t);
             }
-            let resp = req.send().await?;
+            let resp = req.send().await.aws_ctx("DescribeEvents failed")?;
             raw.extend(resp.events.unwrap_or_default());
             pages += 1;
             match next_page_step(resp.next_token, pages, max_pages) {
@@ -909,7 +909,7 @@ impl AwsClient {
             .environment_name(env_name)
             .send()
             .await
-            .wrap_err("DescribeEnvironmentResources failed")?;
+            .aws_ctx("DescribeEnvironmentResources failed")?;
         let res = resp
             .environment_resources
             .ok_or_else(|| eyre!("no environment_resources in response"))?;
@@ -992,6 +992,7 @@ impl AwsClient {
             .environment_name(env_name)
             .send()
             .await
+            .aws_ctx("DescribeEnvironmentResources failed")
         {
             Ok(resp) => {
                 if let Some(res) = resp.environment_resources {
@@ -1003,7 +1004,11 @@ impl AwsClient {
                     );
                 }
             }
-            Err(e) => discovery_err = Some(format!("DescribeEnvironmentResources: {e}")),
+            // `{e:#}` — eyre's alternate Display walks the chain, so
+            // the service's own sentence reaches the operator. `{e}`
+            // rendered the SdkError alone, which for a modelled
+            // failure is the literal "service error".
+            Err(e) => discovery_err = Some(format!("{e:#}")),
         }
 
         // Fallback / override: look at user-supplied option settings in case
@@ -1016,11 +1021,12 @@ impl AwsClient {
                 .environment_name(env_name)
                 .send()
                 .await
+                .aws_ctx("DescribeConfigurationSettings failed")
             {
                 Err(e) => {
                     // Record the fallback failure too — resolution
                     // below decides whether it matters.
-                    let msg = format!("DescribeConfigurationSettings: {e}");
+                    let msg = format!("{e:#}");
                     discovery_err = Some(match discovery_err.take() {
                         Some(prior) => format!("{prior} + {msg}"),
                         None => msg,
@@ -1134,7 +1140,7 @@ impl AwsClient {
             .environment_name(env_name)
             .send()
             .await
-            .wrap_err("DescribeConfigurationSettings(env) failed")?;
+            .aws_ctx("DescribeConfigurationSettings(env) failed")?;
         let out = resp
             .configuration_settings
             .unwrap_or_default()
@@ -1168,7 +1174,7 @@ impl AwsClient {
             .environment_name(env_name)
             .send()
             .await
-            .wrap_err("DescribeConfigurationSettings(env) failed")?;
+            .aws_ctx("DescribeConfigurationSettings(env) failed")?;
         Ok(vpc_context_from_settings(
             resp.configuration_settings
                 .unwrap_or_default()
@@ -1204,7 +1210,7 @@ impl AwsClient {
             .environment_name(env_name)
             .send()
             .await
-            .wrap_err("DescribeConfigurationSettings(rds) failed")?;
+            .aws_ctx("DescribeConfigurationSettings(rds) failed")?;
         let mut out = settings_in_namespace(
             resp.configuration_settings
                 .unwrap_or_default()
@@ -1261,12 +1267,12 @@ impl AwsClient {
             async {
                 vocab_fut
                     .await
-                    .wrap_err("DescribeConfigurationOptions failed")
+                    .aws_ctx("DescribeConfigurationOptions failed")
             },
             async {
                 settings_fut
                     .await
-                    .wrap_err("DescribeConfigurationSettings(options) failed")
+                    .aws_ctx("DescribeConfigurationSettings(options) failed")
             },
         )?;
 
@@ -1347,7 +1353,7 @@ impl AwsClient {
             .environment_name(env_name)
             .send()
             .await
-            .wrap_err("DescribeConfigurationSettings(listeners) failed")?;
+            .aws_ctx("DescribeConfigurationSettings(listeners) failed")?;
         let mut out: Vec<(String, String, String)> = resp
             .configuration_settings
             .unwrap_or_default()
@@ -1386,7 +1392,7 @@ impl AwsClient {
             .environment_name(env_name)
             .send()
             .await
-            .wrap_err("DescribeConfigurationSettings(env) failed")?;
+            .aws_ctx("DescribeConfigurationSettings(env) failed")?;
         let mut out = settings_in_namespace(
             resp.configuration_settings
                 .unwrap_or_default()
@@ -1434,7 +1440,7 @@ impl AwsClient {
         }
         req.send()
             .await
-            .wrap_err("UpdateEnvironment(option_settings) failed")?;
+            .aws_ctx("UpdateEnvironment(option_settings) failed")?;
         Ok(())
     }
 
@@ -1444,7 +1450,8 @@ impl AwsClient {
             .list_tags_for_resource()
             .resource_arn(resource_arn)
             .send()
-            .await?;
+            .await
+            .aws_ctx("ListTagsForResource failed")?;
         let tags = tag_pairs(
             resp.resource_tags
                 .unwrap_or_default()
@@ -1474,7 +1481,7 @@ impl AwsClient {
         for k in to_remove {
             req = req.tags_to_remove(k);
         }
-        req.send().await?;
+        req.send().await.aws_ctx("UpdateTagsForResource failed")?;
         Ok(())
     }
 
@@ -1483,7 +1490,8 @@ impl AwsClient {
             .rebuild_environment()
             .environment_name(env_name)
             .send()
-            .await?;
+            .await
+            .aws_ctx("RebuildEnvironment failed")?;
         Ok(())
     }
 
@@ -1492,7 +1500,8 @@ impl AwsClient {
             .restart_app_server()
             .environment_name(env_name)
             .send()
-            .await?;
+            .await
+            .aws_ctx("RestartAppServer failed")?;
         Ok(())
     }
 
@@ -1502,7 +1511,8 @@ impl AwsClient {
             .source_environment_name(source)
             .destination_environment_name(dest)
             .send()
-            .await?;
+            .await
+            .aws_ctx("SwapEnvironmentCNAMEs failed")?;
         Ok(())
     }
 
@@ -1522,7 +1532,7 @@ impl AwsClient {
             .environment_id(source_env_name)
             .send()
             .await
-            .wrap_err("CreateConfigurationTemplate failed")?;
+            .aws_ctx("CreateConfigurationTemplate failed")?;
         Ok(())
     }
 
@@ -1539,7 +1549,7 @@ impl AwsClient {
             .template_name(template_name)
             .send()
             .await
-            .wrap_err("DeleteConfigurationTemplate failed")?;
+            .aws_ctx("DeleteConfigurationTemplate failed")?;
         Ok(())
     }
 
@@ -1559,7 +1569,7 @@ impl AwsClient {
             .environment_names(env_name)
             .send()
             .await
-            .wrap_err("DescribeEnvironments failed")?;
+            .aws_ctx("DescribeEnvironments failed")?;
         let env = desc
             .environments
             .unwrap_or_default()
@@ -1591,7 +1601,7 @@ impl AwsClient {
             if let Some(t) = token {
                 req = req.next_token(t);
             }
-            let resp = req.send().await.wrap_err("ListPlatformVersions failed")?;
+            let resp = req.send().await.aws_ctx("ListPlatformVersions failed")?;
             Ok((
                 resp.platform_summary_list.unwrap_or_default(),
                 resp.next_token,
@@ -1617,7 +1627,7 @@ impl AwsClient {
             .platform_arn(platform_arn)
             .send()
             .await
-            .wrap_err("UpdateEnvironment(platform_arn) failed")?;
+            .aws_ctx("UpdateEnvironment(platform_arn) failed")?;
         Ok(())
     }
 
@@ -1637,7 +1647,7 @@ impl AwsClient {
             .environment_names(source_env_name)
             .send()
             .await
-            .wrap_err("DescribeEnvironments failed")?;
+            .aws_ctx("DescribeEnvironments failed")?;
         let env = desc
             .environments
             .unwrap_or_default()
@@ -1664,7 +1674,7 @@ impl AwsClient {
             .environment_id(&env_id)
             .send()
             .await
-            .wrap_err("CreateConfigurationTemplate failed")?;
+            .aws_ctx("CreateConfigurationTemplate failed")?;
         // Best-effort cleanup even if create_environment fails — we don't
         // want to leave debris.
         let create_result = self
@@ -1682,7 +1692,7 @@ impl AwsClient {
             .template_name(&template)
             .send()
             .await;
-        create_result.wrap_err("CreateEnvironment failed")?;
+        create_result.aws_ctx("CreateEnvironment failed")?;
         Ok(())
     }
 
@@ -1710,7 +1720,7 @@ impl AwsClient {
             .set_option_settings(Some(opts))
             .send()
             .await
-            .wrap_err("UpdateEnvironment(asg) failed")?;
+            .aws_ctx("UpdateEnvironment(asg) failed")?;
         Ok(())
     }
 
@@ -1722,7 +1732,7 @@ impl AwsClient {
             .environment_name(env_name)
             .send()
             .await
-            .wrap_err("AbortEnvironmentUpdate failed")?;
+            .aws_ctx("AbortEnvironmentUpdate failed")?;
         Ok(())
     }
 
@@ -1743,7 +1753,7 @@ impl AwsClient {
             if let Some(t) = token {
                 req = req.next_token(t);
             }
-            let resp = req.send().await.wrap_err("ListPlatformVersions failed")?;
+            let resp = req.send().await.aws_ctx("ListPlatformVersions failed")?;
             Ok((
                 resp.platform_summary_list.unwrap_or_default(),
                 resp.next_token,
@@ -1773,7 +1783,7 @@ impl AwsClient {
                 .platform_arn(arn)
                 .send()
                 .await
-                .wrap_err("DescribePlatformVersion failed")?;
+                .aws_ctx("DescribePlatformVersion failed")?;
             if let Some(d) = resp
                 .platform_description
                 .and_then(|d| d.date_created)
@@ -1794,7 +1804,7 @@ impl AwsClient {
             .platform_arn(platform_arn)
             .send()
             .await
-            .wrap_err("DeletePlatformVersion failed")?;
+            .aws_ctx("DeletePlatformVersion failed")?;
         Ok(())
     }
 
@@ -1820,7 +1830,7 @@ impl AwsClient {
             let resp = req
                 .send()
                 .await
-                .wrap_err("DescribeApplicationVersions failed")?;
+                .aws_ctx("DescribeApplicationVersions failed")?;
             Ok((
                 resp.application_versions.unwrap_or_default(),
                 resp.next_token,
@@ -1862,7 +1872,7 @@ impl AwsClient {
             .delete_source_bundle(delete_source_bundle)
             .send()
             .await
-            .wrap_err("DeleteApplicationVersion failed")?;
+            .aws_ctx("DeleteApplicationVersion failed")?;
         Ok(())
     }
 
@@ -1878,7 +1888,7 @@ impl AwsClient {
             .create_storage_location()
             .send()
             .await
-            .wrap_err("CreateStorageLocation failed")?;
+            .aws_ctx("CreateStorageLocation failed")?;
         resp.s3_bucket
             .ok_or_else(|| eyre!("CreateStorageLocation returned no S3Bucket"))
     }
@@ -1911,7 +1921,7 @@ impl AwsClient {
         }
         req.send()
             .await
-            .wrap_err("CreateApplicationVersion failed")?;
+            .aws_ctx("CreateApplicationVersion failed")?;
         Ok(())
     }
 
@@ -1924,7 +1934,7 @@ impl AwsClient {
             .version_label(version_label)
             .send()
             .await
-            .wrap_err("UpdateEnvironment(version_label) failed")?;
+            .aws_ctx("UpdateEnvironment(version_label) failed")?;
         Ok(())
     }
 
@@ -1946,7 +1956,7 @@ impl AwsClient {
             .template_name(template_name)
             .send()
             .await
-            .wrap_err("DescribeConfigurationSettings(template) failed")?;
+            .aws_ctx("DescribeConfigurationSettings(template) failed")?;
         let mut out: Vec<(String, String, String)> = resp
             .configuration_settings
             .unwrap_or_default()
@@ -1978,7 +1988,7 @@ impl AwsClient {
             .template_name(template_name)
             .send()
             .await
-            .wrap_err("UpdateEnvironment(template_name) failed")?;
+            .aws_ctx("UpdateEnvironment(template_name) failed")?;
         Ok(())
     }
 
@@ -1987,7 +1997,8 @@ impl AwsClient {
             .terminate_environment()
             .environment_name(env_name)
             .send()
-            .await?;
+            .await
+            .aws_ctx("TerminateEnvironment failed")?;
         Ok(())
     }
 
@@ -2002,7 +2013,7 @@ impl AwsClient {
             .info_type(EnvironmentInfoType::Tail)
             .send()
             .await
-            .wrap_err("RequestEnvironmentInfo failed")?;
+            .aws_ctx("RequestEnvironmentInfo failed")?;
         Ok(())
     }
 
@@ -2021,7 +2032,7 @@ impl AwsClient {
             .info_type(EnvironmentInfoType::Tail)
             .send()
             .await
-            .wrap_err("RetrieveEnvironmentInfo failed")?;
+            .aws_ctx("RetrieveEnvironmentInfo failed")?;
         let mut out = Vec::new();
         for info in resp.environment_info.unwrap_or_default() {
             if let (Some(id), Some(url)) = (info.ec2_instance_id, info.message) {
@@ -2050,7 +2061,7 @@ impl AwsClient {
             )
             .send()
             .await
-            .wrap_err("DescribeEnvironmentHealth failed")?;
+            .aws_ctx("DescribeEnvironmentHealth failed")?;
         Ok(summarise_instance_health(resp.instances_health.as_ref()))
     }
 
@@ -2069,10 +2080,7 @@ impl AwsClient {
             if let Some(t) = token {
                 req = req.next_token(t);
             }
-            let resp = req
-                .send()
-                .await
-                .wrap_err("DescribeInstancesHealth failed")?;
+            let resp = req.send().await.aws_ctx("DescribeInstancesHealth failed")?;
             Ok((
                 resp.instance_health_list.unwrap_or_default(),
                 resp.next_token,
@@ -2101,7 +2109,12 @@ impl AwsClient {
     }
 
     pub(crate) async fn list_applications(&self) -> Result<Vec<Application>> {
-        let resp = self.client.describe_applications().send().await?;
+        let resp = self
+            .client
+            .describe_applications()
+            .send()
+            .await
+            .aws_ctx("DescribeApplications failed")?;
         let apps = resp
             .applications
             .unwrap_or_default()
@@ -2132,11 +2145,12 @@ impl AwsClient {
             if let Some(t) = token {
                 req = req.next_token(t);
             }
-            // Through `wrap_aws`, not bare `wrap_err`: this is the
-            // call whose failure arms the refresh back-off, so it is
-            // the one that most needs a real error code rather than a
-            // substring match on a `Debug` dump.
-            let resp = super::wrap_aws(req.send().await, "DescribeEnvironments failed")?;
+            // This is the call whose failure arms the refresh
+            // back-off, so a real error code rather than a substring
+            // match on a `Debug` dump matters most here. It was the
+            // only site that had one; the comment used to explain why
+            // it was special, and it no longer is.
+            let resp = req.send().await.aws_ctx("DescribeEnvironments failed")?;
             Ok((resp.environments.unwrap_or_default(), resp.next_token))
         })
         .await?
@@ -2172,7 +2186,7 @@ impl AwsClient {
             .list_available_solution_stacks()
             .send()
             .await
-            .wrap_err("ListAvailableSolutionStacks failed")?;
+            .aws_ctx("ListAvailableSolutionStacks failed")?;
         Ok(resp.solution_stacks.unwrap_or_default())
     }
 }

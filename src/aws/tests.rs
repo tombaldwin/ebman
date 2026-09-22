@@ -4770,3 +4770,158 @@ mod sqs_error_surfacing {
         assert!(flat.contains("The receipt handle has expired"), "{flat}");
     }
 }
+
+/// Every SDK call that propagates its failure goes through `aws_ctx`.
+///
+/// `SdkError`'s `Display` for a modelled service failure is the literal
+/// string **"service error"**. A call finished with a bare `?` or a
+/// plain `wrap_err` therefore reports the operation and throws away the
+/// service's own sentence — the one that says WHICH permission is
+/// missing, or WHY the receipt handle was rejected. Seventy-eight of
+/// eighty call sites did exactly that, each one individually
+/// reasonable-looking, because `.wrap_err("Op failed")?` is shorter
+/// than the correct form used to be.
+///
+/// That is why the fix was a postfix trait and not a rule: `aws_ctx` is
+/// now the *shortest* way to finish the call, and this test is what
+/// stops site eighty-one from finding a shorter wrong one.
+///
+/// **Deliberately not an allowlist.** The rule is stated in terms of
+/// what the code does, so the legitimate shapes fall out of it rather
+/// than being named:
+///
+/// - a discarded result (`let _ = … .send().await;`) has no `?`, so it
+///   carries nothing to an operator and is not matched;
+/// - a stored future (`… .send();`) has no `.await` in its statement
+///   and is checked where it is awaited;
+/// - a site that keeps the TYPED error on purpose — `ssm.rs` calls
+///   `as_service_error()` to tell `InvocationDoesNotExist` from a real
+///   permission failure — never converts to a `Report`, so it has no
+///   `?` here either.
+///
+/// Every one of those would have needed a name on a list, and a list is
+/// what turns "the guard fired" into "add the name".
+#[test]
+fn every_sdk_call_that_propagates_goes_through_aws_ctx() {
+    let mut offenders: Vec<String> = Vec::new();
+    let mut checked = 0usize;
+
+    for (path, text) in crate::app::tests::scan::source_files() {
+        if crate::app::tests::scan::is_test_path(&path) {
+            continue;
+        }
+        if !(path == "src/aws.rs" || path.starts_with("src/aws/")) {
+            continue;
+        }
+        let prod = crate::app::tests::scan::production_half(&text);
+        let lines: Vec<&str> = prod.lines().collect();
+        for (n, line) in lines.iter().enumerate() {
+            let code = crate::app::tests::scan::strip_line_comment(line);
+            // `.send()` is the direct case. A STORED future is the
+            // deferred one: `let x_fut = … .send();` for
+            // `tokio::try_join!` is awaited on a line that names no
+            // operation, so a scan looking only for `.send()` cannot
+            // see where its failure is handled.
+            //
+            // Matched on the NAME, not on `_fut.await`. The first
+            // version required both on one line and `cargo fmt` splits
+            // them — so that rule matched nothing, passed, and was
+            // found only by mutating the thing it claimed to guard.
+            let uses_stored_future = code.contains("_fut") && !code.contains("_fut = ");
+            if !code.contains(".send()") && !uses_stored_future {
+                continue;
+            }
+            // The statement this line belongs to. Bounded: a
+            // continuation ends at a `;`, at an opening `{`, or at the
+            // `}` closing the block it is the tail of — and at 12 lines
+            // regardless, so a runaway scan cannot swallow an unrelated
+            // `aws_ctx` and report compliance.
+            let mut stmt = String::new();
+            for l in lines.iter().skip(n).take(12) {
+                let c = crate::app::tests::scan::strip_line_comment(l);
+                stmt.push_str(c);
+                stmt.push('\n');
+                let t = c.trim_end();
+                if t.ends_with(';') || t.ends_with('{') || t.ends_with('}') || t.ends_with("},") {
+                    break;
+                }
+            }
+            if !stmt.contains(".await") {
+                // A stored future's BINDING half. It carries no failure
+                // itself; the convention is what lets the await half be
+                // found at all, so the convention is asserted here.
+                if stmt.trim_end().ends_with(".send();") {
+                    let binds_fut = lines[n.saturating_sub(8)..=n]
+                        .iter()
+                        .any(|l| l.contains("_fut = "));
+                    assert!(
+                        binds_fut,
+                        "{path}:{}: a stored SDK future must bind a name ending \
+                         `_fut`, because that is how the await half of this guard \
+                         finds it",
+                        n + 1
+                    );
+                }
+                continue;
+            }
+            checked += 1;
+            let propagates = stmt.contains('?') || stmt.contains(".wrap_err");
+            let contextualised = stmt.contains("aws_ctx") || stmt.contains("wrap_aws");
+            if propagates && !contextualised {
+                offenders.push(format!("{path}:{}", n + 1));
+            }
+        }
+    }
+
+    // A floor, because a filter that stops matching reports clean.
+    assert!(
+        checked > 60,
+        "only {checked} SDK calls inspected — the statement scan has stopped \
+         matching and this guard is passing over nothing"
+    );
+    assert!(
+        offenders.is_empty(),
+        "these SDK calls propagate a failure without `aws_ctx`, so the service's \
+         own message is discarded and the operator sees the operation name over \
+         the SDK's literal \"service error\": {offenders:?}"
+    );
+}
+
+#[cfg(test)]
+mod eb_error_regression {
+    use super::*;
+
+    /// The EB half of the same defect SQS had. EB is the path every
+    /// session uses — env listings, deploys, config reads — and its
+    /// errors named the operation and dropped the reason.
+    #[tokio::test]
+    async fn a_denied_eb_call_names_the_missing_permission() {
+        let rule = aws_smithy_mocks::mock!(Client::describe_configuration_settings).then_error(
+            || {
+                aws_sdk_elasticbeanstalk::operation::describe_configuration_settings::DescribeConfigurationSettingsError::generic(
+                    aws_smithy_types::error::ErrorMetadata::builder()
+                        .code("AccessDeniedException")
+                        .message("User is not authorized to perform elasticbeanstalk:DescribeConfigurationSettings")
+                        .build(),
+                )
+            },
+        );
+        let eb = aws_smithy_mocks::mock_client!(
+            aws_sdk_elasticbeanstalk,
+            aws_smithy_mocks::RuleMode::MatchAny,
+            [&rule]
+        );
+        let e = client_with_eb(eb)
+            .fetch_env_option_settings("app", "env")
+            .await
+            .expect_err("mocked failure");
+        let flat = crate::app::flatten_err_to_string(&e);
+
+        assert!(
+            flat.contains("elasticbeanstalk:DescribeConfigurationSettings"),
+            "the service's sentence names WHICH permission is missing; the code \
+             alone names only the family: {flat}"
+        );
+        assert!(flat.starts_with("AccessDenied:"), "{flat}");
+    }
+}

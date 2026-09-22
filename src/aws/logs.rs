@@ -224,7 +224,7 @@ impl AwsClient {
             if let Some(t) = token {
                 req = req.next_token(t);
             }
-            let resp = req.send().await.wrap_err("DescribeLogGroups failed")?;
+            let resp = req.send().await.aws_ctx("DescribeLogGroups failed")?;
             Ok((resp.log_groups.unwrap_or_default(), resp.next_token))
         })
         .await?
@@ -296,7 +296,7 @@ impl AwsClient {
             if let Some(t) = next_token.take() {
                 req = req.next_token(t);
             }
-            let resp = req.send().await.wrap_err("FilterLogEvents failed")?;
+            let resp = req.send().await.aws_ctx("FilterLogEvents failed")?;
             for e in resp.events.unwrap_or_default() {
                 seen += 1;
                 keep_newest(
@@ -366,7 +366,7 @@ impl AwsClient {
             if let Some(t) = next_token.take() {
                 req = req.next_token(t);
             }
-            let resp = req.send().await.wrap_err("FilterLogEvents failed")?;
+            let resp = req.send().await.aws_ctx("FilterLogEvents failed")?;
             for e in resp.events.unwrap_or_default() {
                 let ts = e.timestamp.unwrap_or(since_ms);
                 let id = e.event_id.unwrap_or_default();
@@ -473,7 +473,7 @@ impl AwsClient {
         for g in log_groups {
             req = req.log_group_names(g);
         }
-        let start_resp = req.send().await.wrap_err("StartQuery failed")?;
+        let start_resp = req.send().await.aws_ctx("StartQuery failed")?;
         let query_id = start_resp
             .query_id
             .ok_or_else(|| eyre!("StartQuery returned no query_id"))?;
@@ -489,7 +489,7 @@ impl AwsClient {
                 .query_id(&query_id)
                 .send()
                 .await
-                .wrap_err("GetQueryResults failed")?;
+                .aws_ctx("GetQueryResults failed")?;
             let status = resp.status.clone();
             let scanned = resp
                 .statistics

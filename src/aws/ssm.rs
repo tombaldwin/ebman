@@ -73,7 +73,9 @@ impl AwsClient {
             let sent = send
                 .send()
                 .await
-                .map_err(|e| eyre!("SendCommand failed: {e}"))
+                // Was `map_err(|e| eyre!("SendCommand failed: {e}"))`,
+                // which rendered the SdkError alone — "service error".
+                .aws_ctx("SendCommand failed")
                 .and_then(|r| {
                     r.command
                         .and_then(|c| c.command_id)

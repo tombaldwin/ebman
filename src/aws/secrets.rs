@@ -37,7 +37,7 @@ impl AwsClient {
                 if let Some(t) = token {
                     req = req.next_token(t);
                 }
-                let resp = req.send().await.wrap_err("ListSecrets failed")?;
+                let resp = req.send().await.aws_ctx("ListSecrets failed")?;
                 Ok((resp.secret_list.unwrap_or_default(), resp.next_token))
             })
             .await?;
@@ -92,7 +92,7 @@ impl AwsClient {
             .secret_id(secret_id)
             .send()
             .await
-            .wrap_err("GetSecretValue failed")?;
+            .aws_ctx("GetSecretValue failed")?;
         // Secrets Manager returns either SecretString (UTF-8 text,
         // including JSON for k/v secrets) or SecretBinary (base64
         // blob). Prefer the string; fall back to noting the binary
