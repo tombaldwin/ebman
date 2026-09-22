@@ -573,6 +573,49 @@ The nightly whole-tree run finished (6h25m, 2118 survivors overall,
   frame loop that owns stdin. `src/ui/` survivors remain deliberately
   uncovered, as recorded below.
 
+### The four-stage structural refactor, 2026-09-21/22
+
+From the software-architect pass. Reviewed after each stage, as asked.
+
+1. **`cli/lint.rs` — `run` 606 lines -> 308.** `run_cycle` extracted
+   with a `client_for` closure as the testability seam; the
+   `FIX_DISPATCH_FAILED` static replaced by a returned `CycleReport`
+   whose degraded state is *derived* from its reasons rather than
+   tracked alongside them. Found and fixed a live bug: EBL015 reported
+   clean when `ListPlatformVersions` failed. **Done, reviewed.**
+
+2. **`app/input.rs` — `handle_key` 842 lines -> 188.** `OverlayRoute`
+   makes the overlay dispatch exhaustive over all 14 variants with no
+   wildcard, and `key_arm_order` now parses both keymap files. Found
+   and fixed a live bug: `About` was missing from a hand-written
+   overlay-variant list. **Done, reviewed.**
+
+3. **`audit.rs` — escaping into one renderer.** `Field` + `detail_from`.
+   Closed four live forge paths (`action=` was interpolated raw by
+   `dispatched`/`completed`/`skipped`/`undone`) and one door out of the
+   file (`append_raw`, whose sole caller shipped three unescaped
+   fields including an EB *application* name). **Done, reviewed — and
+   the review was worth more than the refactor:**
+
+   - The commit claimed "wire format unchanged" and it was false. Six
+     fields were always-quoted before and became conditionally quoted,
+     rewriting the bytes of every `lint --fix` line. Invisible to 82
+     audit tests because `parse_kv_pairs` reads both forms. Fixed with
+     `Field::Quoted` + a test that asserts on bytes, not on the parse.
+   - The commit claimed `append_extras` was deleted. It was still live
+     behind the DLQ writer.
+   - The "chokepoint" claim held only inside `audit.rs`.
+
+   The pattern across all three: the *narrative* over-claimed while the
+   code under-delivered, in the same commit. Cf.
+   `state-claims-only-as-wide-as-checked`.
+
+4. **Relocate the `cli/mcp` test mass** to `src/cli/mcp/tests/`, on the
+   `src/app/tests/` precedent. `mod.rs`, `writes.rs`, `tools.rs` only —
+   explicitly not a repo-wide sweep. Each self-scanning guard must be
+   re-pointed at the `scan.rs` helpers and re-proven with a planted
+   violation. **In progress.**
+
 ### Also open
 
 - 17 backlog items, mostly design rulings and accepted seam.
