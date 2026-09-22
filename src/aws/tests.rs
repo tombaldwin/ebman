@@ -4866,7 +4866,7 @@ fn every_sdk_call_that_propagates_goes_through_aws_ctx() {
             }
             checked += 1;
             let propagates = stmt.contains('?') || stmt.contains(".wrap_err");
-            let contextualised = stmt.contains("aws_ctx") || stmt.contains("wrap_aws");
+            let contextualised = stmt.contains("aws_ctx");
             if propagates && !contextualised {
                 offenders.push(format!("{path}:{}", n + 1));
             }
@@ -4923,5 +4923,136 @@ mod eb_error_regression {
              alone names only the family: {flat}"
         );
         assert!(flat.starts_with("AccessDenied:"), "{flat}");
+    }
+}
+
+#[cfg(test)]
+mod ssm_error_surfacing {
+    use super::*;
+
+    /// A failed `SendCommand` chunk must report the service's reason
+    /// on every affected instance, not just the operation name.
+    ///
+    /// `aws_ctx` returns a Report whose plain `Display` is the
+    /// OUTERMOST wrap — the operation name. So `format!("{e}")` after
+    /// the conversion renders strictly less than the
+    /// `eyre!("SendCommand failed: {e}")` it replaced, which at least
+    /// reached the SDK's "service error". Found by review: the same
+    /// sweep that fixed this shape in `s3.rs` missed it here.
+    #[tokio::test]
+    async fn a_failed_send_reports_the_reason_on_every_instance() {
+        let rule = aws_smithy_mocks::mock!(SsmClient::send_command).then_error(|| {
+            aws_sdk_ssm::operation::send_command::SendCommandError::generic(
+                aws_smithy_types::error::ErrorMetadata::builder()
+                    .code("AccessDeniedException")
+                    .message("User is not authorized to perform ssm:SendCommand")
+                    .build(),
+            )
+        });
+        let ssm = aws_smithy_mocks::mock_client!(
+            aws_sdk_ssm,
+            aws_smithy_mocks::RuleMode::MatchAny,
+            [&rule]
+        );
+        let cfg = aws_config::SdkConfig::builder()
+            .region(Region::new("us-east-1"))
+            .behavior_version(aws_config::BehaviorVersion::latest())
+            .build();
+        let c = AwsClient::for_tests(
+            Client::new(&cfg),
+            SqsClient::new(&cfg),
+            CwClient::new(&cfg),
+            CwLogsClient::new(&cfg),
+            S3Client::new(&cfg),
+            Ec2Client::new(&cfg),
+        );
+        assert!(
+            c.ssm.set(ssm).is_ok(),
+            "the ssm cell must be unset in a fresh test client"
+        );
+
+        // Every chunk fails, so this takes the all-failed branch —
+        // the common shape for a permissions problem, and the one that
+        // used to discard the detail it had just collected.
+        let e = c
+            .run_shell_command(&["i-0abc".to_string()], "df -h", 5)
+            .await
+            .expect_err("every send failed");
+        let text = format!("{e:#}");
+        assert!(
+            text.contains("ssm:SendCommand"),
+            "the operator must learn WHICH permission is missing, not just \
+             that SendCommand failed: {text}"
+        );
+    }
+}
+
+/// A worker env with no real dead-letter queue must report "no DLQ",
+/// not fail the whole discovery.
+///
+/// Driven through the SDK's TYPED `QueueDoesNotExist` variant, which
+/// is what SQS actually deserialises. Every existing fixture for this
+/// builds the error with `::generic`, producing the `Unhandled`
+/// variant — a shape production never sees, and one whose rendering
+/// happens to contain the error code that the old substring check was
+/// looking for. So the fixtures passed while the production path
+/// returned `Err` for every worker env whose derived `<main>-dlq`
+/// guess missed.
+///
+/// Measured at HEAD before the fix: the chain WITHOUT the metadata
+/// layer reads `service error: QueueDoesNotExist: …` and contains no
+/// `NonExistentQueue` anywhere.
+#[cfg(test)]
+mod typed_queue_does_not_exist {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_missing_dlq_is_reported_as_absent_not_as_a_failure() {
+        let rule = aws_smithy_mocks::mock!(SqsClient::get_queue_attributes).then_error(|| {
+            aws_sdk_sqs::operation::get_queue_attributes::GetQueueAttributesError::QueueDoesNotExist(
+                aws_sdk_sqs::types::error::QueueDoesNotExist::builder()
+                    .message("The specified queue does not exist.")
+                    .meta(
+                        aws_smithy_types::error::ErrorMetadata::builder()
+                            .code("AWS.SimpleQueueService.NonExistentQueue")
+                            .message("The specified queue does not exist.")
+                            .build(),
+                    )
+                    .build(),
+            )
+        });
+        let sqs = aws_smithy_mocks::mock_client!(
+            aws_sdk_sqs,
+            aws_smithy_mocks::RuleMode::MatchAny,
+            [&rule]
+        );
+        let cfg = aws_config::SdkConfig::builder()
+            .region(Region::new("us-east-1"))
+            .behavior_version(aws_config::BehaviorVersion::latest())
+            .build();
+        let c = AwsClient::for_tests(
+            Client::new(&cfg),
+            sqs,
+            CwClient::new(&cfg),
+            CwLogsClient::new(&cfg),
+            S3Client::new(&cfg),
+            Ec2Client::new(&cfg),
+        );
+
+        let e = c.queue_stats("https://sqs/q").await.expect_err("mocked");
+        assert_eq!(
+            crate::aws::error_code(&e),
+            Some("AWS.SimpleQueueService.NonExistentQueue"),
+            "the typed variant must still carry its code through the boundary, \
+             because that is what the discovery swallow now reads: {e:#}"
+        );
+        // Sanity: this really is the typed variant. `::generic`
+        // produces `Unhandled`, whose Display is
+        // `unhandled error ({code})` — and it is precisely because
+        // that rendering contains the code that the old substring
+        // check passed in tests while failing in production.
+        let chain = format!("{e:#}");
+        assert!(chain.contains("QueueDoesNotExist"), "{chain}");
+        assert!(!chain.contains("unhandled error"), "{chain}");
     }
 }

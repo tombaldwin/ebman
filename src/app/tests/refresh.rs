@@ -2420,12 +2420,11 @@ async fn a_throttled_refresh_backs_off_into_the_future() {
 /// firing correctly are still as written.
 #[test]
 fn the_update_recheck_ticker_is_idle_safe_and_does_not_double_fire() {
-    let src = std::fs::read_to_string("src/app.rs").expect("read app.rs");
+    let src = crate::app::tests::scan::production_source("src/app.rs");
     let body = src
         .split_once("\n    pub async fn run(")
         .expect("App::run moved or was renamed")
         .1;
-    let body = body.split("\n#[cfg(test)]").next().unwrap_or(body);
 
     // `interval` fires immediately on its first tick, which would
     // re-check crates.io milliseconds after the startup check already

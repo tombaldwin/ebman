@@ -2753,7 +2753,7 @@ fn flatten_err(op: &str, e: color_eyre::eyre::Report) -> String {
 pub(crate) fn flatten_err_to_string(e: &color_eyre::eyre::Report) -> String {
     let display = e.to_string();
     // Prefer the code the SDK itself reported. `AwsErrorMeta` is our own
-    // type, inserted at the boundary by `aws::wrap_aws`, so it can be
+    // type, inserted at the boundary by `aws::SdkResultExt::aws_ctx`, so it can be
     // downcast back out of the chain — which a generic
     // `ProvideErrorMetadata` cannot be, hence capturing it there.
     //
@@ -2774,14 +2774,10 @@ pub(crate) fn flatten_err_to_string(e: &color_eyre::eyre::Report) -> String {
         // carried an IAM denial rendered as `AccessDenied: service
         // error`. The class was right and the sentence naming the
         // missing permission was gone.
-        let detail = match meta.message.as_deref() {
-            Some(m) => format!("{display}: {m}"),
-            None => display.clone(),
-        };
-        let detail = match meta.request_id.as_deref() {
-            Some(r) => format!("{detail} (request id {r})"),
-            None => detail,
-        };
+        // The same tail `AwsErrorMeta`'s own `Display` builds, from the
+        // same method — only the head differs, because the code is
+        // lifted into the class prefix below.
+        let detail = meta.detail_after(&display);
         if let Some(code) = meta.code.as_deref() {
             let lower = code.to_ascii_lowercase();
             if lower.contains("throttl") || lower.contains("requestlimitexceeded") {

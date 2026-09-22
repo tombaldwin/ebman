@@ -1390,18 +1390,30 @@ async fn demo_mode_refuses_without_writing_an_audit_line() {
 
     let after = std::fs::read_to_string(&path).unwrap_or_default();
     let delta = after.strip_prefix(&before).unwrap_or(&after);
-    // Matched as a whole FIELD, not a substring. `mcp-demo-refusal-probe-env`
-    // in src/cli/mcp/writes.rs contains this test's env name, so a
-    // bare `contains` failed whenever that test wrote first — a
-    // cross-test false failure that looked exactly like demo mode
-    // leaking an audit line, which is the one thing this asserts.
-    let needle = format!("target={env_name}");
-    assert!(
-        !delta
-            .split_whitespace()
-            .any(|tok| tok == needle || tok == format!("target=\"{env_name}\"")),
-        "demo mode writes NO audit lines: {delta}"
-    );
+    // Matched on a WORD BOUNDARY, not as a bare substring and not as
+    // one named field.
+    //
+    // Bare `contains` was a cross-test false failure:
+    // `mcp-demo-refusal-probe-env` in src/cli/mcp/writes.rs contains
+    // this test's env name, so whenever that test wrote first this one
+    // reported demo mode leaking an audit line — the single thing it
+    // exists to catch, which makes the false positive the expensive
+    // kind.
+    //
+    // The first fix narrowed to `target=<env>`. That removed the
+    // collision and also the property: this test is named "writes NO
+    // audit lines", and a leak naming the env under `env=` (which every
+    // DLQ writer uses) or inside a quoted `reason="…"` would have
+    // passed it. Boundary-matching keeps the whole claim.
+    let leaked = delta.match_indices(env_name).any(|(i, _)| {
+        let prev_ok = i == 0
+            || !delta[..i]
+                .chars()
+                .next_back()
+                .is_some_and(|c| c.is_alphanumeric() || c == '-' || c == '_');
+        prev_ok
+    });
+    assert!(!leaked, "demo mode writes NO audit lines: {delta}");
 }
 
 /// A write that is ALLOWED must not file a refusal.

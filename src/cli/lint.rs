@@ -955,20 +955,25 @@ where
         };
         // Per-region one-shot fetch for EBL008 (stale platform):
         // `ListAvailableSolutionStacks` is region-scoped + cheap
-        // (single call, no pagination). On failure we just skip
-        // EBL008 for the region rather than aborting lint — same
-        // tolerance pattern the per-env opts/tags/health fetches
-        // use below. Added in 0.18 to close the TUI/CLI parity
-        // gap noted in the 0.17.1 CHANGELOG.
+        // (single call, no pagination). On failure EBL008 is skipped
+        // for the region rather than aborting lint — but the cycle is
+        // DEGRADED, not clean.
+        //
+        // This was the twin of the EBL015 bug 0.44 fixed, 45 lines
+        // apart in the same function and missed by the same pass. An
+        // empty map makes `newer_stack_available` `None`, which makes
+        // `StalePlatformVersion::applies` return `None` — so a run
+        // whose stack listing never happened exited 0 and
+        // `--baseline` snapshotted it as good. The comment here used
+        // to justify it as "the same tolerance pattern the per-env
+        // fetches use below"; those fetches degrade.
         let latest_stacks = match aws.list_solution_stacks().await {
             Ok(s) => aws::latest_stack_versions(&s),
             Err(e) => {
-                if !quiet {
-                    let region_label = region_opt.as_deref().unwrap_or("default");
-                    eprintln!(
-                        "warning: region '{region_label}' — list_solution_stacks failed: {e} (EBL008 skipped)"
-                    );
-                }
+                let region_label = region_opt.as_deref().unwrap_or("default");
+                report.degrade(format!(
+                    "EBL008 skipped — region '{region_label}': ListAvailableSolutionStacks: {e}"
+                ));
                 std::collections::HashMap::new()
             }
         };
@@ -2015,12 +2020,13 @@ mod degrade_guard {
     /// so a future test that quotes the pattern cannot trip it either.
     #[test]
     fn every_degrade_goes_through_the_helper() {
-        let src = std::fs::read_to_string("src/cli/lint.rs").expect("read lint.rs");
-        // Production source only: everything before the first test module.
-        let prod = match src.find("#[cfg(test)]") {
-            Some(i) => &src[..i],
-            None => src.as_str(),
-        };
+        // Production source only. Was `src.find("#[cfg(test)]")` and a
+        // prefix slice — which truncates at the first INLINE
+        // `#[cfg(test)]` item, not at the test module, and so reported
+        // clean over whatever followed. `production_half` excises test
+        // modules wherever they appear and keeps the rest.
+        let prod = crate::app::tests::scan::production_source("cli/lint.rs");
+        let prod = prod.as_str();
         // A fetch failure that prints and returns is invisible to the
         // check below.
         //
@@ -2036,15 +2042,36 @@ mod degrade_guard {
         // prints that prefix itself. Crude — it cannot know which
         // failures are load-bearing — but it catches the one that
         // happened, which is this repo's standard for a guard.
-        for (i, line) in prod.lines().enumerate() {
+        // By STATEMENT, not by line. The line version matched
+        // `eprintln!("warning:` and `skipped` on one line — which is
+        // how the EBL015 instance happened to be written, and is NOT
+        // how rustfmt writes one. A hundred-character warning wraps,
+        // the two needles land on different lines, and the guard sees
+        // nothing. The EBL008 twin sat 45 lines from the fixed site,
+        // in this shape, through the release that claimed to close it.
+        let lines: Vec<&str> = prod.lines().collect();
+        for (i, line) in lines.iter().enumerate() {
             let stripped = crate::app::tests::scan::strip_line_comment(line);
-            if stripped.contains("eprintln!(\"warning:") && stripped.contains("skipped") {
+            if !stripped.contains("eprintln!(") {
+                continue;
+            }
+            let mut stmt = String::new();
+            for l in lines.iter().skip(i).take(6) {
+                stmt.push_str(crate::app::tests::scan::strip_line_comment(l));
+                if crate::app::tests::scan::strip_line_comment(l)
+                    .trim_end()
+                    .ends_with(';')
+                {
+                    break;
+                }
+            }
+            if stmt.contains("warning:") && stmt.contains("skipped") {
                 panic!(
                     "line {}: a skipped fetch is printed directly rather than passed \
                      to `degrade`, so the cycle still reports clean and --baseline \
                      will snapshot it: {}",
                     i + 1,
-                    stripped.trim()
+                    stmt.trim()
                 );
             }
         }
@@ -2542,8 +2569,7 @@ mod webhook_gate_tests {
     /// a clean result.
     #[test]
     fn the_extracted_gates_are_wired_into_run() {
-        let src = std::fs::read_to_string("src/cli/lint.rs").expect("read own source");
-        let prod = crate::app::tests::scan::production_half(&src);
+        let prod = crate::app::tests::scan::production_source("cli/lint.rs");
 
         assert!(
             prod.contains("fix_may_dispatch(yes, to_set.len())"),

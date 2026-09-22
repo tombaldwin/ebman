@@ -1086,11 +1086,11 @@ impl AwsClient {
             Some(u) => match self.queue_stats(u).await {
                 Ok(st) => Some(st),
                 Err(e) => {
-                    let text = format!("{e:#}");
-                    if text.contains("NonExistentQueue") {
+                    // By CODE, not by substring on a rendered chain.
+                    if super::error_code(&e).is_some_and(|c| c.contains("NonExistentQueue")) {
                         None
                     } else {
-                        return Err(eyre!("main queue stats: {text}"));
+                        return Err(eyre!("main queue stats: {e:#}"));
                     }
                 }
             },
@@ -1100,11 +1100,10 @@ impl AwsClient {
             Some(u) => match self.queue_stats(u).await {
                 Ok(st) => Some(st),
                 Err(e) => {
-                    let text = format!("{e:#}");
-                    if text.contains("NonExistentQueue") {
+                    if super::error_code(&e).is_some_and(|c| c.contains("NonExistentQueue")) {
                         None
                     } else {
-                        return Err(eyre!("dlq stats: {text}"));
+                        return Err(eyre!("dlq stats: {e:#}"));
                     }
                 }
             },
@@ -2318,7 +2317,7 @@ mod paging_tests {
     /// failure mode the extraction was meant to end.
     #[test]
     fn the_platform_listing_uses_the_extracted_filters() {
-        let src = std::fs::read_to_string("src/aws/eb.rs").expect("read own source");
+        let src = crate::app::tests::scan::production_source("aws/eb.rs");
         // Bounded at BOTH the next function and the test module. A
         // slice that ran to EOF would swallow this test's own string
         // literals, so the guard would be matching itself — and a
@@ -2331,9 +2330,9 @@ mod paging_tests {
             .split("pub(crate) async fn list_compatible_platforms(")
             .nth(1)
             .expect("the function moved or was renamed")
-            .split("\n#[cfg(test)]")
-            .next()
-            .expect("stops before the tests")
+            // No `#[cfg(test)]` split: `production_source` has already
+            // excised every test module, and the split that used to sit
+            // here truncated at an INLINE `#[cfg(test)]` item too.
             .split("\n    pub(crate) async fn ")
             .next()
             .expect("has a body");

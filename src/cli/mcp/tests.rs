@@ -2281,14 +2281,7 @@ fn every_result_that_can_be_partial_says_so() {
     // and removing a field came back green. Caught by mutation, and
     // it is the second time in this file that a source scan has
     // needed protecting from itself.
-    let prod = |path: &str| -> String {
-        std::fs::read_to_string(path)
-            .unwrap_or_else(|e| panic!("{path}: {e}"))
-            .split("\n#[cfg(test)]\nmod ")
-            .next()
-            .unwrap_or_default()
-            .to_string()
-    };
+    let prod = crate::app::tests::scan::production_source;
     let src = format!(
         "{}{}",
         prod("src/cli/mcp/tools.rs"),

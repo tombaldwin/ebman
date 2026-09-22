@@ -6,6 +6,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- **A worker environment with no dead-letter queue no longer fails
+  discovery.** `describe_worker_queues` derives a `<main>-dlq` name and
+  treats "that queue does not exist" as the answer *no DLQ* rather than
+  as an error. That swallow was written in 0.29 and, against real AWS,
+  never worked: it substring-matched a rendered error chain for
+  `NonExistentQueue`, and the SDK's typed `QueueDoesNotExist` variant
+  does not render its own wire code. The tests passed because their
+  fixtures built the error a different way — producing a variant whose
+  rendering *does* contain the code — so the fixture and production
+  disagreed about the shape and the test agreed with the fixture.
+
+  Surfaced by the error-context work below, which put the code into the
+  chain and made the old check start matching. It now reads the code
+  directly instead of searching text, and is tested against the variant
+  SQS actually returns.
+
+  Worker envs whose derived DLQ name doesn't exist will stop reporting
+  a discovery failure and start reporting `dlq_stats: null` with the
+  url still present — which is what the MCP `worker_queues` tool has
+  documented all along.
+
 ### Fixed
 
 - **Every AWS error said what failed and not why.** `SdkError`'s
@@ -36,6 +59,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   `.wrap_err("Op failed")?` was shorter than the correct form. The fix
   makes the correct form the shortest one, and a guard keeps it that
   way.
+
+- **`lint` reported a clean run when the platform listing failed.**
+  EBL008's stack-version fetch printed a warning behind `!quiet` and
+  carried on with an empty map, which makes every staleness check
+  return "nothing to say". So a CI run whose role lacked
+  `elasticbeanstalk:ListAvailableSolutionStacks` exited 0 with nothing
+  printed, and `--baseline` would snapshot it as good.
+
+  The twin of the EBL015 bug fixed earlier in this release, 45 lines
+  away in the same function, and missed by the same pass. The guard
+  added alongside that fix could not see it: it matched a single line
+  containing both `warning:` and `skipped`, which is how the EBL015
+  instance happened to be written and is not how rustfmt writes a
+  hundred-character string. The guard now reads statements, and is
+  proven against both the one-line and the wrapped form.
 
 - **A dead-letter operation refused by IAM reported `service error`.**
   The DLQ paths were the sharpest case of the above: an operator
