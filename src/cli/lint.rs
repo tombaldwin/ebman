@@ -1275,9 +1275,25 @@ pub async fn run(args: &[String]) -> Result<()> {
                         all_issues.extend(issues);
                     }
                     Err(e) => {
-                        if !quiet {
-                            eprintln!("warning: EBL015 skipped — ListPlatformVersions: {e}");
-                        }
+                        // Through `degrade`, like every other fetch
+                        // failure in this cycle. It printed and
+                        // returned, so an EBL015 fetch failure left
+                        // the cycle looking CLEAN: exit 0, and
+                        // `--baseline` would snapshot a run whose
+                        // account-level pass never happened. `--quiet`
+                        // suppressed the only evidence, which is the
+                        // exact pairing the `--quiet` bug taught
+                        // (a non-zero exit with an empty log).
+                        //
+                        // `every_degrade_goes_through_the_helper`
+                        // could not catch this: it checks that sites
+                        // which DO degrade use the helper, and cannot
+                        // see a site that should and does not.
+                        degrade(
+                            &mut degrade_reasons,
+                            &mut cycle_degraded,
+                            format!("EBL015 skipped — ListPlatformVersions: {e}"),
+                        );
                     }
                 }
             }
@@ -1939,6 +1955,34 @@ mod degrade_guard {
             Some(i) => &src[..i],
             None => src.as_str(),
         };
+        // A fetch failure that prints and returns is invisible to the
+        // check below.
+        //
+        // That check asks whether every site which DEGRADES uses the
+        // helper. It cannot ask whether every site that SHOULD degrade
+        // does — and one did not: the EBL015 account-pass arm printed
+        // `warning: EBL015 skipped` behind `!quiet` and left the cycle
+        // looking clean, so the run exited 0, `--baseline` would have
+        // snapshotted it, and `--quiet` suppressed the only evidence.
+        //
+        // This looks for the shape: a `warning: ... skipped` written
+        // straight to stderr rather than through `degrade`, which
+        // prints that prefix itself. Crude — it cannot know which
+        // failures are load-bearing — but it catches the one that
+        // happened, which is this repo's standard for a guard.
+        for (i, line) in prod.lines().enumerate() {
+            let stripped = crate::app::tests::scan::strip_line_comment(line);
+            if stripped.contains("eprintln!(\"warning:") && stripped.contains("skipped") {
+                panic!(
+                    "line {}: a skipped fetch is printed directly rather than passed \
+                     to `degrade`, so the cycle still reports clean and --baseline \
+                     will snapshot it: {}",
+                    i + 1,
+                    stripped.trim()
+                );
+            }
+        }
+
         // Assembled, so this line is not itself a match.
         let needle = format!("cycle_degraded{}true", " = ");
         let bare = prod.matches(needle.as_str()).count();
