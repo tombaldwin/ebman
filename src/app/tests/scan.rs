@@ -138,6 +138,16 @@ pub(crate) fn production_source(suffix: &str) -> String {
         .into_iter()
         .filter(|(p, _)| !is_test_path(p) && p.ends_with(suffix))
         .collect();
+    // Zero and many are different mistakes and want different
+    // advice. Zero is the likelier one — a rename, a typo, a file that
+    // became a test path, the wrong working directory — and telling
+    // someone to "qualify the suffix" there points at the opposite of
+    // the fix.
+    assert!(
+        !hits.is_empty(),
+        "`{suffix}` names no production file — it was renamed, misspelled, or \
+         is now a test path (test sources are excluded here on purpose)"
+    );
     assert_eq!(
         hits.len(),
         1,
@@ -537,7 +547,7 @@ mod production_source_tests {
     }
 
     #[test]
-    #[should_panic(expected = "names 0 production files")]
+    #[should_panic(expected = "names no production file")]
     fn a_missing_subject_panics() {
         let _ = production_source("no-such-file-anywhere.rs");
     }

@@ -1596,8 +1596,7 @@ mod tests {
     /// enumeration has to be kept current to notice.
     #[test]
     fn only_the_renderer_builds_a_stage_line() {
-        let src = include_str!("audit.rs");
-        let prod = crate::app::tests::scan::production_half(src);
+        let prod = crate::app::tests::scan::production_source("src/audit.rs");
         let code: String = prod
             .lines()
             .map(crate::app::tests::scan::strip_line_comment)
@@ -1643,8 +1642,7 @@ mod tests {
     /// parameter is.
     #[test]
     fn no_audit_writer_accepts_a_prebuilt_line() {
-        let src = include_str!("audit.rs");
-        let prod = crate::app::tests::scan::production_half(src);
+        let prod = crate::app::tests::scan::production_source("src/audit.rs");
         let code: String = prod
             .lines()
             .map(crate::app::tests::scan::strip_line_comment)
@@ -2455,7 +2453,12 @@ mod parser_properties {
             "dispatched",
             None,
         );
-        let doc = include_str!("audit.rs");
+        // The production half, not the raw file. `find` takes the
+        // FIRST match, so a raw read lets this guard compare the
+        // writer against a line inside the test module if the doc line
+        // ever goes — the shape that hid a broken guard in
+        // `cli/mcp/writes.rs` for months.
+        let doc = crate::app::tests::scan::production_source("src/audit.rs");
         let doc_shape = doc
             .lines()
             .find(|l| l.contains("rollout_id=ID"))
