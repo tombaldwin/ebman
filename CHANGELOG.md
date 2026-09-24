@@ -4,6 +4,29 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **A partly-failed EBL015 pass no longer exits clean.** When
+  `DescribePlatformVersion` failed for one custom-platform branch, the
+  branch was skipped with a warning printed to stderr behind `!quiet`
+  and nothing else: the cycle stayed undegraded, so `ebman lint` exited
+  0, `--watch` did not page, and `--baseline` snapshotted a run whose
+  stale-platform check never ran for that branch. `--quiet` erased the
+  only evidence it had happened at all.
+
+  Those warnings now go through `CycleReport::degrade`, like every
+  other incomplete-coverage reason in the cycle, and name the branch
+  and the call that failed.
+
+  This is the same defect 0.44.0 fixed for a *whole* failed EBL015 pass,
+  one level down and twenty lines away in the same function: the
+  whole-pass path was repaired, the per-branch path beside it was not.
+  `every_degrade_goes_through_the_helper` cannot see this class — it
+  checks that sites which do degrade use the helper, and is blind to a
+  site that should and does not.
+
 ## [0.44.0] - 2026-09-22
 
 ### Changed

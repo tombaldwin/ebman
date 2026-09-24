@@ -1084,10 +1084,28 @@ where
             // inside the function extracted to make the cycle testable.
             match fetch_stale_platform_issues(&aws, now).await {
                 Ok((mut issues, warnings)) => {
-                    if !quiet {
-                        for w in warnings {
-                            eprintln!("warning: {w}");
-                        }
+                    // A branch whose `DescribePlatformVersion` failed
+                    // is EBL015 coverage that did not happen, so it
+                    // DEGRADES the cycle — the same reasoning the Err
+                    // arm below carries, one level down.
+                    //
+                    // This printed and continued until 0.45. 0.44
+                    // fixed the failure of the pass as a WHOLE; the
+                    // per-branch one beside it was not, so a partial
+                    // EBL015 failure still exited 0, the webhook
+                    // stayed quiet, and `--baseline` snapshotted a run
+                    // whose stale-platform check never ran for that
+                    // branch. Gated on `!quiet`, which erased the only
+                    // evidence — the exact pairing the `--quiet` bug
+                    // taught, and which the Err arm's comment below
+                    // already names.
+                    //
+                    // `every_degrade_goes_through_the_helper` cannot
+                    // catch this class: it checks that sites which DO
+                    // degrade use the helper, and is blind to a site
+                    // that should and does not.
+                    for w in warnings {
+                        report.degrade(w);
                     }
                     filter_issues(&mut issues, severity_filter, rule_filter);
                     if let Some(region) = region_opt {
@@ -2672,18 +2690,54 @@ async fn apply_fixes_for_env(
 mod cycle_wiring {
     use super::*;
 
+    /// Which failure the mock fleet injects. Default: none — a clean
+    /// fleet the cycle reads end to end, which is what lets a
+    /// `degraded()` assertion discriminate at all.
+    #[derive(Default, Clone, Copy)]
+    struct MockFaults {
+        /// `UpdateEnvironment` is rejected — the shape a `--fix` run
+        /// hits when the role can read the fleet and not change it.
+        update_rejected: bool,
+        /// One custom platform exists and its `DescribePlatformVersion`
+        /// is rejected: EBL015 coverage that PARTLY failed.
+        platform_date_rejected: bool,
+    }
+
+    /// The branch whose platform dates the mock refuses to report.
+    const FAULTED_BRANCH: &str = "Node.js 20 running on 64bit Amazon Linux 2023";
+
     /// Like `mock_client`, but `UpdateEnvironment` is rejected — the
     /// shape a `--fix` run hits when the role can read the fleet and
     /// not change it.
     fn client_with_failing_update(envs: Vec<String>) -> aws::AwsClient {
-        mock_client_inner(envs, true)
+        mock_client_inner(
+            envs,
+            MockFaults {
+                update_rejected: true,
+                ..MockFaults::default()
+            },
+        )
+    }
+
+    /// A fleet with one custom platform whose `DescribePlatformVersion`
+    /// fails. Everything else answers, so a degraded cycle here can
+    /// only have come from the EBL015 probe.
+    fn client_with_failing_platform_date(envs: Vec<String>) -> aws::AwsClient {
+        mock_client_inner(
+            envs,
+            MockFaults {
+                platform_date_rejected: true,
+                ..MockFaults::default()
+            },
+        )
     }
 
     fn mock_client(envs: Vec<String>) -> aws::AwsClient {
-        mock_client_inner(envs, false)
+        mock_client_inner(envs, MockFaults::default())
     }
 
-    fn mock_client_inner(envs: Vec<String>, failing_update: bool) -> aws::AwsClient {
+    fn mock_client_inner(envs: Vec<String>, faults: MockFaults) -> aws::AwsClient {
+        let failing_update = faults.update_rejected;
         use aws_sdk_elasticbeanstalk::operation::describe_environments::DescribeEnvironmentsOutput;
         use aws_sdk_elasticbeanstalk::types::EnvironmentDescription;
         let listing =
@@ -2763,15 +2817,47 @@ mod cycle_wiring {
         .then_output(|| {
             aws_sdk_elasticbeanstalk::operation::describe_environment_resources::DescribeEnvironmentResourcesOutput::builder().build()
         });
-        // The EBL015 account-level pass. An EMPTY list, not an error:
-        // the error path is the one the previous commit fixed, and a
-        // test that always degrades could not tell a degraded cycle
-        // from a clean one.
+        // The EBL015 account-level pass. An EMPTY list by default, not
+        // an error: the error path is the one 0.44 fixed, and a test
+        // that always degrades could not tell a degraded cycle from a
+        // clean one. Under `platform_date_rejected` it lists one
+        // custom platform, so the per-branch date probe below is
+        // reached.
+        let platform_date_rejected = faults.platform_date_rejected;
         let platforms = aws_smithy_mocks::mock!(
             aws_sdk_elasticbeanstalk::Client::list_platform_versions
         )
-        .then_output(|| {
-            aws_sdk_elasticbeanstalk::operation::list_platform_versions::ListPlatformVersionsOutput::builder().build()
+        .then_output(move || {
+            use aws_sdk_elasticbeanstalk::types::PlatformSummary;
+            let mut b = aws_sdk_elasticbeanstalk::operation::list_platform_versions::ListPlatformVersionsOutput::builder();
+            if platform_date_rejected {
+                b = b.platform_summary_list(
+                    PlatformSummary::builder()
+                        .platform_arn("arn:aws:elasticbeanstalk:us-west-1:123456789012:platform/custom-node/1.0.0")
+                        .platform_branch_name(FAULTED_BRANCH)
+                        .platform_version("1.0.0")
+                        .build(),
+                );
+            }
+            b.build()
+        });
+        // EBL015's only source of dates. Rejected, it yields a WARNING
+        // rather than an error: the branch is skipped and the rest of
+        // the pass continues — which is exactly the partial-coverage
+        // case that must still degrade the cycle.
+        let platform_date = aws_smithy_mocks::mock!(
+            aws_sdk_elasticbeanstalk::Client::describe_platform_version
+        )
+        .then_error(|| {
+            aws_sdk_elasticbeanstalk::operation::describe_platform_version::DescribePlatformVersionError::generic(
+                aws_smithy_types::error::ErrorMetadata::builder()
+                    .code("AccessDeniedException")
+                    .message(
+                        "User is not authorized to perform \
+                         elasticbeanstalk:DescribePlatformVersion",
+                    )
+                    .build(),
+            )
         });
         let update = aws_smithy_mocks::mock!(
             aws_sdk_elasticbeanstalk::Client::update_environment
@@ -2795,6 +2881,9 @@ mod cycle_wiring {
         ];
         if failing_update {
             rules.push(&update);
+        }
+        if faults.platform_date_rejected {
+            rules.push(&platform_date);
         }
         let eb = aws_smithy_mocks::mock_client!(
             aws_sdk_elasticbeanstalk,
@@ -2907,6 +2996,55 @@ mod cycle_wiring {
         assert!(
             !report.degraded(),
             "the fleet WAS seen — a rejected write is not incomplete coverage: {:?}",
+            report.degrade_reasons
+        );
+    }
+
+    /// EBL015 coverage that PARTLY failed degrades the cycle.
+    ///
+    /// `fetch_stale_platform_issues` returns per-branch warnings when
+    /// `DescribePlatformVersion` fails for a branch: the branch is
+    /// skipped, the rest of the pass continues, and the issue set is
+    /// therefore not a full picture. Until 0.45 those warnings were
+    /// `eprintln!`ed behind `!quiet` and dropped — so a partial EBL015
+    /// failure exited 0, the webhook did not page, and `--baseline`
+    /// adopted a snapshot whose stale-platform check never ran for
+    /// that branch.
+    ///
+    /// The whole-pass version of this was 0.44's silent-green fix, 20
+    /// lines below. The per-branch one beside it was left, with a
+    /// comment on the Err arm naming `--quiet` erasing the evidence as
+    /// a lesson already learned. Nothing in the suite could see it:
+    /// `run_with_opts` passes `quiet: true`, so the print this
+    /// replaced never even ran under test.
+    ///
+    /// The discriminating case is
+    /// `a_cycle_where_every_region_answers_is_not_degraded`: the same
+    /// `mock_client` with no fault injected, asserting NOT degraded.
+    /// Without it this assertion would be satisfied by a `degrade`
+    /// that fired unconditionally.
+    #[tokio::test]
+    async fn a_partly_failed_platform_pass_degrades_the_cycle() {
+        let report = run_with(vec![None], |_| async {
+            Ok(client_with_failing_platform_date(vec![
+                "poly-prod-web".into()
+            ]))
+        })
+        .await;
+
+        assert!(
+            report.degraded(),
+            "a branch whose DescribePlatformVersion failed is EBL015 coverage that \
+             did not happen — a clean exit here lets `--baseline` snapshot it as good"
+        );
+        assert!(
+            report.degrade_reasons.iter().any(|r| {
+                r.contains("EBL015 skipped for")
+                    && r.contains(FAULTED_BRANCH)
+                    && r.contains("DescribePlatformVersion")
+            }),
+            "the reason must NAME the branch and the call that failed, or the \
+             operator cannot tell which coverage is missing: {:?}",
             report.degrade_reasons
         );
     }

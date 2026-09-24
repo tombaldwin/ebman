@@ -265,7 +265,7 @@ Live: 0.26+. WAFv2 probe call shape verified live 2026-08-20 against a throwaway
 
 **Severity:** Info · **Auto-fix:** none (the fix is a decision: rebuild, migrate, or delete)
 
-Detection: for each custom platform (grouped by branch), the newest version's `DescribePlatformVersion` date is 180+ days old. **The first account-level rule**: it lives outside the per-env registry as a separate pass (`stale_custom_platform_issues`), fires with no env name, is skipped when lint is scoped to a single `--env`, and honours `lint.disable = ["EBL015"]` at its call sites. Platforms whose versions report no date are skipped, never false-fired.
+Detection: for each custom platform (grouped by branch), the newest version's `DescribePlatformVersion` date is 180+ days old. **The first account-level rule**: it lives outside the per-env registry as a separate pass (`stale_custom_platform_issues`), fires with no env name, is skipped when lint is scoped to a single `--env`, and honours `lint.disable = ["EBL015"]` at its call sites. Platforms whose versions report no date are skipped, never false-fired. A branch whose `DescribePlatformVersion` *fails* is different: that is coverage which did not happen, so it degrades the run (non-zero exit, `degraded_reasons` naming the branch, and `--baseline` refuses to snapshot it).
 
 Why it matters: long-idle custom platforms usually mean the operator forgot they exist — AMIs age unpatched, and envs still pinned to them drift ever further from current runtimes.
 
