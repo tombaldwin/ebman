@@ -599,7 +599,40 @@ From the software-architect pass. Reviewed after each stage, as asked.
    `FIX_DISPATCH_FAILED` static replaced by a returned `CycleReport`
    whose degraded state is *derived* from its reasons rather than
    tracked alongside them. Found and fixed a live bug: EBL015 reported
-   clean when `ListPlatformVersions` failed. **Done, reviewed.**
+   clean when `ListPlatformVersions` failed. **Reviewed — but not
+   done; see the open item below.**
+
+   The review named **three side channels** still inside `run_cycle`.
+   Two are closed: `exit_after_drain(2)` became
+   `CycleReport::usage_error` and the wall clock became a passed-in
+   `now` (`c50a490`), and the `--fix` block came out with the three
+   tests that first reached it (`8985966`).
+
+   **This was recorded nowhere but those commit messages** — the entry
+   above said "Done, reviewed" while a third of it was outstanding,
+   which is the invisible-follow-up failure `CLAUDE.md` names. Hence
+   the open item.
+
+- [ ] **`run_cycle`'s third side channel: it prints instead of
+      reporting** *(architecture — needs a scope ruling before dev)*
+
+      Nine sites write straight to the operator's terminal from inside
+      the function extracted to make the cycle testable:
+      `src/cli/lint.rs:998` and `:1089` in `run_cycle`, and seven in
+      `apply_fixes_for_env` (`:2538`–`:2639`). Output no test can
+      assert on — the same shape as the two channels already closed.
+
+      **Not one item.** The two in `run_cycle` are mechanical. The
+      seven in `apply_fixes_for_env` are interactive `--fix` output
+      and are a design question (does the report carry rendered lines,
+      a typed event stream, or a writer?), so they need a ruling
+      rather than a guess. Split accordingly when it is picked up.
+
+      Evidence the class is live, not cosmetic: chasing it on
+      2026-09-24 turned up a real bug at `:1089` — a partly-failed
+      EBL015 pass printed behind `!quiet` and exited clean. Fixed
+      separately; two mutations CAUGHT. That is three defects this
+      function has now shipped in its output wiring.
 
 2. **`app/input.rs` — `handle_key` 842 lines -> 188.** `OverlayRoute`
    makes the overlay dispatch exhaustive over all 14 variants with no
