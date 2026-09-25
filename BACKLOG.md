@@ -82,6 +82,15 @@ Tier definitions:
   demonstrated the same day: a list-based guard went blind when the code
   it watched moved files (0a81d5e).
 
+- [ ] **Split `cli::write_refusal`'s rendering from its decision**, the
+  way `app/safety.rs` is split (`refusal_for` / `render_refusal` /
+  `audit_refusal`). The CLI's rendering is still inline in the pure half
+  (`write_refusal_unaudited`). It was parked "until stage 5's `Decision`
+  lands, since that changes the return type anyway"; stage 5 was killed
+  on 2026-09-25, so that trigger will never fire. Do it on its own
+  merits or drop it. *Re-opened 2026-09-25: archived as absorbed by the
+  verb vocabulary, which did not in fact do it.*
+
 - [ ] **`App::new` and `App::for_tests` each build the ~115-field struct
   by hand** (`src/app.rs`, two literals of ~260 and ~175 lines).
   `for_tests` is production code too — `new_demo` builds on it — and
