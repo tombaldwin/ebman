@@ -1,5 +1,13 @@
 # Protection levels for operator tools
 
+> **Status, 2026-09-25:** the levels ladder in "What is genuinely ours"
+> is not being built. `runtime-grants.md` shipped in 0.42 made asking
+> universal wherever a client can ask, which subsumes `guarded` and
+> `trusted`; `observe` and `unrestricted` already exist as read-only and
+> the parity default. What survives is the typed verb vocabulary. The
+> reasoning, rung by rung, is in `PLAN.md` (the stage-5 re-scope). The
+> principles below still hold, and are what the shipped design follows.
+
 **Status:** design note. Parts have since shipped — the converged write
 gate, MCP tool annotations, the elicitation detection and refusal
 auditing — and the sections below mark which. The levels and the

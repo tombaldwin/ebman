@@ -140,32 +140,54 @@ now head the list.*
    separately; two mutations CAUGHT. That is three defects this
    function has now shipped in its output wiring.
 
-3. **Re-scope stage 5 against runtime-grants** *(analyse, half a day)*
+3. ~~**Re-scope stage 5 against runtime-grants**~~ — **done 2026-09-25:
+   re-scoped, and most of stage 5 killed by evidence.** The question was
+   "what do levels still buy after 0.42?" Rung by rung, against what
+   0.42–0.44 ship:
 
-   *This entry said "unblocked" and that was momentum wearing a label. A
-   review took it apart three ways and all three hold:*
+   | rung | what it was for | what already does it |
+   |---|---|---|
+   | `observe` | reads only | `--read-only`, `safety.read_only`, and "a client that cannot ask gets reads" |
+   | `guarded` | reversible non-prod writes; the rest asks | on an elicitation client EVERY write asks — stricter than this rung |
+   | `trusted` | prod allowed; irreversible asks | the same; stricter again |
+   | `unrestricted` | no level-based refusal | the parity default |
 
-   - **The data is not the data.** Stage 3's prerequisite is a
-     *population* question — "if MOST clients declare it". What arrived is
-     one connection, one client, one day. That answers the *mechanism*
-     question and not the one the ladder's middle rungs were waiting on.
-   - **Data was not the only block.** The neutral action vocabulary is
-     named in `protection-levels.md` as load-bearing for levels and
-     budgeted as part of them. It has not moved. "Nothing in it changed,
-     it simply became buildable" was false on the note's own text.
-   - **`runtime-grants.md` reshapes stage 5 rather than following it.**
-     Config may only say no; no key grants; request-as-unit; parity
-     default. 0.42.0 shipped that reshape. Stage 5 as written is
-     `safety.level = "trusted"` config keys and an ask tri-state that
-     request-as-unit collapsed into ask-on-every-write.
+   The middle rungs were defined in terms of asking, and request-as-unit
+   made asking universal wherever it is possible. Where it is NOT
+   possible — the headless CLI (`action --yes`, `lint --fix --yes`,
+   `audit replay --yes`) — "ask" degrades to deny, so a level there is
+   just a verb/env restriction. That is the ONE population levels would
+   newly govern, and nothing on record asks for it: no CI user, no
+   incident. `Decision { obligations }` has no consumer either — the one
+   real obligation (type the env name for terminate / dlq_purge) is
+   hard-coded per verb and fine that way.
 
-   So the work is not "build stage 5". It is: **say what levels still buy
-   after 0.42.0.** Plausible answer — something for headless CLI
-   principals, approximately nothing for an elicitation-capable MCP
-   connection where every write already asks and pins already refuse.
-   "Killed by evidence" is an outcome this file celebrates; parts of
-   stage 5 are candidates, and pretending otherwise guarantees the
-   thrown-away work the stages section exists to prevent.
+   **What survives, because it is needed for other reasons:** the typed
+   verb vocabulary. It is the prerequisite three backlog items were
+   parked on "until stage 5" (`write_refusal` split, the neutral action
+   vocabulary, the annotations table's home); it is the writer-side fix
+   for the audit-label split (2bdd4b7 fixed the reader side); the
+   implementation review named it the missing piece for stage 6; and
+   assume-role needs it to map a verb to a role. So assume-role does not
+   replace stage 5 — it builds on the one part of it worth keeping.
+
+   **Needs a ruling before it can be built — see item 3′ below.**
+
+3′. **The typed verb vocabulary** *(architecture — needs one ruling)*
+
+   One `Verb` enum carrying `audit_label()`, `destructive()` and the
+   foreclosure text; `CliVerb` / `ReplayVerb` / `WriteVerb` / the TUI's
+   `Action` stay as parse layers mapping into it; audit writers take a
+   `Verb`, not a `&str`. Absorbs the three parked backlog items.
+
+   **The ruling:** which spelling every surface WRITES. Restart is
+   `RestartAppServer` on three surfaces and `Restart` on MCP; option
+   writes are `SetOption` (MCP, batch, `lint --fix`) or
+   `UpdateOptionSettings` (TUI forms, deploy). The reader already
+   accepts both (`audit::ACTION_ALIASES`), so either choice is
+   compatible with every existing log; it changes what NEW lines say.
+   Recommendation: `RestartAppServer` (the majority, and the AWS API
+   name) and `SetOption` (the verb, not the call; shorter in a filter).
 
 ### Next
 
@@ -204,7 +226,12 @@ independently shippable and useful even if the next one never
 happens; if that stops being true, the stage is wrong. Item 3 above
 decides what stage 5 still is.*
 
-5. **Levels, and the decision type they need** *(behaviour)*
+5. ~~**Levels, and the decision type they need**~~ — **killed by
+   evidence 2026-09-25** (see item 3 above); only the verb vocabulary
+   survives, as item 3′. Kept below for the reasoning, and because the
+   headless-CLI case is the one thing that would reopen it.
+
+   *Original entry:*
 
    Named rungs over the decision function, per principal, effective
    level = minimum of matching entries.
