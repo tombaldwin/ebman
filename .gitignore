@@ -41,3 +41,9 @@ mutants.out.old/
 *.bak
 *.orig
 *.rej
+
+# Names of clients whose data must never ship — read by the
+# `no_tracked_file_names_a_protected_client` guard. The list IS the
+# sensitive data, so it is local-only (CI reads the same list from the
+# EBMAN_PROTECTED_NAMES secret). Also in Cargo.toml's `exclude`.
+/.protected-names

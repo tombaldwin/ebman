@@ -8,6 +8,12 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: short
+  # The protected-client-names list for
+  # `no_tracked_file_names_a_protected_client`. The guard FAILS in CI
+  # when this is empty, because an empty list makes it vacuous. Set as
+  # both an Actions and a Dependabot secret: Dependabot PRs do not see
+  # Actions secrets.
+  EBMAN_PROTECTED_NAMES: ${{ secrets.EBMAN_PROTECTED_NAMES }}
 
 # Least privilege for every job below. Without an explicit block a job
 # inherits the repository default, which can be write-all — CodeQL flags
