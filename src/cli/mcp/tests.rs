@@ -769,20 +769,8 @@ fn a_skipped_entry_carries_the_credential_fix() {
     );
     let other = "EBL010 could not be evaluated for api: Throttling";
     assert_eq!(super::tools::with_credential_fix(&None, other), other);
-
-    // Every per-env and per-branch warning goes through it (the AWS
-    // backend is not reachable from a test, so pin the wiring).
-    let prod = crate::app::tests::scan::production_source("cli/mcp/tools.rs");
-    assert!(
-        !prod.contains("skipped.extend(inputs.coverage_warnings.iter().cloned())")
-            && !prod.contains("skipped.extend(branch_warnings)"),
-        "a warning reaches skipped_envs without the credential fix"
-    );
-    assert_eq!(
-        prod.matches("with_credential_fix(&profile, w)").count(),
-        2,
-        "coverage warnings and branch warnings"
-    );
+    // The wiring — every entry kind, through the live backend — is
+    // `orchestration::every_skipped_entry_carries_the_credential_fix`.
 }
 
 /// `initialize` must tell a client what ebman can do that this
@@ -1265,6 +1253,17 @@ mod orchestration {
         platform_list: bool,
         platform_date: bool,
         health: bool,
+        /// The refusals are an expired session, not AccessDenied.
+        expired: bool,
+        /// Two versioned envs instead of one, so a per-env line and a
+        /// per-run line differ.
+        two_envs: bool,
+        /// The env is on a custom platform: no version family, so EBL008
+        /// cannot apply to it.
+        unversioned: bool,
+        /// The per-env option-settings fetch fails: lint cannot run for
+        /// the env at all.
+        settings: bool,
     }
 
     /// One Ready/Green web env, every lint input answering except the
@@ -1272,24 +1271,47 @@ mod orchestration {
     fn lint_server(f: LintFaults) -> Server {
         use aws_sdk_elasticbeanstalk::operation as op;
         use aws_sdk_elasticbeanstalk::types::{EnvironmentDescription, PlatformSummary};
-        let denied = |what: &str| {
-            aws_smithy_types::error::ErrorMetadata::builder()
-                .code("AccessDeniedException")
-                .message(format!("User is not authorized to perform {what}"))
-                .build()
+        let expired = f.expired;
+        let denied = move |what: &str| {
+            if expired {
+                aws_smithy_types::error::ErrorMetadata::builder()
+                    .code("ExpiredTokenException")
+                    .message("The security token included in the request is expired")
+                    .build()
+            } else {
+                aws_smithy_types::error::ErrorMetadata::builder()
+                    .code("AccessDeniedException")
+                    .message(format!("User is not authorized to perform {what}"))
+                    .build()
+            }
         };
-        let listing = aws_smithy_mocks::mock!(EbClient::describe_environments).then_output(|| {
-            op::describe_environments::DescribeEnvironmentsOutput::builder()
-                .environments(
-                    EnvironmentDescription::builder()
-                        .environment_name("poly-web")
-                        .application_name("poly")
-                        .status("Ready".into())
-                        .health("Green".into())
-                        .build(),
-                )
-                .build()
-        });
+        let names: &'static [&'static str] = if f.two_envs {
+            &["poly-web", "poly-api"]
+        } else {
+            &["poly-web"]
+        };
+        let stack = if f.unversioned {
+            ""
+        } else {
+            // Versioned, so EBL008 applies to it.
+            "64bit Amazon Linux 2023 v4.1.0 running Corretto 17"
+        };
+        let listing =
+            aws_smithy_mocks::mock!(EbClient::describe_environments).then_output(move || {
+                let mut b = op::describe_environments::DescribeEnvironmentsOutput::builder();
+                for name in names {
+                    b = b.environments(
+                        EnvironmentDescription::builder()
+                            .environment_name(*name)
+                            .application_name("poly")
+                            .solution_stack_name(stack)
+                            .status("Ready".into())
+                            .health("Green".into())
+                            .build(),
+                    );
+                }
+                b.build()
+            });
         let stacks = if f.stacks {
             aws_smithy_mocks::mock!(EbClient::list_available_solution_stacks).then_error(
                 move || {
@@ -1304,11 +1326,20 @@ mod orchestration {
                     .build()
             })
         };
-        let settings = aws_smithy_mocks::mock!(EbClient::describe_configuration_settings)
-            .then_output(|| {
+        let settings = if f.settings {
+            aws_smithy_mocks::mock!(EbClient::describe_configuration_settings).then_error(
+                move || {
+                    op::describe_configuration_settings::DescribeConfigurationSettingsError::generic(
+                        denied("elasticbeanstalk:DescribeConfigurationSettings"),
+                    )
+                },
+            )
+        } else {
+            aws_smithy_mocks::mock!(EbClient::describe_configuration_settings).then_output(|| {
                 op::describe_configuration_settings::DescribeConfigurationSettingsOutput::builder()
                     .build()
-            });
+            })
+        };
         let health = if f.health {
             aws_smithy_mocks::mock!(EbClient::describe_environment_health).then_error(move || {
                 op::describe_environment_health::DescribeEnvironmentHealthError::generic(denied(
@@ -1411,6 +1442,88 @@ mod orchestration {
                 .any(|s| s.contains("EBL008") && s.contains("ListAvailableSolutionStacks")),
             "{skipped:?}"
         );
+    }
+
+    /// ...once for the run, not once per env: one failed call is one
+    /// entry, where the per-env form repeated the same cause N times.
+    #[tokio::test]
+    async fn a_failed_stack_listing_is_one_entry_however_many_envs() {
+        let skipped = lint_skipped(LintFaults {
+            stacks: true,
+            two_envs: true,
+            ..LintFaults::default()
+        })
+        .await;
+        let ebl008: Vec<_> = skipped.iter().filter(|s| s.contains("EBL008")).collect();
+        assert_eq!(ebl008.len(), 1, "{skipped:?}");
+        assert_eq!(
+            ebl008[0]
+                .matches("ListAvailableSolutionStacks failed:")
+                .count(),
+            1,
+            "the op is not doubled: {}",
+            ebl008[0]
+        );
+    }
+
+    /// ...and not at all when no env in scope could have had EBL008 fire:
+    /// a fleet of custom platforms lost nothing.
+    #[tokio::test]
+    async fn a_failed_stack_listing_costs_nothing_on_custom_platforms() {
+        let skipped = lint_skipped(LintFaults {
+            stacks: true,
+            unversioned: true,
+            ..LintFaults::default()
+        })
+        .await;
+        assert!(!skipped.iter().any(|s| s.contains("EBL008")), "{skipped:?}");
+    }
+
+    /// An expired session reaches the agent as the fix, in every kind
+    /// of entry: the whole-pass skip and a per-env coverage warning.
+    /// Both carried the raw SDK error before.
+    #[tokio::test]
+    async fn every_skipped_entry_carries_the_credential_fix() {
+        let skipped = lint_skipped(LintFaults {
+            stacks: true,
+            health: true,
+            expired: true,
+            ..LintFaults::default()
+        })
+        .await;
+        for rule in ["EBL008", "EBL012"] {
+            let entry = skipped
+                .iter()
+                .find(|s| s.starts_with(rule))
+                .unwrap_or_else(|| panic!("no {rule} entry: {skipped:?}"));
+            assert!(entry.contains("aws sso login"), "{rule}: {entry}");
+            assert_eq!(
+                entry.matches("aws sso login").count(),
+                1,
+                "one hint: {entry}"
+            );
+        }
+    }
+
+    /// An env whose settings could not be fetched is skipped whole, and
+    /// the entry carries the fix — without the op prefixed twice, which
+    /// `tool_error` did ("fetch_env_lint_inputs failed:
+    /// DescribeConfigurationSettings failed: …").
+    #[tokio::test]
+    async fn a_skipped_env_carries_the_credential_fix_once() {
+        let skipped = lint_skipped(LintFaults {
+            settings: true,
+            expired: true,
+            ..LintFaults::default()
+        })
+        .await;
+        let entry = skipped
+            .iter()
+            .find(|s| s.starts_with("poly-web: "))
+            .unwrap_or_else(|| panic!("no entry for the env: {skipped:?}"));
+        assert!(entry.contains("aws sso login"), "{entry}");
+        assert!(!entry.contains("fetch_env_lint_inputs"), "{entry}");
+        assert_eq!(entry.matches(" failed:").count(), 1, "{entry}");
     }
 
     /// A whole failed EBL015 pass is reported. `if let Ok` dropped it

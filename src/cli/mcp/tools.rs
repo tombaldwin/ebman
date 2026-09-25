@@ -938,13 +938,20 @@ impl Server {
             Backend::Aws => {
                 let profile = arg_str(args, "profile");
                 let client = self.client(args).await?;
-                // A failed stack listing is lost EBL008 coverage. It is
-                // carried in `Platforms` and reported per env by the
-                // shared assembly, in each env's coverage warnings below
-                // — the path the CLI, `explain` and the TUI share.
+                // A failed stack listing is lost EBL008 coverage: one
+                // `skipped_envs` entry for the run, not one per env over
+                // the same cause (each carrying the same credential
+                // hint), and only when an env in scope could have had
+                // EBL008 fire.
                 let platforms = lint::inputs::Platforms::from_listing(
                     client.list_solution_stacks().await,
                     |e| e.to_string(),
+                )
+                .report_once(
+                    targets
+                        .iter()
+                        .any(|e| lint::inputs::ebl008_could_fire(&disabled, e)),
+                    |why| skipped.push(rule_skipped(&profile, "EBL008", why)),
                 );
                 // Bounded concurrent fan-out — serial cost is ~2s/env,
                 // which brushes the 30s tool timeout on large fleets;
@@ -994,11 +1001,11 @@ impl Server {
                         }
                         // Route through the credential rewrite so an
                         // expired-SSO skip still carries the fix hint.
-                        Err(e) => skipped.push(format!(
-                            "{}: {}",
-                            env.name,
-                            tool_error(&profile, "fetch_env_lint_inputs", &e)
-                        )),
+                        // The error already names its call; the prefix
+                        // doubled it ("fetch_env_lint_inputs failed:
+                        // DescribeConfigurationSettings failed: …").
+                        Err(e) => skipped
+                            .push(with_credential_fix(&profile, &format!("{}: {e}", env.name))),
                     }
                 }
                 // EBL015 — account-level pass via the assembly shared

@@ -902,30 +902,13 @@ impl App {
                 });
             }
             // The fetch is this path's own (it reads the lint-input
-            // cache first); everything after it is shared. A failed
-            // input leaves the rule's input unset — it skips, never a
-            // false positive — and `input_gaps` lists the skip.
+            // cache first); everything after it — assembly, gaps, the
+            // cached inputs, the rules — is shared. A failed input
+            // leaves the rule's input unset (it skips, never a false
+            // positive) and the gap lists the skip.
             let (issues, not_run) = match opts_res {
                 Ok(options) => {
-                    let tags_err = match &tags_res {
-                        Some(Err(e)) => Some(e.as_str()),
-                        _ => None,
-                    };
-                    let health_err = health_res.as_ref().err().map(String::as_str);
-                    let mut inputs = crate::lint::inputs::EnvLintInputs::bare(options);
-                    inputs.coverage_warnings = crate::lint::inputs::input_gaps(
-                        &snap.env,
-                        &disabled,
-                        &snap.required_tags,
-                        &snap.platforms,
-                        tags_err,
-                        health_err,
-                        &inputs.options,
-                    );
-                    inputs.env_tag_keys = tags_opt;
-                    inputs.healthy_count = health_opt;
-                    inputs.newer_stack = snap.platforms.newer_for(&snap.env);
-                    let run = snap.finish(inputs, &disabled);
+                    let run = snap.finish_fetched(options, tags_res, health_res, &disabled);
                     (run.issues, run.coverage_warnings)
                 }
                 // Was `Err(_) => Vec::new()`: a failed option fetch
