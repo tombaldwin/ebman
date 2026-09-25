@@ -12,7 +12,7 @@ use super::super::*;
 use super::support::*;
 
 #[test]
-fn action_destructive_covers_terminate_and_ssm_run() {
+fn confirm_in_red_covers_terminate_and_ssm_run() {
     // Terminate has been destructive since 0.6; SsmRun added in
     // 0.17.3 — operator-explicit shell exec across instances is
     // treat-as-write and the modal renders red so the visual cue
