@@ -65,7 +65,7 @@ ebman completions <bash|zsh|fish>                                           # pr
 
 Exit-code convention (CI scripts can branch on these): `0` clean, `1` AWS-layer error, `2` usage error, `3` issues / drift found.
 
-`ebman audit --action NAME` matches every spelling of one operation: surfaces have written some verbs differently (`Restart` / `RestartAppServer`, `SetOption` / `UpdateOptionSettings`), and either name finds both.
+`ebman audit --action NAME` matches every spelling of one operation. Since 0.45 every surface writes one spelling per verb (`RestartAppServer`, `SetOption`), but older logs also carry `Restart` and `UpdateOptionSettings`; either name finds both.
 
 An `--env NAME` that matches no environment is a usage error (`2`) for `lint` and `drift`, across `--regions` too — unless a region could not be listed, in which case NAME may be there and the run exits `1` as degraded instead.
 

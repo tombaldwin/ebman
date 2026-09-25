@@ -76,6 +76,32 @@ pub(crate) enum Action {
 }
 
 impl Action {
+    /// The shared verb, for the actions another surface can also
+    /// dispatch.
+    pub(crate) fn shared_verb(self) -> Option<crate::verb::Verb> {
+        use crate::verb::Verb;
+        match self {
+            Action::Deploy => Some(Verb::Deploy),
+            Action::RestartAppServer => Some(Verb::RestartAppServer),
+            Action::Rebuild => Some(Verb::Rebuild),
+            Action::Terminate => Some(Verb::Terminate),
+            _ => None,
+        }
+    }
+
+    /// The `action=` label the TUI audits this action under: the shared
+    /// vocabulary's spelling where one exists, else the variant name.
+    ///
+    /// It was always `format!("{action:?}")`, which happened to spell the
+    /// shared verbs right — so renaming a variant would have silently
+    /// split a verb across surfaces in the audit log.
+    pub(crate) fn audit_label(self) -> String {
+        match self.shared_verb() {
+            Some(v) => v.audit_label().to_string(),
+            None => format!("{self:?}"),
+        }
+    }
+
     pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Rebuild => "Rebuild env",

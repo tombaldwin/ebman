@@ -65,7 +65,7 @@ impl App {
             self.context.account_id.as_deref(),
             self.context.profile.as_deref(),
             &self.region_for_name(&env),
-            "Deploy",
+            crate::verb::Verb::Deploy.audit_label(),
             env.as_str(),
             &[("version", label.as_str())],
         );
@@ -177,7 +177,7 @@ impl App {
                 self.context.account_id.as_deref(),
                 self.context.profile.as_deref(),
                 &self.region_for_name(&env),
-                "SetOption",
+                crate::verb::Verb::SetOption.audit_label(),
                 &env,
                 "env not in current view",
             );
@@ -190,7 +190,7 @@ impl App {
             self.context.account_id.as_deref(),
             self.context.profile.as_deref(),
             &self.region_for_name(&env),
-            "SetOption",
+            crate::verb::Verb::SetOption.audit_label(),
             &env,
             &[("ns", &namespace), ("name", &name), ("value", &value)],
         );

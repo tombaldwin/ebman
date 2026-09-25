@@ -3069,7 +3069,7 @@ fn write_audit_entry(
         account,
         profile,
         region,
-        &format!("{action:?}"),
+        &action.audit_label(),
         &target,
         &[],
     );
@@ -3089,7 +3089,7 @@ fn write_audit_outcome(
         account,
         profile,
         region,
-        &format!("{action:?}"),
+        &action.audit_label(),
         env,
         result,
         &[],

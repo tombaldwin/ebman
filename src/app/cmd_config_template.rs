@@ -43,7 +43,7 @@ impl App {
                 let action = Action::ConfigSave;
                 let display_env = env.name.clone();
                 let template_for_msg = template.clone();
-                let action_label = format!("{action:?}");
+                let action_label = action.audit_label();
                 crate::audit::append_action_dispatched(
                     self.context.account_id.as_deref(),
                     self.context.profile.as_deref(),

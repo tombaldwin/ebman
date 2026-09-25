@@ -67,6 +67,13 @@ impl ToolAttrs {
 /// Every tool, classified. The table is the point: a tool absent from
 /// it fails `every_tool_is_classified`, so a new one cannot ship
 /// without someone deciding what it does.
+use crate::verb::Verb;
+
+/// Destructiveness for the write verbs comes from the shared vocabulary
+/// (`Verb::destructive`), not from a second classification kept here —
+/// the backlog item that asked for the annotations table to stop being
+/// the vocabulary's home. `confirm_action` and `dlq_undo` are transport
+/// and restore mechanics, not verbs, and stay classified by hand.
 pub(super) const TOOL_ATTRS: &[(&str, ToolAttrs)] = &[
     // ── reads ──
     ("list_environments", ToolAttrs::read()),
@@ -102,29 +109,50 @@ pub(super) const TOOL_ATTRS: &[(&str, ToolAttrs)] = &[
     // `restart` bounces the app servers: downtime, but nothing is
     // destroyed and the end state after two restarts is the state after
     // one.
-    ("restart", ToolAttrs::write(false, true)),
+    (
+        "restart",
+        ToolAttrs::write(Verb::RestartAppServer.destructive(), true),
+    ),
     // `rebuild` terminates and recreates every instance. The
     // environment survives, but the instances do not — the confirm
     // modal says so in as many words, and an operator who expected
     // `restart` would be unpleasantly surprised.
-    ("rebuild", ToolAttrs::write(true, true)),
+    (
+        "rebuild",
+        ToolAttrs::write(Verb::Rebuild.destructive(), true),
+    ),
     // Deploying a version replaces what is running; the previous
     // version is still deployable, so this is reversible rather than
     // destructive. Deploying the same label twice lands in the same
     // place.
-    ("deploy", ToolAttrs::write(false, true)),
+    ("deploy", ToolAttrs::write(Verb::Deploy.destructive(), true)),
     // Same reasoning: a setting can be set back.
-    ("set_option", ToolAttrs::write(false, true)),
+    (
+        "set_option",
+        ToolAttrs::write(Verb::SetOption.destructive(), true),
+    ),
     // The environment is gone and is not coming back.
-    ("terminate", ToolAttrs::write(true, true)),
+    (
+        "terminate",
+        ToolAttrs::write(Verb::Terminate.destructive(), true),
+    ),
     // Destructive, and `dlq_purge` deliberately reads as no less so
     // than `terminate`. An environment can be rebuilt from its
     // configuration; a purged message is gone and there is nothing to
     // rebuild it from. Non-idempotent, all three: the second call acts
     // on a different queue state than the first.
-    ("dlq_resend", ToolAttrs::write(false, false)),
-    ("dlq_delete", ToolAttrs::write(true, false)),
-    ("dlq_purge", ToolAttrs::write(true, false)),
+    (
+        "dlq_resend",
+        ToolAttrs::write(Verb::DlqResend.destructive(), false),
+    ),
+    (
+        "dlq_delete",
+        ToolAttrs::write(Verb::DlqDelete.destructive(), false),
+    ),
+    (
+        "dlq_purge",
+        ToolAttrs::write(Verb::DlqPurge.destructive(), false),
+    ),
     //
     // `confirm_action` is the second half of the two-phase write flow,
     // and it dispatches whatever is pending — which may be a
@@ -178,6 +206,27 @@ pub(super) fn annotate(tools: &mut Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// Every MCP write tool is annotated with its verb's own
+    /// destructiveness — the vocabulary is the one classification.
+    ///
+    /// This table used to be the only home for it, keyed by transport
+    /// tool names, so a second consumer (levels, the TUI, assume-role)
+    /// would have grown a second table and drifted. Now `Verb::destructive`
+    /// decides and the table reads it; this pins that no entry answers
+    /// for itself.
+    #[test]
+    fn every_write_tool_takes_its_destructiveness_from_the_vocabulary() {
+        for verb in crate::cli::mcp::writes::WriteVerb::ALL {
+            let attrs = attrs_for(verb.tool_name())
+                .unwrap_or_else(|| panic!("{} is not classified", verb.tool_name()));
+            assert_eq!(
+                attrs.destructive,
+                verb.verb().destructive(),
+                "{}: the annotation disagrees with Verb::destructive",
+                verb.tool_name()
+            );
+        }
+    }
 
     /// Every advertised tool carries annotations.
     ///

@@ -41,12 +41,12 @@ pub(crate) const REFUSAL_ACTION_LABELS: &[(&str, &str)] = &[
     ("config-delete", "ConfigDelete"),
     ("config-save", "ConfigSave"),
     ("swap-cnames target", "SwapCnames"),
-    ("form submit", "UpdateOptionSettings"),
+    ("form submit", crate::verb::Verb::SetOption.audit_label()),
     // The DLQ verbs are bare words because that is what the toast says;
     // `spawn_dlq.rs` dispatches them under the `dlq-*` / `sqs-*` names.
-    ("delete", "sqs-delete"),
-    ("resend", "dlq-resend"),
-    ("purge", "dlq-purge"),
+    ("delete", crate::verb::Verb::DlqDelete.audit_label()),
+    ("resend", crate::verb::Verb::DlqResend.audit_label()),
+    ("purge", crate::verb::Verb::DlqPurge.audit_label()),
     ("replay", "dlq-replay"),
 ];
 
@@ -104,7 +104,7 @@ impl App {
     ///
     /// For sites that hold the dispatched `Action`: the toast wants the
     /// friendly label ("Terminate env") and the audit wants the one the
-    /// DISPATCH writes (`format!("{action:?}")` → `Terminate`), so
+    /// DISPATCH writes (`Action::audit_label` → `Terminate`), so
     /// `ebman audit --action Terminate` finds the refusals as well as
     /// the writes. `AuditFilter` matches exactly, so a refusal filed
     /// under the toast phrase is invisible to a filter that finds the

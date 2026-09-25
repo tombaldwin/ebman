@@ -959,20 +959,26 @@ impl WriteVerb {
         }
     }
 
-    fn label(self) -> &'static str {
+    /// The shared verb this MCP verb dispatches.
+    pub(super) fn verb(self) -> crate::verb::Verb {
+        use crate::verb::Verb;
         match self {
-            WriteVerb::Deploy => "Deploy",
-            WriteVerb::Restart => "Restart",
-            WriteVerb::Rebuild => "Rebuild",
-            WriteVerb::Terminate => "Terminate",
-            WriteVerb::SetOption => "SetOption",
-            // The labels `spawn_dlq` already audits under, so a TUI
-            // purge and an MCP purge correlate under
-            // `ebman audit --action dlq-purge`.
-            WriteVerb::DlqResend => "dlq-resend",
-            WriteVerb::DlqDelete => "sqs-delete",
-            WriteVerb::DlqPurge => "dlq-purge",
+            WriteVerb::Deploy => Verb::Deploy,
+            WriteVerb::Restart => Verb::RestartAppServer,
+            WriteVerb::Rebuild => Verb::Rebuild,
+            WriteVerb::Terminate => Verb::Terminate,
+            WriteVerb::SetOption => Verb::SetOption,
+            WriteVerb::DlqResend => Verb::DlqResend,
+            WriteVerb::DlqDelete => Verb::DlqDelete,
+            WriteVerb::DlqPurge => Verb::DlqPurge,
         }
+    }
+
+    /// The audit label: the shared vocabulary's, never a local
+    /// spelling. This was a local table, and it wrote a restart as
+    /// `Restart` while every other surface wrote `RestartAppServer`.
+    fn label(self) -> &'static str {
+        self.verb().audit_label()
     }
 }
 
