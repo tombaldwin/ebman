@@ -979,7 +979,12 @@ impl Server {
                             // for the same reason the fetch failures do
                             // — the agent cannot otherwise know that
                             // EBL018/EBL020 coverage shrank.
-                            skipped.extend(inputs.coverage_warnings.iter().cloned());
+                            skipped.extend(
+                                inputs
+                                    .coverage_warnings
+                                    .iter()
+                                    .map(|w| with_credential_fix(&profile, w)),
+                            );
                             all_issues.extend(run_rules_for_env(
                                 &rules,
                                 env,
@@ -1011,14 +1016,13 @@ impl Server {
                             // on them since 0.45, and the tool
                             // description tells agents that
                             // `skipped_envs` is where lost coverage is.
-                            skipped.extend(branch_warnings);
+                            skipped.extend(
+                                branch_warnings
+                                    .iter()
+                                    .map(|w| with_credential_fix(&profile, w)),
+                            );
                         }
-                        Err(e) => skipped.push(rule_skipped(
-                            &profile,
-                            "EBL015",
-                            "ListPlatformVersions",
-                            &e.to_string(),
-                        )),
+                        Err(e) => skipped.push(rule_skipped(&profile, "EBL015", &e.to_string())),
                     }
                 }
             }
@@ -1850,23 +1854,40 @@ impl Server {
 /// reaches the agent as `aws sso login --profile X`, then fall back
 /// to `op failed: msg`.
 pub(super) fn tool_error(profile: &Option<String>, op: &str, msg: &str) -> String {
+    credential_fix(profile, msg).unwrap_or_else(|| format!("{op} failed: {msg}"))
+}
+
+/// The actionable fix for a credential failure in `msg`, if it is one.
+fn credential_fix(profile: &Option<String>, msg: &str) -> Option<String> {
     let profile_name = profile
         .clone()
         .or_else(|| std::env::var("AWS_PROFILE").ok())
         .unwrap_or_else(|| "default".into());
     match crate::aws::rewrite_credential_error(&profile_name, msg) {
         Some(crate::aws::CredentialHint::Expired(text))
-        | Some(crate::aws::CredentialHint::Invalid(text)) => text,
-        None => format!("{op} failed: {msg}"),
+        | Some(crate::aws::CredentialHint::Invalid(text)) => Some(text),
+        None => None,
+    }
+}
+
+/// A `skipped_envs` entry with the credential fix appended when the
+/// failure inside it was an expired or invalid session. Every entry goes
+/// through this or [`tool_error`]: the per-env coverage warnings and the
+/// EBL015 per-branch ones carried the raw SDK error, so an expired SSO
+/// session reached the agent with no fix in it. Appended rather than
+/// substituted, so the entry still names the rule and env it is about.
+pub(super) fn with_credential_fix(profile: &Option<String>, entry: &str) -> String {
+    match credential_fix(profile, entry) {
+        Some(fix) => format!("{entry} — {fix}"),
+        None => entry.to_string(),
     }
 }
 
 /// A whole rule pass that could not run, as a `skipped_envs` entry.
-/// Through [`tool_error`] like the per-env entries, so an expired SSO
-/// session still reaches the agent as the fix, not a raw SDK error:
-/// these two were the only entries that bypassed it.
-pub(super) fn rule_skipped(profile: &Option<String>, rule: &str, op: &str, msg: &str) -> String {
-    format!("{rule} skipped — {}", tool_error(profile, op, msg))
+/// `msg` is the error as it renders — it already names the failed call,
+/// so no op is prefixed (one was, and doubled it).
+pub(super) fn rule_skipped(profile: &Option<String>, rule: &str, msg: &str) -> String {
+    with_credential_fix(profile, &format!("{rule} skipped — {msg}"))
 }
 
 #[cfg(test)]
