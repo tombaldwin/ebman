@@ -324,23 +324,19 @@ impl App {
         let gen = self.generation;
         let mut disabled = self.cfg.lint_disable.clone();
         disabled.extend(crate::project::load_lint_disables_from_cwd());
-        let app_name = env.application.clone();
-        let env_name_for_fetch = env.name.clone();
         let settings = self.cfg.explain_settings.clone();
         // Snapshot the lint-context inputs that aren't already
         // implied by `&env` + `&opts`. All four 0.18 wire-ups land
         // here too so `:explain` sees the same rule firing pattern
         // as `:lint` (EBL008 newer-stack, EBL010 required-tags,
         // EBL011 worker DLQ, EBL012 healthy-count).
-        let newer_stack_owned =
-            crate::aws::newer_stack_version(&env.solution_stack, &self.latest_stacks);
+        let latest_stacks_owned = self.latest_stacks.clone();
         let required_tags_owned = self.cfg.required_tags.clone();
         let dlq_depth_owned = if env.tier.eq_ignore_ascii_case("Worker") {
             self.worker_dlq_depths.get(&env.name).copied()
         } else {
             None
         };
-        let env_arn_owned = env.arn.clone();
         let issue_id_owned = issue_id.to_string();
         let issue_id_title = issue_id.to_string();
         self.status_message = Some(format!("explain: building prompt for {issue_id}…"));
@@ -356,45 +352,45 @@ impl App {
                     return;
                 }
             };
-            // Parallel fetch — see spawn_confirm_lint for the rationale.
-            let opts_fut = aws.fetch_env_option_settings(&app_name, &env_name_for_fetch);
-            let tags_fut = async {
-                match env_arn_owned.as_deref() {
-                    Some(arn) => aws.list_tags(arn).await.ok(),
-                    None => None,
-                }
-            };
-            let health_fut = aws.fetch_env_instance_counts(&env_name_for_fetch);
-            let (opts_res, tags_opt, health_res) = tokio::join!(opts_fut, tags_fut, health_fut);
-            let env_tag_keys_owned: Vec<String> = tags_opt
-                .unwrap_or_default()
-                .into_iter()
-                .map(|(k, _)| k)
-                .collect();
-            let healthy_count_owned = health_res.ok().map(|c| c.healthy as i64);
-            let body = match opts_res {
-                Ok(opts) => {
-                    let mut ctx = crate::lint::LintContext::for_env(&env, &opts)
-                        .with_required_tags(&required_tags_owned)
-                        .with_env_tag_keys(&env_tag_keys_owned);
-                    if let Some(newer) = newer_stack_owned.as_deref() {
-                        ctx = ctx.with_newer_stack_available(newer);
-                    }
-                    if let Some(depth) = dlq_depth_owned {
-                        ctx = ctx.with_dlq_depth(depth);
-                    }
-                    if let Some(count) = healthy_count_owned {
-                        ctx = ctx.with_healthy_count(count);
-                    }
+            // The shared assembly, not a TUI copy of it: the copy here
+            // flattened a failed tag fetch into "no tags", so EBL010
+            // fired for every required tag on an env whose tags were
+            // never read, and any other failed input read as "doesn't
+            // fire". Now a check that could not run says so.
+            let fetched = crate::lint::inputs::fetch_env_lint_inputs(
+                &aws,
+                &env,
+                &latest_stacks_owned,
+                false,
+                &disabled,
+                &required_tags_owned,
+            )
+            .await;
+            let body = match fetched {
+                Ok(mut inputs) => {
+                    inputs.dlq_depth = dlq_depth_owned;
                     let rules = crate::lint::default_rules(&disabled);
-                    let issues = crate::lint::run_rules(&rules, &ctx);
-                    match issues.iter().find(|i| i.rule_id == issue_id_owned) {
-                        None => format!(
+                    let issues = crate::lint::inputs::run_rules_for_env(
+                        &rules,
+                        &env,
+                        &inputs,
+                        &required_tags_owned,
+                    );
+                    use crate::lint::inputs::ExplainVerdict;
+                    match crate::lint::inputs::explain_verdict(
+                        &issue_id_owned,
+                        &issues,
+                        &inputs.coverage_warnings,
+                    ) {
+                        ExplainVerdict::DoesNotFire => format!(
                             "explain: rule {issue_id_owned} doesn't fire on env {} — nothing to explain.\n\
                              Run :lint to see which issues do fire here.\n\nesc / q to close",
                             env.name
                         ),
-                        Some(issue) => {
+                        ExplainVerdict::NotEvaluated(why) => format!(
+                            "explain: {why}\n\nesc / q to close"
+                        ),
+                        ExplainVerdict::Fires(issue) => {
                             let prompt = crate::llm::build_prompt(issue);
                             // Cache first — operators running the
                             // same explain multiple times in a
@@ -418,7 +414,7 @@ impl App {
                         }
                     }
                 }
-                Err(e) => format!("explain: fetch_env_option_settings: {e}\n\nesc / q to close"),
+                Err(e) => format!("explain: {e}\n\nesc / q to close"),
             };
             let _ = tx.send(AppMsg::TextOverlay {
                 gen,

@@ -195,6 +195,12 @@ pub(crate) struct EnvLintInputs {
     /// for "checked, clean" and "IAM denied the probe". These carry the
     /// difference out to the operator.
     pub coverage_warnings: Vec<String>,
+    /// EBL011's input: the worker DLQ depth. Not fetched here — the
+    /// lint path does not poll queues — so it is `None` from
+    /// `fetch_env_lint_inputs`, and the TUI fills it from the depth it
+    /// already caches. Without the field the TUI could not use this
+    /// assembly at all, which is why it kept its own copies.
+    pub dlq_depth: Option<i64>,
 }
 
 impl EnvLintInputs {
@@ -211,6 +217,7 @@ impl EnvLintInputs {
             newer_stack: None,
             waf_missing: None,
             coverage_warnings: Vec::new(),
+            dlq_depth: None,
         }
     }
 }
@@ -326,6 +333,7 @@ pub(crate) async fn fetch_env_lint_inputs(
         newer_stack,
         waf_missing: waf_outcome.verdict(),
         coverage_warnings,
+        dlq_depth: None,
     })
 }
 
@@ -425,7 +433,47 @@ pub(crate) fn build_lint_context<'a>(
     if let Some(missing) = inputs.waf_missing {
         ctx = ctx.with_waf_missing(missing);
     }
+    if let Some(depth) = inputs.dlq_depth {
+        ctx = ctx.with_dlq_depth(depth);
+    }
     ctx
+}
+
+/// What `:explain RULE` should say about one env.
+#[derive(Debug, PartialEq)]
+pub(crate) enum ExplainVerdict<'a> {
+    /// The rule fired: explain this issue.
+    Fires(&'a lint::Issue),
+    /// The rule could not be evaluated: its input fetch or probe
+    /// failed. Saying "doesn't fire" here would be a clean bill of
+    /// health for a check that never ran.
+    NotEvaluated(&'a str),
+    /// Evaluated, and it does not fire.
+    DoesNotFire,
+}
+
+/// Decide `:explain`'s answer from the rule run and its lost coverage.
+///
+/// The TUI's own copy of the assembly flattened a failed tag fetch into
+/// "no tags", so EBL010 FIRED for every required tag on an env whose
+/// tags were never read — and a failed fetch of any other input read as
+/// "doesn't fire". Coverage warnings lead with the rule id (see
+/// `ProbeOutcome::coverage_warning`), which is how one is matched here.
+pub(crate) fn explain_verdict<'a>(
+    rule_id: &str,
+    issues: &'a [lint::Issue],
+    coverage_warnings: &'a [String],
+) -> ExplainVerdict<'a> {
+    if let Some(issue) = issues.iter().find(|i| i.rule_id == rule_id) {
+        return ExplainVerdict::Fires(issue);
+    }
+    match coverage_warnings
+        .iter()
+        .find(|w| w.split_whitespace().next() == Some(rule_id))
+    {
+        Some(w) => ExplainVerdict::NotEvaluated(w),
+        None => ExplainVerdict::DoesNotFire,
+    }
 }
 
 /// Pure: build the `LintContext` over fetched inputs and run the
@@ -439,4 +487,80 @@ pub(crate) fn run_rules_for_env(
     required_tags: &[String],
 ) -> Vec<lint::Issue> {
     lint::run_rules(rules, &build_lint_context(env, inputs, required_tags))
+}
+
+#[cfg(test)]
+mod explain_tests {
+    use super::{explain_verdict, ExplainVerdict};
+    use crate::lint;
+
+    fn issue(rule: &str) -> lint::Issue {
+        lint::Issue {
+            rule_id: rule.into(),
+            severity: lint::Severity::Warn,
+            env_name: Some("api-prod".into()),
+            title: format!("{rule} fired"),
+            detail: String::new(),
+            suggestion: None,
+            fields: Default::default(),
+        }
+    }
+
+    #[test]
+    fn a_rule_that_fired_is_explained() {
+        let issues = vec![issue("EBL001"), issue("EBL010")];
+        assert_eq!(
+            explain_verdict("EBL010", &issues, &[]),
+            ExplainVerdict::Fires(&issues[1])
+        );
+    }
+
+    /// The defect: a check whose input fetch failed must not read as
+    /// "doesn't fire" — that is a clean bill of health for a check
+    /// that never ran.
+    #[test]
+    fn a_rule_that_could_not_run_says_so() {
+        let warnings = vec![
+            "EBL010 could not be evaluated for api-prod: ListTagsForResource failed: AccessDenied"
+                .to_string(),
+        ];
+        assert_eq!(
+            explain_verdict("EBL010", &[], &warnings),
+            ExplainVerdict::NotEvaluated(&warnings[0])
+        );
+    }
+
+    /// A finding stands even when some OTHER check lost coverage on the
+    /// same env — the ordinary mixed case.
+    #[test]
+    fn a_finding_stands_beside_another_rules_lost_coverage() {
+        let issues = vec![issue("EBL010")];
+        let warnings = vec!["EBL012 could not be evaluated for api-prod: throttled".to_string()];
+        assert_eq!(
+            explain_verdict("EBL010", &issues, &warnings),
+            ExplainVerdict::Fires(&issues[0])
+        );
+    }
+
+    #[test]
+    fn a_rule_evaluated_and_quiet_does_not_fire() {
+        assert_eq!(
+            explain_verdict("EBL010", &[issue("EBL001")], &[]),
+            ExplainVerdict::DoesNotFire
+        );
+    }
+
+    /// Matched on the rule id as a WORD: another rule's warning, or one
+    /// that merely mentions this id later on, is not this rule's.
+    #[test]
+    fn another_rules_lost_coverage_is_not_this_rules() {
+        let warnings = vec![
+            "EBL012 could not be evaluated for api-prod: see EBL010 too".to_string(),
+            "EBL0100 could not be evaluated".to_string(),
+        ];
+        assert_eq!(
+            explain_verdict("EBL010", &[], &warnings),
+            ExplainVerdict::DoesNotFire
+        );
+    }
 }

@@ -8,6 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- **`:explain EBL010` no longer reports missing tags it never read.**
+  Its own copy of the lint assembly flattened a failed tag fetch into
+  "no tags", so EBL010 fired for every required tag; a failed fetch of
+  any other input read as "doesn't fire". `:explain` now uses the same
+  assembly as `ebman lint` and the MCP tool, and says when a rule could
+  not be evaluated.
+
 - **A red transition is audited under the environment's own region.**
   Under a multi-region fan-out the line — which operators wire their own
   notifiers off — carried the home region instead.
