@@ -728,44 +728,61 @@ async fn credential_errors_are_rewritten_actionably() {
     assert!(msg.contains("op failed"), "got: {msg}");
 }
 
-/// The whole-pass lint skips (EBL008, EBL015) go through the same
-/// rewrite: they were formatted with a bare `{e}`, so an expired SSO
-/// session reached the agent as an SDK error with no fix in it.
+/// Every `skipped_envs` entry carries the credential fix when the
+/// failure in it was an expired session: the whole-pass EBL015 skip,
+/// and — through `with_credential_fix` — the per-env coverage warnings
+/// and EBL015 per-branch warnings, which carried the raw SDK error.
 #[test]
-fn a_skipped_rule_pass_carries_the_credential_fix() {
-    let msg = super::tools::rule_skipped(
-        &Some("prod-admin".into()),
-        "EBL008",
-        "ListAvailableSolutionStacks",
-        "The security token included in the request is expired",
+fn a_skipped_entry_carries_the_credential_fix() {
+    let expired =
+        "ListPlatformVersions failed: The security token included in the request is expired";
+    let msg = super::tools::rule_skipped(&Some("prod-admin".into()), "EBL015", expired);
+    assert!(
+        msg.starts_with("EBL015 skipped — ListPlatformVersions failed: "),
+        "got: {msg}"
     );
-    assert!(msg.starts_with("EBL008 skipped — "), "got: {msg}");
+    assert_eq!(
+        msg.matches("ListPlatformVersions").count(),
+        1,
+        "op doubled: {msg}"
+    );
     assert!(
         msg.contains("aws sso login --profile prod-admin"),
         "got: {msg}"
     );
-    let msg = super::tools::rule_skipped(&None, "EBL015", "ListPlatformVersions", "Throttling");
+    let plain =
+        super::tools::rule_skipped(&None, "EBL015", "ListPlatformVersions failed: Throttling");
     assert_eq!(
-        msg,
+        plain,
         "EBL015 skipped — ListPlatformVersions failed: Throttling"
     );
 
-    // Both live call sites use it — the AWS backend is not reachable
-    // from a test, so pin the wiring.
+    let warning = format!("EBL010 could not be evaluated for api: {expired}");
+    let fixed = super::tools::with_credential_fix(&Some("prod-admin".into()), &warning);
+    assert!(
+        fixed.starts_with(&warning),
+        "keeps the rule and env: {fixed}"
+    );
+    assert!(
+        fixed.contains("aws sso login --profile prod-admin"),
+        "{fixed}"
+    );
+    let other = "EBL010 could not be evaluated for api: Throttling";
+    assert_eq!(super::tools::with_credential_fix(&None, other), other);
+
+    // Every per-env and per-branch warning goes through it (the AWS
+    // backend is not reachable from a test, so pin the wiring).
     let prod = crate::app::tests::scan::production_source("cli/mcp/tools.rs");
-    // EBL008 has no whole-pass skip any more: a failed listing reaches
-    // `skipped_envs` per env, through the shared assembly.
-    let rule = "EBL015";
-    {
-        assert!(
-            prod.contains(&format!("\"{rule}\",\n")),
-            "the {rule} skip no longer goes through rule_skipped"
-        );
-        assert!(
-            !prod.contains(&format!("\"{rule} skipped")),
-            "the {rule} skip formats the raw error itself again"
-        );
-    }
+    assert!(
+        !prod.contains("skipped.extend(inputs.coverage_warnings.iter().cloned())")
+            && !prod.contains("skipped.extend(branch_warnings)"),
+        "a warning reaches skipped_envs without the credential fix"
+    );
+    assert_eq!(
+        prod.matches("with_credential_fix(&profile, w)").count(),
+        2,
+        "coverage warnings and branch warnings"
+    );
 }
 
 /// `initialize` must tell a client what ebman can do that this
