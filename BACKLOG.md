@@ -38,6 +38,42 @@ Tier definitions:
 
 #### Refactors and test hygiene
 
+- [ ] **Audit writers take a typed label, and the verb spelling guard
+  goes.** `no_surface_spells_a_shared_verb_itself` (`src/verb.rs`) bans
+  any production literal `"Deploy"` / `"Rebuild"` / `"Terminate"` /
+  `"Restart"`, menu text and JSON included, and its message ties UI text
+  to the audit vocabulary. The structural fix: `append_action_*` takes
+  `AuditLabel::{Shared(Verb), Local(&'static str)}` so the compiler
+  enforces it (~40 call sites). *0.45 release review.*
+- [ ] **Move the lint-input tests next to `lint/inputs.rs`.**
+  `probe_outcome_tests`, `disabled_rule_probes` and `lost_coverage` in
+  `src/cli/lint.rs` test code that moved to `lint/inputs.rs` in 0.45.
+  Separately, `apply_fixes_for_env` is production code sitting after
+  ~1,100 lines of test modules in `cli/lint.rs`. *0.45 release review.*
+- [ ] **Coverage warnings are matched as text.** `explain_verdict`
+  identifies a warning by its first word, relying on the formatting in
+  `ProbeOutcome::coverage_warning`, `fetch_stale_platform_issues` and
+  `cached_input_gaps`. A typed `CoverageGap { rule, why }` removes the
+  dependency. *0.45 release review.*
+- [ ] **`src/app/tests/scan.rs` has outgrown its name and location**
+  (~1,100 lines): source-scan primitives, git/packaging checks (account
+  IDs, protected names) and the `write_gate` guard, under `app/tests/`
+  while `verb.rs`, `aws/tests.rs` and `cli` all use it. A crate-level
+  test-support module split into `scan` and `packaging`. *0.45 release
+  review.*
+- [ ] **The MCP undo buffer to its own file.** ~200 self-contained lines
+  of `src/cli/mcp/writes.rs` (`DeletedMessage`, `Claim`, the
+  remember / claim / finish / recoverable methods) → `mcp/undo.rs`.
+  *0.45 release review.*
+- [ ] **TUI `:lint` no longer primes the confirm modal's input cache.**
+  Since it moved to the shared assembly it does not send
+  `LintInputsCached`, so a later pre-deploy confirm refetches tags and
+  health. Latency only. *0.45 release review.*
+- [ ] **The `dlq_undo` refusal audit line records `region="-"`** when the
+  delete used the default region, while the dispatched / completed lines
+  record the resolved one. Same pattern as the other MCP gate refusals —
+  fix the class. *0.45 release review.*
+
 - [ ] **Merged doc comments on `pub(crate)` items are still
   unguarded.** 0.42.0 closed this for the PUBLIC surface —
   `#![warn(missing_docs)]` in `lib.rs`, plus docs for the 18 public
