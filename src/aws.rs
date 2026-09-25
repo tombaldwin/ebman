@@ -1064,6 +1064,20 @@ pub(crate) struct AwsErrorMeta {
     /// action.
     pub message: Option<String>,
     pub request_id: Option<String>,
+    /// Why a failure that never reached the service happened — a
+    /// timeout, DNS, an expired SSO session, a dispatch failure — from
+    /// the SDK error's own chain. Those have no `code` and no `message`
+    /// (`ProvideErrorMetadata` is empty for anything but a service
+    /// error), so without this the plain `Display` was the bare
+    /// operation name and "unable to load credentials" vanished from
+    /// every `{e}` site.
+    ///
+    /// Its own field, not `message`: the TUI's classifier treats a
+    /// `message` as "the service answered" and stops there, and the
+    /// first cut of this fix put the cause in `message` — so a throttle
+    /// or credential failure that never reached the service lost its
+    /// class prefix, and with it the refresh back-off.
+    pub cause: Option<String>,
 }
 
 impl AwsErrorMeta {
@@ -1078,7 +1092,10 @@ impl AwsErrorMeta {
     /// change the operator-facing format and nothing pinning them to
     /// agree.
     pub(crate) fn detail_after(&self, head: &str) -> String {
-        let mut out = match (head.is_empty(), self.message.as_deref()) {
+        let mut out = match (
+            head.is_empty(),
+            self.message.as_deref().or(self.cause.as_deref()),
+        ) {
             (false, Some(m)) => format!("{head}: {m}"),
             (false, None) => head.to_string(),
             (true, Some(m)) => m.to_string(),
@@ -1174,24 +1191,22 @@ where
         match self {
             Ok(v) => Ok(v),
             Err(e) => {
-                let mut meta = AwsErrorMeta {
+                let (code, message) = (
+                    e.code().map(str::to_string),
+                    e.message().map(str::to_string),
+                );
+                // See `AwsErrorMeta::cause`. `DisplayErrorContext`
+                // renders the SDK error's whole chain, which is where a
+                // non-service failure's reason lives.
+                let cause = (code.is_none() && message.is_none())
+                    .then(|| aws_sdk_elasticbeanstalk::error::DisplayErrorContext(&e).to_string());
+                let meta = AwsErrorMeta {
                     op: Some(op.to_string()),
-                    code: e.code().map(str::to_string),
-                    message: e.message().map(str::to_string),
+                    code,
+                    message,
                     request_id: e.request_id().map(str::to_string),
+                    cause,
                 };
-                // A failure that never reached the service — a timeout,
-                // DNS, an expired SSO session, a dispatch failure — has
-                // no code and no message: `ProvideErrorMetadata` is empty
-                // for anything but a service error. Without this the
-                // plain `Display` was the bare operation name, and "unable
-                // to load credentials" vanished from every `{e}` site.
-                // `DisplayErrorContext` renders the SDK error's whole
-                // chain, which is where that cause lives.
-                if meta.code.is_none() && meta.message.is_none() {
-                    meta.message =
-                        Some(aws_sdk_elasticbeanstalk::error::DisplayErrorContext(&e).to_string());
-                }
                 Err(aws_report(color_eyre::eyre::Report::new(e), meta))
             }
         }
