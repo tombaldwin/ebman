@@ -3052,8 +3052,9 @@ fn build_describe_cli(env_name: &str, region: &str, profile: Option<&str>) -> St
 /// Thin typed wrappers around the [`crate::audit`] module's writer
 /// APIs. App-side callers pass [`Action`] (the typed enum) — these
 /// adapt to the `action_label: &str` shape `audit::append_action_*`
-/// expects. Same Debug-derived names (`Rebuild`, `Restart`, ...) the
-/// audit log used pre-consolidation, so the wire format is unchanged.
+/// expects. The label is [`Action::audit_label`]: the shared
+/// vocabulary's spelling (`crate::verb`) where one exists, so a verb
+/// reads the same in the audit log whichever surface wrote it.
 fn write_audit_entry(
     account: Option<&str>,
     profile: Option<&str>,

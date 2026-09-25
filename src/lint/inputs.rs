@@ -59,10 +59,11 @@ impl ProbeOutcome {
 
 /// EBL020 input probe: when the env has `XRayEnabled=true`, resolve
 /// its instance-profile role and IAM-simulate `xray:PutTraceSegments`
-/// against it. `Some(true)` = denied (the rule's firing signal),
-/// `Some(false)` = allowed, `None` = X-Ray off / no profile / probe
-/// failed (the rule skips — never a false positive from a failed
-/// probe). Lives at the call site rather than in `LintContext`
+/// against it. `Checked(true)` = denied (the rule's firing signal),
+/// `Checked(false)` = allowed, `NotApplicable` = X-Ray off / no
+/// profile, `Unknown(why)` = the probe failed: the rule skips — never a false
+/// positive from a failed probe — and the skip is reported as a
+/// coverage warning. Lives at the call site rather than in `LintContext`
 /// because rules are pure and synchronous.
 pub(crate) async fn probe_xray_trace_denied(
     aws: &aws::AwsClient,
@@ -120,10 +121,11 @@ pub(crate) async fn probe_xray_trace_denied(
 }
 
 /// EBL018 input probe: for a prod-named env fronted by an ALB, ask
-/// WAFv2 whether a WebACL is associated. `Some(true)` = no WAF (the
-/// rule's firing signal), `Some(false)` = WAF present, `None` =
-/// non-prod name / classic-or-network LB / no ALB ARN resolvable /
-/// probe failed (the rule skips — never a false positive). Classic
+/// WAFv2 whether a WebACL is associated. `Checked(true)` = no WAF (the
+/// rule's firing signal), `Checked(false)` = WAF present,
+/// `NotApplicable` = non-prod name / classic-or-network LB / no ALB ARN
+/// resolvable, `Unknown(why)` = the probe failed: the rule skips and
+/// the skip is reported. Classic
 /// ELBs are structurally out: WAFv2 can't associate with them.
 pub(crate) async fn probe_waf_missing(
     aws: &aws::AwsClient,
@@ -172,9 +174,8 @@ pub(crate) async fn probe_waf_missing(
 /// fetched and held in one place. Extracted (0.26) so `ebman lint`
 /// and the MCP `lint` tool share a single assembly path instead of
 /// each growing its own copy of the fetch + probe choreography.
-/// `dlq_depth` is deliberately absent: the CLI doesn't poll worker
-/// queues, so EBL011 stays TUI-only (stated in the MCP tool's
-/// coverage caveats).
+/// The TUI's `:lint` and `:explain` use it too (0.45); the pre-deploy
+/// confirm lint (`spawn_confirm_lint`) is the one recorded exception.
 pub(crate) struct EnvLintInputs {
     pub options: Vec<(String, String, String)>,
     /// `None` = the tag fetch failed or wasn't attempted, so EBL010
@@ -223,12 +224,12 @@ impl EnvLintInputs {
 }
 
 /// Fetch one env's lint inputs: parallel option-settings + tags +
-/// instance-counts (matching the TUI's `spawn_confirm_lint`
-/// plumbing), then the two gated probes (EBL020 IAM sim when X-Ray
-/// is on; EBL016 HTTP probe when `probe_live`). Tags and health are
-/// tolerated independently — a missing input means the corresponding
-/// rule doesn't fire. `Err` carries the option-settings fetch error,
-/// the one input lint can't run without.
+/// instance-counts, then the gated probes (EBL020 IAM sim when X-Ray
+/// is on, EBL018 WAF lookup for prod ALB envs, EBL016 HTTP probe when
+/// `probe_live`). Tags and health are tolerated independently — a
+/// missing input means the corresponding rule doesn't fire, and a
+/// coverage warning says so. `Err` carries the option-settings fetch
+/// error, the one input lint can't run without.
 pub(crate) async fn fetch_env_lint_inputs(
     aws: &aws::AwsClient,
     env: &aws::Environment,

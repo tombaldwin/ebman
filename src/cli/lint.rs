@@ -826,11 +826,11 @@ pub(crate) fn env_not_found_anywhere(
 
 /// `ebman lint` — run the diagnostic rule engine over the fleet.
 ///
-/// Exit 2 on a usage error, 1 when `--baseline` refuses to snapshot a
-/// degraded run. Findings themselves do not set the exit code.
-///
-/// A run whose inputs partly failed reports `skipped_envs` rather than
-/// failing: check it before reading a clean result as full coverage.
+/// Exit codes are [`lint_exit_code`]'s: 0 clean, 3 issues found, 1 a
+/// degraded run (a region, env, input fetch or probe failed — so a
+/// "clean" result is not full coverage) or a failed `--fix` dispatch,
+/// and 2 a usage error. `--baseline` also exits 1 rather than snapshot
+/// a degraded run.
 pub async fn run(args: &[String]) -> Result<()> {
     let LintArgs {
         env_name,
