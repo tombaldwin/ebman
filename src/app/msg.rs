@@ -396,10 +396,12 @@ impl App {
                 Ok(Some(depth)) => {
                     self.worker_dlq_depths.insert(env_name.clone(), depth);
                     self.worker_dlq_stale.remove(&env_name);
+                    self.worker_dlq_absent.remove(&env_name);
                 }
                 Ok(None) => {
                     self.worker_dlq_depths.remove(&env_name);
                     self.worker_dlq_stale.remove(&env_name);
+                    self.worker_dlq_absent.insert(env_name);
                 }
                 Err(e) => {
                     tracing::warn!(

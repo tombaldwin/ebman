@@ -801,6 +801,7 @@ impl App {
                 // would render as current until the first refresh.
                 self.worker_dlq_depths.clear();
                 self.worker_dlq_stale.clear();
+                self.worker_dlq_absent.clear();
                 self.env_instance_counts.clear();
                 self.applications.clear();
                 self.costs.clear();

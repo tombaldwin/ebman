@@ -337,6 +337,8 @@ impl App {
         } else {
             None
         };
+        let dlq_absent = self.worker_dlq_absent.contains(&env.name);
+        let platforms_loaded = !self.latest_stacks.is_empty();
         let issue_id_owned = issue_id.to_string();
         let issue_id_title = issue_id.to_string();
         self.status_message = Some(format!("explain: building prompt for {issue_id}…"));
@@ -369,6 +371,15 @@ impl App {
             let body = match fetched {
                 Ok(mut inputs) => {
                     inputs.dlq_depth = dlq_depth_owned;
+                    inputs
+                        .coverage_warnings
+                        .extend(crate::lint::inputs::cached_input_gaps(
+                            &env,
+                            &disabled,
+                            platforms_loaded,
+                            dlq_depth_owned,
+                            dlq_absent,
+                        ));
                     let rules = crate::lint::default_rules(&disabled);
                     let issues = crate::lint::inputs::run_rules_for_env(
                         &rules,

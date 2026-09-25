@@ -253,6 +253,11 @@ pub struct App {
     /// may be old. Cleared per-env on the next successful check and
     /// wholesale on context switch.
     pub(crate) worker_dlq_stale: std::collections::HashSet<String>,
+    /// Worker envs whose last check found NO DLQ configured. Without
+    /// it, a missing `worker_dlq_depths` entry meant both "no DLQ" and
+    /// "not checked yet", and lint could not tell a rule with nothing
+    /// to check from one that had no input. Cleared with the depths.
+    pub(crate) worker_dlq_absent: std::collections::HashSet<String>,
     /// Monotonic counter of context-switch spawns (`:region`,
     /// `:profile`, `:account`). Stamped into `AppMsg::Rebuild` so a
     /// slow older switch losing the race to a newer one is dropped in
@@ -1296,6 +1301,7 @@ impl App {
             alerts: 0,
             worker_dlq_depths: std::collections::HashMap::new(),
             worker_dlq_stale: std::collections::HashSet::new(),
+            worker_dlq_absent: std::collections::HashSet::new(),
             rebuild_epoch: 0,
             fanout_epoch: 0,
             aws_built_at: Instant::now(),
@@ -1626,6 +1632,7 @@ impl App {
             alerts: 0,
             worker_dlq_depths: std::collections::HashMap::new(),
             worker_dlq_stale: std::collections::HashSet::new(),
+            worker_dlq_absent: std::collections::HashSet::new(),
             rebuild_epoch: 0,
             fanout_epoch: 0,
             aws_built_at: Instant::now(),
