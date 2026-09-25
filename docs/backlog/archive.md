@@ -4102,3 +4102,492 @@ the shape CLAUDE.md names as the cheapest wrong path.
   last segment of a UUID can be twelve digits — RFC 4122's own example
   UUID ends in one. (Not quoted here: this file is scanned too.) If one appears, teach the detector the UUID
   shape; do not add the value to the list.
+
+## PLAN.md window, retired 2026-09-25 (0.43 → 0.44)
+
+*Moved verbatim from `PLAN.md` when the window was refreshed. The
+window header then read "Refreshed 2026-09-19, after 0.42.0"; every
+item below was done, ruled or verified. The "Also open" list was
+dropped rather than archived — it duplicated `BACKLOG.md` entries.*
+
+### Done since the last refresh
+
+- **0.42.0 shipped** — writes without a flag on any client that can ask
+  the operator; `--read-only`; batch DLQ plans; caller identity in every
+  plan; `writes_via`. Live on crates.io, Homebrew and the MCP Registry,
+  and **exercised against real infrastructure**: a dead-lettered message
+  cleared on a production fleet through plan → dialog → approve.
+- **The elicitation round-trip is observed, not inferred** — approve,
+  decline and walk-away, against a real client. Stage 3's instrument is
+  no longer dead.
+- **Four reviewers found a fail-open before it shipped** — a dead ask
+  channel dispatched an unapproved `terminate`. A re-review after the
+  fix pass found three more defects the fix pass had itself introduced,
+  including a guard that asserted a defect and talked a second reviewer
+  out of reporting it.
+
+### Now — 0.43
+
+Three items, all of them promises already made in public. The tag notes
+name the first two as deliberate gaps, so they are debts, not ideas.
+
+0. **A declared capability is not a human** *(behaviour + measurement)*
+   — **partly done 2026-09-19.** `stage=asked` records the question,
+   answer and latency; `doctor` and `safety-and-privacy.md` now state
+   the limit and name the over-claim to avoid ("the confirmation was
+   approved", never "a human approved it"). ~~Still owed: script one
+   non-Claude-Code elicitation-declaring client~~ — **done
+   2026-09-20**: `a_scripted_client_can_complete_a_typed_confirmation`
+   drives the real binary over stdio, declares elicitation, and
+   answers its own dialog including the typed field. The protocol half
+   no longer depends on one vendor. It still cannot tell you whether a
+   human-facing UI renders an input box, which is the part only a live
+   client answers.
+
+   *Original entry:*
+
+   The load-bearing claim of 0.42.0 is that writes are safe by default
+   because a person answers. Nothing verifies a person is there.
+   `effective_scope` grants every verb on a self-reported capability
+   bit in the client's `initialize` frame, and a framework that
+   declares `elicitation: {}` and routes the question to its own model
+   satisfies every ask — producing a **cleaner** audit trail than an
+   honest operator, which `protection-levels.md` calls out by name as
+   the wrong incentive.
+
+   That note prescribed the mitigation and 0.42.0 shipped without it.
+   Partly repaid already: `stage=asked` now records the question, the
+   answer and the latency, so an approval leaves a trace and a
+   twenty-millisecond answer is distinguishable from someone reading a
+   foreclosure line. Remaining:
+
+   - `doctor` and the docs must never describe elicitation-approved as
+     "a human confirmed" — the honest phrasing is that the client said
+     it would ask.
+   - **Script one non-Claude-Code elicitation-declaring client.** The
+     whole "asking is a known quantity" claim rests on n=1. This is the
+     same twenty minutes item 2 gets, and it is worth more.
+
+   Note for whoever picks this up: item 1 is **no defence here.** A
+   self-answering client types an environment name back as readily as
+   it clicks. Name-back defends against a rubber-stamping human, which
+   is a different threat.
+
+1. ~~**Terminate name-back parity**~~ — **done 2026-09-19**, and widened to `dlq_purge` on the maintainer's ruling: both are strict-typed-name confirms in the TUI, so both are now typed over MCP. Fails closed on a client that cannot render a text field. ~~**Still owed: the live verification**~~ — **done 2026-09-25, after it had shipped in 0.43.0 and 0.44.0 without it.** The entry said "do that before it ships in a tag" and two tags went out anyway: the promise sat inside a struck-through heading, which reads as done whatever the body says.
+
+   Exercised against Claude Code with a person at the keyboard, via `ebman-dev` (`mcp serve --demo`: the ask at `writes.rs:2173` runs before the demo branch, so the dialog is real and the dispatch synthetic). Two cases, because the happy path alone cannot tell a typed name from an auto-filled one:
+
+   - `dlq_purge poly-batch`, name typed correctly → a text field **rendered**, the prompt named the env, the operator typed it, `dispatched`.
+   - Same, typed `poly-batc` and approved → refused as **`unconfirmed`** ("Nobody declined"), not `declined`.
+
+   So the field renders in this client and the typed value is load-bearing. **Scope of that claim:** one client (Claude Code), one verb (`dlq_purge`). `terminate` takes the same `typed` arm (`writes.rs:2168`) but was not driven live. Nothing is known about other clients' rendering beyond the scripted client in item 0.
+
+   *(Open follow-up promoted to PLAN.md "Now" item 1 on 2026-09-25.)*
+
+   *Original entry, for the reasoning:*
+
+   In the TUI a human types the environment name back before a
+   terminate. Over MCP `confirm_name` is supplied by the AGENT, so the
+   human's whole contribution to destroying an environment is one
+   click. "Same bargain as the TUI" is the justification for
+   writes-by-default, and for this one verb it is not true.
+
+   Elicitation supports the missing gate: a `requestedSchema` with a
+   required string property, validated against the env name, refusing
+   on mismatch.
+
+   **The ordering is the point.** A non-empty `requestedSchema` is
+   client behaviour nothing has exercised — the live matrix validated
+   the zero-field form only. So: prototype the schema, verify against a
+   real client, THEN ship. Shipping it untested would repeat the exact
+   sin 0.42.0 spent a day correcting.
+
+   Fails closed if a client cannot render it: no typed field means no
+   match, which refuses. That is the right direction, and it is also
+   why this must be measured — a silent refusal of every terminate is a
+   poor way to discover a rendering gap.
+
+2. ~~**The headless configuration**~~ — **measured 2026-09-20, and
+   the measurement changed the fix.** `claude -p` declares
+   `elicitation: true`, gets `writes: every verb`, and does **not**
+   hang: it auto-declines a confirmation in under a second.
+
+   So there is no availability problem — and a worse one. The reply
+   was recorded and reported as *"declined by the operator"* with no
+   human anywhere in the session, and the agent relayed "the operator
+   simply said no" to its user. A false attribution, produced by the
+   tool, repeated by the agent.
+
+   Fixed: nothing now claims a person answered. The reason reads "the
+   confirmation was declined", and the guidance tells the agent not to
+   attribute it, naming `-p` and CI harnesses as the concrete case.
+   The flat do-not-retry prohibition is unchanged.
+
+   `stage=asked` records the latency, which is what makes the two
+   distinguishable afterwards — a sub-second decline is not somebody
+   reading a foreclosure line.
+
+   **Ruled 2026-09-20: log it, do not act on it.** No code change; this
+   is the shipped behaviour. See "Not scheduled" for the reasoning and
+   the one thing that would reopen it.
+
+   *Original entry:*
+
+   `claude -p` and CI harnesses use the same client binary and
+   plausibly declare the same capability with no human to render to.
+   For those, every write waits out the ask window and then denies —
+   including writes an operator explicitly granted with
+   `--allow-writes`, because the ask fires on capability alone.
+
+   The tag notes state this as untested rather than claiming it works.
+   Twenty minutes with `claude -p` settles it. If it reproduces, the
+   fix is not obvious and is a **stop condition**, not a small item —
+   an autonomous run must measure and then stop, rather than reach for
+   a flag design:
+   possibly a startup flag asserting no human is present, possibly
+   honouring the flag as its own gate when the ask cannot be delivered.
+   **Measure first; the answer changes which.**
+
+3. ~~**A resend whose delete half failed**~~ — **done 2026-09-19.**
+   The item reports `RESENT BUT NOT REMOVED`, says a duplicate now
+   exists, and tells the agent not to retry that id. Mock-client
+   tested both branches: a delete-half failure on `dlq_delete` must
+   NOT claim a duplicate, because nothing was sent.
+
+   ~~**Found while testing, not yet fixed:** an SQS failure surfaces as
+   the SDK's bare `"service error"`~~ — **done 2026-09-22.** Measured
+   before touching anything: a mocked IAM denial on `delete_message`
+   rendered as `AccessDenied: service error`. The class was right and
+   the sentence naming the missing permission — `sqs:DeleteMessage` —
+   was gone.
+
+   `AwsErrorMeta` now carries the service's `message` alongside the
+   code and request id, `flatten_err_to_string` renders it, and the
+   five SQS calls go through `wrap_aws`. Same denial now reads
+   `AccessDenied: DeleteMessage failed: User is not authorized to
+   perform sqs:DeleteMessage`. An unclassified code (`ReceiptHandle
+   IsInvalid`) reaches the operator too, where it previously fell
+   through to the `Debug` sniff and surfaced nothing.
+
+   All three layers proven separately — drop the capture, drop the
+   render, or make the call site a pass-through: CAUGHT each time.
+
+   **The class is wider than SQS and was left alone deliberately.** 77
+   `.send()` call sites outside `aws/sqs.rs` still take the bare `?`,
+   exactly one of which is already converted. 13 modules is past the
+   stop condition; it is now its own backlog item with the per-file
+   counts.
+
+   *Original entry:*
+
+   `dispatch_one_dlq_message` sends before deleting, deliberately. If
+   the send succeeds and the delete fails, the item reports `ok: false`
+   with a bare error — but the message IS now on the main queue and the
+   original is still in the DLQ. An agent that retries the "failed" id,
+   which the batch report invites, mints another duplicate per attempt.
+   Found by the correctness reviewer, twice, in both reviews.
+
+   The error needs to say a duplicate now exists and not to resend that
+   id. Half a day including the mock-client test.
+
+### The protection-levels stages, in order
+
+*Stages 1-4 and 4b are done. Stage 5 (levels + the `Decision` type) was
+blocked on the elicitation data stage 3 instruments — the ladder's
+middle rungs are defined in terms of asking, and 4b deliberately did
+not prejudge them. **That block lifted on 2026-09-19**: 0.42.0 shipped
+the ask and its behaviour is measured, not assumed. See "Then" above.*
+
+The design note is agreed in principle. What follows is the
+implementation order, and the ordering is the important part: the
+reviews showed that doing these in the obvious sequence produces work
+that has to be thrown away.
+
+Each stage must be independently shippable and useful even if the next
+one never happens. If that stops being true, the stage is wrong.
+
+1. ~~Converge the two write gates~~ — **done 2026-09-09.**
+
+   `cli::write_refusal` and `App::read_only_reason` are separate
+   implementations over different inputs, and `src/config.rs` documents
+   the divergence as deliberate. Nothing shared with pgman is possible
+   until there is one decision function.
+
+   Done means: one function over a fully-materialised context — no
+   ambient `AWS_PROFILE` read, no clock, no `App` — with the TUI's
+   session gates (global read-only, freeze, demo mode) expressed as
+   context rather than as a second implementation. Toast wording stays
+   where it is; only the *decision* converges.
+
+   Guard it: the existing check catches half-composition in `src/cli`,
+   not a path that calls neither gate. A dispatch site that reaches
+   neither should fail a test.
+
+   `src/write_gate.rs` holds `decide(&WriteContext) -> Option<Refusal>`:
+   values only, no `App`, no `Config` methods, no `std::env`, no clock.
+   Both `cli::write_refusal` and `App::read_only_reason` now consult it
+   and render the result in their own voice — the TUI keeps the freeze
+   age and the `:incident END` hint, the CLI keeps `refusing ENV —
+   pinned by …`. Converging the messages too would have been a visible
+   regression for no benefit.
+
+   The converged precedence (global → freeze → env pin → account pin) is
+   the union of both, and preserves each: the CLI never sets the global
+   rung, so its old order is untouched.
+
+   `Config::pin_reason` is gone — it was the third implementation. Its
+   tests moved: the precedence cases to `write_gate`, and the replay one
+   ported to go through `write_refusal`, which pins the path it claims
+   to rather than a helper.
+
+   Five mutations CAUGHT, and two of them were the interesting ones. An
+   account pin applying with no profile resolved was NOT caught until
+   the fixture gained an empty-string account key — a malformed config
+   line produces one, and without it the bug's lookup simply misses. And
+   the CLI guard could be blinded entirely with the suite staying green,
+   because it only ever fired if someone introduced a violation; it now
+   carries a canary that proves it detects on every run.
+
+2. ~~Emit MCP tool annotations~~ — **done 2026-09-09.**
+
+   `readOnlyHint` / `destructiveHint` / `idempotentHint` /
+   `openWorldHint` on every tool descriptor. Verify the field names
+   against the current spec revision first.
+
+   `src/cli/mcp/annotations.rs` holds one table classifying all 14
+   tools, applied in `tool_table` rather than at each descriptor so a
+   guard can check the table against what is actually advertised.
+   Verified on the wire by driving the real server over stdio in both
+   modes: 14 tools, 0 unannotated.
+
+   The classification that took the most thought is `confirm_action`,
+   annotated at its **worst case** — it dispatches whatever is pending,
+   which may be a terminate, so a client trusting `destructive: false`
+   would skip the prompt on exactly the call that needs one. It is also
+   the only non-idempotent tool: its token is single-use.
+
+   `restart`, `deploy` and `set_option` are deliberately NOT destructive.
+   Flagging everything teaches clients to ignore the flag.
+
+   Five mutations CAUGHT. As intended, the table doubles as stage 4's
+   action vocabulary.
+
+3. ~~Specify `ask` per surface~~ — **decided 2026-09-09, and instrumented.**
+
+   Not code: a decision, written down, about what `ask` means on TUI,
+   CLI and MCP, and what it degrades to when the transport cannot carry
+   it. MCP degrades to *deny*, never to allow.
+
+   This is deliberately ahead of levels. `guarded` and `trusted` are
+   defined in terms of asking; a ladder whose middle rungs cannot be
+   expressed over the primary agent transport is sugar over nothing.
+
+   The decision is in the design note. The part worth repeating here:
+   elicitation is a CLIENT capability declared at `initialize`, so
+   whether `ask` is expressible is knowable per connection rather than
+   assumed. ebman was throwing that field away; it now captures and logs
+   it, and nothing branches on it yet.
+
+   **The instrument was dead until 2026-09-18, and stage 5 was waiting
+   on data it could never receive.** Every subcommand returns from
+   `main` before `init_logging` — deliberate, and correct for a flag
+   that prints and exits, but the MCP server is a daemon. The whole
+   subcommand surface held exactly one `tracing::` call and it was this
+   one. A probe declaring elicitation support moved the log by zero
+   bytes. `mcp serve` now initialises file logging (`setup` does not —
+   it promises it writes no files); the same probe now records
+   `elicitation=true`, and a plain client `elicitation=false`.
+
+   So the count starts at zero on 2026-09-18, not at the stage-3 date.
+   Nothing observed before then was recorded anywhere.
+
+   **The stop condition is now instrumented rather than hypothetical.**
+   If the logs show almost no client declaring elicitation, the ladder's
+   middle rungs collapse to deny and stages 4–5 need re-planning — but
+   that will be a conclusion from data, not a guess. Three mutations
+   CAUGHT on the detector, including one that would have made every
+   client look incapable.
+
+4. ~~Audit every refusal, with its rule and its remedy~~ — **done
+   2026-09-09.** Re-scoped; see below.
+
+   `stage=refused` lines across all four enforcement funnels: the TUI's
+   `deny_write` / `deny_write_batch`, and `cli::write_refusal` behind
+   `ebman action`, `action rollout`, `audit replay`, `lint --fix` and
+   both MCP write phases. Each names the rule (`env_pinned`,
+   `account_pinned`, `frozen`, `global_read_only`) and a remedy naming
+   the exact config key.
+
+   The near-miss is now visible: an agent attempting `terminate` on a
+   pinned prod leaves a line per attempt instead of nothing.
+
+   Wired at four funnels rather than ~25 dispatch sites, which the
+   existing `cli_write_paths_do_not_reach_past_the_shared_gate` guard is
+   what makes safe. `read_only_reason` split into `refusal_for` (typed)
+   and `render_refusal` (wording) — the audit needs the rule name, and
+   rendering is exactly what discards it.
+
+   Eight mutations CAUGHT across the two halves.
+
+   **Re-scoped: the obligations channel moves into stage 5.** Stage 4 as
+   written also carried `Decision { outcome, obligations }` and a
+   correlation id. Both were deferred *because nothing produces or reads
+   them yet* — the first obligation ("allow, but type-to-confirm")
+   arrives with the levels, and a channel with no producer is the
+   dead-field defect this repo has now hit three times in one day
+   (`client_supports_elicitation` written and never read; a client cache
+   added that nothing read; `pin_reason` as a third gate). Adding it
+   early would not have made stage 5 cheaper; it would have shipped a
+   plausible-looking struct field that no test could fail on.
+
+4b. ~~Verb-scoped `--allow-writes`~~ — **done 2026-09-18.** Taken
+   ahead of stage 5, on evidence.
+
+   `--allow-writes=dlq_resend,dlq_delete` grants those verbs and
+   nothing else. Not in the original order; it went in front of the
+   levels because the coarse flag had stopped being a design concern
+   and started blocking a real grant — a field session declined to ask
+   for write access rather than accept terminate-on-Prod as the price
+   of deleting one dead-lettered message.
+
+   Half a day against stage 5's two weeks, and it prejudges nothing: a
+   named level later compiles down to a verb set. Pure ceiling, so
+   Principle 5 holds trivially — a server flag, not request content.
+
+   The operator ruling that shaped it: a **uniform** grant, no tiered
+   ceremony per environment. Demo is not a lesser Prod when a client is
+   watching it, and a ladder that says otherwise teaches operators to
+   click through the cheap rungs.
+
+   Two defects, both found by guards rather than by review — worth
+   noting because both were in the new work and both read as fine:
+   `confirm_action` was being filtered out of a narrow grant (every
+   narrow grant could plan a write and never dispatch one), and `mcp
+   setup` had been advertising five write verbs since the three DLQ
+   ones shipped. Both lists are now derived; a `docs_drift` guard pins
+   the third.
+
+   Eleven mutations CAUGHT, two of which were only caught after the
+   first attempt at them proved to be a no-op — one did not compile,
+   one was semantically identical to the original.
+
+### From the scheduled mutation sweep, 2026-09-21
+
+The nightly whole-tree run finished (6h25m, 2118 survivors overall,
+76 in `cli/mcp`). Triaged against the week's new code:
+
+- **Fixed:** `succeeded += 1` in `dispatch_dlq_and_audit` survived
+  `-=` and `*=`. The batch test asserting `"succeeded":2` runs in
+  demo, and the demo branch renders that field from
+  `dlq_targets.len()` rather than from the counter — so the live
+  counter was never incremented by any test. Demo and live computing
+  the same field two ways with only demo covered is the divergence
+  this cycle kept finding elsewhere. Now covered by a mock-client
+  batch that deletes two messages for real.
+- **Fixed:** the confirm-time re-read depth (`DLQ_BATCH_CAP * 3`)
+  survived being divided. Under-fetching means a full batch cannot be
+  found, so messages the operator approved report as "not among those
+  returned" while the rest dispatch. Pinned on the REQUEST — the first
+  call must ask SQS for its per-call maximum of 10 — rather than by
+  simulating SQS sampling, which would be testing the mock.
+- **Accepted equivalent:** `ask_outcome_from`'s
+  `Some("decline") | Some("cancel")` arm can be deleted with no
+  behaviour change, because the catch-all is also `Declined` — the
+  fail-closed default is deliberate. The explicit arm states intent;
+  it does not carry behaviour. Recorded so nobody re-investigates.
+- **Accepted:** `forget_ask` replaced with `()` survives. It leaks one
+  `pending_asks` entry per timed-out ask, bounded by connection
+  lifetime, and no observable behaviour changes — the ask has already
+  been answered by its own timeout. Worth a drop-guard if
+  `pending_asks` ever grows unbounded; not now.
+- **Not chased:** the remaining `cli/mcp` survivors are in `run`, the
+  frame loop that owns stdin. `src/ui/` survivors remain deliberately
+  uncovered, as recorded below.
+
+### The four-stage structural refactor, 2026-09-21/22
+
+From the software-architect pass. Reviewed after each stage, as asked.
+
+1. **`cli/lint.rs` — `run` 606 lines -> 308.** `run_cycle` extracted
+   with a `client_for` closure as the testability seam; the
+   `FIX_DISPATCH_FAILED` static replaced by a returned `CycleReport`
+   whose degraded state is *derived* from its reasons rather than
+   tracked alongside them. Found and fixed a live bug: EBL015 reported
+   clean when `ListPlatformVersions` failed. **Reviewed — but not
+   done; see the open item below.**
+
+   The review named **three side channels** still inside `run_cycle`.
+   Two are closed: `exit_after_drain(2)` became
+   `CycleReport::usage_error` and the wall clock became a passed-in
+   `now` (`c50a490`), and the `--fix` block came out with the three
+   tests that first reached it (`8985966`).
+
+   **This was recorded nowhere but those commit messages** — the entry
+   above said "Done, reviewed" while a third of it was outstanding,
+   which is the invisible-follow-up failure `CLAUDE.md` names. Hence
+   the open item.
+
+   *(Open follow-up promoted to PLAN.md "Now" item 2 on 2026-09-25.)*
+
+2. **`app/input.rs` — `handle_key` 842 lines -> 188.** `OverlayRoute`
+   makes the overlay dispatch exhaustive over all 14 variants with no
+   wildcard, and `key_arm_order` now parses both keymap files. Found
+   and fixed a live bug: `About` was missing from a hand-written
+   overlay-variant list. **Done, reviewed.**
+
+3. **`audit.rs` — escaping into one renderer.** `Field` + `detail_from`.
+   Closed four live forge paths (`action=` was interpolated raw by
+   `dispatched`/`completed`/`skipped`/`undone`) and one door out of the
+   file (`append_raw`, whose sole caller shipped three unescaped
+   fields including an EB *application* name). **Done, reviewed — and
+   the review was worth more than the refactor:**
+
+   - The commit claimed "wire format unchanged" and it was false. Six
+     fields were always-quoted before and became conditionally quoted,
+     rewriting the bytes of every `lint --fix` line. Invisible to 82
+     audit tests because `parse_kv_pairs` reads both forms. Fixed with
+     `Field::Quoted` + a test that asserts on bytes, not on the parse.
+   - The commit claimed `append_extras` was deleted. It was still live
+     behind the DLQ writer.
+   - The "chokepoint" claim held only inside `audit.rs`.
+
+   The pattern across all three: the *narrative* over-claimed while the
+   code under-delivered, in the same commit. Cf.
+   `state-claims-only-as-wide-as-checked`.
+
+4. **Relocate the `cli/mcp` test mass** to `src/cli/mcp/tests/`, on the
+   `src/app/tests/` precedent. `mod.rs`, `writes.rs`, `tools.rs` only —
+   explicitly not a repo-wide sweep. Each self-scanning guard must be
+   re-pointed at the `scan.rs` helpers and re-proven with a planted
+   violation. **Done, reviewed.**
+
+   Production halves: `mod.rs` 5,841 -> 1,715, `writes.rs`
+   4,305 -> 2,652, `tools.rs` 2,759 -> 1,862, with the 168 MCP test
+   names byte-identical across all three moves.
+
+   Two parenting strategies, because one does not fit both: `mod.rs`'s
+   tests keep their path exactly (`mcp::tests`), while `writes.rs`'s
+   and `tools.rs`'s stay CHILDREN of their parents via `#[path]` —
+   re-parenting them compiled and then failed on visibility, and the
+   only way through would have been `pub(crate)` on a dozen private
+   items of the module that owns the write gate.
+
+   **What it found, which is the point:**
+
+   - `a_resend_sends_before_it_deletes` had been asserting on its own
+     source since a rename in `beae2bd`. The `.expect()` that should
+     have caught it was satisfied by the guard's own literal, sitting
+     in the file it read. Its `send < del` also compared `Option`s,
+     where `None < Some(_)` — a missing send SATISFIED the ordering
+     check.
+   - `production_half` was deleting 27 lines of `src/aws.rs`,
+     including `pub(crate) struct AwsErrorMeta`, because an
+     out-of-line `mod tests;` has no body to skip past. A scan helper
+     reporting clean over code it never saw.
+   - The write-gate guard could pass over zero files, and its
+     "`mod.rs` is the gate" exemption silently excused all 1,715 lines
+     of `cli/mcp/mod.rs`.
+
+   Three of these predate the refactor by months. The relocation did
+   not cause them; it is what made them visible, which is the argument
+   for doing this kind of move at all.

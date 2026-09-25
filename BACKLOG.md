@@ -431,22 +431,6 @@ Populated by autonomous runs per `CLAUDE.md` stop-conditions. Each entry: one-li
   anywhere. The scan cannot become a guard at a 100% false-positive
   rate, exactly as the old entry predicted.
 
-- [ ] **Assume-role elevation for MCP writes** (`runtime-grants.md`
-  layer four / step 6). `sts:AssumeRole` is the time-boxed grant done
-  properly: STS enforces the TTL, the role policy is the ceiling, and
-  CloudTrail audits it independently of ebman — so the record does not
-  depend on ebman being honest about itself.
-
-  `AwsClient::assume_role` already exists for cross-account switching,
-  so the plumbing is there. Buys nothing for a setup running as admin,
-  which is why it is not first; the maintainer asked for it to be
-  designed now and rolled out in a release soon after, not built into
-  the current cut.
-
-  Attribution is the sleeper benefit: writes land as the assumed role
-  rather than the operator's own identity, so "what did the agent do"
-  is answerable from CloudTrail alone.
-
 - [ ] **Two accepted equivalent mutants on the undo window.** Recorded
   so nobody re-investigates them. `remember_deleted`'s prune compares
   `elapsed < UNDO_WINDOW_SECS`; mutating that to `<=` or `==` survives
