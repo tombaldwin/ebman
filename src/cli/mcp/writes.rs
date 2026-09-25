@@ -520,7 +520,8 @@ async fn dispatch_dlq_batch(
         };
         out.push(DlqOutcome {
             target: target.clone(),
-            result: dispatch_one_dlq_message(client, p.verb, url, msg).await,
+            result: dispatch_one_dlq_message(client, p.verb, url, p.dlq_main_url.as_deref(), msg)
+                .await,
         });
     }
     Ok(out)
@@ -565,9 +566,18 @@ async fn dispatch_one_dlq_message(
     client: &crate::aws::AwsClient,
     verb: WriteVerb,
     url: &str,
+    main_url: Option<&str>,
     msg: &crate::aws::QueueMessage,
 ) -> Result<Option<crate::aws::QueueMessage>, String> {
     if verb == WriteVerb::DlqResend {
+        // The plan refuses a resend with no main queue, so this is the
+        // backstop, not the gate: nothing is sent and nothing deleted.
+        let Some(main_url) = main_url else {
+            return Err(
+                "the plan carried no main queue to resend to — nothing was sent or deleted"
+                    .to_string(),
+            );
+        };
         // Send first, delete second. The other order can lose the
         // message outright if the send fails; this order can duplicate
         // it, and a duplicate in a worker queue is the recoverable
@@ -580,7 +590,7 @@ async fn dispatch_one_dlq_message(
         // dropped them delivered something the worker daemon has no
         // path to route to.
         client
-            .send_message(&main_queue_for(url), &msg.body, &msg.attributes)
+            .send_message(main_url, &msg.body, &msg.attributes)
             .await
             .map_err(|e| format!("resend failed, message left in the dead-letter queue: {e}"))?;
     }
@@ -614,14 +624,6 @@ async fn dispatch_one_dlq_message(
     // nothing: the message still exists, on the main queue, so there
     // is nothing to recover and offering one would be a lie.
     Ok(captures_for_undo(verb).then_some(msg.clone()))
-}
-
-/// The main queue a dead-letter queue drains from.
-///
-/// EB names the pair `<name>` and `<name>-dlq`, which is the same
-/// convention `derive_dlq_url` applies in the other direction.
-fn main_queue_for(dlq_url: &str) -> String {
-    dlq_url.strip_suffix("-dlq").unwrap_or(dlq_url).to_string()
 }
 
 /// Does this verb destroy something that can be handed back?
@@ -1171,6 +1173,8 @@ struct PlanDetails {
     plan_extra: String,
     dlq_targets: Vec<DlqTarget>,
     dlq_url: Option<String>,
+    /// The main queue this DLQ drains to, as EB reported it.
+    dlq_main_url: Option<String>,
     /// SQS's `ApproximateNumberOfMessages`, for the foreclosure line.
     dlq_visible: Option<i64>,
 }
@@ -1280,6 +1284,16 @@ pub(super) struct PendingWrite {
     pub dlq_targets: Vec<DlqTarget>,
     /// The dead-letter queue URL resolved at plan time.
     pub dlq_url: Option<String>,
+    /// Resend only: the main queue the message goes back to, from the
+    /// same `describe_worker_queues` answer as `dlq_url`.
+    ///
+    /// Taken from EB, never derived from the DLQ's name. This used to
+    /// strip a `-dlq` suffix and otherwise return the DLQ url itself —
+    /// so for a dead-letter queue EB reported under any other name, a
+    /// resend put the message straight back into the DLQ, deleted the
+    /// original, and reported success. The work never reached the
+    /// worker. The TUI always used the reported main queue.
+    pub dlq_main_url: Option<String>,
 }
 
 /// Token TTL — long enough for an agent round-trip, short enough
@@ -1565,6 +1579,15 @@ impl Server {
         let url = super::tools::answered_dlq_url(&queues)
             .ok_or_else(|| format!("env '{}' has no dead-letter queue", env.name))?
             .to_string();
+        // A resend needs somewhere to send TO, and that has to be the
+        // queue EB reports — never one derived from the DLQ's name.
+        if verb == WriteVerb::DlqResend && queues.main_url.is_none() {
+            return Err(format!(
+                "env '{}' has a dead-letter queue but its main queue could not be \
+                 resolved, so a resend has nowhere to go. Nothing was planned.",
+                env.name
+            ));
+        }
 
         let dlq_visible = queues.dlq_stats.as_ref().map(|s| s.visible);
         if verb == WriteVerb::DlqPurge {
@@ -1647,6 +1670,7 @@ impl Server {
             );
         }
         out.dlq_url = Some(url);
+        out.dlq_main_url = queues.main_url.clone();
         out.plan_extra = plan_extra;
         out.dlq_targets = dlq_targets;
         out.dlq_visible = dlq_visible;
@@ -1714,6 +1738,7 @@ impl Server {
         let mut plan_extra = String::new();
         let mut dlq_targets: Vec<DlqTarget> = Vec::new();
         let mut dlq_url: Option<String> = None;
+        let mut dlq_main_url: Option<String> = None;
         // Captured for the foreclosure line, which needs to say how
         // much else is in the queue. Only the DLQ branch resolves it.
         let mut dlq_visible: Option<i64> = None;
@@ -1845,6 +1870,7 @@ impl Server {
                     plan_extra: String::new(),
                     dlq_targets: Vec::new(),
                     dlq_url: None,
+                    dlq_main_url: None,
                     dlq_visible: None,
                 };
                 self.resolve_dlq_plan(verb, args, env, &profile, &mut out)
@@ -1852,6 +1878,7 @@ impl Server {
                 plan_extra = out.plan_extra;
                 dlq_targets = out.dlq_targets;
                 dlq_url = out.dlq_url;
+                dlq_main_url = out.dlq_main_url;
                 dlq_visible = out.dlq_visible;
             }
             WriteVerb::Restart | WriteVerb::Rebuild | WriteVerb::Terminate => {}
@@ -1863,6 +1890,7 @@ impl Server {
             plan_extra,
             dlq_targets,
             dlq_url,
+            dlq_main_url,
             dlq_visible,
         })
     }
@@ -1921,6 +1949,7 @@ impl Server {
             plan_extra,
             dlq_targets,
             dlq_url,
+            dlq_main_url,
             dlq_visible,
         } = self
             .resolve_plan_details(verb, args, &env, &profile)
@@ -1982,6 +2011,7 @@ impl Server {
                 name_retry_used: false,
                 dlq_targets: dlq_targets.clone(),
                 dlq_url: dlq_url.clone(),
+                dlq_main_url: dlq_main_url.clone(),
             });
         }
 

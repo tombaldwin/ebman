@@ -1201,6 +1201,182 @@ mod orchestration {
         })
     }
 
+    /// EB's own names for an auto-created worker queue pair. Neither
+    /// ends in `-dlq`, which is what made the old derivation wrong.
+    const EB_MAIN: &str =
+        "https://sqs.us-west-1.amazonaws.com/123456789012/awseb-e-abc-stack-AWSEBWorkerQueue-XYZ";
+    const EB_DLQ: &str =
+        "https://sqs.us-west-1.amazonaws.com/123456789012/awseb-e-abc-stack-AWSEBWorkerDeadLetterQueue-XYZ";
+
+    /// The worker env's queues as EB reports them: the DLQ always,
+    /// the main queue only when `with_main`.
+    fn reported_queues(with_main: bool) -> aws_smithy_mocks::Rule {
+        use aws_sdk_elasticbeanstalk::operation::describe_environment_resources::DescribeEnvironmentResourcesOutput;
+        use aws_sdk_elasticbeanstalk::types::{EnvironmentResourceDescription, Queue};
+        aws_smithy_mocks::mock!(EbClient::describe_environment_resources).then_output(move || {
+            let mut res = EnvironmentResourceDescription::builder().queues(
+                Queue::builder()
+                    .name("WorkerDeadLetterQueue")
+                    .url(EB_DLQ)
+                    .build(),
+            );
+            if with_main {
+                res = res.queues(Queue::builder().name("WorkerQueue").url(EB_MAIN).build());
+            }
+            DescribeEnvironmentResourcesOutput::builder()
+                .environment_resources(res.build())
+                .build()
+        })
+    }
+
+    /// No `aws:elasticbeanstalk:sqsd` overrides, so a queue EB did not
+    /// report stays unresolved rather than being invented.
+    fn no_sqsd_settings() -> aws_smithy_mocks::Rule {
+        use aws_sdk_elasticbeanstalk::operation::describe_configuration_settings::DescribeConfigurationSettingsOutput;
+        aws_smithy_mocks::mock!(EbClient::describe_configuration_settings)
+            .then_output(|| DescribeConfigurationSettingsOutput::builder().build())
+    }
+
+    /// The confirm path reads recent events for its dispatch baseline.
+    fn no_events() -> aws_smithy_mocks::Rule {
+        aws_smithy_mocks::mock!(EbClient::describe_events).then_output(|| {
+            aws_sdk_elasticbeanstalk::operation::describe_events::DescribeEventsOutput::builder()
+                .build()
+        })
+    }
+
+    fn one_visible() -> aws_smithy_mocks::Rule {
+        use aws_sdk_sqs::operation::get_queue_attributes::GetQueueAttributesOutput;
+        use aws_sdk_sqs::types::QueueAttributeName;
+        aws_smithy_mocks::mock!(SqsClient::get_queue_attributes).then_output(|| {
+            GetQueueAttributesOutput::builder()
+                .attributes(QueueAttributeName::ApproximateNumberOfMessages, "1")
+                .attributes(
+                    QueueAttributeName::ApproximateNumberOfMessagesNotVisible,
+                    "0",
+                )
+                .attributes(QueueAttributeName::ApproximateNumberOfMessagesDelayed, "0")
+                .build()
+        })
+    }
+
+    fn dead_lettered_message() -> aws_smithy_mocks::Rule {
+        use aws_sdk_sqs::operation::receive_message::ReceiveMessageOutput;
+        use aws_sdk_sqs::types::Message;
+        aws_smithy_mocks::mock!(SqsClient::receive_message)
+            .match_requests(|req| req.queue_url() == Some(EB_DLQ))
+            .then_output(|| {
+                ReceiveMessageOutput::builder()
+                    .messages(
+                        Message::builder()
+                            .message_id("m-1")
+                            .receipt_handle("rh-1")
+                            .body("job")
+                            .build(),
+                    )
+                    .build()
+            })
+    }
+
+    /// A resend puts the message on the main queue EB REPORTED.
+    ///
+    /// It used to derive the main queue by stripping `-dlq` from the
+    /// DLQ url and, when there was no such suffix, fall back to the DLQ
+    /// url itself. EB's auto-created pair is named
+    /// `…-AWSEBWorkerQueue-…` / `…-AWSEBWorkerDeadLetterQueue-…`, so the
+    /// "resend" went straight back into the dead-letter queue, the
+    /// original was deleted, and the result said `ok: true`. The work
+    /// never reached the worker. Every fixture used `-dlq` names, which
+    /// is the one shape the derivation got right.
+    ///
+    /// The send rule matches ONLY the reported main queue: a send
+    /// anywhere else finds no rule and the message reports a failure.
+    #[tokio::test]
+    async fn a_resend_goes_to_the_main_queue_eb_reported() {
+        use aws_sdk_sqs::operation::delete_message::DeleteMessageOutput;
+        use aws_sdk_sqs::operation::send_message::SendMessageOutput;
+
+        let send = aws_smithy_mocks::mock!(SqsClient::send_message)
+            .match_requests(|req| req.queue_url() == Some(EB_MAIN))
+            .then_output(|| SendMessageOutput::builder().message_id("new-1").build());
+        let delete = aws_smithy_mocks::mock!(SqsClient::delete_message)
+            .match_requests(|req| req.queue_url() == Some(EB_DLQ))
+            .then_output(|| DeleteMessageOutput::builder().build());
+        let eb = aws_smithy_mocks::mock_client!(
+            aws_sdk_elasticbeanstalk,
+            aws_smithy_mocks::RuleMode::MatchAny,
+            [
+                &env_listing(),
+                &reported_queues(true),
+                &no_sqsd_settings(),
+                &no_events()
+            ]
+        );
+        let sqs = aws_smithy_mocks::mock_client!(
+            aws_sdk_sqs,
+            aws_smithy_mocks::RuleMode::MatchAny,
+            [&one_visible(), &dead_lettered_message(), &send, &delete]
+        );
+        let s = Server::with_injected_client(
+            WriteScope::All,
+            crate::config::Config::default(),
+            client_with(eb, sqs),
+        );
+
+        let plan = s
+            .call_tool(
+                "dlq_resend",
+                &json!({"env": "poly-prod-wk", "message_id": "m-1"}),
+            )
+            .await
+            .expect("the resend plans");
+        let plan: Value = serde_json::from_str(&plan).expect("valid JSON");
+        let token = plan["confirm_token"].as_str().expect("a token").to_string();
+
+        let out = s
+            .call_tool("confirm_action", &json!({"confirm_token": token}))
+            .await
+            .expect("the confirm dispatches");
+        let v: Value = serde_json::from_str(&out).expect("valid JSON");
+        assert_eq!(
+            v["succeeded"], 1,
+            "the resend must reach the reported main queue: {out}"
+        );
+    }
+
+    /// With no main queue resolved, a resend is refused at PLAN time:
+    /// there is nowhere legitimate to send it, and guessing one is
+    /// exactly the defect above.
+    #[tokio::test]
+    async fn a_resend_with_no_main_queue_is_refused_before_anything_is_planned() {
+        let eb = aws_smithy_mocks::mock_client!(
+            aws_sdk_elasticbeanstalk,
+            aws_smithy_mocks::RuleMode::MatchAny,
+            [&env_listing(), &reported_queues(false), &no_sqsd_settings()]
+        );
+        let sqs = aws_smithy_mocks::mock_client!(
+            aws_sdk_sqs,
+            aws_smithy_mocks::RuleMode::MatchAny,
+            [&one_visible(), &dead_lettered_message()]
+        );
+        let s = Server::with_injected_client(
+            WriteScope::All,
+            crate::config::Config::default(),
+            client_with(eb, sqs),
+        );
+        let err = s
+            .call_tool(
+                "dlq_resend",
+                &json!({"env": "poly-prod-wk", "message_id": "m-1"}),
+            )
+            .await
+            .expect_err("no main queue means no plan");
+        assert!(
+            err.contains("main queue could not be resolved"),
+            "the refusal must say why: {err}"
+        );
+    }
+
     /// `worker_queues` must resolve the env's queues and, with
     /// `peek`, read messages from the DEAD-LETTER url — not the
     /// main one.
