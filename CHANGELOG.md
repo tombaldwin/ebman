@@ -8,6 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- **`lint --fix` audit lines named a region that does not exist.**
+  Without `--regions`, every fix — and every refusal of one — was
+  recorded as `region=default`. They now carry the region the client
+  actually ran in.
+
 - **`:readonly off` is now audited.** It re-enables every destructive
   action in the session and left no trace — so `--read-only`, advertised
   as the audit-friendly posture, could be undone in one keystroke with

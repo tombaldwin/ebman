@@ -1142,7 +1142,6 @@ where
                     fix_disabled,
                     safety_cfg,
                     active_profile_for_safety,
-                    region_opt,
                 )
                 .await
             {
@@ -2755,7 +2754,6 @@ async fn apply_fixes_for_env(
     fix_disabled: &[String],
     safety_cfg: &config::Config,
     active_profile_for_safety: &Option<String>,
-    region_opt: &Option<String>,
 ) -> bool {
     let mut dispatch_failed = false;
     // Through the shared gate, not `pin_reason` alone.
@@ -2778,7 +2776,7 @@ async fn apply_fixes_for_env(
             &env.name,
             active_profile_for_safety,
             None,
-            region_opt.as_deref(),
+            Some(aws.context.region.as_str()),
             // The label the fix DISPATCH logs, so a
             // refusal correlates with it under `ebman
             // audit --action SetOption`.
@@ -2800,7 +2798,10 @@ async fn apply_fixes_for_env(
         // made dead.
         return yes;
     }
-    let region_label = region_opt.as_deref().unwrap_or("default").to_string();
+    // The client's resolved region, not the `--regions` label: without
+    // `--regions` the label was `None`, so every single-region fix was
+    // audited as `region=default` — a region that does not exist.
+    let region_label = aws.context.region.clone();
     // Rebuild the (cheap, borrowing) context for the
     // fix pass — `run_rules_for_env` consumed its own.
     let ctx = build_lint_context(env, inputs, &safety_cfg.required_tags);
@@ -3449,6 +3450,43 @@ mod cycle_wiring {
              operator cannot tell which coverage is missing: {:?}",
             report.degrade_reasons
         );
+    }
+
+    /// A single-region `--fix` is audited under the region it ran in.
+    ///
+    /// The audit took the `--regions` label, which is `None` without
+    /// `--regions`, so every ordinary fix was recorded as
+    /// `region=default` — a region that does not exist, on the line an
+    /// operator filters by afterwards.
+    #[tokio::test]
+    async fn a_fix_is_audited_under_the_region_it_ran_in() {
+        let env = "lint-fix-region-probe-env";
+        let path = crate::util::cache_dir().join("audit.log");
+        let before = std::fs::read_to_string(&path).unwrap_or_default();
+        run_with_opts(
+            vec![None],
+            CycleOpts {
+                fix: true,
+                yes: true,
+                ..CycleOpts::default()
+            },
+            |_| async { Ok(client_with_failing_update(vec![env.into()])) },
+        )
+        .await;
+        let after = std::fs::read_to_string(&path).unwrap_or_default();
+        let lines: Vec<&str> = after
+            .strip_prefix(&before)
+            .expect("the audit log is append-only")
+            .lines()
+            .filter(|l| l.contains(env))
+            .collect();
+        assert!(!lines.is_empty(), "the fix attempt is audited");
+        // The client's own resolved region, whatever the fixture sets.
+        let region = client_with_failing_update(vec![]).context.region.clone();
+        for l in &lines {
+            assert!(l.contains(&format!("region={region}")), "{l}");
+            assert!(!l.contains("region=default"), "{l}");
+        }
     }
 
     /// The same rejection under a preview (no `--yes`) must NOT fail
