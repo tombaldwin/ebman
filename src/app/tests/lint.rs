@@ -155,6 +155,11 @@ fn no_lint_caller_flattens_a_failed_tag_fetch_into_an_empty_list() {
         ("app/cmd_misc.rs", include_str!("../cmd_misc.rs")),
         ("app/spawn_deploy.rs", include_str!("../spawn_deploy.rs")),
         ("cli/lint.rs", include_str!("../../cli/lint.rs")),
+        // Where the shared assembly lives since it left `cli/lint.rs`.
+        // Moving the code out of a listed file blinds a list-based guard
+        // silently: it went on passing, scanning a file the binding was
+        // no longer in.
+        ("lint/inputs.rs", include_str!("../../lint/inputs.rs")),
     ] {
         let code: String = src
             .lines()
