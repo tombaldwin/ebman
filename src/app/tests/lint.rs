@@ -49,7 +49,7 @@ async fn cmd_drift_with_no_tfstate_loaded_hints_at_discovery() {
 
 #[test]
 fn render_lint_overlay_empty_shows_clean_stub() {
-    let body = crate::app::cmd_misc::render_lint_overlay("prod-api", &[]);
+    let body = crate::app::cmd_misc::render_lint_overlay("prod-api", &[], &[]);
     assert!(body.contains("prod-api"));
     assert!(body.contains("✓ No issues found"));
     assert!(body.contains("esc / q to close"));
@@ -79,7 +79,7 @@ fn render_lint_overlay_with_issues_renders_per_severity_glyph() {
             fields: BTreeMap::new(),
         },
     ];
-    let body = crate::app::cmd_misc::render_lint_overlay("prod-api", &issues);
+    let body = crate::app::cmd_misc::render_lint_overlay("prod-api", &issues, &[]);
     // Warn gets ⚠, Info gets ·.
     assert!(body.contains("⚠ [EBL001]"));
     assert!(body.contains("· [EBL005]"));
@@ -151,16 +151,20 @@ fn no_lint_caller_flattens_a_failed_tag_fetch_into_an_empty_list() {
     // Pinned structurally because the failure is a lost distinction,
     // not a wrong value: `unwrap_or_default()` on the tags option is
     // exactly the shape that throws it away.
-    for (name, src) in [
-        ("app/cmd_misc.rs", include_str!("../cmd_misc.rs")),
-        ("app/spawn_deploy.rs", include_str!("../spawn_deploy.rs")),
-        ("cli/lint.rs", include_str!("../../cli/lint.rs")),
-        // Where the shared assembly lives since it left `cli/lint.rs`.
-        // Moving the code out of a listed file blinds a list-based guard
-        // silently: it went on passing, scanning a file the binding was
-        // no longer in.
-        ("lint/inputs.rs", include_str!("../../lint/inputs.rs")),
-    ] {
+    //
+    // Every production file, not a list. The list named three callers
+    // and missed the fourth — `:explain`'s copy in `cmd_inspect.rs`,
+    // which flattened exactly this way and fired EBL010 on every env
+    // whose tags were never read. Then moving the shared assembly out
+    // of a listed file blinded it again, silently. A list goes stale
+    // on every move; the tree does not.
+    let mut bindings_seen = 0usize;
+    for (path, full) in super::scan::source_files() {
+        if super::scan::is_test_path(&path) {
+            continue;
+        }
+        let src = super::scan::production_half(&full);
+        let name = path.as_str();
         let code: String = src
             .lines()
             .map(super::scan::strip_line_comment)
@@ -183,6 +187,7 @@ fn no_lint_caller_flattens_a_failed_tag_fetch_into_an_empty_list() {
                     break;
                 }
             }
+            bindings_seen += 1;
             assert!(
                 !expr.contains("unwrap_or_default"),
                 "{name}:{} flattens the tag-fetch failure into an empty list, \
@@ -191,5 +196,82 @@ fn no_lint_caller_flattens_a_failed_tag_fetch_into_an_empty_list() {
                 expr.trim()
             );
         }
+    }
+    // The shared assembly binds `env_tag_keys`; seeing none means the
+    // scan went blind, not that the tree is clean.
+    assert!(
+        bindings_seen > 0,
+        "no `env_tag_keys` binding found anywhere — the scan is looking at nothing"
+    );
+}
+
+/// Lost coverage is never rendered as a clean result.
+///
+/// The TUI's own copy of the assembly dropped tag and health failures
+/// in silence, so `:lint` showed "✓ No issues found" over checks that
+/// never ran — the same wrong answer the CLI and MCP gave before they
+/// started degrading on it.
+#[test]
+fn lint_overlay_never_shows_a_clean_result_over_checks_that_did_not_run() {
+    let warnings = vec![
+        "EBL012 could not be evaluated for prod-api: DescribeEnvironmentHealth failed: AccessDenied"
+            .to_string(),
+    ];
+    let body = crate::app::cmd_misc::render_lint_overlay("prod-api", &[], &warnings);
+    assert!(
+        !body.contains('✓'),
+        "no check-mark over a check that did not run: {body}"
+    );
+    assert!(body.contains("could NOT run"), "{body}");
+    assert!(body.contains("EBL012"), "names the check: {body}");
+}
+
+/// ...and alongside real findings, the lost coverage is still listed.
+#[test]
+fn lint_overlay_lists_lost_coverage_beside_findings() {
+    let issue = crate::lint::Issue {
+        rule_id: "EBL001".into(),
+        severity: crate::lint::Severity::Warn,
+        env_name: Some("prod-api".into()),
+        title: "EBL001 fired".into(),
+        detail: String::new(),
+        suggestion: None,
+        fields: Default::default(),
+    };
+    let warnings = vec!["EBL010 could not be evaluated for prod-api: throttled".to_string()];
+    let body = crate::app::cmd_misc::render_lint_overlay("prod-api", &[issue], &warnings);
+    assert!(body.contains("EBL001 fired"), "{body}");
+    assert!(body.contains("EBL010 could not be evaluated"), "{body}");
+}
+
+/// The TUI's `:lint` and `:explain` assemble their inputs through the
+/// shared `lint::inputs` path, and build no `LintContext` of their own.
+///
+/// Each kept a private copy of the assembly, and the copies drifted
+/// from `ebman lint` and the MCP tool: silent tag/health failures, no
+/// EBL020 / EBL018 probes, and in `:explain` an EBL010 false positive
+/// on every env whose tags were never read. A copy reappearing is the
+/// regression; this is the shape it would take.
+#[test]
+fn the_tui_lint_paths_use_the_shared_assembly() {
+    for (file, func) in [
+        ("app/cmd_misc.rs", "fn cmd_lint("),
+        ("app/cmd_inspect.rs", "fn cmd_explain_issue("),
+    ] {
+        let prod = super::scan::production_source(file);
+        let body = prod
+            .split(func)
+            .nth(1)
+            .and_then(|rest| rest.split("\n    }\n").next())
+            .unwrap_or_else(|| panic!("{file}: `{func}` not found"));
+        assert!(
+            body.contains("lint::inputs::fetch_env_lint_inputs("),
+            "{file} `{func}` must fetch through the shared assembly"
+        );
+        assert!(
+            !body.contains("LintContext::for_env("),
+            "{file} `{func}` builds its own LintContext — a private copy of the \
+             assembly again"
+        );
     }
 }
