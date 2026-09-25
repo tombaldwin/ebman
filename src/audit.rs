@@ -1021,6 +1021,29 @@ pub(crate) fn build_webhook_body(
 /// Typed rather than "pass a built string" precisely so there is no
 /// second way to reach the log. `append_raw` existed to be that second
 /// way.
+/// Append a `stage=event kind=read_only` line: the session's read-only
+/// guard was turned on or off.
+///
+/// An EVENT, not a dispatched action. The first cut (0112e6d) wrote
+/// `stage=dispatched action=ReadOnly` with no completed line — which is
+/// how this log marks a write that crashed mid-flight, and which fired
+/// the audit webhook as a dispatched action. A toggle is neither.
+pub(crate) fn append_read_only_toggle(
+    account: Option<&str>,
+    profile: Option<&str>,
+    region: &str,
+    state: &str,
+) {
+    let detail = detail_from(
+        "event",
+        &[
+            ("kind", Field::Token("read_only")),
+            ("state", Field::Token(state)),
+        ],
+    );
+    write_audit_line(account, profile, region, &detail);
+}
+
 pub(crate) fn append_red_transition(
     account: Option<&str>,
     profile: Option<&str>,

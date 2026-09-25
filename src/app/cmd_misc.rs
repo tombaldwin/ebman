@@ -339,13 +339,11 @@ impl App {
         self.read_only = super::parse_toggle(arg, self.read_only);
         if self.read_only != was && !self.demo_mode {
             let state = if self.read_only { "on" } else { "off" };
-            crate::audit::append_action_dispatched(
+            crate::audit::append_read_only_toggle(
                 self.context.account_id.as_deref(),
                 self.context.profile.as_deref(),
                 &self.context.region,
-                "ReadOnly",
-                "",
-                &[("state", state)],
+                state,
             );
         }
         self.status_message = Some(if self.read_only {
