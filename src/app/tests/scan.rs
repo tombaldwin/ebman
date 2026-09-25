@@ -276,6 +276,78 @@ pub(crate) fn account_id_candidates(text: &str) -> Vec<(usize, &str)> {
     hits
 }
 
+/// Where the names of clients whose data must never ship are listed,
+/// locally. Gitignored and in `Cargo.toml`'s `exclude`: the list is
+/// itself the sensitive data, so it can live anywhere but the repo.
+pub(crate) const PROTECTED_NAMES_FILE: &str = ".protected-names";
+
+/// The same list for CI, from a repository secret.
+pub(crate) const PROTECTED_NAMES_ENV: &str = "EBMAN_PROTECTED_NAMES";
+
+/// Names shorter than this would match inside ordinary words and make
+/// the guard fire on everything — at which point it gets ignored.
+const PROTECTED_NAME_MIN_LEN: usize = 4;
+
+/// Parse a protected-names list: one name per line or comma-separated,
+/// `#` starts a comment line, blanks ignored, matched case-insensitively.
+///
+/// A name too short to scan for is an ERROR, not a skip: silently
+/// dropping an entry would leave the operator believing a name is
+/// protected when nothing checks for it.
+pub(crate) fn parse_protected_names(text: &str) -> Result<Vec<String>, String> {
+    let mut names: Vec<String> = Vec::new();
+    for raw in text.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        for part in line.split(',') {
+            let name = part.trim().to_lowercase();
+            if name.is_empty() {
+                continue;
+            }
+            if name.chars().count() < PROTECTED_NAME_MIN_LEN {
+                return Err(format!(
+                    "a protected name is shorter than {PROTECTED_NAME_MIN_LEN} characters \
+                     and would match inside ordinary words"
+                ));
+            }
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        }
+    }
+    Ok(names)
+}
+
+/// Every (1-based line, index into `names`) where a protected name
+/// appears in `text`, case-insensitively and anywhere in a word —
+/// `Name-prod` and `name_truth.txt` are the shapes that leaked.
+pub(crate) fn protected_name_hits(text: &str, names: &[String]) -> Vec<(usize, usize)> {
+    let mut hits = Vec::new();
+    for (idx, line) in text.lines().enumerate() {
+        let lower = line.to_lowercase();
+        for (k, name) in names.iter().enumerate() {
+            if lower.contains(name.as_str()) {
+                hits.push((idx + 1, k));
+            }
+        }
+    }
+    hits
+}
+
+/// The protected names configured for this run: the CI secret and the
+/// local file, merged. Empty when neither is present. A malformed list
+/// panics — see [`parse_protected_names`].
+pub(crate) fn protected_names() -> Vec<String> {
+    let mut text = std::env::var(PROTECTED_NAMES_ENV).unwrap_or_default();
+    if let Ok(local) = std::fs::read_to_string(PROTECTED_NAMES_FILE) {
+        text.push('\n');
+        text.push_str(&local);
+    }
+    parse_protected_names(&text).unwrap_or_else(|e| panic!("{e}"))
+}
+
 /// `123456789012` -> `12…12`: enough to find in `path:line`, not
 /// enough to be the leak. A guard whose job is stopping a real account
 /// ID being published must not print one into a public CI log.
@@ -474,6 +546,114 @@ mod packaging {
              all, the detector is wrong for that shape — fix the detector.",
             super::AWS_DOC_ACCOUNT_IDS
         );
+    }
+}
+
+/// No published file may name a client whose data has leaked before.
+///
+/// The account-ID guard cannot catch this: a name has no shape. One
+/// client's name was scrubbed from this repository in 0.38.0 and again
+/// on 2026-09-18, and was written back into `PLAN.md` and a design note
+/// the next day — by agent sessions citing that client's fleet as
+/// evidence — then shipped in four releases.
+///
+/// The list lives outside the repo (see [`super::PROTECTED_NAMES_FILE`]
+/// and [`super::PROTECTED_NAMES_ENV`]), because a list in the repo would
+/// publish exactly what it protects. Hence the two asymmetries below:
+/// with no list, this passes on a contributor's machine but FAILS in CI,
+/// where an empty list would make the guard vacuous; and the list file
+/// must never be tracked.
+///
+/// Reports `path:line` and the name's position in the list — never the
+/// name, which would put it in a CI log.
+#[cfg(test)]
+mod protected_names {
+    #[test]
+    fn no_tracked_file_names_a_protected_client() {
+        // First, so the `cargo mutants` scratch copy (no `.git`) skips
+        // before the name list is required.
+        let Some(files) = super::tracked_files() else {
+            return;
+        };
+        assert!(
+            !files.iter().any(|f| f == super::PROTECTED_NAMES_FILE),
+            "{} is TRACKED — it would be published in the crate. \
+             `git rm --cached {}` and keep it local",
+            super::PROTECTED_NAMES_FILE,
+            super::PROTECTED_NAMES_FILE
+        );
+        let names = super::protected_names();
+        if names.is_empty() {
+            assert!(
+                std::env::var_os("CI").is_none(),
+                "CI has no protected-names list, so this guard would pass \
+                 vacuously. Set the `{}` repository secret (and the \
+                 Dependabot secret of the same name) and pass it to every \
+                 job that runs `cargo test`",
+                super::PROTECTED_NAMES_ENV
+            );
+            return;
+        }
+        let mut hits = Vec::new();
+        for path in &files {
+            let Ok(bytes) = std::fs::read(path) else {
+                continue;
+            };
+            for (line, k) in super::protected_name_hits(&String::from_utf8_lossy(&bytes), &names) {
+                hits.push(format!("{path}:{line}: protected name #{}", k + 1));
+            }
+        }
+        assert!(
+            hits.is_empty(),
+            "these name a protected client and would be published \
+             permanently in the crate: {hits:#?}\n\
+             Use the `poly-*` placeholder convention, or \"a production \
+             fleet\" when citing real-world evidence."
+        );
+    }
+
+    use super::{parse_protected_names, protected_name_hits};
+
+    /// Fixture names are made up; the real list must never appear here.
+    fn names(list: &str) -> Vec<String> {
+        parse_protected_names(list).expect("valid list")
+    }
+
+    #[test]
+    fn a_list_parses_lines_commas_comments_and_case() {
+        assert_eq!(
+            names("# clients\nZorblax\n\n  quuxcorp , Wibbleco\nzorblax"),
+            vec!["zorblax", "quuxcorp", "wibbleco"]
+        );
+    }
+
+    #[test]
+    fn a_name_too_short_to_scan_for_is_an_error_not_a_skip() {
+        assert!(parse_protected_names("zorblax\nabc").is_err());
+        assert!(parse_protected_names("abcd").is_ok());
+    }
+
+    /// The shapes that actually leaked: an environment name, a
+    /// possessive in prose, a filename — case varying each time.
+    #[test]
+    fn a_name_is_found_inside_words_in_any_case() {
+        let list = names("zorblax");
+        let text = "fine\nZorblax-prod\nzORBLAX's setup\neval/zorblax_truth.txt\nfine";
+        assert_eq!(
+            protected_name_hits(text, &list),
+            vec![(2, 0), (3, 0), (4, 0)]
+        );
+    }
+
+    #[test]
+    fn nothing_is_found_when_no_name_is_present() {
+        assert!(protected_name_hits("poly-prod\npoly-batch", &names("zorblax")).is_empty());
+    }
+
+    #[test]
+    fn each_name_reports_its_own_position_in_the_list() {
+        let list = names("zorblax\nquuxcorp");
+        assert_eq!(protected_name_hits("QuuxCorp", &list), vec![(1, 1)]);
     }
 }
 

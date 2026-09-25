@@ -16,7 +16,7 @@ categories = ["command-line-utilities"]
 # them out of the published tarball even if one is ever committed again.
 # v0.34.1 shipped 92 files it should not have, including a lock.json
 # carrying the build machine's hostname and username.
-exclude = ["mutants.out*", "target"]
+exclude = ["mutants.out*", "target", ".protected-names"]
 
 [dependencies]
 # `tb-tui-common` — shared TUI helpers (font_probe / overlay / theme /
