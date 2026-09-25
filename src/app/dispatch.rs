@@ -121,14 +121,7 @@ impl App {
             "export" => self.export_tsv(),
             "json" => self.export_json(),
             "report" | "markdown" => self.export_markdown(),
-            "readonly" => {
-                self.read_only = parse_toggle(rest.first().copied(), self.read_only);
-                self.status_message = Some(if self.read_only {
-                    "read-only ON — destructive actions disabled".into()
-                } else {
-                    "read-only off".into()
-                });
-            }
+            "readonly" => self.cmd_readonly(rest.first().copied()),
             "pin" => self.toggle_pin_selected(),
             "alias" => match rest.first().copied() {
                 Some(name) => {

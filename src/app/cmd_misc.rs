@@ -295,6 +295,35 @@ impl App {
         }
     }
 
+    /// `:readonly [on|off]` — toggle the session's read-only guard, and
+    /// record the change.
+    ///
+    /// Turning it OFF re-enables every destructive action in the
+    /// session, and it left no trace: `--read-only` is advertised as the
+    /// audit-friendly posture, yet one keystroke undid it and the log
+    /// showed nothing. Now every change is a line, in both directions.
+    /// Demo writes nothing, as elsewhere.
+    pub(crate) fn cmd_readonly(&mut self, arg: Option<&str>) {
+        let was = self.read_only;
+        self.read_only = super::parse_toggle(arg, self.read_only);
+        if self.read_only != was && !self.demo_mode {
+            let state = if self.read_only { "on" } else { "off" };
+            crate::audit::append_action_dispatched(
+                self.context.account_id.as_deref(),
+                self.context.profile.as_deref(),
+                &self.context.region,
+                "ReadOnly",
+                "",
+                &[("state", state)],
+            );
+        }
+        self.status_message = Some(if self.read_only {
+            "read-only ON — destructive actions disabled".into()
+        } else {
+            "read-only off".into()
+        });
+    }
+
     /// `:thaw-deploys` — clear the session-scoped freeze. No-op
     /// (status toast) if no freeze was active. Audit-logged either
     /// way so the audit stream captures the lifecycle.

@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- **`:readonly off` is now audited.** It re-enables every destructive
+  action in the session and left no trace — so `--read-only`, advertised
+  as the audit-friendly posture, could be undone in one keystroke with
+  nothing in the log. Each change is now recorded as `action=ReadOnly
+  state=on|off`.
+
 - **`ebman mcp setup` and `--help` no longer describe a bare MCP
   registration as read-only.** Both said "reads only by default" beside
   `claude mcp add ebman -- ebman mcp serve` — which, on any client that

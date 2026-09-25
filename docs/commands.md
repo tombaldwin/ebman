@@ -165,7 +165,7 @@ goes to *that environment's* region, and the audit line says so.
 
 ## Read-only mode
 
-- `:readonly on|off` — toggle destructive-action lockout. `--read-only` on the CLI does the same at startup. Per-env / per-account safety pins in `config.toml` add granular locks on top.
+- `:readonly on|off` — toggle destructive-action lockout; each change is audit-logged (`action=ReadOnly`). `--read-only` on the CLI does the same at startup. Per-env / per-account safety pins in `config.toml` add granular locks on top.
 
 ## Setup / discovery
 
