@@ -1174,12 +1174,24 @@ where
         match self {
             Ok(v) => Ok(v),
             Err(e) => {
-                let meta = AwsErrorMeta {
+                let mut meta = AwsErrorMeta {
                     op: Some(op.to_string()),
                     code: e.code().map(str::to_string),
                     message: e.message().map(str::to_string),
                     request_id: e.request_id().map(str::to_string),
                 };
+                // A failure that never reached the service — a timeout,
+                // DNS, an expired SSO session, a dispatch failure — has
+                // no code and no message: `ProvideErrorMetadata` is empty
+                // for anything but a service error. Without this the
+                // plain `Display` was the bare operation name, and "unable
+                // to load credentials" vanished from every `{e}` site.
+                // `DisplayErrorContext` renders the SDK error's whole
+                // chain, which is where that cause lives.
+                if meta.code.is_none() && meta.message.is_none() {
+                    meta.message =
+                        Some(aws_sdk_elasticbeanstalk::error::DisplayErrorContext(&e).to_string());
+                }
                 Err(aws_report(color_eyre::eyre::Report::new(e), meta))
             }
         }
