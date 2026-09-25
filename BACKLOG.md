@@ -526,8 +526,6 @@ Populated by autonomous runs per `CLAUDE.md` stop-conditions. Each entry: one-li
   the open item.
 - **Unifying the pre-deploy lint (2026-09-25)** — two rulings needed:
   see the open item.
-- **The typed verb vocabulary (2026-09-25)** — needs a spelling ruling:
-  PLAN.md item 3′.
 
 ---
 
