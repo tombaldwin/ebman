@@ -1141,6 +1141,38 @@ async fn an_undo_restores_once_and_is_audited() {
     }
 }
 
+/// An undo's audit line names a non-worker message the way the
+/// delete's did, so the two correlate by task.
+///
+/// The delete recorded `NOT_A_WORKER_TASK`; the undo wrote `task=""`.
+#[tokio::test]
+async fn an_undo_of_a_non_worker_message_audits_the_deletes_task_label() {
+    let env = "mcp-undo-task-label-probe-env";
+    let s = Server::with_injected_client(
+        crate::cli::mcp::WriteScope::All,
+        crate::config::Config::default(),
+        undo_client(true),
+    );
+    let mut msg = crate::demo_fixture::dlq_messages_for_env("poly-batch")
+        .into_iter()
+        .next()
+        .expect("fixture");
+    msg.task = None;
+    let id = msg.id.clone();
+    s.remember_deleted(&deleted_from(env, Some("https://q/undo-dlq".into())), msg)
+        .await;
+    let before =
+        std::fs::read_to_string(crate::util::cache_dir().join("audit.log")).unwrap_or_default();
+    s.tool_dlq_undo(&json!({"message_id": id}))
+        .await
+        .expect("restored");
+    let lines = audit_delta_for(&before, env);
+    assert!(!lines.is_empty(), "the restore is audited");
+    for l in &lines {
+        assert!(l.contains(NOT_A_WORKER_TASK), "the delete's label: {l}");
+    }
+}
+
 /// A restore that FAILS leaves the message recoverable, and the
 /// failure is on the record.
 #[tokio::test]

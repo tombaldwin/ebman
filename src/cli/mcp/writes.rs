@@ -676,6 +676,11 @@ pub(super) struct DeletedMessage {
     pub restoring_since: Option<tokio::time::Instant>,
 }
 
+/// The task label for a dead-lettered message that carries no
+/// `beanstalk.sqsd.task_name` — used by the plan, the delete's audit
+/// line and the undo's, which must agree to correlate.
+pub(super) const NOT_A_WORKER_TASK: &str = "(not an EB worker task)";
+
 /// How long an undo's claim on a held message stands: twice the tool
 /// timeout, so a restore still running is never raced, and a claim left
 /// behind by one whose call was DROPPED — the tool timeout firing
@@ -1707,7 +1712,7 @@ impl Server {
                             .task
                             .as_ref()
                             .and_then(|t| t.name.clone())
-                            .unwrap_or_else(|| "(not an EB worker task)".into()),
+                            .unwrap_or_else(|| NOT_A_WORKER_TASK.into()),
                     }),
                     None => missing.push(id.clone()),
                 }
@@ -2693,7 +2698,7 @@ impl Server {
                         "{{\"message_id\":{},\"env\":{},\"task\":{},\"expires_in_secs\":{}}}",
                         util::json_string(&d.original_id),
                         util::json_string(&d.env),
-                        util::json_string(d.task.as_deref().unwrap_or("(not an EB worker task)")),
+                        util::json_string(d.task.as_deref().unwrap_or(NOT_A_WORKER_TASK)),
                         UNDO_WINDOW_SECS.saturating_sub(d.at.elapsed().as_secs()),
                     )
                 })
@@ -2757,9 +2762,13 @@ impl Server {
             let can_ask = self
                 .client_supports_elicitation
                 .load(std::sync::atomic::Ordering::Relaxed);
+            // The label the DELETE's audit line used, so the two lines
+            // correlate by task. `unwrap_or_default()` wrote `task=""`
+            // here for a non-worker message, while the delete had
+            // recorded `NOT_A_WORKER_TASK`.
             let target = DlqTarget {
                 id: d.original_id.clone(),
-                task: d.task.clone().unwrap_or_default(),
+                task: d.task.clone().unwrap_or_else(|| NOT_A_WORKER_TASK.into()),
             };
             let extras = dlq_audit_line(&client_name, can_ask, &target);
             let refs: Vec<(&str, &str)> = extras.iter().map(|(k, v)| (*k, v.as_str())).collect();
@@ -2808,7 +2817,7 @@ impl Server {
              \"sent_at: now, not the original enqueue time\"]}}",
             util::json_string(&d.queue_url),
             util::json_string(&d.original_id),
-            util::json_string(d.task.as_deref().unwrap_or("(not an EB worker task)")),
+            util::json_string(d.task.as_deref().unwrap_or(NOT_A_WORKER_TASK)),
         ))
     }
 }
