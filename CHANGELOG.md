@@ -86,7 +86,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   — showed `DeleteMessage failed` and nothing else, and the audit
   `err=` field recorded the same. The error's plain text is now the
   whole story: `DeleteMessage failed: AccessDenied: User is not
-  authorized to perform sqs:DeleteMessage (request id …)`.
+  authorized to perform sqs:DeleteMessage (request id …)` — and for a
+  failure that never reached AWS (a timeout, an expired SSO session),
+  the cause the SDK reported, such as "unable to load credentials".
 
 - **`lint` and `drift` with `--env NAME --regions a,b` exited 0 when
   NAME existed in no region.** Each region warned "not in region —

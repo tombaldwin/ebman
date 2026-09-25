@@ -5232,3 +5232,29 @@ async fn an_aws_errors_plain_display_names_what_aws_refused() {
     assert!(flat.starts_with("AccessDenied:"), "{flat}");
     assert_eq!(flat.matches("User is not authorized").count(), 1, "{flat}");
 }
+
+/// A failure that never reached the service keeps its cause in the
+/// plain `Display`.
+///
+/// Timeouts, DNS, expired SSO sessions and dispatch failures carry no
+/// error code and no message — `ProvideErrorMetadata` is empty for
+/// anything but a service error — so once the operation moved into the
+/// same layer as the reason, their plain text was the bare operation
+/// name. The release review found six `{e}` sites that had printed the
+/// cause via `{e:#}` and lost it, including an SSM run on an expired
+/// session no longer saying "unable to load credentials".
+#[test]
+fn a_failure_that_never_reached_the_service_keeps_its_cause() {
+    use aws_sdk_elasticbeanstalk::config::http::HttpResponse;
+    use aws_sdk_elasticbeanstalk::error::SdkError;
+    use aws_sdk_elasticbeanstalk::operation::describe_environments::DescribeEnvironmentsError;
+    let r: Result<(), SdkError<DescribeEnvironmentsError, HttpResponse>> =
+        Err(SdkError::timeout_error("the connection timed out"));
+    let e = super::SdkResultExt::aws_ctx(r, "DescribeEnvironments failed").expect_err("failed");
+    let plain = e.to_string();
+    assert!(plain.starts_with("DescribeEnvironments failed"), "{plain}");
+    assert!(
+        plain.contains("the connection timed out"),
+        "the cause must survive a plain `{{e}}`: {plain}"
+    );
+}
