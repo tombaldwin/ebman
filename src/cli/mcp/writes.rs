@@ -692,8 +692,11 @@ const RESTORE_CLAIM_SECS: u64 = super::TOOL_TIMEOUT_SECS * 2;
 #[derive(Debug)]
 pub(super) enum Claim {
     Claimed(Box<DeletedMessage>),
-    /// Another undo is restoring it right now.
-    InProgress,
+    /// An undo is restoring it now — or one was, and its call was
+    /// dropped; either way the claim lapses within `retry_after_secs`.
+    InProgress {
+        retry_after_secs: u64,
+    },
     /// Not held: never deleted here, already restored, or expired.
     NotHeld,
 }
@@ -719,7 +722,16 @@ impl Server {
         let mut buf = self.deleted.lock().await;
         buf.retain(|d: &DeletedMessage| d.at.elapsed().as_secs() < UNDO_WINDOW_SECS);
         if buf.len() >= UNDO_CAPACITY {
-            buf.remove(0);
+            // The oldest UNCLAIMED entry. Evicting a message mid-restore
+            // meant that if the restore then failed, `finish_restore`
+            // found nothing and the message was gone. Falls back to the
+            // oldest overall only if every entry is claimed, so the
+            // capacity bound always holds.
+            let victim = buf
+                .iter()
+                .position(|d| d.restoring_since.is_none())
+                .unwrap_or(0);
+            buf.remove(victim);
         }
         buf.push(DeletedMessage {
             env: env.to_string(),
@@ -759,10 +771,13 @@ impl Server {
         let Some(d) = buf.iter_mut().find(|d| d.original_id == id) else {
             return Claim::NotHeld;
         };
-        if d.restoring_since
-            .is_some_and(|t| t.elapsed().as_secs() < RESTORE_CLAIM_SECS)
-        {
-            return Claim::InProgress;
+        if let Some(t) = d.restoring_since {
+            let held_for = t.elapsed().as_secs();
+            if held_for < RESTORE_CLAIM_SECS {
+                return Claim::InProgress {
+                    retry_after_secs: RESTORE_CLAIM_SECS - held_for,
+                };
+            }
         }
         d.restoring_since = Some(tokio::time::Instant::now());
         Claim::Claimed(Box::new(d.clone()))
@@ -2695,11 +2710,13 @@ impl Server {
                 .iter()
                 .map(|d| {
                     format!(
-                        "{{\"message_id\":{},\"env\":{},\"task\":{},\"expires_in_secs\":{}}}",
+                        "{{\"message_id\":{},\"env\":{},\"task\":{},\"expires_in_secs\":{},\"restoring\":{}}}",
                         util::json_string(&d.original_id),
                         util::json_string(&d.env),
                         util::json_string(d.task.as_deref().unwrap_or(NOT_A_WORKER_TASK)),
                         UNDO_WINDOW_SECS.saturating_sub(d.at.elapsed().as_secs()),
+                        d.restoring_since
+                            .is_some_and(|t| t.elapsed().as_secs() < RESTORE_CLAIM_SECS),
                     )
                 })
                 .collect();
@@ -2714,11 +2731,13 @@ impl Server {
 
         let d = match self.claim_for_restore(&want).await {
             Claim::Claimed(d) => *d,
-            Claim::InProgress => {
+            Claim::InProgress { retry_after_secs } => {
+                // Not "another call right now": after a timeout there is
+                // no other call, only a claim that has not lapsed yet.
                 return Err(WriteError::Invalid(format!(
-                    "'{want}' is being restored by another call right now. If that restore \
-                     fails the message stays recoverable; call this tool with no arguments \
-                     to see what is held."
+                    "'{want}' is mid-restore — by a call still running, or by one that timed \
+                     out. Nothing is lost either way: it can be retried in at most \
+                     {retry_after_secs}s if it is still held then."
                 )));
             }
             Claim::NotHeld => {

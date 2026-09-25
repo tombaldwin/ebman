@@ -1208,7 +1208,7 @@ async fn a_failed_undo_keeps_the_message_recoverable() {
         .await
         .expect_err("the send still fails");
     assert!(
-        !retry.to_string().contains("being restored"),
+        !retry.to_string().contains("mid-restore"),
         "a failed restore must release its claim: {retry}"
     );
     let lines = audit_delta_for(&before, env);
@@ -1270,7 +1270,17 @@ async fn a_dropped_restore_does_not_lose_the_message() {
         .tool_dlq_undo(&json!({"message_id": id}))
         .await
         .expect_err("a second undo must not race the one in flight");
-    assert!(err.to_string().contains("being restored"), "{err}");
+    // It says when to retry: after a timeout there is no other call,
+    // only a claim that has not lapsed yet.
+    assert!(err.to_string().contains("mid-restore"), "{err}");
+    assert!(
+        err.to_string()
+            .contains(&format!("at most {RESTORE_CLAIM_SECS}s")),
+        "the retry horizon, computed from the claim: {err}"
+    );
+    // And the listing shows the claim.
+    let listing = s.tool_dlq_undo(&json!({})).await.expect("listing");
+    assert!(listing.contains("\"restoring\":true"), "{listing}");
 
     // The abandoned claim lapses, and the message can be restored.
     tokio::time::advance(std::time::Duration::from_secs(RESTORE_CLAIM_SECS + 1)).await;
@@ -1280,6 +1290,48 @@ async fn a_dropped_restore_does_not_lose_the_message() {
     assert!(
         !s.recoverable().await.iter().any(|d| d.original_id == id),
         "and gone once restored"
+    );
+}
+
+/// A full buffer evicts the oldest UNCLAIMED message, never one being
+/// restored: if that restore then failed, the message would be gone.
+#[tokio::test]
+async fn capacity_eviction_spares_a_message_being_restored() {
+    let s = Server::with_scope(true, false, crate::cli::mcp::WriteScope::All);
+    let base = crate::demo_fixture::dlq_messages_for_env("poly-batch")
+        .into_iter()
+        .next()
+        .expect("fixture");
+    let plan = deleted_from("poly-batch", Some("https://q/dlq".into()));
+    let msg = |n: usize| {
+        let mut m = base.clone();
+        m.id = format!("m-{n}");
+        m
+    };
+    for n in 0..UNDO_CAPACITY {
+        s.remember_deleted(&plan, msg(n)).await;
+    }
+    // The OLDEST is mid-restore when one more delete lands.
+    assert!(matches!(
+        s.claim_for_restore("m-0").await,
+        Claim::Claimed(_)
+    ));
+    s.remember_deleted(&plan, msg(UNDO_CAPACITY)).await;
+
+    let held: Vec<String> = s
+        .recoverable()
+        .await
+        .into_iter()
+        .map(|d| d.original_id)
+        .collect();
+    assert_eq!(held.len(), UNDO_CAPACITY, "the capacity bound holds");
+    assert!(
+        held.iter().any(|i| i == "m-0"),
+        "the claimed message survives: {held:?}"
+    );
+    assert!(
+        !held.iter().any(|i| i == "m-1"),
+        "the oldest unclaimed one goes: {held:?}"
     );
 }
 
