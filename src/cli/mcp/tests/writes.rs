@@ -2041,3 +2041,80 @@ async fn an_unshowable_setting_value_is_refused_rather_than_truncated() {
         "and must not have abbreviated it: {summary}"
     );
 }
+
+/// A restore that fails says whether the message is still held. One
+/// claimed just inside the window and failing just outside it is gone,
+/// and the error used to read the same either way — so an agent
+/// retried a message that no longer existed.
+#[tokio::test(start_paused = true)]
+async fn a_failed_restore_says_whether_the_window_is_still_open() {
+    let s = Server::with_scope(true, false, crate::cli::mcp::WriteScope::All);
+    let msgs = crate::demo_fixture::dlq_messages_for_env("poly-batch");
+    let (early, late) = (msgs[0].id.clone(), msgs[1].id.clone());
+    for m in [&msgs[0], &msgs[1]] {
+        s.remember_deleted(
+            &deleted_from("poly-batch", Some("https://q/dlq".into())),
+            m.clone(),
+        )
+        .await;
+    }
+
+    // Inside the window: released, still held.
+    assert!(matches!(
+        s.claim_for_restore(&early).await,
+        Claim::Claimed(_)
+    ));
+    assert!(s.finish_restore(&early, false).await, "still in its window");
+
+    // Claimed at the last second, failing after it.
+    tokio::time::advance(std::time::Duration::from_secs(UNDO_WINDOW_SECS - 1)).await;
+    assert!(matches!(
+        s.claim_for_restore(&late).await,
+        Claim::Claimed(_)
+    ));
+    tokio::time::advance(std::time::Duration::from_secs(2)).await;
+    assert!(
+        !s.finish_restore(&late, false).await,
+        "the window closed during the restore"
+    );
+
+    // A successful restore is never "still held".
+    let s2 = Server::with_scope(true, false, crate::cli::mcp::WriteScope::All);
+    s2.remember_deleted(
+        &deleted_from("poly-batch", Some("https://q/dlq".into())),
+        msgs[0].clone(),
+    )
+    .await;
+    assert!(!s2.finish_restore(&early, true).await);
+
+    let open = restore_failed("AccessDenied", true);
+    assert!(
+        open.contains("AccessDenied") && open.contains("can be retried"),
+        "{open}"
+    );
+    let closed = restore_failed("AccessDenied", false);
+    assert!(
+        closed.contains("AccessDenied") && closed.contains("no longer held"),
+        "{closed}"
+    );
+    assert!(
+        !closed.contains("  "),
+        "a wrapped literal leaked its indent: {closed}"
+    );
+
+    // The live failure paths (client, send) use the answer. They are
+    // not reachable on the demo backend, so pin the wiring: a literal
+    // `true` there would tell an agent to retry a message that is gone.
+    let prod = crate::app::tests::scan::production_source("cli/mcp/writes.rs");
+    let calls: Vec<&str> = prod
+        .match_indices("restore_failed(&")
+        .map(|(i, _)| prod[i..].lines().next().unwrap_or_default())
+        .collect();
+    assert_eq!(calls.len(), 2, "client and send paths: {calls:?}");
+    for call in calls {
+        assert!(
+            call.contains(", held)"),
+            "not finish_restore's answer: {call}"
+        );
+    }
+}

@@ -129,8 +129,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   it used the undo call's own profile and region rather than the
   delete's. Each held message is now restored at most once, to where it
   was deleted from; a failed or interrupted restore (the tool timeout
-  firing mid-send) keeps it recoverable; and both halves are audited as
-  `action=dlq-undo`.
+  firing mid-send) keeps it recoverable for the rest of its window — and
+  a restore that fails after the window closed says the message is no
+  longer held, rather than implying a retry will work; and both halves
+  are audited as `action=dlq-undo`.
 
 - **An MCP `dlq_resend` could put the message straight back into the
   dead-letter queue.** The main queue was derived by stripping a `-dlq`
