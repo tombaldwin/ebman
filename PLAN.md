@@ -165,7 +165,24 @@ name the first two as deliberate gaps, so they are debts, not ideas.
    it clicks. Name-back defends against a rubber-stamping human, which
    is a different threat.
 
-1. ~~**Terminate name-back parity**~~ — **done 2026-09-19**, and widened to `dlq_purge` on the maintainer's ruling: both are strict-typed-name confirms in the TUI, so both are now typed over MCP. Fails closed on a client that cannot render a text field. **Still owed: the live verification** — the non-empty `requestedSchema` has not been exercised against a real client, which was the whole reason this was sequenced behind a prototype. Do that before it ships in a tag.
+1. ~~**Terminate name-back parity**~~ — **done 2026-09-19**, and widened to `dlq_purge` on the maintainer's ruling: both are strict-typed-name confirms in the TUI, so both are now typed over MCP. Fails closed on a client that cannot render a text field. ~~**Still owed: the live verification**~~ — **done 2026-09-25, after it had shipped in 0.43.0 and 0.44.0 without it.** The entry said "do that before it ships in a tag" and two tags went out anyway: the promise sat inside a struck-through heading, which reads as done whatever the body says.
+
+   Exercised against Claude Code with a person at the keyboard, via `ebman-dev` (`mcp serve --demo`: the ask at `writes.rs:2173` runs before the demo branch, so the dialog is real and the dispatch synthetic). Two cases, because the happy path alone cannot tell a typed name from an auto-filled one:
+
+   - `dlq_purge poly-batch`, name typed correctly → a text field **rendered**, the prompt named the env, the operator typed it, `dispatched`.
+   - Same, typed `poly-batc` and approved → refused as **`unconfirmed`** ("Nobody declined"), not `declined`.
+
+   So the field renders in this client and the typed value is load-bearing. **Scope of that claim:** one client (Claude Code), one verb (`dlq_purge`). `terminate` takes the same `typed` arm (`writes.rs:2168`) but was not driven live. Nothing is known about other clients' rendering beyond the scripted client in item 0.
+
+- [ ] **No `stage=asked` line has ever landed in the real audit log.** Found while
+      setting up the verification above: `~/.cache/ebman/audit.log` holds zero, ever.
+      Explained, not broken, as far as it was checked: demo suppresses every audit
+      write (`writes.rs:2188`, and `Audited::record` at `:1017`), the dev
+      registration is `--demo`, and the only real MCP write on record (a production
+      `sqs-delete`, 2026-09-19 22:08, `dispatched`+`completed`, no `asked`) ran a
+      0.42.0 build — the stage first shipped in 0.43.0 (`b7e4ced`). But the "Not scheduled" latency ruling rests on
+      *"`stage=asked` records the latency"*, and that has only ever been observed
+      in tests. One non-demo confirm, even a decline, settles it.
 
    *Original entry, for the reasoning:*
 
