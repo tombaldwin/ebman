@@ -4737,3 +4737,55 @@ review.
   good as the attached client, and ebman cannot tell a person answering
   from a client answering itself.
 
+## PLAN.md window items, retired 2026-09-25 (0.45.0)
+
+3. ~~**Re-scope stage 5 against runtime-grants**~~ — **done 2026-09-25:
+   re-scoped, and most of stage 5 killed by evidence.** The question was
+   "what do levels still buy after 0.42?" Rung by rung, against what
+   0.42–0.44 ship:
+
+   | rung | what it was for | what already does it |
+   |---|---|---|
+   | `observe` | reads only | `--read-only`, `safety.read_only`, and "a client that cannot ask gets reads" |
+   | `guarded` | reversible non-prod writes; the rest asks | on an elicitation client EVERY write asks — stricter than this rung |
+   | `trusted` | prod allowed; irreversible asks | the same; stricter again |
+   | `unrestricted` | no level-based refusal | the parity default |
+
+   The middle rungs were defined in terms of asking, and request-as-unit
+   made asking universal wherever it is possible. Where it is NOT
+   possible — the headless CLI (`action --yes`, `lint --fix --yes`,
+   `audit replay --yes`) — "ask" degrades to deny, so a level there is
+   just a verb/env restriction. That is the ONE population levels would
+   newly govern, and nothing on record asks for it: no CI user, no
+   incident. `Decision { obligations }` has no consumer either — the one
+   real obligation (type the env name for terminate / dlq_purge) is
+   hard-coded per verb and fine that way.
+
+   **What survives, because it is needed for other reasons:** the typed
+   verb vocabulary. It is the prerequisite three backlog items were
+   parked on "until stage 5" (`write_refusal` split, the neutral action
+   vocabulary, the annotations table's home); it is the writer-side fix
+   for the audit-label split (2bdd4b7 fixed the reader side); the
+   implementation review named it the missing piece for stage 6; and
+   assume-role needs it to map a verb to a role. So assume-role does not
+   replace stage 5 — it builds on the one part of it worth keeping.
+
+   **Needs a ruling before it can be built — see item 3′ below.**
+
+3′. ~~**The typed verb vocabulary**~~ — **done 2026-09-25 (fb35586)** on the maintainer's ruling (`RestartAppServer`, `SetOption`). Scoped to the verbs more than one surface writes; guarded by `no_surface_spells_a_shared_verb_itself`. The `write_refusal` split it was meant to absorb is back in BACKLOG.md on its own merits.
+
+   *Original entry:*
+
+   One `Verb` enum carrying `audit_label()`, `destructive()` and the
+   foreclosure text; `CliVerb` / `ReplayVerb` / `WriteVerb` / the TUI's
+   `Action` stay as parse layers mapping into it; audit writers take a
+   `Verb`, not a `&str`. Absorbs the three parked backlog items.
+
+   **The ruling:** which spelling every surface WRITES. Restart is
+   `RestartAppServer` on three surfaces and `Restart` on MCP; option
+   writes are `SetOption` (MCP, batch, `lint --fix`) or
+   `UpdateOptionSettings` (TUI forms, deploy). The reader already
+   accepts both (`audit::ACTION_ALIASES`), so either choice is
+   compatible with every existing log; it changes what NEW lines say.
+   Recommendation: `RestartAppServer` (the majority, and the AWS API
+   name) and `SetOption` (the verb, not the call; shorter in a filter).
