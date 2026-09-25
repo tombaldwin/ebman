@@ -371,6 +371,39 @@ pub(crate) fn ebl012_could_fire(
         && green
 }
 
+/// What the TUI's cached inputs could not supply, as coverage warnings.
+///
+/// `:lint` and `:explain` take two inputs from App caches rather than
+/// fetching them: the region's platform list (EBL008) and a worker's
+/// DLQ depth (EBL011). An empty platform list — not loaded yet, or the
+/// fetch failed; a region always has platforms — and a worker with no
+/// depth that is not known to have no DLQ both read as "the rule does
+/// not fire", which is the clean result, for a check that never ran.
+pub(crate) fn cached_input_gaps(
+    env: &aws::Environment,
+    disabled: &[String],
+    platforms_loaded: bool,
+    dlq_depth: Option<i64>,
+    dlq_known_absent: bool,
+) -> Vec<String> {
+    let on = |rule: &str| !disabled.iter().any(|d| d == rule);
+    let mut gaps = Vec::new();
+    if !platforms_loaded && on("EBL008") {
+        gaps.extend(
+            ProbeOutcome::Unknown("the platform-version list has not loaded".into())
+                .coverage_warning("EBL008", &env.name),
+        );
+    }
+    let worker = env.tier.eq_ignore_ascii_case("Worker");
+    if worker && dlq_depth.is_none() && !dlq_known_absent && on("EBL011") {
+        gaps.extend(
+            ProbeOutcome::Unknown("no worker-queue depth has been read yet".into())
+                .coverage_warning("EBL011", &env.name),
+        );
+    }
+    gaps
+}
+
 /// EBL015 account-level assembly, shared by `run` and the MCP `lint`
 /// tool: list custom platforms, resolve each branch's newest version
 /// date via `latest_platform_version_date`, and run the pure

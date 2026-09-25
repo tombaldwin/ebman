@@ -154,6 +154,17 @@ async fn worker_queue_fetch_error_keeps_previous_dlq_depth() {
         results: vec![("wk-prod".into(), Ok(None))],
     });
     assert!(!app.worker_dlq_depths.contains_key("wk-prod"));
+    // ...and recorded as KNOWN to have no DLQ, which a never-checked
+    // env is not: lint needs the difference (EBL011).
+    assert!(app.worker_dlq_absent.contains("wk-prod"));
+    app.handle_msg(AppMsg::WorkerQueueCheck {
+        gen: app.generation,
+        results: vec![("wk-prod".into(), Ok(Some(1)))],
+    });
+    assert!(
+        !app.worker_dlq_absent.contains("wk-prod"),
+        "a DLQ that appears is no longer absent"
+    );
 }
 
 #[tokio::test]
@@ -1064,4 +1075,23 @@ async fn a_plain_dlq_message_still_shows_its_body() {
         screen.contains("ORDER-4471-RETRY"),
         "a non-task message has nothing BUT its body:\n{screen}"
     );
+}
+
+#[tokio::test]
+async fn a_context_switch_forgets_which_workers_have_no_dlq() {
+    // "Known to have no DLQ" is per-account knowledge. Carried across a
+    // switch, a same-named worker in the new account would lint EBL011
+    // as nothing-to-check before its queue was ever read.
+    let _cache_guard = crate::aws::CACHE_TEST_LOCK.lock().await;
+    let mut app = test_app();
+    app.handle_msg(AppMsg::WorkerQueueCheck {
+        gen: app.generation,
+        results: vec![("wk-prod".into(), Ok(None))],
+    });
+    assert!(app.worker_dlq_absent.contains("wk-prod"));
+    app.handle_msg(AppMsg::Rebuild {
+        epoch: app.rebuild_epoch,
+        result: Ok(Box::new(crate::aws::AwsClient::stub())),
+    });
+    assert!(app.worker_dlq_absent.is_empty());
 }

@@ -273,7 +273,50 @@ fn the_tui_lint_paths_use_the_shared_assembly() {
             "{file} `{func}` builds its own LintContext — a private copy of the \
              assembly again"
         );
+        // The inputs taken from App caches rather than fetched: their
+        // gaps must be reported too, from the real cache state.
+        assert!(
+            body.contains("cached_input_gaps(")
+                && body.contains("!self.latest_stacks.is_empty()")
+                && body.contains("self.worker_dlq_absent.contains("),
+            "{file} `{func}` must report the gaps in its cached inputs"
+        );
     }
+}
+
+#[test]
+fn a_cached_input_that_is_missing_is_reported_not_read_as_clean() {
+    use crate::lint::inputs::{cached_input_gaps, explain_verdict, ExplainVerdict};
+    let web = mk_env("api", "poly", "WebServer", "Green");
+    let worker = mk_env("jobs", "poly", "Worker", "Green");
+
+    // Platform list not loaded → EBL008 could not run, on any env.
+    let gaps = cached_input_gaps(&web, &[], false, None, false);
+    assert_eq!(gaps.len(), 1, "{gaps:?}");
+    assert!(
+        gaps[0].starts_with("EBL008 could not be evaluated for api"),
+        "{gaps:?}"
+    );
+    // And `:explain EBL008` says so, rather than "doesn't fire".
+    assert!(matches!(
+        explain_verdict("EBL008", &[], &gaps),
+        ExplainVerdict::NotEvaluated(_)
+    ));
+    assert!(cached_input_gaps(&web, &[], true, None, false).is_empty());
+
+    // A worker with no depth read and no known absence → EBL011.
+    let gaps = cached_input_gaps(&worker, &[], true, None, false);
+    assert_eq!(gaps.len(), 1, "{gaps:?}");
+    assert!(
+        gaps[0].starts_with("EBL011 could not be evaluated for jobs"),
+        "{gaps:?}"
+    );
+    // Known to have no DLQ, or a depth in hand → nothing missing.
+    assert!(cached_input_gaps(&worker, &[], true, None, true).is_empty());
+    assert!(cached_input_gaps(&worker, &[], true, Some(0), false).is_empty());
+    // Disabled rules are silent.
+    let off = vec!["EBL008".to_string(), "EBL011".to_string()];
+    assert!(cached_input_gaps(&worker, &off, false, None, false).is_empty());
 }
 
 /// The pre-deploy lint reports a failed run as a reason, never as an
