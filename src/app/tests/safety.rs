@@ -17,25 +17,25 @@ fn action_destructive_covers_terminate_and_ssm_run() {
     // 0.17.3 — operator-explicit shell exec across instances is
     // treat-as-write and the modal renders red so the visual cue
     // matches the intent.
-    assert!(Action::Terminate.destructive());
-    assert!(Action::SsmRun.destructive());
+    assert!(Action::Terminate.confirm_in_red());
+    assert!(Action::SsmRun.confirm_in_red());
     // Every other variant stays non-destructive. Exhaustive list
     // (0.17.4 — code-review flagged the previous Capacity/Clone/
     // Upgrade/Abort/Config*/TerminateInstance gap) so a future
     // accidental destructive() flip is caught here.
-    assert!(!Action::Rebuild.destructive());
-    assert!(!Action::RestartAppServer.destructive());
-    assert!(!Action::SwapCnames.destructive());
-    assert!(!Action::Deploy.destructive());
-    assert!(!Action::UpgradePlatform.destructive());
-    assert!(!Action::Clone.destructive());
-    assert!(!Action::Scale.destructive());
-    assert!(!Action::Capacity.destructive());
-    assert!(!Action::AbortUpdate.destructive());
-    assert!(!Action::ConfigSave.destructive());
-    assert!(!Action::ConfigDelete.destructive());
-    assert!(!Action::ConfigApply.destructive());
-    assert!(!Action::TerminateInstance.destructive());
+    assert!(!Action::Rebuild.confirm_in_red());
+    assert!(!Action::RestartAppServer.confirm_in_red());
+    assert!(!Action::SwapCnames.confirm_in_red());
+    assert!(!Action::Deploy.confirm_in_red());
+    assert!(!Action::UpgradePlatform.confirm_in_red());
+    assert!(!Action::Clone.confirm_in_red());
+    assert!(!Action::Scale.confirm_in_red());
+    assert!(!Action::Capacity.confirm_in_red());
+    assert!(!Action::AbortUpdate.confirm_in_red());
+    assert!(!Action::ConfigSave.confirm_in_red());
+    assert!(!Action::ConfigDelete.confirm_in_red());
+    assert!(!Action::ConfigApply.confirm_in_red());
+    assert!(!Action::TerminateInstance.confirm_in_red());
 }
 
 #[test]

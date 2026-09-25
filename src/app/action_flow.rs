@@ -873,8 +873,10 @@ impl App {
         };
         let msg = format!("undone — {} → {} not dispatched", pd.label, pd.target);
         let action_for_audit = match &pd.kind {
-            PendingDispatchKind::Single { modal } => format!("{:?}", modal.action),
-            PendingDispatchKind::BatchAction { action, .. } => format!("Batch{action:?}"),
+            PendingDispatchKind::Single { modal } => modal.action.audit_label(),
+            PendingDispatchKind::BatchAction { action, .. } => {
+                format!("Batch{}", action.audit_label())
+            }
             PendingDispatchKind::BatchDeploy { .. } => "BatchDeploy".into(),
             PendingDispatchKind::BatchTag { value, .. } => {
                 if value.is_some() {
