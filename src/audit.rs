@@ -1005,22 +1005,6 @@ pub(crate) fn build_webhook_body(
     )
 }
 
-/// Append a `stage=event kind=red_transition` line — an environment
-/// observed crossing into Red by the background refresh. Passive: an
-/// observation, not an action, which is why it carries no `action=`
-/// and has no dispatched/completed pair.
-///
-/// This was the last `append_raw` caller, and `append_raw` asked the
-/// caller to own "the `key=value` shape + escaping" in its own
-/// rustdoc. The caller owned neither: it interpolated the env name,
-/// the APPLICATION name and the health string raw. EB application
-/// names are far looser than env names, and `parse_audit_line` reads
-/// an embedded newline as a new, replayable entry — so the field with
-/// the widest charset on the line was the unescaped one.
-///
-/// Typed rather than "pass a built string" precisely so there is no
-/// second way to reach the log. `append_raw` existed to be that second
-/// way.
 /// Append a `stage=event kind=read_only` line: the session's read-only
 /// guard was turned on or off.
 ///
@@ -1044,6 +1028,22 @@ pub(crate) fn append_read_only_toggle(
     write_audit_line(account, profile, region, &detail);
 }
 
+/// Append a `stage=event kind=red_transition` line — an environment
+/// observed crossing into Red by the background refresh. Passive: an
+/// observation, not an action, which is why it carries no `action=`
+/// and has no dispatched/completed pair.
+///
+/// This was the last `append_raw` caller, and `append_raw` asked the
+/// caller to own "the `key=value` shape + escaping" in its own
+/// rustdoc. The caller owned neither: it interpolated the env name,
+/// the APPLICATION name and the health string raw. EB application
+/// names are far looser than env names, and `parse_audit_line` reads
+/// an embedded newline as a new, replayable entry — so the field with
+/// the widest charset on the line was the unescaped one.
+///
+/// Typed rather than "pass a built string" precisely so there is no
+/// second way to reach the log. `append_raw` existed to be that second
+/// way.
 pub(crate) fn append_red_transition(
     account: Option<&str>,
     profile: Option<&str>,
