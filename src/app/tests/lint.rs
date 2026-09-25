@@ -622,6 +622,23 @@ async fn the_lint_snapshot_reads_the_caches_as_lint_may_use_them() {
         app.lint_snapshot(&worker).platforms,
         Platforms::Loaded(_)
     ));
+    // Judged by the row it was given, not a lookup by name: with a
+    // same-named twin in the home region listed first, the abroad row
+    // must still be the abroad row.
+    let mut twin = abroad.clone();
+    twin.region = Some(app.context.region.clone());
+    app.environments = vec![twin.clone(), abroad.clone()];
+    assert!(
+        matches!(
+            app.lint_snapshot(&abroad).platforms,
+            Platforms::Unavailable(_)
+        ),
+        "the abroad row read its home-region twin's answer"
+    );
+    assert!(matches!(
+        app.lint_snapshot(&twin).platforms,
+        Platforms::Loaded(_)
+    ));
 
     // A depth in hand is used — EBL011 fires on it...
     app.worker_dlq_depths.insert("jobs".into(), 250);
