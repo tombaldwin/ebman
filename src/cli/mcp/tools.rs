@@ -243,7 +243,7 @@ fn read_tool_table() -> Value {
         },
         {
             "name": "lint",
-            "description": "Run ebman's diagnostic rule engine over the fleet (or one env). CAVEATS: EBL011 (worker DLQ) never fires here — the lint path does not poll queues; call `worker_queues` for depth, and with `peek` for which task dead-lettered; EBL016 (live health probe) does not run in this tool. A clean result does NOT clear those rules. EBL015 (stale custom platforms, account-level) runs only when not scoped to a single env. Envs whose input fetch fails are skipped, not fatal — a `skipped_envs` array in the result lists them, so check it before treating the run as full coverage.",
+            "description": "Run ebman's diagnostic rule engine over the fleet (or one env). CAVEATS: EBL011 (worker DLQ) never fires here — the lint path does not poll queues; call `worker_queues` for depth, and with `peek` for which task dead-lettered; EBL016 (live health probe) does not run in this tool. A clean result does NOT clear those rules. EBL015 (stale custom platforms, account-level) runs only when not scoped to a single env. Anything that could not be checked is skipped, not fatal, and listed in a `skipped_envs` array: an env whose inputs failed, a probe or input fetch that errored (e.g. EBL010 tags, EBL012 health), and a failed account-level pass (EBL008 stack listing, EBL015). Check it before treating the run as full coverage.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -923,7 +923,6 @@ impl Server {
             None => envs.iter().collect(),
         };
         let mut all_issues: Vec<lint::Issue> = Vec::new();
-        let mut platform_warnings: Vec<String> = Vec::new();
         // Envs whose input fetch failed — reported in the result as
         // `skipped_envs` so the agent knows coverage shrank (the CLI's
         // `cycle_degraded` tolerance, in tool-result shape). One
@@ -939,11 +938,22 @@ impl Server {
             Backend::Aws => {
                 let profile = arg_str(args, "profile");
                 let client = self.client(args).await?;
+                // A failed stack listing is lost EBL008 coverage, and goes
+                // in `skipped_envs` like every other. The comment here
+                // said "same tolerance as the CLI path" and had been
+                // false since 0.44, when the CLI started degrading on
+                // it: an agent got a clean result for a check that
+                // never ran.
                 let latest_stacks = match client.list_solution_stacks().await {
                     Ok(stacks) => aws::latest_stack_versions(&stacks),
-                    // EBL008 quietly loses its input — same tolerance
-                    // as the CLI path.
-                    Err(_) => std::collections::HashMap::new(),
+                    Err(e) => {
+                        if !disabled.iter().any(|d| d == "EBL008") {
+                            skipped.push(format!(
+                                "EBL008 skipped — ListAvailableSolutionStacks: {e:#}"
+                            ));
+                        }
+                        std::collections::HashMap::new()
+                    }
                 };
                 // Bounded concurrent fan-out — serial cost is ~2s/env,
                 // which brushes the 30s tool timeout on large fleets;
@@ -997,17 +1007,24 @@ impl Server {
                 }
                 // EBL015 — account-level pass via the assembly shared
                 // with the CLI: skipped when scoped to one env or
-                // disabled; failures skip silently (a tool result
-                // shouldn't fail over an Info-severity side pass).
+                // disabled. A failure does not fail the tool (an
+                // Info-severity side pass), but it is lost coverage and
+                // is REPORTED: `if let Ok` dropped a whole failed pass
+                // with nothing in the result at all, while the CLI
+                // degraded on it.
                 if env_filter.is_none() && !disabled.iter().any(|d| d == "EBL015") {
-                    if let Ok((issues, warnings)) =
-                        fetch_stale_platform_issues(&client, chrono::Utc::now()).await
-                    {
-                        all_issues.extend(issues);
-                        // Per-branch date-fetch failures surface like the
-                        // CLI's stderr warnings do — dropped silently, an
-                        // agent can't know EBL015 coverage shrank.
-                        platform_warnings = warnings;
+                    match fetch_stale_platform_issues(&client, chrono::Utc::now()).await {
+                        Ok((issues, branch_warnings)) => {
+                            all_issues.extend(issues);
+                            // Per-branch failures too — the CLI degrades
+                            // on them since 0.45, and the tool
+                            // description tells agents that
+                            // `skipped_envs` is where lost coverage is.
+                            skipped.extend(branch_warnings);
+                        }
+                        Err(e) => {
+                            skipped.push(format!("EBL015 skipped — ListPlatformVersions: {e}"))
+                        }
                     }
                 }
             }
@@ -1018,14 +1035,10 @@ impl Server {
         if !rule_filter.is_empty() {
             all_issues.retain(|i| rule_filter.contains(&i.rule_id));
         }
-        Ok(append_string_array(
-            append_cannot_fire(append_skipped_envs(
-                lint::render_issues_json(&all_issues),
-                &skipped,
-            )),
-            "warnings",
-            &platform_warnings,
-        ))
+        Ok(append_cannot_fire(append_skipped_envs(
+            lint::render_issues_json(&all_issues),
+            &skipped,
+        )))
     }
 
     async fn tool_option_settings(&self, args: &Value) -> Result<String, String> {

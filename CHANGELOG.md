@@ -8,6 +8,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- **The MCP `lint` tool reported clean when EBL008 or EBL015 could not
+  run.** A failed stack listing became an empty map under a comment
+  claiming "same tolerance as the CLI path", false since 0.44; a failed
+  EBL015 pass was dropped by `if let Ok`. Both — and per-branch EBL015
+  failures — now appear in `skipped_envs`, where the tool description
+  tells agents to look. The undocumented `warnings` array that carried
+  per-branch failures is gone; they are in `skipped_envs` with the rest.
+  In the CLI and MCP alike, a failed stack listing no longer degrades a
+  run when EBL008 is disabled.
+
 - **`lint` no longer passes clean when it could not check tags or
   instance health.** A failed `ListTagsForResource` (EBL010) or
   `DescribeEnvironmentHealth` (EBL012) was turned into a silent skip, so

@@ -1052,10 +1052,14 @@ where
         let latest_stacks = match aws.list_solution_stacks().await {
             Ok(s) => aws::latest_stack_versions(&s),
             Err(e) => {
-                let region_label = region_opt.as_deref().unwrap_or("default");
-                report.degrade(format!(
-                    "EBL008 skipped — region '{region_label}': ListAvailableSolutionStacks: {e}"
-                ));
+                // A disabled EBL008 loses nothing, and a disabled rule
+                // must never redden a run (see `disabled_rule_probes`).
+                if !disabled.iter().any(|d| d == "EBL008") {
+                    let region_label = region_opt.as_deref().unwrap_or("default");
+                    report.degrade(format!(
+                        "EBL008 skipped — region '{region_label}': ListAvailableSolutionStacks: {e:#}"
+                    ));
+                }
                 std::collections::HashMap::new()
             }
         };
@@ -2864,6 +2868,8 @@ mod cycle_wiring {
         tags_rejected: bool,
         /// `DescribeEnvironmentHealth` is rejected: EBL012's input is lost.
         health_rejected: bool,
+        /// `ListAvailableSolutionStacks` is rejected: EBL008's input is lost.
+        stacks_rejected: bool,
     }
 
     /// The branch whose platform dates the mock refuses to report.
@@ -2925,12 +2931,26 @@ mod cycle_wiring {
         // The per-region solution-stack fetch is allowed to fail: the
         // cycle skips EBL008 for the region rather than aborting, and
         // that tolerance is part of what this test pins.
-        let stacks = aws_smithy_mocks::mock!(
-            aws_sdk_elasticbeanstalk::Client::list_available_solution_stacks
-        )
-        .then_output(|| {
-            aws_sdk_elasticbeanstalk::operation::list_available_solution_stacks::ListAvailableSolutionStacksOutput::builder().build()
-        });
+        let stacks = if faults.stacks_rejected {
+            aws_smithy_mocks::mock!(
+                aws_sdk_elasticbeanstalk::Client::list_available_solution_stacks
+            )
+            .then_error(|| {
+                aws_sdk_elasticbeanstalk::operation::list_available_solution_stacks::ListAvailableSolutionStacksError::generic(
+                    aws_smithy_types::error::ErrorMetadata::builder()
+                        .code("AccessDeniedException")
+                        .message("not authorized")
+                        .build(),
+                )
+            })
+        } else {
+            aws_smithy_mocks::mock!(
+                aws_sdk_elasticbeanstalk::Client::list_available_solution_stacks
+            )
+            .then_output(|| {
+                aws_sdk_elasticbeanstalk::operation::list_available_solution_stacks::ListAvailableSolutionStacksOutput::builder().build()
+            })
+        };
         // With `failing_update`, hand back the option settings EBL001
         // fires on — `AllAtOnce` on a multi-instance env — so the fix
         // pass has something to PLAN and therefore something to
@@ -3107,6 +3127,8 @@ mod cycle_wiring {
         yes: bool,
         safety_cfg: config::Config,
         fix_disabled: Vec<String>,
+        /// `lint.disable` / `--rules` exclusions.
+        disabled: Vec<String>,
     }
 
     /// A fixed clock, so EBL015's date-dependent staleness threshold
@@ -3135,7 +3157,7 @@ mod cycle_wiring {
         run_cycle(
             &regions,
             &opts.env_name,
-            &[],
+            &opts.disabled,
             false,
             opts.fix,
             opts.yes,
@@ -3246,6 +3268,47 @@ mod cycle_wiring {
             "{:?}",
             report.degrade_reasons
         );
+    }
+
+    fn stacks_rejected() -> aws::AwsClient {
+        mock_client_inner(
+            vec!["poly-prod-web".into()],
+            MockFaults {
+                stacks_rejected: true,
+                ..MockFaults::default()
+            },
+        )
+    }
+
+    /// A failed stack listing degrades the cycle — EBL008 did not run.
+    #[tokio::test]
+    async fn a_failed_stack_listing_degrades_the_cycle() {
+        let report = run_with(vec![None], |_| async { Ok(stacks_rejected()) }).await;
+        assert!(
+            report
+                .degrade_reasons
+                .iter()
+                .any(|r| r.contains("EBL008") && r.contains("ListAvailableSolutionStacks")),
+            "{:?}",
+            report.degrade_reasons
+        );
+    }
+
+    /// ...unless EBL008 is disabled, when nothing was lost. A disabled
+    /// rule must never redden a run: the operator's documented escape
+    /// hatch has to be one.
+    #[tokio::test]
+    async fn a_failed_stack_listing_does_not_degrade_when_ebl008_is_disabled() {
+        let report = run_with_opts(
+            vec![None],
+            CycleOpts {
+                disabled: vec!["EBL008".into()],
+                ..CycleOpts::default()
+            },
+            |_| async { Ok(stacks_rejected()) },
+        )
+        .await;
+        assert!(!report.degraded(), "{:?}", report.degrade_reasons);
     }
 
     /// EBL015 coverage that PARTLY failed degrades the cycle.

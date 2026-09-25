@@ -1201,6 +1201,210 @@ mod orchestration {
         })
     }
 
+    /// Which lint input the mock fleet refuses.
+    #[derive(Default, Clone, Copy)]
+    struct LintFaults {
+        stacks: bool,
+        platform_list: bool,
+        platform_date: bool,
+        health: bool,
+    }
+
+    /// One Ready/Green web env, every lint input answering except the
+    /// faults asked for — so anything in `skipped_envs` came from them.
+    fn lint_server(f: LintFaults) -> Server {
+        use aws_sdk_elasticbeanstalk::operation as op;
+        use aws_sdk_elasticbeanstalk::types::{EnvironmentDescription, PlatformSummary};
+        let denied = |what: &str| {
+            aws_smithy_types::error::ErrorMetadata::builder()
+                .code("AccessDeniedException")
+                .message(format!("User is not authorized to perform {what}"))
+                .build()
+        };
+        let listing = aws_smithy_mocks::mock!(EbClient::describe_environments).then_output(|| {
+            op::describe_environments::DescribeEnvironmentsOutput::builder()
+                .environments(
+                    EnvironmentDescription::builder()
+                        .environment_name("poly-web")
+                        .application_name("poly")
+                        .status("Ready".into())
+                        .health("Green".into())
+                        .build(),
+                )
+                .build()
+        });
+        let stacks = if f.stacks {
+            aws_smithy_mocks::mock!(EbClient::list_available_solution_stacks).then_error(
+                move || {
+                    op::list_available_solution_stacks::ListAvailableSolutionStacksError::generic(
+                        denied("elasticbeanstalk:ListAvailableSolutionStacks"),
+                    )
+                },
+            )
+        } else {
+            aws_smithy_mocks::mock!(EbClient::list_available_solution_stacks).then_output(|| {
+                op::list_available_solution_stacks::ListAvailableSolutionStacksOutput::builder()
+                    .build()
+            })
+        };
+        let settings = aws_smithy_mocks::mock!(EbClient::describe_configuration_settings)
+            .then_output(|| {
+                op::describe_configuration_settings::DescribeConfigurationSettingsOutput::builder()
+                    .build()
+            });
+        let health = if f.health {
+            aws_smithy_mocks::mock!(EbClient::describe_environment_health).then_error(move || {
+                op::describe_environment_health::DescribeEnvironmentHealthError::generic(denied(
+                    "elasticbeanstalk:DescribeEnvironmentHealth",
+                ))
+            })
+        } else {
+            aws_smithy_mocks::mock!(EbClient::describe_environment_health).then_output(|| {
+                op::describe_environment_health::DescribeEnvironmentHealthOutput::builder().build()
+            })
+        };
+        let platforms = if f.platform_list {
+            aws_smithy_mocks::mock!(EbClient::list_platform_versions).then_error(move || {
+                op::list_platform_versions::ListPlatformVersionsError::generic(denied(
+                    "elasticbeanstalk:ListPlatformVersions",
+                ))
+            })
+        } else {
+            let with_one = f.platform_date;
+            aws_smithy_mocks::mock!(EbClient::list_platform_versions).then_output(move || {
+                let mut b = op::list_platform_versions::ListPlatformVersionsOutput::builder();
+                if with_one {
+                    b = b.platform_summary_list(
+                        PlatformSummary::builder()
+                            .platform_arn("arn:aws:elasticbeanstalk:us-west-1:123456789012:platform/custom-node/1.0.0")
+                            .platform_branch_name("custom-node")
+                            .build(),
+                    );
+                }
+                b.build()
+            })
+        };
+        let platform_date = aws_smithy_mocks::mock!(EbClient::describe_platform_version)
+            .then_error(move || {
+                op::describe_platform_version::DescribePlatformVersionError::generic(denied(
+                    "elasticbeanstalk:DescribePlatformVersion",
+                ))
+            });
+        let eb = aws_smithy_mocks::mock_client!(
+            aws_sdk_elasticbeanstalk,
+            aws_smithy_mocks::RuleMode::MatchAny,
+            [
+                &listing,
+                &stacks,
+                &settings,
+                &health,
+                &platforms,
+                &platform_date
+            ]
+        );
+        let sqs =
+            aws_smithy_mocks::mock_client!(aws_sdk_sqs, aws_smithy_mocks::RuleMode::MatchAny, []);
+        Server::with_injected_client(
+            WriteScope::None,
+            crate::config::Config::default(),
+            client_with(eb, sqs),
+        )
+    }
+
+    async fn lint_skipped(f: LintFaults) -> Vec<String> {
+        let out = lint_server(f)
+            .call_tool("lint", &json!({}))
+            .await
+            .expect("lint answers");
+        let v: Value = serde_json::from_str(&out).expect("valid JSON");
+        v["skipped_envs"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// The discriminating case: a fleet that answered everything
+    /// reports nothing skipped. Without it, every assertion below
+    /// would pass on a tool that reported skips unconditionally.
+    #[tokio::test]
+    async fn lint_that_saw_everything_reports_nothing_skipped() {
+        let skipped = lint_skipped(LintFaults::default()).await;
+        assert!(skipped.is_empty(), "{skipped:?}");
+    }
+
+    /// A failed stack listing is lost EBL008 coverage, reported.
+    ///
+    /// It was an empty map under a comment reading "same tolerance as
+    /// the CLI path" — false since 0.44, when the CLI started degrading
+    /// on it. An agent got a clean result for a check that never ran.
+    #[tokio::test]
+    async fn lint_reports_a_failed_stack_listing() {
+        let skipped = lint_skipped(LintFaults {
+            stacks: true,
+            ..LintFaults::default()
+        })
+        .await;
+        assert!(
+            skipped
+                .iter()
+                .any(|s| s.contains("EBL008") && s.contains("ListAvailableSolutionStacks")),
+            "{skipped:?}"
+        );
+    }
+
+    /// A whole failed EBL015 pass is reported. `if let Ok` dropped it
+    /// with nothing in the result at all.
+    #[tokio::test]
+    async fn lint_reports_a_failed_platform_pass() {
+        let skipped = lint_skipped(LintFaults {
+            platform_list: true,
+            ..LintFaults::default()
+        })
+        .await;
+        assert!(
+            skipped
+                .iter()
+                .any(|s| s.contains("EBL015") && s.contains("ListPlatformVersions")),
+            "{skipped:?}"
+        );
+    }
+
+    /// And a partly-failed one, where the CLI now degrades too.
+    #[tokio::test]
+    async fn lint_reports_a_partly_failed_platform_pass() {
+        let skipped = lint_skipped(LintFaults {
+            platform_date: true,
+            ..LintFaults::default()
+        })
+        .await;
+        assert!(
+            skipped
+                .iter()
+                .any(|s| s.contains("EBL015 skipped for 'custom-node'")),
+            "{skipped:?}"
+        );
+    }
+
+    /// The shared input fetch's new health warning reaches the tool.
+    #[tokio::test]
+    async fn lint_reports_a_failed_health_fetch() {
+        let skipped = lint_skipped(LintFaults {
+            health: true,
+            ..LintFaults::default()
+        })
+        .await;
+        assert!(
+            skipped
+                .iter()
+                .any(|s| s.contains("EBL012") && s.contains("DescribeEnvironmentHealth")),
+            "{skipped:?}"
+        );
+    }
+
     /// EB's own names for an auto-created worker queue pair. Neither
     /// ends in `-dlq`, which is what made the old derivation wrong.
     const EB_MAIN: &str =
