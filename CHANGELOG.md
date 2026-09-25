@@ -8,6 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- **The TUI's `:lint` no longer shows "✓ No issues found" over checks
+  that did not run.** It had its own copy of the lint assembly, which
+  dropped tag and health failures in silence and never ran the EBL020 /
+  EBL018 probes — so the same env linted differently in the TUI and in
+  `ebman lint`. It now uses the shared assembly and lists any check that
+  could not run.
+
 - **`:explain EBL010` no longer reports missing tags it never read.**
   Its own copy of the lint assembly flattened a failed tag fetch into
   "no tags", so EBL010 fired for every required tag; a failed fetch of

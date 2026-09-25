@@ -19,12 +19,42 @@ use super::{
 /// rather than wondering whether the rules ran at all. Each issue
 /// renders as a four-line block: severity+id+title header,
 /// indented detail, optional suggestion, blank separator.
-pub(crate) fn render_lint_overlay(env_name: &str, issues: &[crate::lint::Issue]) -> String {
+pub(crate) fn render_lint_overlay(
+    env_name: &str,
+    issues: &[crate::lint::Issue],
+    coverage_warnings: &[String],
+) -> String {
     use crate::lint::Severity;
+    // Checks that could not run, listed — never folded into a ✓. A
+    // clean pane over a check whose input fetch failed is the defect
+    // the shared assembly exists to stop.
+    let not_run = if coverage_warnings.is_empty() {
+        String::new()
+    } else {
+        let mut s = format!(
+            "\n{} check{} could NOT run — not a clean result:\n",
+            coverage_warnings.len(),
+            if coverage_warnings.len() == 1 {
+                ""
+            } else {
+                "s"
+            },
+        );
+        for w in coverage_warnings {
+            s.push_str(&format!("  ? {w}\n"));
+        }
+        s
+    };
     if issues.is_empty() {
+        if coverage_warnings.is_empty() {
+            return format!(
+                "lint — {env_name}\n\n\
+                 ✓ No issues found against the v1 rule set.\n\n\
+                 esc / q to close"
+            );
+        }
         return format!(
-            "lint — {env_name}\n\n\
-             ✓ No issues found against the v1 rule set.\n\n\
+            "lint — {env_name}\n\nNo issues found by the checks that ran.\n{not_run}\n\
              esc / q to close"
         );
     }
@@ -52,6 +82,7 @@ pub(crate) fn render_lint_overlay(env_name: &str, issues: &[crate::lint::Issue])
         }
         out.push('\n');
     }
+    out.push_str(&not_run);
     out.push_str("esc / q to close");
     out
 }
@@ -690,7 +721,6 @@ impl App {
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let env_name = env.name.clone();
-        let app_name = env.application.clone();
         // Snapshot the user-level disables now — the project-level
         // ones get read fresh inside the spawn so a mid-session
         // edit to `.ebman/ebman.toml` takes effect without
@@ -701,15 +731,13 @@ impl App {
         // EBL011 worker DLQ, EBL012 healthy-count). The tags + health
         // fetches run in parallel with option-settings (see
         // spawn_confirm_lint for the latency rationale).
-        let newer_stack_owned =
-            crate::aws::newer_stack_version(&env.solution_stack, &self.latest_stacks);
+        let latest_stacks_owned = self.latest_stacks.clone();
         let required_tags_owned = self.cfg.required_tags.clone();
         let dlq_depth_owned = if env.tier.eq_ignore_ascii_case("Worker") {
             self.worker_dlq_depths.get(&env.name).copied()
         } else {
             None
         };
-        let env_arn_owned = env.arn.clone();
         self.status_message = Some(format!("running lint on {env_name}…"));
         tokio::spawn(async move {
             let aws = match client.resolve().await {
@@ -723,55 +751,42 @@ impl App {
                     return;
                 }
             };
-            let opts_fut = aws.fetch_env_option_settings(&app_name, &env_name);
-            let tags_fut = async {
-                match env_arn_owned.as_deref() {
-                    Some(arn) => aws.list_tags(arn).await.ok(),
-                    None => None,
-                }
-            };
-            let health_fut = aws.fetch_env_instance_counts(&env_name);
-            let (opts_res, tags_opt, health_res) = tokio::join!(opts_fut, tags_fut, health_fut);
-            // Stays an `Option`: `None` is "the tag fetch failed, or
-            // the env has no ARN to fetch against", and EBL010 must
-            // SKIP on that. Flattening it to an empty Vec here would
-            // hand the rule a successful-but-empty result and fire a
-            // false positive for every required key on every env.
-            let env_tag_keys_owned: Option<Vec<String>> =
-                tags_opt.map(|t| t.into_iter().map(|(k, _)| k).collect());
-            let healthy_count_owned = health_res.ok().map(|c| c.healthy as i64);
-            let body = match opts_res {
-                Ok(opts) => {
-                    let mut ctx = crate::lint::LintContext::for_env(&env, &opts)
-                        .with_required_tags(&required_tags_owned);
-                    if let Some(keys) = env_tag_keys_owned.as_deref() {
-                        ctx = ctx.with_env_tag_keys(keys);
-                    }
-                    if let Some(newer) = newer_stack_owned.as_deref() {
-                        ctx = ctx.with_newer_stack_available(newer);
-                    }
-                    if let Some(depth) = dlq_depth_owned {
-                        ctx = ctx.with_dlq_depth(depth);
-                    }
-                    if let Some(count) = healthy_count_owned {
-                        ctx = ctx.with_healthy_count(count);
-                    }
-                    // Compose operator disables: user-level (from
-                    // App, mirrored from config.toml at startup) +
-                    // project-local (read fresh from cwd so a
-                    // mid-session edit to .ebman/ebman.toml takes
-                    // effect). Project disables extend; nothing
-                    // overrides.
-                    let mut disabled = user_disables.clone();
-                    disabled.extend(crate::project::load_lint_disables_from_cwd());
+            // Compose operator disables: user-level (from App,
+            // mirrored from config.toml at startup) + project-local
+            // (read fresh from cwd so a mid-session edit to
+            // .ebman/ebman.toml takes effect). Project disables extend;
+            // nothing overrides. Composed BEFORE the fetch: a disabled
+            // rule must not run its probe.
+            let mut disabled = user_disables.clone();
+            disabled.extend(crate::project::load_lint_disables_from_cwd());
+            // The shared assembly, not a TUI copy: the copy here kept
+            // its own fetches, dropped tag and health failures in
+            // silence, and never ran the EBL020 / EBL018 probes — so
+            // the same env linted differently here and in `ebman lint`.
+            let fetched = crate::lint::inputs::fetch_env_lint_inputs(
+                &aws,
+                &env,
+                &latest_stacks_owned,
+                false,
+                &disabled,
+                &required_tags_owned,
+            )
+            .await;
+            let body = match fetched {
+                Ok(mut inputs) => {
+                    inputs.dlq_depth = dlq_depth_owned;
                     let rules = crate::lint::default_rules(&disabled);
-                    let issues = crate::lint::run_rules(&rules, &ctx);
-                    render_lint_overlay(&env_name, &issues)
+                    let issues = crate::lint::inputs::run_rules_for_env(
+                        &rules,
+                        &env,
+                        &inputs,
+                        &required_tags_owned,
+                    );
+                    render_lint_overlay(&env_name, &issues, &inputs.coverage_warnings)
                 }
-                Err(e) => format!(
-                    "lint — failed to fetch option settings:\n  {}\n\nesc / q to close",
-                    flatten_err("fetch_env_option_settings", e)
-                ),
+                Err(e) => {
+                    format!("lint — failed to fetch option settings:\n  {e}\n\nesc / q to close")
+                }
             };
             let _ = tx.send(AppMsg::TextOverlay {
                 gen,
