@@ -24,7 +24,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   EBL010, EBL012, EBL018 and EBL020 could never fire through it, and a
   failed fetch read as "no env in scope has issue" (exit 3). It now uses
   the shared assembly, and exits 1 when the rule could not be evaluated
-  for some env.
+  for some env — EBL008 included: a failed platform listing was a
+  warning followed by the clean exit 3.
 
 - **`ebman audit --action RestartAppServer` finds MCP restarts too.**
   Surfaces spell some verbs differently in the audit log — MCP writes
@@ -41,7 +42,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   clean" at the moment of the write. The modal now lists the checks that
   could not run, with the reason — including a single rule that lost its
   input: a denied tag fetch (EBL010) or health fetch (EBL012) was
-  dropped the same way, when either rule could otherwise have fired.
+  dropped the same way, when either rule could otherwise have fired, and
+  so were the TUI-cached inputs described under `:explain` below.
 
 - **The TUI's `:lint` no longer shows "✓ No issues found" over checks
   that did not run.** It had its own copy of the lint assembly, which

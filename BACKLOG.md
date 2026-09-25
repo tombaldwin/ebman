@@ -221,7 +221,7 @@ Tier definitions:
   `rebuild` destructive (`Verb::destructive` — it replaces every
   instance), while the TUI's `Action::confirm_in_red` deliberately
   shows only terminate and `ssm-run` in red, pinned by
-  `action_destructive_covers_terminate_and_ssm_run`. The 0.45 release
+  `confirm_in_red_covers_terminate_and_ssm_run`. The 0.45 release
   review found the two disagreeing under one name; they were renamed by
   meaning rather than changed. One line to align if wanted.
 

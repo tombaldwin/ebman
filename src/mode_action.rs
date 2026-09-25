@@ -130,7 +130,7 @@ impl Action {
     /// gate of the same name, and the three answered three different
     /// questions (0.45 release review). Rebuild is destructive to MCP
     /// and deliberately not red here — pinned by
-    /// `action_destructive_covers_terminate_and_ssm_run`; whether it
+    /// `confirm_in_red_covers_terminate_and_ssm_run`; whether it
     /// should be is recorded as a question for the maintainer.
     pub(crate) fn confirm_in_red(self) -> bool {
         // SsmRun is flagged so the confirm modal renders in red —
