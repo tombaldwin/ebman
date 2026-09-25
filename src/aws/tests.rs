@@ -5183,3 +5183,52 @@ mod cache_lock_guard {
         assert!(unlocked(constructed).is_empty());
     }
 }
+
+/// An AWS error's PLAIN `Display` names what AWS refused.
+///
+/// The CLI and MCP print errors with `{e}` / `e.to_string()` at some
+/// sixty sites. `aws_ctx` used to put the operation in its own outer
+/// layer, so all of them printed `"DeleteMessage failed"` and nothing
+/// else — only the TUI, which downcasts for the reason, showed it. So
+/// 0.44's headline, "errors that name what AWS refused", held in one
+/// surface of three.
+///
+/// Driven through a real SDK call, not a hand-built chain: the shape of
+/// the chain is the thing under test.
+#[tokio::test]
+async fn an_aws_errors_plain_display_names_what_aws_refused() {
+    use aws_sdk_sqs::operation::delete_message::DeleteMessageError;
+    let rule = mock!(aws_sdk_sqs::Client::delete_message).then_error(|| {
+        DeleteMessageError::generic(
+            aws_smithy_types::error::ErrorMetadata::builder()
+                .code("AccessDenied")
+                .message("User is not authorized to perform sqs:DeleteMessage")
+                .build(),
+        )
+    });
+    let client = client_with_sqs(mock_client!(aws_sdk_sqs, [&rule]));
+    let e = client
+        .delete_message("https://sqs.us-east-1.amazonaws.com/123456789012/q", "rh-1")
+        .await
+        .expect_err("denied");
+
+    let plain = e.to_string();
+    // "DeleteMessage failed", not "DeleteMessage": AWS's own sentence
+    // ("…perform sqs:DeleteMessage") contains the bare word, so that
+    // assertion passed with the operation gone.
+    assert!(
+        plain.starts_with("DeleteMessage failed:"),
+        "leads with the operation: {plain}"
+    );
+    assert!(
+        plain.contains("User is not authorized to perform sqs:DeleteMessage"),
+        "a plain `{{e}}` must carry AWS's own sentence: {plain}"
+    );
+
+    // The TUI's renderer must not now say it twice. (`{e:#}` is not
+    // asserted on: it walks down into the SDK's own error, whose
+    // Display repeats the message whatever this layer does.)
+    let flat = crate::app::flatten_err_to_string(&e);
+    assert!(flat.starts_with("AccessDenied:"), "{flat}");
+    assert_eq!(flat.matches("User is not authorized").count(), 1, "{flat}");
+}

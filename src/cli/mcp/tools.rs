@@ -948,9 +948,7 @@ impl Server {
                     Ok(stacks) => aws::latest_stack_versions(&stacks),
                     Err(e) => {
                         if !disabled.iter().any(|d| d == "EBL008") {
-                            skipped.push(format!(
-                                "EBL008 skipped — ListAvailableSolutionStacks: {e:#}"
-                            ));
+                            skipped.push(format!("EBL008 skipped — {e}"));
                         }
                         std::collections::HashMap::new()
                     }

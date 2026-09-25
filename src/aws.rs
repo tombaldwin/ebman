@@ -1039,6 +1039,16 @@ mod tests;
 /// `dyn Error`, which is why the capture has to happen at the boundary.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AwsErrorMeta {
+    /// The operation that failed, e.g. `"DeleteMessage failed"`.
+    ///
+    /// Carried here, in the SAME layer as the reason, so that the
+    /// error's plain `Display` is the whole story. It used to be a
+    /// separate outer `wrap_err`, which made `e.to_string()` / `{e}`
+    /// render only `"DeleteMessage failed"` — and that is what every
+    /// CLI and MCP error site printed. The TUI recovered the reason by
+    /// downcasting; nothing else did, so 0.44's "errors that name what
+    /// AWS refused" held in one surface of three.
+    pub op: Option<String>,
     /// The service's error code, e.g. `ThrottlingException`.
     pub code: Option<String>,
     /// The service's own sentence about what went wrong, e.g. "User is
@@ -1060,12 +1070,13 @@ impl AwsErrorMeta {
     /// Append the service's message and request id to `head`.
     ///
     /// Two callers with different heads: this type's `Display` leads
-    /// with the error CODE, and `app::flatten_err_to_string` leads with
-    /// the OPERATION name because it has already lifted the code into a
-    /// class prefix. Same fields, same order, same separators — which
-    /// is why they were previously two hand-built copies of the tail,
-    /// two places to change the operator-facing format and nothing
-    /// pinning them to agree.
+    /// with the operation and the error CODE, and
+    /// `app::flatten_err_to_string` leads with the operation alone
+    /// because it has already lifted the code into a class prefix. Same
+    /// fields, same order, same separators — which is why they were
+    /// previously two hand-built copies of the tail, two places to
+    /// change the operator-facing format and nothing pinning them to
+    /// agree.
     pub(crate) fn detail_after(&self, head: &str) -> String {
         let mut out = match (head.is_empty(), self.message.as_deref()) {
             (false, Some(m)) => format!("{head}: {m}"),
@@ -1081,13 +1092,32 @@ impl AwsErrorMeta {
 }
 
 impl std::fmt::Display for AwsErrorMeta {
+    /// `DeleteMessage failed: AccessDenied: User is not authorized to
+    /// perform sqs:DeleteMessage (request id …)` — the operation, the
+    /// code and AWS's own sentence, in one plain `Display`.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}",
-            self.detail_after(self.code.as_deref().unwrap_or(""))
-        )
+        let head = match (self.op.as_deref(), self.code.as_deref()) {
+            (Some(op), Some(code)) => format!("{op}: {code}"),
+            (Some(op), None) => op.to_string(),
+            (None, Some(code)) => code.to_string(),
+            (None, None) => String::new(),
+        };
+        write!(f, "{}", self.detail_after(&head))
     }
+}
+
+/// The one way an AWS failure becomes a `Report`: `meta` wrapped
+/// directly around the SDK error, as a single layer.
+///
+/// One function so the tests that build a chain by hand build THIS
+/// shape, not a copy of it — when the shape changed from two layers to
+/// one, hand-built two-layer fixtures would have gone on pinning a
+/// chain production no longer makes.
+pub(crate) fn aws_report(
+    source: color_eyre::eyre::Report,
+    meta: AwsErrorMeta,
+) -> color_eyre::eyre::Report {
+    source.wrap_err(meta)
 }
 
 impl std::error::Error for AwsErrorMeta {}
@@ -1111,10 +1141,8 @@ pub(crate) fn error_code(e: &color_eyre::eyre::Report) -> Option<&str> {
 /// `.send().await.aws_ctx("Op failed")?` — the shortest correct way to
 /// finish an SDK call.
 ///
-/// Same job as [`wrap_aws`], in postfix position. That is the whole
-/// point: the wrong form was `.wrap_err("Op failed")?`, which is
-/// shorter than wrapping the call in `wrap_aws(...)` and reads as if it
-/// did the same thing. Seventy-eight of eighty call sites took it, and
+/// The wrong form was `.wrap_err("Op failed")?`, which is shorter and
+/// reads as if it did the same thing. Seventy-eight of eighty call sites took it, and
 /// each one silently discarded the service's own message.
 ///
 /// A rule that asks for more typing than the mistake loses. This one
@@ -1147,13 +1175,12 @@ where
             Ok(v) => Ok(v),
             Err(e) => {
                 let meta = AwsErrorMeta {
+                    op: Some(op.to_string()),
                     code: e.code().map(str::to_string),
                     message: e.message().map(str::to_string),
                     request_id: e.request_id().map(str::to_string),
                 };
-                Err(color_eyre::eyre::Report::new(e))
-                    .wrap_err(meta)
-                    .wrap_err_with(|| op.to_string())
+                Err(aws_report(color_eyre::eyre::Report::new(e), meta))
             }
         }
     }

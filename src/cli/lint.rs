@@ -334,8 +334,7 @@ pub(crate) async fn fetch_env_lint_inputs(
         Some(Err(e)) => {
             if ebl010_could_fire(disabled, required_tags) {
                 fetch_warnings.extend(
-                    ProbeOutcome::Unknown(format!("ListTagsForResource: {e:#}"))
-                        .coverage_warning("EBL010", &env.name),
+                    ProbeOutcome::Unknown(e.to_string()).coverage_warning("EBL010", &env.name),
                 );
             }
             None
@@ -347,8 +346,7 @@ pub(crate) async fn fetch_env_lint_inputs(
         Err(e) => {
             if ebl012_could_fire(disabled, env, &options) {
                 fetch_warnings.extend(
-                    ProbeOutcome::Unknown(format!("DescribeEnvironmentHealth: {e:#}"))
-                        .coverage_warning("EBL012", &env.name),
+                    ProbeOutcome::Unknown(e.to_string()).coverage_warning("EBL012", &env.name),
                 );
             }
             None
@@ -1062,9 +1060,7 @@ where
                 // must never redden a run (see `disabled_rule_probes`).
                 if !disabled.iter().any(|d| d == "EBL008") {
                     let region_label = region_opt.as_deref().unwrap_or("default");
-                    report.degrade(format!(
-                        "EBL008 skipped — region '{region_label}': ListAvailableSolutionStacks: {e:#}"
-                    ));
+                    report.degrade(format!("EBL008 skipped — region '{region_label}': {e}"));
                 }
                 std::collections::HashMap::new()
             }

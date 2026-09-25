@@ -93,16 +93,13 @@ impl AwsClient {
                 // instances are reported as failures by name, with the
                 // service's own reason attached.
                 Err(e) => {
-                    // `{e:#}`, not `{e}`. `aws_ctx` returns a Report
-                    // whose plain `Display` is the OUTERMOST wrap
-                    // only — here the literal "SendCommand failed" —
-                    // so `{e}` renders strictly LESS than the
-                    // `eyre!("SendCommand failed: {e}")` it replaced,
-                    // which at least reached the SDK's "service
-                    // error". The alternate form walks the chain to
-                    // the service's own sentence. Same fix as
-                    // `s3.rs`'s abort log, which this site missed.
-                    let detail = format!("{e:#}");
+                    // Plain `{e}` is the whole story since
+                    // `AwsErrorMeta` holds the operation as well as the
+                    // reason (see `aws_report`). This site and `s3.rs`'s
+                    // abort log each used to work around the old
+                    // two-layer chain with `{e:#}` — the same fix, made
+                    // per site, which is how one of them got missed.
+                    let detail = e.to_string();
                     tracing::warn!(
                         target: "ebman::aws",
                         instances = chunk.len(),

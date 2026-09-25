@@ -1004,11 +1004,10 @@ impl AwsClient {
                     );
                 }
             }
-            // `{e:#}` — eyre's alternate Display walks the chain, so
-            // the service's own sentence reaches the operator. `{e}`
-            // rendered the SdkError alone, which for a modelled
-            // failure is the literal "service error".
-            Err(e) => discovery_err = Some(format!("{e:#}")),
+            // Plain `{e}` carries the service's own sentence since
+            // `AwsErrorMeta` holds the operation too (see `aws_report`);
+            // this site used `{e:#}` to reach it before that.
+            Err(e) => discovery_err = Some(e.to_string()),
         }
 
         // Fallback / override: look at user-supplied option settings in case
@@ -1026,7 +1025,7 @@ impl AwsClient {
                 Err(e) => {
                     // Record the fallback failure too — resolution
                     // below decides whether it matters.
-                    let msg = format!("{e:#}");
+                    let msg = e.to_string();
                     discovery_err = Some(match discovery_err.take() {
                         Some(prior) => format!("{prior} + {msg}"),
                         None => msg,
@@ -1090,7 +1089,7 @@ impl AwsClient {
                     if super::error_code(&e).is_some_and(|c| c.contains("NonExistentQueue")) {
                         None
                     } else {
-                        return Err(eyre!("main queue stats: {e:#}"));
+                        return Err(eyre!("main queue stats: {e}"));
                     }
                 }
             },
@@ -1103,7 +1102,7 @@ impl AwsClient {
                     if super::error_code(&e).is_some_and(|c| c.contains("NonExistentQueue")) {
                         None
                     } else {
-                        return Err(eyre!("dlq stats: {e:#}"));
+                        return Err(eyre!("dlq stats: {e}"));
                     }
                 }
             },
