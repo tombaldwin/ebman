@@ -8,6 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- **`ebman audit --action RestartAppServer` finds MCP restarts too.**
+  Surfaces spell some verbs differently in the audit log — MCP writes
+  `Restart` where the TUI and CLI write `RestartAppServer`, and option
+  writes are `SetOption` or `UpdateOptionSettings` depending on where
+  they came from — and the filter matched exactly, so a search by one
+  spelling silently missed the other. Either spelling now finds both.
+  What is on disk is unchanged.
+
 - **A pre-deploy lint that could not run now says so in the confirm
   modal.** A failed option fetch — or an unreachable client — became an
   empty issue list, and an empty list renders as nothing, which is also

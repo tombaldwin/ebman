@@ -296,12 +296,41 @@ impl<'a> AuditFilter<'a> {
             }
         }
         if let Some(want) = self.action {
-            if entry.action.as_deref() != Some(want) {
+            if entry.action.as_deref().map(action_key) != Some(action_key(want)) {
                 return false;
             }
         }
         true
     }
+}
+
+/// Action labels that name the SAME operation, spelled differently by
+/// different surfaces. First spelling is the comparison key.
+///
+/// MCP audits a restart as `Restart`; the TUI, CLI and replay write
+/// `RestartAppServer`. Option writes are `SetOption` from MCP, batch and
+/// `lint --fix`, and `UpdateOptionSettings` from TUI forms and deploy —
+/// every one of them the same `update_env_option_settings` call. The
+/// filter matched labels exactly, so `ebman audit --action
+/// RestartAppServer` silently missed every MCP restart. `audit replay`
+/// had already learned to accept both restart spellings; the filter had
+/// not.
+///
+/// Reader-side on purpose: the log keeps what each surface wrote, so
+/// nothing already on disk changes meaning. Which spelling every
+/// surface should WRITE is the typed-verb refactor's decision.
+const ACTION_ALIASES: &[&[&str]] = &[
+    &["RestartAppServer", "Restart"],
+    &["SetOption", "UpdateOptionSettings"],
+];
+
+/// The key an action label is compared under: its alias group's first
+/// spelling, or the label itself.
+pub(crate) fn action_key(label: &str) -> &str {
+    ACTION_ALIASES
+        .iter()
+        .find(|group| group.contains(&label))
+        .map_or(label, |group| group[0])
 }
 
 /// Render audit entries as a pretty text table (TS / REGION / STAGE /
@@ -1458,6 +1487,47 @@ mod tests {
         let kept: Vec<_> = entries.iter().filter(|e| filter.matches(e)).collect();
         assert_eq!(kept.len(), 1);
         assert_eq!(kept[0].when, "2026-05-27T11:00:00Z");
+    }
+
+    /// `--action` finds an operation whichever surface's spelling it was
+    /// written under, and still distinguishes different operations.
+    #[test]
+    fn filter_by_action_matches_every_spelling_of_one_operation() {
+        let line = |action: &str| {
+            parse_audit_line(&format!(
+                "2026-05-27T10:00:00Z\tregion=r\tstage=dispatched action={action} target=env-a"
+            ))
+            .unwrap()
+        };
+        let entries = [
+            line("RestartAppServer"),
+            line("Restart"),
+            line("SetOption"),
+            line("UpdateOptionSettings"),
+            line("Rebuild"),
+        ];
+        let kept = |want: &str| -> Vec<String> {
+            let f = AuditFilter {
+                action: Some(want),
+                ..Default::default()
+            };
+            entries
+                .iter()
+                .filter(|e| f.matches(e))
+                .filter_map(|e| e.action.clone())
+                .collect()
+        };
+        assert_eq!(kept("RestartAppServer"), ["RestartAppServer", "Restart"]);
+        assert_eq!(kept("Restart"), ["RestartAppServer", "Restart"]);
+        assert_eq!(
+            kept("UpdateOptionSettings"),
+            ["SetOption", "UpdateOptionSettings"]
+        );
+        assert_eq!(
+            kept("Rebuild"),
+            ["Rebuild"],
+            "an unaliased label matches only itself"
+        );
     }
 
     #[test]
