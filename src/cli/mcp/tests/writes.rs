@@ -1168,6 +1168,17 @@ async fn a_failed_undo_keeps_the_message_recoverable() {
         s.recoverable().await.iter().any(|d| d.original_id == id),
         "a failed restore must not cost the operator their only copy"
     );
+    // Held AND free: retrying at once reaches the send again rather than
+    // being told another restore is in progress. "Still in the buffer"
+    // alone was satisfied by a message left claimed after a failure.
+    let retry = s
+        .tool_dlq_undo(&json!({"message_id": id}))
+        .await
+        .expect_err("the send still fails");
+    assert!(
+        !retry.to_string().contains("being restored"),
+        "a failed restore must release its claim: {retry}"
+    );
     let lines = audit_delta_for(&before, env);
     assert!(
         lines
@@ -1193,6 +1204,51 @@ async fn a_held_message_remembers_its_profile_and_region() {
     let held = s.recoverable().await;
     assert_eq!(held[0].profile.as_deref(), Some("ops"));
     assert_eq!(held[0].region.as_deref(), Some("eu-west-2"));
+}
+
+/// A restore whose call is DROPPED mid-flight does not lose the message.
+///
+/// `dlq_undo` runs under the 30 s tool timeout, and a timeout drops the
+/// future — no error path runs. The first take-once fix removed the
+/// held message before restoring and put it back only on an ERROR, so a
+/// slow credential load or send lost the only copy of the body. Found by
+/// the re-review. Simulated here exactly: claim, then never finish.
+#[tokio::test(start_paused = true)]
+async fn a_dropped_restore_does_not_lose_the_message() {
+    let s = Server::with_scope(true, false, crate::cli::mcp::WriteScope::All);
+    let msg = crate::demo_fixture::dlq_messages_for_env("poly-batch")
+        .into_iter()
+        .next()
+        .expect("fixture");
+    let id = msg.id.clone();
+    s.remember_deleted(
+        &deleted_from("poly-batch", Some("https://q/dlq".into())),
+        msg,
+    )
+    .await;
+
+    // A restore starts, and its future is dropped: no finish ever runs.
+    assert!(matches!(s.claim_for_restore(&id).await, Claim::Claimed(_)));
+
+    assert!(
+        s.recoverable().await.iter().any(|d| d.original_id == id),
+        "the message must still be held — the claim did not take it"
+    );
+    let err = s
+        .tool_dlq_undo(&json!({"message_id": id}))
+        .await
+        .expect_err("a second undo must not race the one in flight");
+    assert!(err.to_string().contains("being restored"), "{err}");
+
+    // The abandoned claim lapses, and the message can be restored.
+    tokio::time::advance(std::time::Duration::from_secs(RESTORE_CLAIM_SECS + 1)).await;
+    s.tool_dlq_undo(&json!({"message_id": id}))
+        .await
+        .expect("restorable again once the abandoned claim lapses");
+    assert!(
+        !s.recoverable().await.iter().any(|d| d.original_id == id),
+        "and gone once restored"
+    );
 }
 
 /// Remembering a new message evicts ones that have expired.

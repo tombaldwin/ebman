@@ -671,6 +671,26 @@ pub(super) struct DeletedMessage {
     pub body: String,
     pub attributes: Vec<(String, String, String)>,
     pub at: tokio::time::Instant,
+    /// Set while an undo is restoring this message. The entry stays in
+    /// the buffer until the restore SUCCEEDS, so nothing can lose it.
+    pub restoring_since: Option<tokio::time::Instant>,
+}
+
+/// How long an undo's claim on a held message stands: twice the tool
+/// timeout, so a restore still running is never raced, and a claim left
+/// behind by one whose call was DROPPED — the tool timeout firing
+/// mid-send — lapses within a minute and the message is restorable
+/// again.
+const RESTORE_CLAIM_SECS: u64 = super::TOOL_TIMEOUT_SECS * 2;
+
+/// What an undo found when it tried to claim a held message.
+#[derive(Debug)]
+pub(super) enum Claim {
+    Claimed(Box<DeletedMessage>),
+    /// Another undo is restoring it right now.
+    InProgress,
+    /// Not held: never deleted here, already restored, or expired.
+    NotHeld,
 }
 
 impl Server {
@@ -706,32 +726,52 @@ impl Server {
             body: msg.body,
             attributes: msg.attributes,
             at: tokio::time::Instant::now(),
+            restoring_since: None,
         });
         Some(UNDO_WINDOW_SECS)
     }
 
     /// What is still recoverable, newest first.
-    /// Remove one held message by its original id, under the lock.
+    /// Claim one held message for a restore, under the lock.
     ///
-    /// Taking it OUT before restoring is what makes an undo happen at
-    /// most once. `recoverable()` hands back a copy, and restoring from
-    /// the copy left the entry in place — so calling `dlq_undo` with
-    /// the same id N times inside the window enqueued N copies.
-    pub(super) async fn take_recoverable(&self, id: &str) -> Option<DeletedMessage> {
+    /// A CLAIM, not a removal. The first cut of the take-once fix
+    /// (90f93e2) removed the entry before restoring and put it back on
+    /// the error paths — but `dlq_undo` runs under the 30 s tool
+    /// timeout, and a timeout DROPS the future rather than returning an
+    /// error: a slow credential load or send lost the only copy of the
+    /// body, and the agent was told "timed out". Found by the re-review.
+    /// Now the entry leaves the buffer only when the restore succeeds;
+    /// a dropped restore leaves a claim that lapses (`RESTORE_CLAIM_SECS`).
+    /// The worst case is a duplicate send, which in a worker queue is
+    /// the recoverable failure — never a lost message.
+    ///
+    /// Still at most once: while a claim stands, a second undo is told
+    /// `InProgress`, not the old "already restored" — which was false
+    /// whenever the first one then failed.
+    pub(super) async fn claim_for_restore(&self, id: &str) -> Claim {
         let mut buf = self.deleted.lock().await;
         buf.retain(|d| d.at.elapsed().as_secs() < UNDO_WINDOW_SECS);
-        let at = buf.iter().position(|d| d.original_id == id)?;
-        Some(buf.remove(at))
+        let Some(d) = buf.iter_mut().find(|d| d.original_id == id) else {
+            return Claim::NotHeld;
+        };
+        if d.restoring_since
+            .is_some_and(|t| t.elapsed().as_secs() < RESTORE_CLAIM_SECS)
+        {
+            return Claim::InProgress;
+        }
+        d.restoring_since = Some(tokio::time::Instant::now());
+        Claim::Claimed(Box::new(d.clone()))
     }
 
-    /// Put a message back after a restore that failed, so it stays
-    /// recoverable for whatever remains of its original window.
-    async fn hold_again(&self, d: DeletedMessage) {
+    /// End a claim: drop the message if it was restored, otherwise make
+    /// it restorable again for the rest of its window.
+    pub(super) async fn finish_restore(&self, id: &str, restored: bool) {
         let mut buf = self.deleted.lock().await;
-        if buf.len() >= UNDO_CAPACITY {
-            buf.remove(0);
+        if restored {
+            buf.retain(|d| d.original_id != id);
+        } else if let Some(d) = buf.iter_mut().find(|d| d.original_id == id) {
+            d.restoring_since = None;
         }
-        buf.push(d);
     }
 
     pub(super) async fn recoverable(&self) -> Vec<DeletedMessage> {
@@ -1474,7 +1514,7 @@ pub(super) fn write_tool_descriptors() -> Vec<Value> {
         }),
         json!({
             "name": "dlq_undo",
-            "description": "Put back a dead-lettered message THIS server deleted, within 10 minutes. Call with no arguments to list what is still recoverable. Single-phase — no plan/confirm — because it is the least destructive action here and is reached for under time pressure. CAVEATS: held in memory by this server only, so a restart loses them and nothing deleted by another process is here; purges are never recoverable; and the restore is a re-send, so the message id changes, receive_count resets to 0 and the enqueue time becomes now. Body and attributes come back verbatim. Each message can be restored ONCE, to the region and profile it was deleted from; a failed restore leaves it recoverable.",
+            "description": "Put back a dead-lettered message THIS server deleted, within 10 minutes. Call with no arguments to list what is still recoverable. Single-phase — no plan/confirm — because it is the least destructive action here and is reached for under time pressure. CAVEATS: held in memory by this server only, so a restart loses them and nothing deleted by another process is here; purges are never recoverable; and the restore is a re-send, so the message id changes, receive_count resets to 0 and the enqueue time becomes now. Body and attributes come back verbatim. Each message can be restored ONCE, to the region and profile it was deleted from; a failed or interrupted restore leaves it recoverable, and a second call while one is running is told so.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -2667,19 +2707,29 @@ impl Server {
             ));
         };
 
-        let Some(d) = self.take_recoverable(&want).await else {
-            return Err(WriteError::Invalid(format!(
-                "'{want}' is not recoverable. Either it was never deleted by this server, \
-                 it has already been restored, the {UNDO_WINDOW_SECS}s window has passed, \
-                 or the server restarted. Call this tool with no arguments to see what IS \
-                 recoverable."
-            )));
+        let d = match self.claim_for_restore(&want).await {
+            Claim::Claimed(d) => *d,
+            Claim::InProgress => {
+                return Err(WriteError::Invalid(format!(
+                    "'{want}' is being restored by another call right now. If that restore \
+                     fails the message stays recoverable; call this tool with no arguments \
+                     to see what is held."
+                )));
+            }
+            Claim::NotHeld => {
+                return Err(WriteError::Invalid(format!(
+                    "'{want}' is not recoverable. Either it was never deleted by this server, \
+                     it has already been restored, the {UNDO_WINDOW_SECS}s window has passed, \
+                     or the server restarted. Call this tool with no arguments to see what IS \
+                     recoverable."
+                )));
+            }
         };
 
         if let Some(refused) =
             self.gate_refusal(&d.env, &d.profile, d.region.as_deref(), "dlq-undo")
         {
-            self.hold_again(d).await;
+            self.finish_restore(&d.original_id, false).await;
             return Err(WriteError::Refused(refused));
         }
 
@@ -2692,7 +2742,7 @@ impl Server {
             let client = match self.client(&client_args).await {
                 Ok(c) => c,
                 Err(e) => {
-                    self.hold_again(d).await;
+                    self.finish_restore(&d.original_id, false).await;
                     return Err(e.into());
                 }
             };
@@ -2739,10 +2789,12 @@ impl Server {
                 sent.as_ref().map(|_| ()).map_err(|e| e.as_str()),
                 &refs,
             );
+            self.finish_restore(&d.original_id, sent.is_ok()).await;
             if let Err(e) = sent {
-                self.hold_again(d).await;
                 return Err(e.into());
             }
+        } else {
+            self.finish_restore(&d.original_id, true).await;
         }
 
         // Rule 6: say what could NOT be restored. The body and every
