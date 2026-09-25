@@ -728,6 +728,43 @@ async fn credential_errors_are_rewritten_actionably() {
     assert!(msg.contains("op failed"), "got: {msg}");
 }
 
+/// The whole-pass lint skips (EBL008, EBL015) go through the same
+/// rewrite: they were formatted with a bare `{e}`, so an expired SSO
+/// session reached the agent as an SDK error with no fix in it.
+#[test]
+fn a_skipped_rule_pass_carries_the_credential_fix() {
+    let msg = super::tools::rule_skipped(
+        &Some("prod-admin".into()),
+        "EBL008",
+        "ListAvailableSolutionStacks",
+        "The security token included in the request is expired",
+    );
+    assert!(msg.starts_with("EBL008 skipped — "), "got: {msg}");
+    assert!(
+        msg.contains("aws sso login --profile prod-admin"),
+        "got: {msg}"
+    );
+    let msg = super::tools::rule_skipped(&None, "EBL015", "ListPlatformVersions", "Throttling");
+    assert_eq!(
+        msg,
+        "EBL015 skipped — ListPlatformVersions failed: Throttling"
+    );
+
+    // Both live call sites use it — the AWS backend is not reachable
+    // from a test, so pin the wiring.
+    let prod = crate::app::tests::scan::production_source("cli/mcp/tools.rs");
+    for rule in ["EBL008", "EBL015"] {
+        assert!(
+            prod.contains(&format!("\"{rule}\",\n")),
+            "the {rule} skip no longer goes through rule_skipped"
+        );
+        assert!(
+            !prod.contains(&format!("\"{rule} skipped")),
+            "the {rule} skip formats the raw error itself again"
+        );
+    }
+}
+
 /// `initialize` must tell a client what ebman can do that this
 /// surface does not expose.
 ///

@@ -108,7 +108,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   tells agents to look. The undocumented `warnings` array that carried
   per-branch failures is gone; they are in `skipped_envs` with the rest.
   In the CLI and MCP alike, a failed stack listing no longer degrades a
-  run when EBL008 is disabled.
+  run when EBL008 is disabled. These two entries also go through the
+  credential rewrite now, like every other `skipped_envs` entry, so an
+  expired SSO session names the `aws sso login` fix.
 
 - **`lint` no longer passes clean when it could not check tags or
   instance health.** A failed `ListTagsForResource` (EBL010) or
