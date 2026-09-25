@@ -605,7 +605,7 @@ where
         let envs = match aws.list_environments().await {
             Ok(envs) => envs,
             Err(e) => {
-                let region_label = region_opt.as_deref().unwrap_or("default");
+                let region_label = aws.context.region.as_str();
                 report.degrade(format!(
                     "skipping region '{region_label}' — list_environments: {e}"
                 ));
@@ -644,7 +644,7 @@ where
                 }
                 None => {
                     if multi_region && !quiet {
-                        let region_label = region_opt.as_deref().unwrap_or("default");
+                        let region_label = aws.context.region.as_str();
                         eprintln!(
                             "warning: env '{name}' not in region '{region_label}' — skipping"
                         );
@@ -666,7 +666,7 @@ where
                 .iter()
                 .any(|e| lint::inputs::ebl008_could_fire(disabled, e)),
             |why| {
-                let region_label = region_opt.as_deref().unwrap_or("default");
+                let region_label = aws.context.region.as_str();
                 report.degrade(format!("EBL008 skipped — region '{region_label}': {why}"));
             },
         );
