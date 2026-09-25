@@ -117,7 +117,10 @@ impl App {
                 &self.latest_stacks,
                 self.latest_stacks_error.as_deref(),
                 &self.context.region,
-                &self.region_for_name(&env.name),
+                // The row's own region, not a lookup by name: under a
+                // fan-out a same-named env in another region would
+                // answer for it.
+                &self.region_for(env),
             ),
             dlq: worker_dlq(
                 self.worker_dlq_depths.get(&env.name).copied(),
