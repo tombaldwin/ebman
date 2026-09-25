@@ -800,27 +800,15 @@ impl App {
         let client = self.client_for_env(&env.name);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
-        // Snapshot operator-tunable disables — user-level (already
-        // mirrored on App) + project-local (read fresh from cwd).
-        let mut disabled = self.cfg.lint_disable.clone();
-        disabled.extend(crate::project::load_lint_disables_from_cwd());
+        // The same snapshot `:lint` and `:explain` take — platform
+        // list (EBL008), worker DLQ (EBL011), disables, required tags —
+        // so a cached input that is missing is reported here too. It
+        // was not: the gaps reached `:lint` and `:explain` first and
+        // missed this, the surface where a missed check matters most.
+        let snap = self.lint_snapshot(&env);
         let env_for_msg = env.name.clone();
         let app_name = env.application.clone();
         let env_name = env.name.clone();
-        // Plumb the live lint-context inputs. latest_stack enables
-        // EBL008; required_tags + env_tag_keys (fetched parallel below)
-        // enable EBL010; dlq_depth enables EBL011; healthy instance
-        // count enables EBL012. All four wire-up tracks landed in 0.18.
-        let newer_stack_owned =
-            crate::aws::newer_stack_version(&env.solution_stack, &self.latest_stacks);
-        let required_tags_owned = self.cfg.required_tags.clone();
-        // EBL011 only fires for Worker envs and only when we have a
-        // cached DLQ depth (populated by the Queue tab / worker poll).
-        let dlq_depth_owned = if env.tier.eq_ignore_ascii_case("Worker") {
-            self.worker_dlq_depths.get(&env.name).copied()
-        } else {
-            None
-        };
         let env_arn_owned = env.arn.clone();
         // 0.21: opportunistic lint-input cache lookup. If tags or
         // health are fresh (< LINT_INPUT_CACHE_TTL), skip the
@@ -839,6 +827,7 @@ impl App {
             .and_then(|(v, t)| (now.duration_since(*t) < LINT_INPUT_CACHE_TTL).then_some(*v));
         let cache_env_name = env.name.clone();
         tokio::spawn(async move {
+            let disabled = snap.disabled();
             // The confirm modal's lint pane is advisory — an
             // unreachable client does not block the confirm. But it
             // is REPORTED: an empty pane is what a clean result looks
@@ -912,46 +901,37 @@ impl App {
                     healthy: if health_was_cached { None } else { health_opt },
                 });
             }
-            // `None` means the fetch failed or was not possible, and
-            // the rule skips on that rather than firing a false
-            // positive — and the skip is listed, see
-            // `pre_deploy_coverage_gaps`.
-            let env_tag_keys_owned: Option<Vec<String>> = tags_opt;
-            let healthy_count_owned = health_opt;
-            let mut not_run = pre_deploy_coverage_gaps(
-                &env,
-                &disabled,
-                &required_tags_owned,
-                tags_res.as_ref(),
-                &health_res,
-                opts_res.as_deref().ok(),
-            );
-            let issues = match opts_res {
-                Ok(opts) => {
-                    let mut ctx = crate::lint::LintContext::for_env(&env, &opts)
-                        .with_required_tags(&required_tags_owned);
-                    if let Some(keys) = env_tag_keys_owned.as_deref() {
-                        ctx = ctx.with_env_tag_keys(keys);
-                    }
-                    if let Some(newer) = newer_stack_owned.as_deref() {
-                        ctx = ctx.with_newer_stack_available(newer);
-                    }
-                    if let Some(depth) = dlq_depth_owned {
-                        ctx = ctx.with_dlq_depth(depth);
-                    }
-                    if let Some(count) = healthy_count_owned {
-                        ctx = ctx.with_healthy_count(count);
-                    }
-                    let rules = crate::lint::default_rules(&disabled);
-                    crate::lint::run_rules(&rules, &ctx)
+            // The fetch is this path's own (it reads the lint-input
+            // cache first); everything after it is shared. A failed
+            // input leaves the rule's input unset — it skips, never a
+            // false positive — and `input_gaps` lists the skip.
+            let (issues, not_run) = match opts_res {
+                Ok(options) => {
+                    let tags_err = match &tags_res {
+                        Some(Err(e)) => Some(e.as_str()),
+                        _ => None,
+                    };
+                    let health_err = health_res.as_ref().err().map(String::as_str);
+                    let mut inputs = crate::lint::inputs::EnvLintInputs::bare(options);
+                    inputs.coverage_warnings = crate::lint::inputs::input_gaps(
+                        &snap.env,
+                        &disabled,
+                        &snap.required_tags,
+                        &snap.platforms,
+                        tags_err,
+                        health_err,
+                        &inputs.options,
+                    );
+                    inputs.env_tag_keys = tags_opt;
+                    inputs.healthy_count = health_opt;
+                    inputs.newer_stack = snap.platforms.newer_for(&snap.env);
+                    let run = snap.finish(inputs, &disabled);
+                    (run.issues, run.coverage_warnings)
                 }
-                Err(e) => {
-                    // Was `Err(_) => Vec::new()`: a failed option fetch
-                    // produced an empty pane — the same thing a clean
-                    // env produces — right before a deploy.
-                    not_run.push(format!("lint could not run: {e}"));
-                    Vec::new()
-                }
+                // Was `Err(_) => Vec::new()`: a failed option fetch
+                // produced an empty pane — the same thing a clean env
+                // produces — right before a deploy.
+                Err(e) => (Vec::new(), vec![format!("lint could not run: {e}")]),
             };
             let _ = tx.send(AppMsg::ConfirmModalLint {
                 gen,
@@ -961,41 +941,4 @@ impl App {
             });
         });
     }
-}
-
-/// The per-rule checks the pre-deploy lint could not run, as operator
-/// lines. A failed tag or health fetch used to be dropped by `.ok()`,
-/// leaving an empty pane — what a clean env shows — right before a
-/// deploy. Reported only when the rule could have fired, via the same
-/// predicates `lint::inputs` uses, so a basic-health env does not
-/// false-alarm. `options` is `None` when the option fetch itself failed:
-/// EBL012's predicate needs it, and the whole-lint failure is reported
-/// separately. `tags` is `None` when there was no ARN to ask about.
-pub(super) fn pre_deploy_coverage_gaps(
-    env: &crate::aws::Environment,
-    disabled: &[String],
-    required_tags: &[String],
-    tags: Option<&Result<Vec<String>, String>>,
-    health: &Result<i64, String>,
-    options: Option<&[(String, String, String)]>,
-) -> Vec<String> {
-    use crate::lint::inputs::{ebl010_could_fire, ebl012_could_fire, ProbeOutcome};
-    let mut gaps = Vec::new();
-    if let Some(Err(e)) = tags {
-        if ebl010_could_fire(disabled, required_tags) {
-            gaps.extend(
-                ProbeOutcome::Unknown(format!("ListTagsForResource: {e}"))
-                    .coverage_warning("EBL010", &env.name),
-            );
-        }
-    }
-    if let (Err(e), Some(opts)) = (health, options) {
-        if ebl012_could_fire(disabled, env, opts) {
-            gaps.extend(
-                ProbeOutcome::Unknown(format!("DescribeEnvironmentHealth: {e}"))
-                    .coverage_warning("EBL012", &env.name),
-            );
-        }
-    }
-    gaps
 }

@@ -254,9 +254,35 @@ fn lint_overlay_lists_lost_coverage_beside_findings() {
 /// regression; this is the shape it would take.
 #[test]
 fn the_tui_lint_paths_use_the_shared_assembly() {
-    for (file, func) in [
-        ("app/cmd_misc.rs", "fn cmd_lint("),
-        ("app/cmd_inspect.rs", "fn cmd_explain_issue("),
+    // The runner `:lint` and `:explain` call finishes through the same
+    // step the pre-deploy lint does; `finish` is tested directly, the
+    // async runner (it needs AWS) is not.
+    let runner = super::scan::production_source("app/tui_lint.rs");
+    let body = runner
+        .split("pub(crate) async fn run_tui_lint(")
+        .nth(1)
+        .unwrap_or_else(|| panic!("run_tui_lint not found"));
+    assert!(
+        body.contains("fetch_env_lint_inputs(") && body.contains("snap.finish(inputs"),
+        "run_tui_lint must fetch through the shared assembly and finish from the snapshot"
+    );
+    // All three TUI lint runs take the one snapshot, which is where the
+    // cached inputs (platform list, worker DLQ) and their gaps come
+    // from. The cached-input gaps first landed in `:lint` and `:explain`
+    // and missed the confirm modal — a guard that named two functions
+    // could not see the third.
+    for (file, func, run) in [
+        ("app/cmd_misc.rs", "fn cmd_lint(", "run_tui_lint("),
+        (
+            "app/cmd_inspect.rs",
+            "fn cmd_explain_issue(",
+            "run_tui_lint(",
+        ),
+        (
+            "app/spawn_deploy.rs",
+            "fn spawn_confirm_lint(",
+            "snap.finish(inputs",
+        ),
     ] {
         let prod = super::scan::production_source(file);
         let body = prod
@@ -265,58 +291,101 @@ fn the_tui_lint_paths_use_the_shared_assembly() {
             .and_then(|rest| rest.split("\n    }\n").next())
             .unwrap_or_else(|| panic!("{file}: `{func}` not found"));
         assert!(
-            body.contains("lint::inputs::fetch_env_lint_inputs("),
-            "{file} `{func}` must fetch through the shared assembly"
+            body.contains("self.lint_snapshot(&env)"),
+            "{file} `{func}` must take the shared lint snapshot"
+        );
+        assert!(
+            body.contains(run),
+            "{file} `{func}` must complete its inputs from the snapshot ({run})"
         );
         assert!(
             !body.contains("LintContext::for_env("),
             "{file} `{func}` builds its own LintContext — a private copy of the \
              assembly again"
         );
-        // The inputs taken from App caches rather than fetched: their
-        // gaps must be reported too, from the real cache state.
-        assert!(
-            body.contains("cached_input_gaps(")
-                && body.contains("!self.latest_stacks.is_empty()")
-                && body.contains("self.worker_dlq_absent.contains("),
-            "{file} `{func}` must report the gaps in its cached inputs"
-        );
+        for cache in ["latest_stacks", "worker_dlq_depths", "lint_disable"] {
+            assert!(
+                !body.contains(cache),
+                "{file} `{func}` reads `{cache}` itself instead of through the snapshot"
+            );
+        }
     }
 }
 
 #[test]
 fn a_cached_input_that_is_missing_is_reported_not_read_as_clean() {
-    use crate::lint::inputs::{cached_input_gaps, explain_verdict, ExplainVerdict};
+    use crate::app::tui_lint::worker_dlq;
+    use crate::lint::inputs::{
+        dlq_depth_gap, explain_verdict, input_gaps, ExplainVerdict, Platforms, WorkerDlq,
+    };
     let web = mk_env("api", "poly", "WebServer", "Green");
     let worker = mk_env("jobs", "poly", "Worker", "Green");
+    let stacks: std::collections::HashMap<String, String> =
+        [("Java".to_string(), "4.1".to_string())]
+            .into_iter()
+            .collect();
+    let loaded = Platforms::from_cache(&stacks, None);
 
-    // Platform list not loaded → EBL008 could not run, on any env.
-    let gaps = cached_input_gaps(&web, &[], false, None, false);
+    // Platform list not loaded, or failed → EBL008 could not run, and
+    // the gap says which.
+    let empty = std::collections::HashMap::new();
+    let waiting = Platforms::from_cache(&empty, None);
+    let gaps = input_gaps(&web, &[], &[], &waiting, None, None, &[]);
     assert_eq!(gaps.len(), 1, "{gaps:?}");
     assert!(
         gaps[0].starts_with("EBL008 could not be evaluated for api"),
         "{gaps:?}"
     );
+    assert!(gaps[0].contains("has not loaded yet"), "{gaps:?}");
     // And `:explain EBL008` says so, rather than "doesn't fire".
     assert!(matches!(
         explain_verdict("EBL008", &[], &gaps),
         ExplainVerdict::NotEvaluated(_)
     ));
-    assert!(cached_input_gaps(&web, &[], true, None, false).is_empty());
-
-    // A worker with no depth read and no known absence → EBL011.
-    let gaps = cached_input_gaps(&worker, &[], true, None, false);
-    assert_eq!(gaps.len(), 1, "{gaps:?}");
-    assert!(
-        gaps[0].starts_with("EBL011 could not be evaluated for jobs"),
-        "{gaps:?}"
+    let denied = Platforms::from_cache(
+        &empty,
+        Some("ListAvailableSolutionStacks failed: AccessDenied"),
     );
-    // Known to have no DLQ, or a depth in hand → nothing missing.
-    assert!(cached_input_gaps(&worker, &[], true, None, true).is_empty());
-    assert!(cached_input_gaps(&worker, &[], true, Some(0), false).is_empty());
-    // Disabled rules are silent.
-    let off = vec!["EBL008".to_string(), "EBL011".to_string()];
-    assert!(cached_input_gaps(&worker, &off, false, None, false).is_empty());
+    let gaps = input_gaps(&web, &[], &[], &denied, None, None, &[]);
+    assert!(
+        gaps[0].contains("AccessDenied"),
+        "a failure names itself: {gaps:?}"
+    );
+    assert!(!gaps[0].contains("not loaded"), "{gaps:?}");
+    assert!(input_gaps(&web, &[], &[], &loaded, None, None, &[]).is_empty());
+    let off = vec!["EBL008".to_string()];
+    assert!(input_gaps(&web, &off, &[], &waiting, None, None, &[]).is_empty());
+
+    // The worker-queue poll, as lint may use it. A failed last check is
+    // never a usable answer — not the depth kept for the alert pill, and
+    // not an earlier "no DLQ".
+    assert!(matches!(
+        worker_dlq(Some(3), false, false),
+        WorkerDlq::Depth(3)
+    ));
+    assert!(matches!(worker_dlq(None, true, false), WorkerDlq::NoDlq));
+    for (depth, absent) in [(Some(3), false), (None, true), (None, false)] {
+        let WorkerDlq::Unknown(why) = worker_dlq(depth, absent, true) else {
+            panic!("stale must not be usable ({depth:?}, {absent})");
+        };
+        assert!(why.contains("failed"), "{why}");
+    }
+    let WorkerDlq::Unknown(why) = worker_dlq(None, false, false) else {
+        panic!("never checked is not 'no DLQ'");
+    };
+    assert!(why.contains("completed yet"), "{why}");
+
+    // EBL011's gap: only for a worker with no usable answer.
+    let unknown = WorkerDlq::Unknown("the last worker-queue check failed".into());
+    let gap = dlq_depth_gap(&worker, &[], &unknown).expect("a worker with no answer");
+    assert!(
+        gap.starts_with("EBL011 could not be evaluated for jobs"),
+        "{gap}"
+    );
+    assert!(dlq_depth_gap(&worker, &[], &WorkerDlq::NoDlq).is_none());
+    assert!(dlq_depth_gap(&worker, &[], &WorkerDlq::Depth(0)).is_none());
+    assert!(dlq_depth_gap(&web, &[], &unknown).is_none(), "not a worker");
+    assert!(dlq_depth_gap(&worker, &["EBL011".to_string()], &unknown).is_none());
 }
 
 /// The pre-deploy lint reports a failed run as a reason, never as an
@@ -361,18 +430,20 @@ fn the_pre_deploy_lint_reports_a_failed_run() {
             "{call} drops its error with `.ok()` — a failed fetch must be reported: {tail}"
         );
     }
-    // And the kept errors must reach the reporting helper: a call that
+    // And the kept errors must reach the shared gap helper: a call that
     // passed `None` for either would compile and list nothing.
     let at = code
-        .find("pre_deploy_coverage_gaps(")
-        .unwrap_or_else(|| panic!("spawn_confirm_lint no longer reports coverage gaps"));
+        .find("input_gaps(")
+        .unwrap_or_else(|| panic!("spawn_confirm_lint no longer reports input gaps"));
     let args = code[at..].split(';').next().unwrap_or_default();
-    for arg in ["tags_res.as_ref()", "&health_res"] {
-        assert!(
-            args.contains(arg),
-            "pre_deploy_coverage_gaps is not given {arg}: {args}"
-        );
+    for arg in ["tags_err", "health_err", "&snap.platforms"] {
+        assert!(args.contains(arg), "input_gaps is not given {arg}: {args}");
     }
+    assert!(
+        code.contains("Some(Err(e)) => Some(e.as_str())")
+            && code.contains("health_res.as_ref().err()"),
+        "tags_err / health_err must come from the fetch results"
+    );
 }
 
 /// Only `src/lint/` builds a `LintContext`: every surface gets its lint
@@ -385,12 +456,11 @@ fn the_pre_deploy_lint_reports_a_failed_run() {
 /// "no env has this issue". Asked the other way round, a new copy
 /// anywhere fails.
 ///
-/// One exception, by COUNT so it cannot grow: the pre-deploy lint in
-/// `spawn_deploy.rs`, recorded in BACKLOG.md ("The pre-deploy lint is
-/// still its own copy of the assembly") pending two rulings.
+/// No exceptions. The pre-deploy lint was one, by count, until it moved
+/// onto `run_rules_for_env` (0.45); it still FETCHES its own way — it
+/// reads the lint-input cache first — but builds nothing of its own.
 #[test]
 fn only_the_shared_assembly_builds_a_lint_context() {
-    const ALLOWED: &[(&str, usize)] = &[("src/app/spawn_deploy.rs", 1)];
     let mut found: Vec<(String, usize)> = Vec::new();
     let mut scanned = 0usize;
     for (path, full) in super::scan::source_files() {
@@ -409,78 +479,170 @@ fn only_the_shared_assembly_builds_a_lint_context() {
         }
     }
     assert!(scanned > 50, "scanned only {scanned} files");
-    for (path, n) in &found {
-        let allowed = ALLOWED
-            .iter()
-            .find(|(p, _)| path.ends_with(p))
-            .map_or(0, |(_, c)| *c);
-        assert!(
-            *n <= allowed,
-            "{path} builds its own LintContext ({n}×) — a private copy of the lint \
-             assembly. Use `lint::inputs::fetch_env_lint_inputs` + `run_rules_for_env`."
-        );
+    assert!(
+        found.is_empty(),
+        "these build their own LintContext — a private copy of the lint assembly. \
+         Use `lint::inputs::run_rules_for_env`: {found:?}"
+    );
+}
+
+#[test]
+fn a_failed_tag_or_health_fetch_is_listed_as_not_run() {
+    use crate::lint::inputs::{input_gaps, Platforms};
+    let env = fake_env("api-prod", "Ready", "Green", "v1");
+    let loaded = Platforms::Loaded(Default::default());
+    let tags = vec!["Owner".to_string()];
+    let gaps = input_gaps(
+        &env,
+        &[],
+        &tags,
+        &loaded,
+        Some("ListTagsForResource failed: AccessDenied"),
+        Some("DescribeEnvironmentHealth failed: Throttling"),
+        &[],
+    );
+    assert_eq!(gaps.len(), 2, "{gaps:?}");
+    assert!(gaps[0].starts_with("EBL010 could not be evaluated for api-prod"));
+    assert!(gaps[1].starts_with("EBL012 could not be evaluated for api-prod"));
+    // The error already names its call: no op prefixed a second time.
+    for (gap, op) in gaps
+        .iter()
+        .zip(["ListTagsForResource", "DescribeEnvironmentHealth"])
+    {
+        assert_eq!(gap.matches(op).count(), 1, "{gap}");
     }
 }
 
 #[test]
-fn a_failed_tag_or_health_fetch_is_listed_as_not_run_before_a_deploy() {
-    use super::super::spawn_deploy::pre_deploy_coverage_gaps;
-    let env = fake_env("api-prod", "Ready", "Green", "v1");
-    let tags = vec!["Owner".to_string()];
-    let enhanced: Vec<(String, String, String)> = Vec::new();
-    let gaps = pre_deploy_coverage_gaps(
-        &env,
-        &[],
-        &tags,
-        Some(&Err("AccessDenied".to_string())),
-        &Err("Throttling".to_string()),
-        Some(&enhanced),
-    );
-    assert_eq!(gaps.len(), 2, "{gaps:?}");
-    assert!(gaps[0].starts_with("EBL010 could not be evaluated for api-prod"));
-    assert!(gaps[0].contains("ListTagsForResource: AccessDenied"));
-    assert!(gaps[1].starts_with("EBL012 could not be evaluated for api-prod"));
-    assert!(gaps[1].contains("DescribeEnvironmentHealth: Throttling"));
-}
-
-#[test]
 fn a_failed_fetch_is_not_listed_when_its_rule_could_not_have_fired() {
-    use super::super::spawn_deploy::pre_deploy_coverage_gaps;
+    use crate::lint::inputs::{input_gaps, Platforms};
     let env = fake_env("api-prod", "Ready", "Green", "v1");
+    let loaded = Platforms::Loaded(Default::default());
     let basic = vec![(
         "aws:elasticbeanstalk:healthreporting:system".to_string(),
         "SystemType".to_string(),
         "basic".to_string(),
     )];
+    let (tags_err, health_err) = (Some("AccessDenied"), Some("Throttling"));
     // No required tags → EBL010 cannot fire; basic health → EBL012 cannot.
-    let quiet = pre_deploy_coverage_gaps(
-        &env,
-        &[],
-        &[],
-        Some(&Err("AccessDenied".to_string())),
-        &Err("Throttling".to_string()),
-        Some(&basic),
-    );
+    let quiet = input_gaps(&env, &[], &[], &loaded, tags_err, health_err, &basic);
     assert!(quiet.is_empty(), "{quiet:?}");
     // Disabled rules are silent too.
     let disabled = vec!["EBL010".to_string(), "EBL012".to_string()];
-    let off = pre_deploy_coverage_gaps(
-        &env,
-        &disabled,
-        &["Owner".to_string()],
-        Some(&Err("AccessDenied".to_string())),
-        &Err("Throttling".to_string()),
-        Some(&[]),
-    );
+    let owner = vec!["Owner".to_string()];
+    let off = input_gaps(&env, &disabled, &owner, &loaded, tags_err, health_err, &[]);
     assert!(off.is_empty(), "{off:?}");
     // Fetches that succeeded report nothing.
-    let clean = pre_deploy_coverage_gaps(
-        &env,
-        &[],
-        &["Owner".to_string()],
-        Some(&Ok(vec!["Owner".to_string()])),
-        &Ok(2),
-        Some(&[]),
-    );
+    let clean = input_gaps(&env, &[], &owner, &loaded, None, None, &[]);
     assert!(clean.is_empty(), "{clean:?}");
+}
+
+/// A failed platform listing becomes `Platforms::Unavailable`, which the
+/// assembly reports as EBL008's gap — and every surface that lists
+/// platforms for lint goes through it. Each used to map a failure to an
+/// empty map its own way, and `ebman explain` then called EBL008 clean.
+#[test]
+fn a_failed_platform_listing_reaches_lint_as_a_gap_on_every_surface() {
+    use crate::lint::inputs::Platforms;
+    let failed: Result<Vec<String>, &str> = Err("ListAvailableSolutionStacks failed: AccessDenied");
+    let Platforms::Unavailable(why) = Platforms::from_listing(failed, str::to_string) else {
+        panic!("a failed listing is not a loaded one");
+    };
+    assert!(why.contains("AccessDenied"), "{why}");
+    let ok: Result<Vec<String>, &str> = Ok(vec![
+        "64bit Amazon Linux 2023 v4.1.0 running Corretto 17".to_string(),
+    ]);
+    assert!(matches!(
+        Platforms::from_listing(ok, str::to_string),
+        Platforms::Loaded(m) if !m.is_empty()
+    ));
+
+    // Outside the TUI's cache handler, a listing reaches lint only
+    // through `from_listing`.
+    for file in ["cli/lint.rs", "cli/explain.rs", "cli/mcp/tools.rs"] {
+        let prod = super::scan::production_source(file);
+        assert!(
+            prod.contains("Platforms::from_listing("),
+            "{file} lists platforms for lint without `Platforms::from_listing`"
+        );
+        assert!(
+            !prod.contains("latest_stack_versions("),
+            "{file} builds the platform map itself — a failure becomes an empty map again"
+        );
+    }
+}
+
+/// The snapshot reads the App caches the way lint must use them, and
+/// `complete` carries the DLQ answer and its gap into the inputs.
+#[tokio::test]
+async fn the_lint_snapshot_reads_the_caches_as_lint_may_use_them() {
+    use crate::lint::inputs::{EnvLintInputs, Platforms, WorkerDlq};
+    let mut app = test_app();
+    let worker = mk_env("jobs", "poly", "Worker", "Green");
+
+    // A failed platform fetch is named, not "not loaded".
+    app.latest_stacks_error = Some("ListAvailableSolutionStacks failed: AccessDenied".into());
+    let snap = app.lint_snapshot(&worker);
+    let Platforms::Unavailable(why) = &snap.platforms else {
+        panic!("an empty cache is not a loaded list");
+    };
+    assert!(why.contains("AccessDenied"), "{why}");
+
+    // A depth in hand is used — EBL011 fires on it...
+    app.worker_dlq_depths.insert("jobs".into(), 250);
+    let snap = app.lint_snapshot(&worker);
+    let run = snap.finish(EnvLintInputs::bare(Vec::new()), &[]);
+    assert!(
+        run.issues.iter().any(|i| i.rule_id == "EBL011"),
+        "fires on 250"
+    );
+    assert!(!run
+        .coverage_warnings
+        .iter()
+        .any(|w| w.starts_with("EBL011")));
+
+    // ...but not once the last check failed: no verdict, and a gap.
+    app.worker_dlq_stale.insert("jobs".into());
+    let snap = app.lint_snapshot(&worker);
+    assert!(matches!(snap.dlq, WorkerDlq::Unknown(_)));
+    let run = snap.finish(EnvLintInputs::bare(Vec::new()), &[]);
+    assert!(
+        !run.issues.iter().any(|i| i.rule_id == "EBL011"),
+        "a stale depth is not judged on"
+    );
+    assert!(
+        run.coverage_warnings
+            .iter()
+            .any(|w| w.starts_with("EBL011")),
+        "{:?}",
+        run.coverage_warnings
+    );
+}
+
+#[tokio::test]
+async fn the_platform_fetch_error_is_cleared_by_a_success_and_a_context_switch() {
+    let _cache_guard = crate::aws::CACHE_TEST_LOCK.lock().await;
+    let mut app = test_app();
+    app.handle_msg(AppMsg::SolutionStacks {
+        gen: app.generation,
+        result: Err("ListAvailableSolutionStacks failed: AccessDenied".into()),
+    });
+    assert!(app.latest_stacks_error.is_some());
+    app.handle_msg(AppMsg::SolutionStacks {
+        gen: app.generation,
+        result: Ok(vec![
+            "64bit Amazon Linux 2023 v4.1.0 running Corretto 17".into()
+        ]),
+    });
+    assert!(app.latest_stacks_error.is_none(), "a success clears it");
+
+    app.latest_stacks_error = Some("old account's failure".into());
+    app.handle_msg(AppMsg::Rebuild {
+        epoch: app.rebuild_epoch,
+        result: Ok(Box::new(crate::aws::AwsClient::stub())),
+    });
+    assert!(
+        app.latest_stacks_error.is_none(),
+        "a context switch clears it"
+    );
 }

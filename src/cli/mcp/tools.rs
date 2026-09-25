@@ -938,26 +938,14 @@ impl Server {
             Backend::Aws => {
                 let profile = arg_str(args, "profile");
                 let client = self.client(args).await?;
-                // A failed stack listing is lost EBL008 coverage, and goes
-                // in `skipped_envs` like every other. The comment here
-                // said "same tolerance as the CLI path" and had been
-                // false since 0.44, when the CLI started degrading on
-                // it: an agent got a clean result for a check that
-                // never ran.
-                let latest_stacks = match client.list_solution_stacks().await {
-                    Ok(stacks) => aws::latest_stack_versions(&stacks),
-                    Err(e) => {
-                        if !disabled.iter().any(|d| d == "EBL008") {
-                            skipped.push(rule_skipped(
-                                &profile,
-                                "EBL008",
-                                "ListAvailableSolutionStacks",
-                                &e.to_string(),
-                            ));
-                        }
-                        std::collections::HashMap::new()
-                    }
-                };
+                // A failed stack listing is lost EBL008 coverage. It is
+                // carried in `Platforms` and reported per env by the
+                // shared assembly, in each env's coverage warnings below
+                // — the path the CLI, `explain` and the TUI share.
+                let platforms = lint::inputs::Platforms::from_listing(
+                    client.list_solution_stacks().await,
+                    |e| e.to_string(),
+                );
                 // Bounded concurrent fan-out — serial cost is ~2s/env,
                 // which brushes the 30s tool timeout on large fleets;
                 // unbounded join_all provokes throttling. Order is
@@ -970,7 +958,7 @@ impl Server {
                     fetches.push(fetch_env_lint_inputs(
                         &client,
                         env,
-                        &latest_stacks,
+                        &platforms,
                         false,
                         &disabled,
                         &required_tags,

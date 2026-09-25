@@ -50,11 +50,22 @@ Tier definitions:
   `src/cli/lint.rs` test code that moved to `lint/inputs.rs` in 0.45.
   Separately, `apply_fixes_for_env` is production code sitting after
   ~1,100 lines of test modules in `cli/lint.rs`. *0.45 release review.*
-- [ ] **Coverage warnings are matched as text.** `explain_verdict`
-  identifies a warning by its first word, relying on the formatting in
-  `ProbeOutcome::coverage_warning`, `fetch_stale_platform_issues` and
-  `cached_input_gaps`. A typed `CoverageGap { rule, why }` removes the
-  dependency. *0.45 release review.*
+- [ ] **Coverage gaps are untyped strings.** `explain_verdict`
+  identifies a warning by its first word; today one formatter,
+  `ProbeOutcome::coverage_warning`, produces every warning it sees, so
+  that holds. The stronger case: the confirm modal's `not_run:
+  Vec<String>` mixes whole-lint failures ("lint could not run: …", no
+  rule id) with per-rule gaps, MCP's `rule_skipped` is another format,
+  and `fetch_stale_platform_issues`'s branch warnings a third. A typed
+  `CoverageGap { rule: Option<RuleId>, why }` rendered at each surface.
+  *0.45 release review.*
+- [ ] **One map for the worker-queue poll.** `worker_dlq_depths`,
+  `worker_dlq_stale` and `worker_dlq_absent` track one fact in three
+  collections updated together by hand (`msg.rs`, the context-switch
+  clear). `HashMap<String, DlqState::{Depth(i64), Stale(i64), Absent}>`
+  makes the impossible combinations unrepresentable; lint already reads
+  them through one function (`tui_lint::worker_dlq`). Touches the alert
+  calc, the table chip and Detail, so its own change. *0.45 re-review.*
 - [ ] **`src/app/tests/scan.rs` has outgrown its name and location**
   (~1,100 lines): source-scan primitives, git/packaging checks (account
   IDs, protected names) and the `write_gate` guard, under `app/tests/`
@@ -188,12 +199,16 @@ Tier definitions:
   completed lines and the agent is told "timed out" for writes that
   went out. Plausible, not reproduced.
 
-- [ ] **The pre-deploy lint is still its own copy of the assembly.**
-  960d702 made a failed run visible in the confirm modal; the fetch
-  itself still differs from `lint::inputs`: silent `.ok()` on tags and
-  health, and no EBL020/EBL018 probes. **Two rulings needed:** how its
-  latency cache (`env_tag_cache` / `env_health_cache`) fits the shared
-  fetch, and whether a confirm modal should pay for the IAM/WAF probes.
+- [ ] **The pre-deploy lint still fetches its own way.** Since 0.45 it
+  shares everything after the fetch with `:lint` / `:explain` (the
+  snapshot, `input_gaps`, `LintSnapshot::finish`), and a failed tag or
+  health fetch is listed. What differs is the fetch: it reads the
+  lint-input cache first, and it never runs the EBL020 / EBL018 probes
+  — so those two rules cannot fire in the confirm modal, and nothing
+  there says so. **Two rulings needed:** how the latency cache
+  (`env_tag_cache` / `env_health_cache`) fits the shared fetch, and
+  whether a confirm modal should pay for the IAM/WAF probes (if not, it
+  should at least list them as not run).
 
 - [ ] **The MCP side of "a disabled EBL008 does not degrade" is
   unpinned.** e15d62b pins it for the CLI; the MCP tool reads

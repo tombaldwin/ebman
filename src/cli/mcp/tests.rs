@@ -753,7 +753,10 @@ fn a_skipped_rule_pass_carries_the_credential_fix() {
     // Both live call sites use it — the AWS backend is not reachable
     // from a test, so pin the wiring.
     let prod = crate::app::tests::scan::production_source("cli/mcp/tools.rs");
-    for rule in ["EBL008", "EBL015"] {
+    // EBL008 has no whole-pass skip any more: a failed listing reaches
+    // `skipped_envs` per env, through the shared assembly.
+    let rule = "EBL015";
+    {
         assert!(
             prod.contains(&format!("\"{rule}\",\n")),
             "the {rule} skip no longer goes through rule_skipped"

@@ -690,6 +690,7 @@ impl App {
                 // Solution-stack catalogue is region-specific; drop it so the
                 // new context's `spawn_refresh` rebuilds it.
                 self.latest_stacks.clear();
+                self.latest_stacks_error = None;
                 // Overlays show data from the previous context (describe dump,
                 // alarms list, …); close them so the user doesn't act on stale info.
                 self.current_overlay = None;

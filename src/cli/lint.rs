@@ -627,18 +627,15 @@ where
         // `--baseline` snapshotted it as good. The comment here used
         // to justify it as "the same tolerance pattern the per-env
         // fetches use below"; those fetches degrade.
-        let latest_stacks = match aws.list_solution_stacks().await {
-            Ok(s) => aws::latest_stack_versions(&s),
-            Err(e) => {
-                // A disabled EBL008 loses nothing, and a disabled rule
-                // must never redden a run (see `disabled_rule_probes`).
-                if !disabled.iter().any(|d| d == "EBL008") {
-                    let region_label = region_opt.as_deref().unwrap_or("default");
-                    report.degrade(format!("EBL008 skipped — region '{region_label}': {e}"));
-                }
-                std::collections::HashMap::new()
-            }
-        };
+        //
+        // The failure is carried in `Platforms` and reported per env by
+        // the shared assembly (`lint::inputs::input_gaps`), as each
+        // env's coverage warnings below — the one path every surface
+        // now shares, and which skips a disabled EBL008.
+        let platforms =
+            lint::inputs::Platforms::from_listing(aws.list_solution_stacks().await, |e| {
+                e.to_string()
+            });
 
         let targets: Vec<&aws::Environment> = match env_name.as_deref() {
             Some(name) => match envs.iter().find(|e| e.name == name) {
@@ -670,7 +667,7 @@ where
             let inputs = match fetch_env_lint_inputs(
                 &aws,
                 env,
-                &latest_stacks,
+                &platforms,
                 probe_live,
                 disabled,
                 &safety_cfg.required_tags,
