@@ -569,6 +569,7 @@ fn parse_i32(s: &str) -> Option<i32> {
 /// EBL001 — `AllAtOnce` deployment policy on a multi-instance
 /// env. Causes 100% capacity loss during deploys, which is
 /// almost never what an operator wants on production.
+pub(crate) mod inputs;
 pub(crate) mod rules;
 pub(crate) use rules::*;
 
