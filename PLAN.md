@@ -186,7 +186,9 @@ now head the list.*
 
    **Needs a ruling before it can be built — see item 3′ below.**
 
-3′. **The typed verb vocabulary** *(architecture — needs one ruling)*
+3′. ~~**The typed verb vocabulary**~~ — **done 2026-09-25 (fb35586)** on the maintainer's ruling (`RestartAppServer`, `SetOption`). Scoped to the verbs more than one surface writes; guarded by `no_surface_spells_a_shared_verb_itself`. The `write_refusal` split it was meant to absorb is back in BACKLOG.md on its own merits.
+
+   *Original entry:*
 
    One `Verb` enum carrying `audit_label()`, `destructive()` and the
    foreclosure text; `CliVerb` / `ReplayVerb` / `WriteVerb` / the TUI's
