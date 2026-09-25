@@ -369,20 +369,24 @@ SUBCOMMANDS:
                                                   polls 1s for new entries (until Ctrl-C). --since
                                                   filters to entries within a duration (5m/1h/2d).
                                                   Exit codes: 0 ok, 1 io err, 2 usage.
-    mcp serve [--demo] [--no-redact] [--allow-writes]
-                                                  Stdio MCP server exposing the read surface
-                                                  (envs / lint / option settings / drift / audit /
-                                                  events / versions / cost) as agent tools for
-                                                  Claude Code etc. Reads-only by default;
+    mcp serve [--demo] [--no-redact] [--allow-writes[=VERBS] | --read-only]
+                                                  Stdio MCP server for Claude Code etc.: the read
+                                                  surface (envs / lint / option settings / drift /
+                                                  audit / events / versions / cost) as agent tools.
+                                                  WRITES: on a client that can ask you (Claude Code
+                                                  can), EVERY write verb is available — deploy,
+                                                  restart, rebuild, terminate, set_option and the
+                                                  dlq verbs — each two-phase and put to you as a
+                                                  confirmation you can decline. On a client that
+                                                  cannot ask, reads only. --read-only keeps it to
+                                                  reads whatever the client supports;
+                                                  --allow-writes=VERBS names the only verbs allowed.
+                                                  Pins + freeze + read-only are enforced either way.
                                                   get_option_settings redacts env-var values +
-                                                  DBPassword by default (--no-redact opts out).
-                                                  --allow-writes adds two-phase deploy / restart /
-                                                  rebuild / terminate / set_option (plan then
-                                                  confirm_action; pins + freeze + read-only
-                                                  enforced). --demo serves the synthetic fleet
-                                                  with zero AWS calls.
+                                                  DBPassword (--no-redact opts out). --demo serves
+                                                  the synthetic fleet with zero AWS calls.
                                                   Register: claude mcp add ebman -- ebman mcp serve
-    mcp setup [--allow-writes]                   Print the MCP registration commands (claude mcp add
+    mcp setup [--allow-writes[=VERBS]]           Print the MCP registration commands (claude mcp add
                                                   + a .mcp.json snippet for other clients) from the
                                                   installed binary — no network, no remote fetch.
                                                   --allow-writes shows the write-enabled form.

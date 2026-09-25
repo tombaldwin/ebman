@@ -8,6 +8,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- **`ebman mcp setup` and `--help` no longer describe a bare MCP
+  registration as read-only.** Both said "reads only by default" beside
+  `claude mcp add ebman -- ebman mcp serve` — which, on any client that
+  can ask the operator (Claude Code can), serves every write verb,
+  `terminate` and `dlq_purge` included. They now say so, and print the
+  `--read-only` form for anyone who wanted what the old text promised.
+  The README no longer claims a confirmation is a person's answer:
+  ebman cannot tell an operator from a client answering for itself.
+
 - **CLI and MCP errors now name what AWS refused, as the TUI's do.**
   0.44.0 made AWS failures carry the service's own sentence, but only
   the TUI could see it: the operation name sat in its own outer layer,
