@@ -70,6 +70,32 @@ fn version_prints_the_crate_version_and_exits_zero() {
     );
 }
 
+/// `--help` says what a bare `mcp serve` registration really grants.
+///
+/// It said "Reads-only by default" — and on any client that can ask
+/// the operator (Claude Code can), that registration serves every write
+/// verb, `terminate` included. The text an operator reads before
+/// registering told them the opposite of what they got.
+#[test]
+fn help_says_what_a_bare_mcp_registration_grants() {
+    let out = ebman(&["--help"]);
+    let text = stdout(&out) + &stderr(&out);
+    assert!(
+        !text.to_lowercase().contains("reads-only by default"),
+        "a bare mcp serve is not read-only on a client that can ask"
+    );
+    let block = text
+        .split("mcp serve")
+        .nth(1)
+        .and_then(|rest| rest.split("mcp setup").next())
+        .unwrap_or_else(|| panic!("--help documents `mcp serve`"));
+    assert!(block.contains("EVERY write verb"), "{block}");
+    assert!(
+        block.contains("--read-only"),
+        "the way to get a read-only server must be named: {block}"
+    );
+}
+
 #[test]
 fn help_exits_zero_and_lists_the_subcommands() {
     let out = ebman(&["--help"]);

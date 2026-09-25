@@ -105,9 +105,23 @@ pub(super) fn render(scope: &WriteScope) -> String {
             s.push('\n');
         }
         WriteScope::None => {
-            s.push_str("Reads only by default (list_environments, lint, drift, cost, …).\n");
-            s.push_str("Re-run with --allow-writes for the opt-in two-phase write tools,\n");
-            s.push_str("or name just the ones you want:\n");
+            // This said "Reads only by default", which is what the
+            // operator reads beside the bare registration above — and
+            // on a client that can ask (Claude Code can), that
+            // registration serves EVERY write verb. Wrong in the
+            // dangerous direction, on the official setup path.
+            s.push_str("What this registration can do depends on your client:\n");
+            s.push_str("  - A client that can ask you (Claude Code can): EVERY write\n");
+            s.push_str("    verb, terminate and dlq_purge included. Each write is put\n");
+            s.push_str("    to you as a confirmation you can decline; terminate and\n");
+            s.push_str("    dlq_purge make you type the environment name.\n");
+            s.push_str("  - A client that cannot ask: reads only (list_environments,\n");
+            s.push_str("    lint, drift, cost, …).\n\n");
+            s.push_str("To keep it read-only whatever the client supports:\n");
+            s.push_str(&format!(
+                "  claude mcp add ebman -- {serve} --read-only\n\n"
+            ));
+            s.push_str("To allow only the verbs you name:\n");
             s.push_str("  ebman mcp setup --allow-writes=dlq_resend,dlq_delete\n\n");
             s.push_str("The verbs you can name:\n\n");
             s.push_str(&wrapped_verbs(&super::writes::write_verb_names(), 62));
@@ -178,13 +192,25 @@ pub(super) fn run(args: &[String]) -> Result<()> {
 mod tests {
     use super::*;
 
+    /// The bare registration's text says what it REALLY grants.
+    ///
+    /// It said "Reads only by default" beside a registration that, on
+    /// any client that can ask, serves every write verb — the official
+    /// setup path telling the operator the opposite of what they got,
+    /// in the dangerous direction.
     #[test]
-    fn reads_only_by_default() {
+    fn a_bare_registration_says_what_it_really_grants() {
         let s = render(&WriteScope::None);
         assert!(s.contains("claude mcp add ebman -- ebman mcp serve\n"));
-        assert!(s.contains("Reads only by default"));
         assert!(s.contains("\"args\": [\"mcp\", \"serve\"]"));
-        // The read-only form must not pre-arm writes.
+        assert!(
+            !s.to_lowercase().contains("reads only by default"),
+            "a bare registration is not read-only on a client that can ask: {s}"
+        );
+        assert!(s.contains("EVERY write") && s.contains("terminate"), "{s}");
+        // And the way to get what the old text promised.
+        assert!(s.contains("ebman mcp serve --read-only"), "{s}");
+        // The bare form must not pre-arm writes by flag.
         assert!(!s.contains("serve --allow-writes"));
     }
 
