@@ -8,6 +8,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- **CLI and MCP errors now name what AWS refused, as the TUI's do.**
+  0.44.0 made AWS failures carry the service's own sentence, but only
+  the TUI could see it: the operation name sat in its own outer layer,
+  so every CLI and MCP site that printed an error plainly — about sixty
+  — showed `DeleteMessage failed` and nothing else, and the audit
+  `err=` field recorded the same. The error's plain text is now the
+  whole story: `DeleteMessage failed: AccessDenied: User is not
+  authorized to perform sqs:DeleteMessage (request id …)`.
+
 - **`lint` and `drift` with `--env NAME --regions a,b` exited 0 when
   NAME existed in no region.** Each region warned "not in region —
   skipping" (silenced by `--quiet`) and nothing checked afterwards that

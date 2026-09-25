@@ -2777,7 +2777,17 @@ pub(crate) fn flatten_err_to_string(e: &color_eyre::eyre::Report) -> String {
         // The same tail `AwsErrorMeta`'s own `Display` builds, from the
         // same method — only the head differs, because the code is
         // lifted into the class prefix below.
-        let detail = meta.detail_after(&display);
+        // The head is the operation: `meta.op` when the meta IS the
+        // outermost layer (its `Display` already carries code and
+        // message, so using it here would print them twice), or the
+        // caller's own outer wrap when someone added one after
+        // `aws_ctx`.
+        let head = if display == meta.to_string() {
+            meta.op.clone().unwrap_or_default()
+        } else {
+            display.clone()
+        };
+        let detail = meta.detail_after(&head);
         if let Some(code) = meta.code.as_deref() {
             let lower = code.to_ascii_lowercase();
             if lower.contains("throttl") || lower.contains("requestlimitexceeded") {

@@ -1518,21 +1518,18 @@ fn a_dlq_url_always_carries_its_origin() {
 #[test]
 fn a_typed_error_code_beats_sniffing_the_debug_dump() {
     use crate::aws::AwsErrorMeta;
-    use color_eyre::eyre::WrapErr;
 
     // The mechanism that arms the refresh back-off used to lowercase
     // `format!("{e:?}")` and substring-match it. That made the back-off
     // depend on the `Debug` representation of an SDK type — not a
     // stability contract — and handed out false positives for free.
     let meta = AwsErrorMeta {
+        op: Some("DescribeEnvironments failed".into()),
         code: Some("ThrottlingException".into()),
         message: None,
         request_id: Some("abc-123".into()),
     };
-    let report = Err::<(), _>(color_eyre::eyre::eyre!("service error"))
-        .wrap_err(meta)
-        .wrap_err_with(|| "DescribeEnvironments failed".to_string())
-        .unwrap_err();
+    let report = crate::aws::aws_report(color_eyre::eyre::eyre!("service error"), meta);
     let flat = crate::app::flatten_err_to_string(&report);
     assert!(
         flat.starts_with("ThrottlingException:"),
@@ -1547,7 +1544,6 @@ fn a_typed_error_code_beats_sniffing_the_debug_dump() {
 #[test]
 fn an_env_named_throttling_does_not_arm_the_back_off() {
     use crate::aws::AwsErrorMeta;
-    use color_eyre::eyre::WrapErr;
 
     // The false positive the Debug sniff allowed. An env legitimately
     // named `throttling-test` put the word in the error chain, so a
@@ -1555,16 +1551,15 @@ fn an_env_named_throttling_does_not_arm_the_back_off() {
     // refresh back-off — slowing the fleet listing over a permissions
     // problem that back-off cannot fix.
     let meta = AwsErrorMeta {
+        op: Some("DescribeEnvironments failed".into()),
         code: Some("AccessDeniedException".into()),
         message: None,
         request_id: None,
     };
-    let report = Err::<(), _>(color_eyre::eyre::eyre!(
-        "environment throttling-test: not authorized"
-    ))
-    .wrap_err(meta)
-    .wrap_err_with(|| "DescribeEnvironments failed".to_string())
-    .unwrap_err();
+    let report = crate::aws::aws_report(
+        color_eyre::eyre::eyre!("environment throttling-test: not authorized"),
+        meta,
+    );
     let flat = crate::app::flatten_err_to_string(&report);
     assert!(
         flat.starts_with("AccessDenied:"),
@@ -1582,6 +1577,7 @@ fn the_request_id_survives_to_the_log() {
     // nothing to give them.
     use crate::aws::AwsErrorMeta;
     let meta = AwsErrorMeta {
+        op: None,
         code: Some("ThrottlingException".into()),
         message: None,
         request_id: Some("req-9f3c".into()),

@@ -66,12 +66,13 @@ impl AwsClient {
             .await
             .aws_ctx("AbortMultipartUpload failed")
         {
-            // `{e:#}` walks the chain. `%e` rendered the outermost
-            // layer only, which is the operation name.
+            // Plain `%e` carries AWS's reason since `AwsErrorMeta`
+            // holds the operation too (see `aws_report`); before that
+            // it rendered the operation name alone.
             tracing::warn!(
                 target: "ebman::aws",
                 bucket, key, upload_id,
-                error = %format!("{e:#}"),
+                error = %e,
                 "AbortMultipartUpload failed — uploaded parts may be left billed"
             );
         }
