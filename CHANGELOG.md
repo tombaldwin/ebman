@@ -19,6 +19,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- **`ebman explain` evaluates a rule the way `ebman lint` does.** It
+  fetched option settings alone and built its own lint context, so
+  EBL010, EBL012, EBL018 and EBL020 could never fire through it, and a
+  failed fetch read as "no env in scope has issue" (exit 3). It now uses
+  the shared assembly, and exits 1 when the rule could not be evaluated
+  for some env.
+
 - **`ebman audit --action RestartAppServer` finds MCP restarts too.**
   Surfaces spell some verbs differently in the audit log — MCP writes
   `Restart` where the TUI and CLI write `RestartAppServer`, and option

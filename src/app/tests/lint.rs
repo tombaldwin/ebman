@@ -304,3 +304,50 @@ fn the_pre_deploy_lint_reports_a_failed_run() {
         "both failure paths (client, option fetch) must carry a reason"
     );
 }
+
+/// Only `src/lint/` builds a `LintContext`: every surface gets its lint
+/// inputs from the one assembly, `lint::inputs`.
+///
+/// The per-function pin above could only see the functions it named,
+/// and the release review found a fifth private copy it could not: the
+/// CLI's `ebman explain`, which fetched option settings alone — so four
+/// rules could never fire there and a failed fetch read as a clean
+/// "no env has this issue". Asked the other way round, a new copy
+/// anywhere fails.
+///
+/// One exception, by COUNT so it cannot grow: the pre-deploy lint in
+/// `spawn_deploy.rs`, recorded in BACKLOG.md ("The pre-deploy lint is
+/// still its own copy of the assembly") pending two rulings.
+#[test]
+fn only_the_shared_assembly_builds_a_lint_context() {
+    const ALLOWED: &[(&str, usize)] = &[("src/app/spawn_deploy.rs", 1)];
+    let mut found: Vec<(String, usize)> = Vec::new();
+    let mut scanned = 0usize;
+    for (path, full) in super::scan::source_files() {
+        if super::scan::is_test_path(&path) || path.contains("src/lint/") {
+            continue;
+        }
+        scanned += 1;
+        let prod = super::scan::production_half(&full);
+        let n = prod
+            .lines()
+            .map(super::scan::strip_line_comment)
+            .filter(|l| l.contains("LintContext::for_env("))
+            .count();
+        if n > 0 {
+            found.push((path, n));
+        }
+    }
+    assert!(scanned > 50, "scanned only {scanned} files");
+    for (path, n) in &found {
+        let allowed = ALLOWED
+            .iter()
+            .find(|(p, _)| path.ends_with(p))
+            .map_or(0, |(_, c)| *c);
+        assert!(
+            *n <= allowed,
+            "{path} builds its own LintContext ({n}×) — a private copy of the lint \
+             assembly. Use `lint::inputs::fetch_env_lint_inputs` + `run_rules_for_env`."
+        );
+    }
+}

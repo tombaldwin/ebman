@@ -126,31 +126,64 @@ pub async fn run(args: &[String]) -> Result<()> {
         None => envs.iter().collect(),
     };
 
+    // The shared assembly — `lint::inputs`, as `ebman lint`, the MCP
+    // tool and the TUI's `:lint` / `:explain` use. This fetched option
+    // settings alone and built its own `LintContext`, so EBL010 / EBL012
+    // / EBL018 / EBL020 could never fire here and a failed fetch was
+    // invisible: "no env in scope has issue", exit 3, for a check that
+    // never ran. The TUI's `:explain` had the same defect and was fixed
+    // first; this sibling was missed by a guard that looked only inside
+    // the functions it named.
+    let required_tags = cfg.required_tags.clone();
+    let latest_stacks = match aws_client.list_solution_stacks().await {
+        Ok(stacks) => aws::latest_stack_versions(&stacks),
+        Err(e) => {
+            eprintln!("warning: EBL008 cannot be evaluated — ListAvailableSolutionStacks: {e}");
+            std::collections::HashMap::new()
+        }
+    };
     let mut matched: Vec<lint::Issue> = Vec::new();
+    // Envs where the rule could not be evaluated, with why.
+    let mut not_evaluated: Vec<String> = Vec::new();
     for env in targets {
-        let opts = match aws_client
-            .fetch_env_option_settings(&env.application, &env.name)
-            .await
+        let inputs = match lint::inputs::fetch_env_lint_inputs(
+            &aws_client,
+            env,
+            &latest_stacks,
+            false,
+            &disabled,
+            &required_tags,
+        )
+        .await
         {
-            Ok(o) => o,
+            Ok(inputs) => inputs,
             Err(e) => {
-                eprintln!(
-                    "warning: skipping {} — fetch_env_option_settings: {e}",
-                    env.name
-                );
+                not_evaluated.push(format!("{}: {e}", env.name));
                 continue;
             }
         };
-        let ctx = lint::LintContext::for_env(env, &opts);
-        let issues = lint::run_rules(&rules, &ctx);
-        for i in issues {
-            if i.rule_id == issue_id {
-                matched.push(i);
-            }
+        let issues = lint::inputs::run_rules_for_env(&rules, env, &inputs, &required_tags);
+        match lint::inputs::explain_verdict(&issue_id, &issues, &inputs.coverage_warnings) {
+            lint::inputs::ExplainVerdict::Fires(issue) => matched.push(issue.clone()),
+            lint::inputs::ExplainVerdict::NotEvaluated(why) => not_evaluated.push(why.to_string()),
+            lint::inputs::ExplainVerdict::DoesNotFire => {}
         }
+    }
+    for why in &not_evaluated {
+        eprintln!("warning: {why}");
     }
 
     if matched.is_empty() {
+        if !not_evaluated.is_empty() {
+            // Not "no env has it": some could not be checked. Exit 1,
+            // the code `lint` uses for a run that did not see
+            // everything — never the clean-result 3.
+            eprintln!(
+                "ebman explain: '{issue_id}' could not be evaluated for {} env(s) — this is not a clean result",
+                not_evaluated.len()
+            );
+            std::process::exit(1);
+        }
         eprintln!("ebman explain: no env in scope has issue '{issue_id}' — nothing to explain");
         std::process::exit(3);
     }
