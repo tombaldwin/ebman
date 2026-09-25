@@ -660,6 +660,12 @@ const UNDO_CAPACITY: usize = 20;
 pub(super) struct DeletedMessage {
     pub env: String,
     pub queue_url: String,
+    /// The `profile` / `region` the delete was dispatched with, so an
+    /// undo rebuilds the SAME client. It used to take them from the
+    /// undo call's own arguments, so a message deleted in a
+    /// non-default region was restored against the default one.
+    pub profile: Option<String>,
+    pub region: Option<String>,
     pub original_id: String,
     pub task: Option<String>,
     pub body: String,
@@ -675,10 +681,11 @@ impl Server {
     /// can state it. An undo nobody is told about is not an undo.
     pub(super) async fn remember_deleted(
         &self,
-        env: &str,
-        queue_url: Option<String>,
+        p: &PendingWrite,
         msg: crate::aws::QueueMessage,
     ) -> Option<u64> {
+        let env = p.env.as_str();
+        let queue_url = p.dlq_url.clone();
         // `None`, not `Some(0)`. A zero-second window is a claim that
         // the message was held and has already expired; not holding it
         // at all is a different fact, and the one an agent needs if it
@@ -692,6 +699,8 @@ impl Server {
         buf.push(DeletedMessage {
             env: env.to_string(),
             queue_url,
+            profile: p.profile.clone(),
+            region: p.region.clone(),
             original_id: msg.id,
             task: msg.task.as_ref().and_then(|t| t.name.clone()),
             body: msg.body,
@@ -702,6 +711,29 @@ impl Server {
     }
 
     /// What is still recoverable, newest first.
+    /// Remove one held message by its original id, under the lock.
+    ///
+    /// Taking it OUT before restoring is what makes an undo happen at
+    /// most once. `recoverable()` hands back a copy, and restoring from
+    /// the copy left the entry in place — so calling `dlq_undo` with
+    /// the same id N times inside the window enqueued N copies.
+    pub(super) async fn take_recoverable(&self, id: &str) -> Option<DeletedMessage> {
+        let mut buf = self.deleted.lock().await;
+        buf.retain(|d| d.at.elapsed().as_secs() < UNDO_WINDOW_SECS);
+        let at = buf.iter().position(|d| d.original_id == id)?;
+        Some(buf.remove(at))
+    }
+
+    /// Put a message back after a restore that failed, so it stays
+    /// recoverable for whatever remains of its original window.
+    async fn hold_again(&self, d: DeletedMessage) {
+        let mut buf = self.deleted.lock().await;
+        if buf.len() >= UNDO_CAPACITY {
+            buf.remove(0);
+        }
+        buf.push(d);
+    }
+
     pub(super) async fn recoverable(&self) -> Vec<DeletedMessage> {
         let mut buf = self.deleted.lock().await;
         buf.retain(|d| d.at.elapsed().as_secs() < UNDO_WINDOW_SECS);
@@ -1442,7 +1474,7 @@ pub(super) fn write_tool_descriptors() -> Vec<Value> {
         }),
         json!({
             "name": "dlq_undo",
-            "description": "Put back a dead-lettered message THIS server deleted, within 10 minutes. Call with no arguments to list what is still recoverable. Single-phase — no plan/confirm — because it is the least destructive action here and is reached for under time pressure. CAVEATS: held in memory by this server only, so a restart loses them and nothing deleted by another process is here; purges are never recoverable; and the restore is a re-send, so the message id changes, receive_count resets to 0 and the enqueue time becomes now. Body and attributes come back verbatim.",
+            "description": "Put back a dead-lettered message THIS server deleted, within 10 minutes. Call with no arguments to list what is still recoverable. Single-phase — no plan/confirm — because it is the least destructive action here and is reached for under time pressure. CAVEATS: held in memory by this server only, so a restart loses them and nothing deleted by another process is here; purges are never recoverable; and the restore is a re-send, so the message id changes, receive_count resets to 0 and the enqueue time becomes now. Body and attributes come back verbatim. Each message can be restored ONCE, to the region and profile it was deleted from; a failed restore leaves it recoverable.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -2377,9 +2409,7 @@ impl Server {
                 Ok(destroyed) => {
                     succeeded += 1;
                     if let Some(msg) = destroyed.clone() {
-                        if let Some(until) =
-                            self.remember_deleted(&p.env, p.dlq_url.clone(), msg).await
-                        {
+                        if let Some(until) = self.remember_deleted(p, msg).await {
                             // The window is per message but they are
                             // captured within milliseconds of each
                             // other, so the shortest is the honest one
@@ -2447,9 +2477,7 @@ impl Server {
                             .into_iter()
                             .find(|m| m.id == t.id)
                         {
-                            if let Some(until) =
-                                self.remember_deleted(&p.env, p.dlq_url.clone(), msg).await
-                            {
+                            if let Some(until) = self.remember_deleted(p, msg).await {
                                 // The SHORTEST window, as live does.
                                 // Overwriting per message would quote
                                 // the last one's, and a demo that
@@ -2579,7 +2607,7 @@ impl Server {
             Ok(destroyed) => {
                 let recoverable = match destroyed {
                     Some(msg) => self
-                        .remember_deleted(&p.env, p.dlq_url.clone(), msg)
+                        .remember_deleted(p, msg)
                         .await
                         .map(|until| format!(",\"recoverable_for_secs\":{until}"))
                         .unwrap_or_default(),
@@ -2639,26 +2667,82 @@ impl Server {
             ));
         };
 
-        let Some(d) = held.into_iter().find(|d| d.original_id == want) else {
+        let Some(d) = self.take_recoverable(&want).await else {
             return Err(WriteError::Invalid(format!(
                 "'{want}' is not recoverable. Either it was never deleted by this server, \
-                 or the {UNDO_WINDOW_SECS}s window has passed, or the server restarted. \
-                 Call this tool with no arguments to see what IS recoverable."
+                 it has already been restored, the {UNDO_WINDOW_SECS}s window has passed, \
+                 or the server restarted. Call this tool with no arguments to see what IS \
+                 recoverable."
             )));
         };
 
         if let Some(refused) =
-            self.gate_refusal(&d.env, &arg_str(args, "profile"), None, "dlq-undo")
+            self.gate_refusal(&d.env, &d.profile, d.region.as_deref(), "dlq-undo")
         {
+            self.hold_again(d).await;
             return Err(WriteError::Refused(refused));
         }
 
         if !matches!(self.backend, Backend::Demo) {
-            self.client(args)
-                .await?
+            // The profile and region the DELETE used, not this call's.
+            let client_args = json!({
+                "profile": d.profile.clone().unwrap_or_default(),
+                "region": d.region.clone().unwrap_or_default(),
+            });
+            let client = match self.client(&client_args).await {
+                Ok(c) => c,
+                Err(e) => {
+                    self.hold_again(d).await;
+                    return Err(e.into());
+                }
+            };
+            // Audited like every other write. A restore is a real
+            // `SendMessage`, and it left no line at all — so the log
+            // said a message was deleted and never that it came back.
+            let client_name = self
+                .client_name
+                .lock()
+                .map(|s| s.clone())
+                .unwrap_or_else(|_| "unknown".into());
+            let can_ask = self
+                .client_supports_elicitation
+                .load(std::sync::atomic::Ordering::Relaxed);
+            let target = DlqTarget {
+                id: d.original_id.clone(),
+                task: d.task.clone().unwrap_or_default(),
+            };
+            let extras = dlq_audit_line(&client_name, can_ask, &target);
+            let refs: Vec<(&str, &str)> = extras.iter().map(|(k, v)| (*k, v.as_str())).collect();
+            let audit_profile = d
+                .profile
+                .clone()
+                .or_else(|| std::env::var("AWS_PROFILE").ok());
+            let region = client.context.region.clone();
+            crate::audit::append_action_dispatched(
+                None,
+                audit_profile.as_deref(),
+                &region,
+                "dlq-undo",
+                &d.env,
+                &refs,
+            );
+            let sent = client
                 .send_message(&d.queue_url, &d.body, &d.attributes)
                 .await
-                .map_err(|e| format!("restoring the message failed: {e}"))?;
+                .map_err(|e| format!("restoring the message failed: {e}"));
+            crate::audit::append_action_completed(
+                None,
+                audit_profile.as_deref(),
+                &region,
+                "dlq-undo",
+                &d.env,
+                sent.as_ref().map(|_| ()).map_err(|e| e.as_str()),
+                &refs,
+            );
+            if let Err(e) = sent {
+                self.hold_again(d).await;
+                return Err(e.into());
+            }
         }
 
         // Rule 6: say what could NOT be restored. The body and every

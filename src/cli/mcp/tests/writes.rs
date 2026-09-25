@@ -876,8 +876,10 @@ async fn a_deleted_message_can_be_put_back_within_the_window() {
 
     let window = s
         .remember_deleted(
-            "poly-batch",
-            Some("https://sqs.eu-west-2.amazonaws.com/1/poly-batch-dlq".into()),
+            &deleted_from(
+                "poly-batch",
+                Some("https://sqs.eu-west-2.amazonaws.com/1/poly-batch-dlq".into()),
+            ),
             msg,
         )
         .await;
@@ -892,8 +894,7 @@ async fn a_deleted_message_can_be_put_back_within_the_window() {
     // message was kept and is merely too late to recover.
     assert_eq!(
         s.remember_deleted(
-            "poly-batch",
-            None,
+            &deleted_from("poly-batch", None),
             crate::demo_fixture::dlq_messages_for_env("poly-batch")[1].clone()
         )
         .await,
@@ -1018,8 +1019,11 @@ async fn the_undo_window_expires() {
         .next()
         .expect("fixture");
     let id = msg.id.clone();
-    s.remember_deleted("poly-batch", Some("https://q/poly-batch-dlq".into()), msg)
-        .await;
+    s.remember_deleted(
+        &deleted_from("poly-batch", Some("https://q/poly-batch-dlq".into())),
+        msg,
+    )
+    .await;
     assert_eq!(s.recoverable().await.len(), 1, "held immediately after");
 
     tokio::time::advance(std::time::Duration::from_secs(UNDO_WINDOW_SECS - 1)).await;
@@ -1038,6 +1042,159 @@ async fn the_undo_window_expires() {
     assert!(err.to_string().contains("not recoverable"), "{err}");
 }
 
+/// A client whose only SQS behaviour is `send_message`: succeed, or
+/// fail with AccessDenied.
+fn undo_client(send_ok: bool) -> crate::aws::AwsClient {
+    use aws_sdk_sqs::operation::send_message::{SendMessageError, SendMessageOutput};
+    let send = if send_ok {
+        aws_smithy_mocks::mock!(aws_sdk_sqs::Client::send_message).then_output(|| {
+            SendMessageOutput::builder()
+                .message_id("restored-1")
+                .build()
+        })
+    } else {
+        aws_smithy_mocks::mock!(aws_sdk_sqs::Client::send_message).then_error(|| {
+            SendMessageError::generic(
+                aws_smithy_types::error::ErrorMetadata::builder()
+                    .code("AccessDenied")
+                    .message("not authorized to perform sqs:SendMessage")
+                    .build(),
+            )
+        })
+    };
+    let sqs =
+        aws_smithy_mocks::mock_client!(aws_sdk_sqs, aws_smithy_mocks::RuleMode::MatchAny, [&send]);
+    let cfg = aws_config::SdkConfig::builder()
+        .region(aws_config::Region::new("us-west-1"))
+        .behavior_version(aws_config::BehaviorVersion::latest())
+        .build();
+    crate::aws::AwsClient::for_tests(
+        aws_sdk_elasticbeanstalk::Client::new(&cfg),
+        sqs,
+        aws_sdk_cloudwatch::Client::new(&cfg),
+        aws_sdk_cloudwatchlogs::Client::new(&cfg),
+        aws_sdk_s3::Client::new(&cfg),
+        aws_sdk_ec2::Client::new(&cfg),
+    )
+}
+
+fn audit_delta_for(before: &str, env: &str) -> Vec<String> {
+    let after =
+        std::fs::read_to_string(crate::util::cache_dir().join("audit.log")).unwrap_or_default();
+    after
+        .strip_prefix(before)
+        .expect("the audit log is append-only")
+        .lines()
+        .filter(|l| l.contains(env))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// An undo restores a message at most ONCE, and is audited.
+///
+/// `recoverable()` hands back a copy, and the restore used to read
+/// from that copy and leave the held entry in place — so calling
+/// `dlq_undo` with the same id N times inside the window enqueued N
+/// copies. And the restore, a real `SendMessage`, wrote no audit line:
+/// the log recorded the delete and never that it was undone.
+#[tokio::test]
+async fn an_undo_restores_once_and_is_audited() {
+    let env = "mcp-undo-once-probe-env";
+    let s = Server::with_injected_client(
+        crate::cli::mcp::WriteScope::All,
+        crate::config::Config::default(),
+        undo_client(true),
+    );
+    let msg = crate::demo_fixture::dlq_messages_for_env("poly-batch")
+        .into_iter()
+        .next()
+        .expect("fixture");
+    let id = msg.id.clone();
+    s.remember_deleted(&deleted_from(env, Some("https://q/undo-dlq".into())), msg)
+        .await;
+    let before =
+        std::fs::read_to_string(crate::util::cache_dir().join("audit.log")).unwrap_or_default();
+
+    s.tool_dlq_undo(&json!({"message_id": id}))
+        .await
+        .expect("the first undo restores it");
+    let err = s
+        .tool_dlq_undo(&json!({"message_id": id}))
+        .await
+        .expect_err("a second undo of the same id must not restore it again");
+    assert!(err.to_string().contains("not recoverable"), "{err}");
+
+    let lines = audit_delta_for(&before, env);
+    assert_eq!(
+        lines.len(),
+        2,
+        "one dispatched and one completed line for the ONE restore: {lines:#?}"
+    );
+    assert!(lines[0].contains("stage=dispatched"), "{}", lines[0]);
+    assert!(lines[1].contains("stage=completed"), "{}", lines[1]);
+    for l in &lines {
+        assert!(l.contains("action=dlq-undo"), "{l}");
+        assert!(
+            l.contains(&format!("message_id={id}")),
+            "names the message: {l}"
+        );
+    }
+}
+
+/// A restore that FAILS leaves the message recoverable, and the
+/// failure is on the record.
+#[tokio::test]
+async fn a_failed_undo_keeps_the_message_recoverable() {
+    let env = "mcp-undo-fail-probe-env";
+    let s = Server::with_injected_client(
+        crate::cli::mcp::WriteScope::All,
+        crate::config::Config::default(),
+        undo_client(false),
+    );
+    let msg = crate::demo_fixture::dlq_messages_for_env("poly-batch")
+        .into_iter()
+        .next()
+        .expect("fixture");
+    let id = msg.id.clone();
+    s.remember_deleted(&deleted_from(env, Some("https://q/undo-dlq".into())), msg)
+        .await;
+    let before =
+        std::fs::read_to_string(crate::util::cache_dir().join("audit.log")).unwrap_or_default();
+
+    s.tool_dlq_undo(&json!({"message_id": id}))
+        .await
+        .expect_err("the send was refused");
+    assert!(
+        s.recoverable().await.iter().any(|d| d.original_id == id),
+        "a failed restore must not cost the operator their only copy"
+    );
+    let lines = audit_delta_for(&before, env);
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("stage=completed") && l.contains("err=")),
+        "the failure is recorded: {lines:#?}"
+    );
+}
+
+/// The held message remembers where it was deleted, so an undo goes
+/// back through the same profile and region.
+#[tokio::test]
+async fn a_held_message_remembers_its_profile_and_region() {
+    let s = Server::with_scope(true, false, crate::cli::mcp::WriteScope::All);
+    let msg = crate::demo_fixture::dlq_messages_for_env("poly-batch")
+        .into_iter()
+        .next()
+        .expect("fixture");
+    let mut p = deleted_from("poly-batch", Some("https://q/dlq".into()));
+    p.profile = Some("ops".into());
+    p.region = Some("eu-west-2".into());
+    s.remember_deleted(&p, msg).await;
+    let held = s.recoverable().await;
+    assert_eq!(held[0].profile.as_deref(), Some("ops"));
+    assert_eq!(held[0].region.as_deref(), Some("eu-west-2"));
+}
+
 /// Remembering a new message evicts ones that have expired.
 ///
 /// `remember_deleted` prunes before it pushes, and the expiry test
@@ -1052,13 +1209,19 @@ async fn remembering_a_new_message_evicts_expired_ones() {
     let msgs = crate::demo_fixture::dlq_messages_for_env("poly-batch");
     let (old_id, new_id) = (msgs[0].id.clone(), msgs[1].id.clone());
 
-    s.remember_deleted("poly-batch", Some("https://q/dlq".into()), msgs[0].clone())
-        .await;
+    s.remember_deleted(
+        &deleted_from("poly-batch", Some("https://q/dlq".into())),
+        msgs[0].clone(),
+    )
+    .await;
     tokio::time::advance(std::time::Duration::from_secs(UNDO_WINDOW_SECS + 1)).await;
 
     // The prune happens HERE, on a buffer holding one expired entry.
-    s.remember_deleted("poly-batch", Some("https://q/dlq".into()), msgs[1].clone())
-        .await;
+    s.remember_deleted(
+        &deleted_from("poly-batch", Some("https://q/dlq".into())),
+        msgs[1].clone(),
+    )
+    .await;
 
     // The BUFFER, before `recoverable()` prunes again on read.
     // Reading through `recoverable` cannot see this: it applies the
@@ -1645,6 +1808,14 @@ fn a_huge_task_name_is_capped() {
         clean.chars().count()
     );
     assert!(clean.ends_with('…'), "and says it was truncated");
+}
+
+/// The delete plan a held message came from.
+fn deleted_from(env: &str, dlq_url: Option<String>) -> PendingWrite {
+    let mut p = pending_for(WriteVerb::DlqDelete);
+    p.env = env.into();
+    p.dlq_url = dlq_url;
+    p
 }
 
 fn pending_for(verb: WriteVerb) -> PendingWrite {

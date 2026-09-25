@@ -8,6 +8,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- **MCP `dlq_undo` could restore the same message repeatedly, and left
+  no trace.** It restored from a copy of the held message and never
+  removed the original, so calling it N times with one id enqueued N
+  copies. The restore — a real `SendMessage` — wrote no audit line, and
+  it used the undo call's own profile and region rather than the
+  delete's. Each held message is now restored at most once, to where it
+  was deleted from; a failed restore keeps it recoverable; and both
+  halves are audited as `action=dlq-undo`.
+
 - **An MCP `dlq_resend` could put the message straight back into the
   dead-letter queue.** The main queue was derived by stripping a `-dlq`
   suffix from the DLQ's url, falling back to the DLQ url itself when
