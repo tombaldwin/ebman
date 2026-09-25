@@ -120,13 +120,20 @@ now head the list.*
    only ever been observed in tests. One non-demo confirm, even a
    decline, settles it.
 
+   **First, a build that can write the line.** The `ebman` on PATH is
+   Homebrew 0.42.0 (checked 2026-09-25), which predates `stage=asked`
+   (0.43.0), so a test against it proves nothing. `brew upgrade ebman`,
+   or register the local release build without `--demo`.
+
 2. **`run_cycle`'s third side channel: it prints instead of reporting** *(architecture — needs a scope ruling before dev)*
 
-   Nine sites write straight to the operator's terminal from inside
-   the function extracted to make the cycle testable:
-   `src/cli/lint.rs:998` and `:1089` in `run_cycle`, and seven in
-   `apply_fixes_for_env` (`:2538`–`:2639`). Output no test can
-   assert on — the same shape as the two channels already closed.
+   Nine sites wrote straight to the operator's terminal from inside
+   the function extracted to make the cycle testable. Nine still do,
+   re-counted 2026-09-25: `src/cli/lint.rs:652` in `run_cycle`,
+   `CycleReport::degrade`'s own `eprintln!` (`:393`), and seven in
+   `apply_fixes_for_env` (`:2367`–`:2471`). The old `:1089` site was
+   the EBL015 bug fixed in c704ea0. Output no test can assert on — the
+   same shape as the two channels already closed.
 
    **Not one item.** The two in `run_cycle` are mechanical. The
    seven in `apply_fixes_for_env` are interactive `--fix` output
