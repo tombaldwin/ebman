@@ -55,11 +55,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   "no tags", so EBL010 fired for every required tag; a failed fetch of
   any other input read as "doesn't fire". `:explain` now uses the same
   assembly as `ebman lint` and the MCP tool, and says when a rule could
-  not be evaluated. That covers the two inputs `:lint` and `:explain`
-  take from the TUI's caches rather than fetching: before the platform
-  list has loaded (or when it failed) EBL008 is reported as not
-  evaluated, as is EBL011 for a worker whose queue depth has not been
-  read — neither reads as clean any more.
+  not be evaluated. That covers the two inputs the TUI takes from its
+  caches rather than fetching, in `:lint`, `:explain` and the confirm
+  modal alike: EBL008 before the platform list has loaded, or naming the
+  failure when it could not be fetched; and EBL011 for a worker whose
+  queue has not been checked yet, or whose last check failed — lint no
+  longer judges on the depth kept from before the failure.
 
 - **A red transition is audited under the environment's own region.**
   Under a multi-region fan-out the line — which operators wire their own

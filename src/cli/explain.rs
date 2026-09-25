@@ -135,13 +135,13 @@ pub async fn run(args: &[String]) -> Result<()> {
     // first; this sibling was missed by a guard that looked only inside
     // the functions it named.
     let required_tags = cfg.required_tags.clone();
-    let latest_stacks = match aws_client.list_solution_stacks().await {
-        Ok(stacks) => aws::latest_stack_versions(&stacks),
-        Err(e) => {
-            eprintln!("warning: EBL008 cannot be evaluated — ListAvailableSolutionStacks: {e}");
-            std::collections::HashMap::new()
-        }
-    };
+    // A failed listing is EBL008's missing input: the assembly reports
+    // it per env, so `explain EBL008` exits 1, not the clean 3. It used
+    // to warn here and carry on with an empty map — "no env has it".
+    let platforms =
+        lint::inputs::Platforms::from_listing(aws_client.list_solution_stacks().await, |e| {
+            e.to_string()
+        });
     let mut matched: Vec<lint::Issue> = Vec::new();
     // Envs where the rule could not be evaluated, with why.
     let mut not_evaluated: Vec<String> = Vec::new();
@@ -149,7 +149,7 @@ pub async fn run(args: &[String]) -> Result<()> {
         let inputs = match lint::inputs::fetch_env_lint_inputs(
             &aws_client,
             env,
-            &latest_stacks,
+            &platforms,
             false,
             &disabled,
             &required_tags,

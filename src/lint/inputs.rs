@@ -233,7 +233,7 @@ impl EnvLintInputs {
 pub(crate) async fn fetch_env_lint_inputs(
     aws: &aws::AwsClient,
     env: &aws::Environment,
-    latest_stacks: &std::collections::HashMap<String, String>,
+    platforms: &Platforms,
     probe_live: bool,
     // Rules the operator switched off (`lint.disable`, `--rules`). A
     // disabled rule must not run its probe: without this it still
@@ -265,31 +265,26 @@ pub(crate) async fn fetch_env_lint_inputs(
     // whose EBL010/EBL012 checks never happened. The rule's own comment
     // said "a FAILED fetch is a different thing and the caller reports
     // it"; no caller did.
-    let mut fetch_warnings: Vec<String> = Vec::new();
+    let tags_err = match &tags_opt {
+        Some(Err(e)) => Some(e.to_string()),
+        _ => None,
+    };
+    let health_err = health_res.as_ref().err().map(|e| e.to_string());
+    let fetch_warnings = input_gaps(
+        env,
+        disabled,
+        required_tags,
+        platforms,
+        tags_err.as_deref(),
+        health_err.as_deref(),
+        &options,
+    );
     let env_tag_keys: Option<Vec<String>> = match tags_opt {
         Some(Ok(t)) => Some(t.into_iter().map(|(k, _)| k).collect()),
-        Some(Err(e)) => {
-            if ebl010_could_fire(disabled, required_tags) {
-                fetch_warnings.extend(
-                    ProbeOutcome::Unknown(e.to_string()).coverage_warning("EBL010", &env.name),
-                );
-            }
-            None
-        }
-        None => None,
+        _ => None,
     };
-    let healthy_count = match health_res {
-        Ok(c) => Some(c.healthy as i64),
-        Err(e) => {
-            if ebl012_could_fire(disabled, env, &options) {
-                fetch_warnings.extend(
-                    ProbeOutcome::Unknown(e.to_string()).coverage_warning("EBL012", &env.name),
-                );
-            }
-            None
-        }
-    };
-    let newer_stack = aws::newer_stack_version(&env.solution_stack, latest_stacks);
+    let healthy_count = health_res.ok().map(|c| c.healthy as i64);
+    let newer_stack = platforms.newer_for(env);
     // EBL020 probe — only when the env actually has X-Ray on (rare),
     // so the common path pays no IAM calls. Probe failures leave the
     // field unset: skip, never false-positive.
@@ -371,37 +366,128 @@ pub(crate) fn ebl012_could_fire(
         && green
 }
 
-/// What the TUI's cached inputs could not supply, as coverage warnings.
-///
-/// `:lint` and `:explain` take two inputs from App caches rather than
-/// fetching them: the region's platform list (EBL008) and a worker's
-/// DLQ depth (EBL011). An empty platform list — not loaded yet, or the
-/// fetch failed; a region always has platforms — and a worker with no
-/// depth that is not known to have no DLQ both read as "the rule does
-/// not fire", which is the clean result, for a check that never ran.
-pub(crate) fn cached_input_gaps(
+/// EBL008's input: the region's newest platform versions. It comes from
+/// one account-level call, outside the per-env fetch, and every caller
+/// used to handle its failure its own way — the CLI degraded, MCP
+/// skipped, the TUI read an empty map as "nothing newer", and `ebman
+/// explain` warned and then reported the rule clean. Carrying the
+/// failure in the type lets [`input_gaps`] report it once, for all.
+pub(crate) enum Platforms {
+    Loaded(std::collections::HashMap<String, String>),
+    /// Why the list is missing, as the operator should read it: the
+    /// failed call (already credential-rewritten where the surface
+    /// does that), or "not loaded yet" from the TUI's cache.
+    Unavailable(String),
+}
+
+impl Platforms {
+    /// From a `ListAvailableSolutionStacks` result, the error rendered
+    /// by `why`.
+    pub(crate) fn from_listing<E>(
+        listing: Result<Vec<String>, E>,
+        why: impl FnOnce(E) -> String,
+    ) -> Self {
+        match listing {
+            Ok(stacks) => Self::Loaded(aws::latest_stack_versions(&stacks)),
+            Err(e) => Self::Unavailable(why(e)),
+        }
+    }
+
+    /// The TUI's cached list. `failed` is the last fetch's error, if it
+    /// failed; an empty list with no error has not loaded yet. (A region
+    /// always has platforms, so empty never means "none".)
+    pub(crate) fn from_cache(
+        latest: &std::collections::HashMap<String, String>,
+        failed: Option<&str>,
+    ) -> Self {
+        match failed {
+            Some(e) if latest.is_empty() => Self::Unavailable(e.to_string()),
+            _ if latest.is_empty() => {
+                Self::Unavailable("the platform-version list has not loaded yet".into())
+            }
+            _ => Self::Loaded(latest.clone()),
+        }
+    }
+
+    pub(crate) fn newer_for(&self, env: &aws::Environment) -> Option<String> {
+        match self {
+            Self::Loaded(latest) => aws::newer_stack_version(&env.solution_stack, latest),
+            Self::Unavailable(_) => None,
+        }
+    }
+}
+
+/// The inputs that failed, as coverage warnings: the platform list
+/// (EBL008), the tag fetch (EBL010), the health fetch (EBL012). Each
+/// rule still skips on a missing input — never a false positive — but
+/// the skip is reported, and only when the rule could otherwise have
+/// fired. One place for every assembly: the pre-deploy lint had grown
+/// its own copy, already worded differently.
+pub(crate) fn input_gaps(
     env: &aws::Environment,
     disabled: &[String],
-    platforms_loaded: bool,
-    dlq_depth: Option<i64>,
-    dlq_known_absent: bool,
+    required_tags: &[String],
+    platforms: &Platforms,
+    tags_err: Option<&str>,
+    health_err: Option<&str>,
+    options: &[(String, String, String)],
 ) -> Vec<String> {
-    let on = |rule: &str| !disabled.iter().any(|d| d == rule);
     let mut gaps = Vec::new();
-    if !platforms_loaded && on("EBL008") {
-        gaps.extend(
-            ProbeOutcome::Unknown("the platform-version list has not loaded".into())
-                .coverage_warning("EBL008", &env.name),
-        );
+    if let Platforms::Unavailable(why) = platforms {
+        if !disabled.iter().any(|d| d == "EBL008") {
+            gaps.extend(ProbeOutcome::Unknown(why.clone()).coverage_warning("EBL008", &env.name));
+        }
     }
-    let worker = env.tier.eq_ignore_ascii_case("Worker");
-    if worker && dlq_depth.is_none() && !dlq_known_absent && on("EBL011") {
-        gaps.extend(
-            ProbeOutcome::Unknown("no worker-queue depth has been read yet".into())
-                .coverage_warning("EBL011", &env.name),
-        );
+    if let Some(e) = tags_err {
+        if ebl010_could_fire(disabled, required_tags) {
+            gaps.extend(ProbeOutcome::Unknown(e.into()).coverage_warning("EBL010", &env.name));
+        }
+    }
+    if let Some(e) = health_err {
+        if ebl012_could_fire(disabled, env, options) {
+            gaps.extend(ProbeOutcome::Unknown(e.into()).coverage_warning("EBL012", &env.name));
+        }
     }
     gaps
+}
+
+/// EBL011's input, from the TUI's worker-queue poll.
+pub(crate) enum WorkerDlq {
+    Depth(i64),
+    /// The last check found no DLQ configured: nothing to check.
+    NoDlq,
+    /// No usable answer, with why — the first poll has not landed, or
+    /// the last one failed. A failed poll keeps the previous depth for
+    /// the alert pill, but lint does not judge on it: the rule would
+    /// fire, or pass, on a number nobody has seen since.
+    Unknown(String),
+}
+
+impl WorkerDlq {
+    pub(crate) fn depth(&self) -> Option<i64> {
+        match self {
+            Self::Depth(d) => Some(*d),
+            _ => None,
+        }
+    }
+}
+
+/// EBL011's input gap: a worker with no usable DLQ answer read the same
+/// as a clean one — including every worker in the seconds before the
+/// first poll lands, and one whose checks have been failing since an
+/// earlier "no DLQ".
+pub(crate) fn dlq_depth_gap(
+    env: &aws::Environment,
+    disabled: &[String],
+    dlq: &WorkerDlq,
+) -> Option<String> {
+    let WorkerDlq::Unknown(why) = dlq else {
+        return None;
+    };
+    if !env.tier.eq_ignore_ascii_case("Worker") || disabled.iter().any(|d| d == "EBL011") {
+        return None;
+    }
+    ProbeOutcome::Unknown(why.clone()).coverage_warning("EBL011", &env.name)
 }
 
 /// EBL015 account-level assembly, shared by `run` and the MCP `lint`

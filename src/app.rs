@@ -136,6 +136,7 @@ mod spawn_refresh; // the main fetch-the-world loop and its `apply_*` half
 mod spawn_rollout; // multi-region staged rollouts
 mod spawn_tail; // log and event tails
 mod spawn_why_red; // the why-is-this-red diagnostic fan-out
+mod tui_lint; // the snapshot and run shared by `:lint`, `:explain`, pre-deploy
 
 // Pure logic — no `App` receiver, no I/O, directly unit-testable.
 mod config_diff; // `:diff` option-setting comparison
@@ -405,6 +406,10 @@ pub struct App {
     /// tint. Empty until the first fetch lands; cleared on context switch so a
     /// new account/region rebuilds it.
     pub(crate) latest_stacks: std::collections::HashMap<String, String>,
+    /// Why the last `latest_stacks` fetch failed, if it did. An empty
+    /// `latest_stacks` alone cannot say whether the list is still
+    /// loading or was denied, and lint's EBL008 gap should name which.
+    pub(crate) latest_stacks_error: Option<String>,
     pub(crate) frozen: bool, // when true, auto-refresh ticker is no-op
     /// `true` when ebman launched without a `state.toml` on disk —
     /// i.e. first-ever run on this machine. Renderer surfaces a
@@ -1357,6 +1362,7 @@ impl App {
             },
             last_yanked_cli: None,
             latest_stacks: std::collections::HashMap::new(),
+            latest_stacks_error: None,
             frozen: false,
             first_run_hint: !crate::state::file_exists(),
             current_overlay: None,
@@ -1660,6 +1666,7 @@ impl App {
             costs: Costs::default(),
             last_yanked_cli: None,
             latest_stacks: std::collections::HashMap::new(),
+            latest_stacks_error: None,
             frozen: false,
             first_run_hint: false,
             current_overlay: None,

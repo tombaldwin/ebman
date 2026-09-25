@@ -322,23 +322,10 @@ impl App {
         let client = self.client_for_env(&env.name);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
-        let mut disabled = self.cfg.lint_disable.clone();
-        disabled.extend(crate::project::load_lint_disables_from_cwd());
         let settings = self.cfg.explain_settings.clone();
-        // Snapshot the lint-context inputs that aren't already
-        // implied by `&env` + `&opts`. All four 0.18 wire-ups land
-        // here too so `:explain` sees the same rule firing pattern
-        // as `:lint` (EBL008 newer-stack, EBL010 required-tags,
-        // EBL011 worker DLQ, EBL012 healthy-count).
-        let latest_stacks_owned = self.latest_stacks.clone();
-        let required_tags_owned = self.cfg.required_tags.clone();
-        let dlq_depth_owned = if env.tier.eq_ignore_ascii_case("Worker") {
-            self.worker_dlq_depths.get(&env.name).copied()
-        } else {
-            None
-        };
-        let dlq_absent = self.worker_dlq_absent.contains(&env.name);
-        let platforms_loaded = !self.latest_stacks.is_empty();
+        // The same snapshot `:lint` and the pre-deploy lint take, so a
+        // cached input that is missing is reported here too.
+        let snap = self.lint_snapshot(&env);
         let issue_id_owned = issue_id.to_string();
         let issue_id_title = issue_id.to_string();
         self.status_message = Some(format!("explain: building prompt for {issue_id}…"));
@@ -359,39 +346,14 @@ impl App {
             // fired for every required tag on an env whose tags were
             // never read, and any other failed input read as "doesn't
             // fire". Now a check that could not run says so.
-            let fetched = crate::lint::inputs::fetch_env_lint_inputs(
-                &aws,
-                &env,
-                &latest_stacks_owned,
-                false,
-                &disabled,
-                &required_tags_owned,
-            )
-            .await;
-            let body = match fetched {
-                Ok(mut inputs) => {
-                    inputs.dlq_depth = dlq_depth_owned;
-                    inputs
-                        .coverage_warnings
-                        .extend(crate::lint::inputs::cached_input_gaps(
-                            &env,
-                            &disabled,
-                            platforms_loaded,
-                            dlq_depth_owned,
-                            dlq_absent,
-                        ));
-                    let rules = crate::lint::default_rules(&disabled);
-                    let issues = crate::lint::inputs::run_rules_for_env(
-                        &rules,
-                        &env,
-                        &inputs,
-                        &required_tags_owned,
-                    );
+            let body = match super::tui_lint::run_tui_lint(&aws, &snap).await {
+                Ok(run) => {
+                    let (issues, gaps) = (run.issues, run.coverage_warnings);
                     use crate::lint::inputs::ExplainVerdict;
                     match crate::lint::inputs::explain_verdict(
                         &issue_id_owned,
                         &issues,
-                        &inputs.coverage_warnings,
+                        &gaps,
                     ) {
                         ExplainVerdict::DoesNotFire => format!(
                             "explain: rule {issue_id_owned} doesn't fire on env {} — nothing to explain.\n\

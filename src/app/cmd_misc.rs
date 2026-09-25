@@ -719,25 +719,10 @@ impl App {
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let env_name = env.name.clone();
-        // Snapshot the user-level disables now — the project-level
-        // ones get read fresh inside the spawn so a mid-session
-        // edit to `.ebman/ebman.toml` takes effect without
-        // restarting ebman.
-        let user_disables = self.cfg.lint_disable.clone();
-        // Plumb live lint-context inputs. All four 0.18 wire-ups land
-        // here (EBL008 newer-stack, EBL010 required-tags + env-tags,
-        // EBL011 worker DLQ, EBL012 healthy-count). The tags + health
-        // fetches run in parallel with option-settings (see
-        // spawn_confirm_lint for the latency rationale).
-        let latest_stacks_owned = self.latest_stacks.clone();
-        let required_tags_owned = self.cfg.required_tags.clone();
-        let dlq_depth_owned = if env.tier.eq_ignore_ascii_case("Worker") {
-            self.worker_dlq_depths.get(&env.name).copied()
-        } else {
-            None
-        };
-        let dlq_absent = self.worker_dlq_absent.contains(&env.name);
-        let platforms_loaded = !self.latest_stacks.is_empty();
+        // The same snapshot `:explain` and the pre-deploy lint take;
+        // project-level disables are read inside the spawn so a
+        // mid-session edit to `.ebman/ebman.toml` takes effect.
+        let snap = self.lint_snapshot(&env);
         self.status_message = Some(format!("running lint on {env_name}…"));
         tokio::spawn(async move {
             let aws = match client.resolve().await {
@@ -751,48 +736,12 @@ impl App {
                     return;
                 }
             };
-            // Compose operator disables: user-level (from App,
-            // mirrored from config.toml at startup) + project-local
-            // (read fresh from cwd so a mid-session edit to
-            // .ebman/ebman.toml takes effect). Project disables extend;
-            // nothing overrides. Composed BEFORE the fetch: a disabled
-            // rule must not run its probe.
-            let mut disabled = user_disables.clone();
-            disabled.extend(crate::project::load_lint_disables_from_cwd());
             // The shared assembly, not a TUI copy: the copy here kept
             // its own fetches, dropped tag and health failures in
             // silence, and never ran the EBL020 / EBL018 probes — so
             // the same env linted differently here and in `ebman lint`.
-            let fetched = crate::lint::inputs::fetch_env_lint_inputs(
-                &aws,
-                &env,
-                &latest_stacks_owned,
-                false,
-                &disabled,
-                &required_tags_owned,
-            )
-            .await;
-            let body = match fetched {
-                Ok(mut inputs) => {
-                    inputs.dlq_depth = dlq_depth_owned;
-                    inputs
-                        .coverage_warnings
-                        .extend(crate::lint::inputs::cached_input_gaps(
-                            &env,
-                            &disabled,
-                            platforms_loaded,
-                            dlq_depth_owned,
-                            dlq_absent,
-                        ));
-                    let rules = crate::lint::default_rules(&disabled);
-                    let issues = crate::lint::inputs::run_rules_for_env(
-                        &rules,
-                        &env,
-                        &inputs,
-                        &required_tags_owned,
-                    );
-                    render_lint_overlay(&env_name, &issues, &inputs.coverage_warnings)
-                }
+            let body = match super::tui_lint::run_tui_lint(&aws, &snap).await {
+                Ok(run) => render_lint_overlay(&env_name, &run.issues, &run.coverage_warnings),
                 Err(e) => {
                     format!("lint — failed to fetch option settings:\n  {e}\n\nesc / q to close")
                 }
