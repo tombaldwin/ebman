@@ -8,6 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- **A red transition is audited under the environment's own region.**
+  Under a multi-region fan-out the line — which operators wire their own
+  notifiers off — carried the home region instead.
+
 - **`lint --fix` audit lines named a region that does not exist.**
   Without `--regions`, every fix — and every refusal of one — was
   recorded as `region=default`. They now carry the region the client

@@ -2071,6 +2071,37 @@ async fn the_first_refresh_flags_nothing_as_newly_added() {
     );
 }
 
+/// A red transition is audited under the ROW's region.
+///
+/// Under a multi-region fan-out the env that went red is usually not in
+/// the home region, and this audit line is what operators wire their
+/// own notifiers off. It carried `self.context.region` regardless.
+#[tokio::test]
+async fn a_red_transition_is_audited_under_the_rows_region() {
+    let env = "red-region-probe-env";
+    let mut app = test_app();
+    let mut red = mk_env(env, "shop", "Web", "Red");
+    red.region = Some("eu-west-2".into());
+    assert_ne!(
+        app.context.region, "eu-west-2",
+        "the fixture must differ from home"
+    );
+    let path = crate::util::cache_dir().join("audit.log");
+    let before = std::fs::read_to_string(&path).unwrap_or_default();
+
+    app.apply_refresh(app.fanout_epoch, Ok(vec![red]), Vec::new());
+
+    let after = std::fs::read_to_string(&path).unwrap_or_default();
+    let lines: Vec<&str> = after
+        .strip_prefix(&before)
+        .expect("append-only")
+        .lines()
+        .filter(|l| l.contains(env))
+        .collect();
+    assert_eq!(lines.len(), 1, "{lines:#?}");
+    assert!(lines[0].contains("region=eu-west-2"), "{}", lines[0]);
+}
+
 /// A red alert fires on the TRANSITION into red, not on being red.
 #[tokio::test]
 async fn newly_red_marks_the_transition_not_the_state() {
