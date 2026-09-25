@@ -82,6 +82,7 @@ fn a_superseded_token_says_so_rather_than_unknown() {
         name_retry_used: false,
         dlq_targets: Vec::new(),
         dlq_url: None,
+        dlq_main_url: None,
     };
     st.install(plan("tok-a"));
     assert!(st.retired.is_empty(), "the first plan replaces nothing");
@@ -332,17 +333,57 @@ fn the_confirm_window_outlives_a_receipt_handle() {
     );
 }
 
-/// The main queue is the dead-letter URL without its suffix.
-#[test]
-fn the_main_queue_is_the_dlq_without_its_suffix() {
-    assert_eq!(
-        main_queue_for("https://sqs/awseb-e-abc-stack-AWSEBWorkerQueue-xyz-dlq"),
-        "https://sqs/awseb-e-abc-stack-AWSEBWorkerQueue-xyz"
+/// The dispatch backstop: a resend plan with no main queue sends
+/// NOTHING, rather than falling back to some other url.
+///
+/// The plan refuses this case first, so only a broken plan invariant
+/// reaches here — which is exactly when a quiet fallback would do the
+/// most damage. No send or delete rule is registered, so any attempt
+/// at either panics the mock and fails the test.
+#[tokio::test]
+async fn a_resend_plan_with_no_main_queue_sends_nothing() {
+    use aws_sdk_sqs::operation::receive_message::ReceiveMessageOutput;
+    use aws_sdk_sqs::types::Message;
+    let peek = aws_smithy_mocks::mock!(aws_sdk_sqs::Client::receive_message).then_output(|| {
+        ReceiveMessageOutput::builder()
+            .messages(
+                Message::builder()
+                    .message_id("m-1")
+                    .receipt_handle("rh-1")
+                    .body("job")
+                    .build(),
+            )
+            .build()
+    });
+    let sqs =
+        aws_smithy_mocks::mock_client!(aws_sdk_sqs, aws_smithy_mocks::RuleMode::MatchAny, [&peek]);
+    let cfg = aws_config::SdkConfig::builder()
+        .region(aws_config::Region::new("us-west-1"))
+        .behavior_version(aws_config::BehaviorVersion::latest())
+        .build();
+    let client = crate::aws::AwsClient::for_tests(
+        aws_sdk_elasticbeanstalk::Client::new(&cfg),
+        sqs,
+        aws_sdk_cloudwatch::Client::new(&cfg),
+        aws_sdk_cloudwatchlogs::Client::new(&cfg),
+        aws_sdk_s3::Client::new(&cfg),
+        aws_sdk_ec2::Client::new(&cfg),
     );
-    // Not a dlq-suffixed url: returned unchanged rather than
-    // mangled. Resending to a queue we guessed wrong would put the
-    // message somewhere nobody is reading.
-    assert_eq!(main_queue_for("https://sqs/plain"), "https://sqs/plain");
+    let mut p = pending_for(WriteVerb::DlqResend);
+    p.dlq_url = Some("https://sqs/some-dead-letter-queue".into());
+    p.dlq_targets = vec![DlqTarget {
+        id: "m-1".into(),
+        task: "t".into(),
+    }];
+
+    let out = dispatch_dlq_batch(&client, &p)
+        .await
+        .expect("the batch runs");
+    let err = out[0]
+        .result
+        .as_ref()
+        .expect_err("with nowhere to send it, the message must not be moved");
+    assert!(err.contains("nothing was sent"), "{err}");
 }
 
 /// Resend sends BEFORE deleting.
@@ -434,6 +475,7 @@ async fn the_confirm_gate_refuses_a_plan_outside_the_scope() {
             name_retry_used: false,
             dlq_targets: Vec::new(),
             dlq_url: None,
+            dlq_main_url: None,
         });
     }
 
@@ -1169,6 +1211,7 @@ fn a_batch_ask_enumerates_the_messages() {
         name_retry_used: false,
         dlq_targets: targets,
         dlq_url: Some("https://sqs/q-dlq".into()),
+        dlq_main_url: None,
     };
     let summary = ask_summary(&p);
     for i in 1..=3 {
@@ -1319,6 +1362,7 @@ fn the_ask_says_whose_credentials_it_would_use() {
         name_retry_used: false,
         dlq_targets: Vec::new(),
         dlq_url: None,
+        dlq_main_url: None,
     };
     let s = ask_summary(&p);
     assert!(
@@ -1621,6 +1665,7 @@ fn pending_for(verb: WriteVerb) -> PendingWrite {
         name_retry_used: false,
         dlq_targets: Vec::new(),
         dlq_url: None,
+        dlq_main_url: None,
     }
 }
 

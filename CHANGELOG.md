@@ -8,6 +8,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- **An MCP `dlq_resend` could put the message straight back into the
+  dead-letter queue.** The main queue was derived by stripping a `-dlq`
+  suffix from the DLQ's url, falling back to the DLQ url itself when
+  there was none. EB's own auto-created pair is named
+  `…-AWSEBWorkerQueue-…` / `…-AWSEBWorkerDeadLetterQueue-…`, so for
+  those the resend re-enqueued the message into the DLQ, deleted the
+  original and reported success — the work never reached the worker.
+  The resend now goes to the main queue EB reports, as the TUI's always
+  did, and is refused at plan time when there isn't one.
+
 - **A partly-failed EBL015 pass no longer exits clean.** When
   `DescribePlatformVersion` failed for one custom-platform branch, the
   branch was skipped with a warning printed to stderr behind `!quiet`
