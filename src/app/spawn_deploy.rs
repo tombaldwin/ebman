@@ -850,7 +850,7 @@ impl App {
                         gen,
                         env_name: env_for_msg,
                         issues: Vec::new(),
-                        unavailable: Some(e.to_string()),
+                        not_run: vec![format!("lint could not run: {e}")],
                     });
                     return;
                 }
@@ -863,15 +863,19 @@ impl App {
             let opts_fut = aws.fetch_env_option_settings(&app_name, &env_name);
             let tags_was_cached = cached_tags.is_some();
             let tags_fut = async {
+                // `Option<Result>`: `None` = no ARN to fetch against;
+                // `Some(Err)` = the fetch FAILED, which is reported
+                // below rather than dropped by `.ok()`.
                 if let Some(cached) = cached_tags {
-                    Some(cached)
+                    Some(Ok(cached))
                 } else {
                     match env_arn_owned.as_deref() {
-                        Some(arn) => aws
-                            .list_tags(arn)
-                            .await
-                            .ok()
-                            .map(|kvs| kvs.into_iter().map(|(k, _)| k).collect()),
+                        Some(arn) => Some(
+                            aws.list_tags(arn)
+                                .await
+                                .map(|kvs| kvs.into_iter().map(|(k, _)| k).collect::<Vec<_>>())
+                                .map_err(|e| e.to_string()),
+                        ),
                         None => None,
                     }
                 }
@@ -879,15 +883,20 @@ impl App {
             let health_was_cached = cached_health.is_some();
             let health_fut = async {
                 if let Some(cached) = cached_health {
-                    Some(cached)
+                    Ok(cached)
                 } else {
                     aws.fetch_env_instance_counts(&env_name)
                         .await
-                        .ok()
                         .map(|c| c.healthy as i64)
+                        .map_err(|e| e.to_string())
                 }
             };
-            let (opts_res, tags_opt, health_opt) = tokio::join!(opts_fut, tags_fut, health_fut);
+            let (opts_res, tags_res, health_res) = tokio::join!(opts_fut, tags_fut, health_fut);
+            let tags_opt: Option<Vec<String>> = match &tags_res {
+                Some(Ok(t)) => Some(t.clone()),
+                _ => None,
+            };
+            let health_opt: Option<i64> = health_res.as_ref().ok().copied();
             // Send cache-update before lint computation so the cache
             // is fresh for the NEXT modal-open even if lint logic
             // changes shape.
@@ -903,11 +912,20 @@ impl App {
                     healthy: if health_was_cached { None } else { health_opt },
                 });
             }
-            // See `cmd_lint`: `None` means the fetch failed, and
-            // EBL010 skips on that rather than firing for every key.
+            // `None` means the fetch failed or was not possible, and
+            // the rule skips on that rather than firing a false
+            // positive — and the skip is listed, see
+            // `pre_deploy_coverage_gaps`.
             let env_tag_keys_owned: Option<Vec<String>> = tags_opt;
             let healthy_count_owned = health_opt;
-            let mut unavailable: Option<String> = None;
+            let mut not_run = pre_deploy_coverage_gaps(
+                &env,
+                &disabled,
+                &required_tags_owned,
+                tags_res.as_ref(),
+                &health_res,
+                opts_res.as_deref().ok(),
+            );
             let issues = match opts_res {
                 Ok(opts) => {
                     let mut ctx = crate::lint::LintContext::for_env(&env, &opts)
@@ -931,7 +949,7 @@ impl App {
                     // Was `Err(_) => Vec::new()`: a failed option fetch
                     // produced an empty pane — the same thing a clean
                     // env produces — right before a deploy.
-                    unavailable = Some(e.to_string());
+                    not_run.push(format!("lint could not run: {e}"));
                     Vec::new()
                 }
             };
@@ -939,8 +957,45 @@ impl App {
                 gen,
                 env_name: env_for_msg,
                 issues,
-                unavailable,
+                not_run,
             });
         });
     }
+}
+
+/// The per-rule checks the pre-deploy lint could not run, as operator
+/// lines. A failed tag or health fetch used to be dropped by `.ok()`,
+/// leaving an empty pane — what a clean env shows — right before a
+/// deploy. Reported only when the rule could have fired, via the same
+/// predicates `lint::inputs` uses, so a basic-health env does not
+/// false-alarm. `options` is `None` when the option fetch itself failed:
+/// EBL012's predicate needs it, and the whole-lint failure is reported
+/// separately. `tags` is `None` when there was no ARN to ask about.
+pub(super) fn pre_deploy_coverage_gaps(
+    env: &crate::aws::Environment,
+    disabled: &[String],
+    required_tags: &[String],
+    tags: Option<&Result<Vec<String>, String>>,
+    health: &Result<i64, String>,
+    options: Option<&[(String, String, String)]>,
+) -> Vec<String> {
+    use crate::lint::inputs::{ebl010_could_fire, ebl012_could_fire, ProbeOutcome};
+    let mut gaps = Vec::new();
+    if let Some(Err(e)) = tags {
+        if ebl010_could_fire(disabled, required_tags) {
+            gaps.extend(
+                ProbeOutcome::Unknown(format!("ListTagsForResource: {e}"))
+                    .coverage_warning("EBL010", &env.name),
+            );
+        }
+    }
+    if let (Err(e), Some(opts)) = (health, options) {
+        if ebl012_could_fire(disabled, env, opts) {
+            gaps.extend(
+                ProbeOutcome::Unknown(format!("DescribeEnvironmentHealth: {e}"))
+                    .coverage_warning("EBL012", &env.name),
+            );
+        }
+    }
+    gaps
 }

@@ -391,12 +391,18 @@ pub(crate) fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
             // env renders — so without this line a failed check was
             // indistinguishable from a passed one, right before a
             // deploy.
-            if let Some(why) = &modal.lint_unavailable {
+            if !modal.lint_not_run.is_empty() {
                 lines.push(Line::from(""));
                 lines.push(Line::from(Span::styled(
-                    format!("  lint could not run — not a clean result: {why}"),
+                    "  lint checks that could NOT run — not a clean result:",
                     Style::default().fg(theme.health_yellow),
                 )));
+                for why in &modal.lint_not_run {
+                    lines.push(Line::from(Span::styled(
+                        format!("    ? {why}"),
+                        Style::default().fg(theme.health_yellow),
+                    )));
+                }
             }
             // Pre-flight events: last 3 events on this env.
             if let Some(events) = &modal.recent_events {

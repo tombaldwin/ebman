@@ -1160,18 +1160,18 @@ async fn a_lint_that_could_not_run_is_shown_in_the_confirm_modal() {
         app.mode = Mode::Action;
         let mut modal = mk_modal(Action::Rebuild, "api-prod");
         modal.lint_issues = Some(Vec::new());
-        modal.lint_unavailable = why.map(str::to_owned);
+        modal.lint_not_run = why.map(str::to_owned).into_iter().collect();
         app.action_flow = Some(crate::app::ActionFlow::Confirm(modal));
         render(&mut app, 160, 40)
     };
     let failed = frame_for(Some("DescribeConfigurationSettings failed: AccessDenied"));
     assert!(
-        failed.contains("lint could not run") && failed.contains("AccessDenied"),
+        failed.contains("could NOT run") && failed.contains("AccessDenied"),
         "the operator must see that lint did not run; got:\n{failed}"
     );
     let clean = frame_for(None);
     assert!(
-        !clean.contains("lint could not run"),
+        !clean.contains("could NOT run"),
         "a clean lint must not claim it failed; got:\n{clean}"
     );
 }

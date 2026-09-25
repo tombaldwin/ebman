@@ -424,11 +424,12 @@ pub(crate) struct ConfirmModal {
     /// `None` while loading; populated by `spawn_confirm_lint` at
     /// modal-open time.
     pub lint_issues: Option<Vec<crate::lint::Issue>>,
-    /// Why lint could not run for this modal, when it could not. Kept
-    /// apart from `lint_issues` because an empty issue list is what a
-    /// CLEAN env renders as — nothing — and "could not check" must not
-    /// look like that immediately before a deploy.
-    pub lint_unavailable: Option<String>,
+    /// The lint checks that could not run for this modal, each with
+    /// why — the whole lint, or one rule's input. Kept apart from
+    /// `lint_issues` because an empty issue list is what a CLEAN env
+    /// renders as — nothing — and "could not check" must not look like
+    /// that immediately before a deploy.
+    pub lint_not_run: Vec<String>,
     /// True while `spawn_confirm_lint` is in flight.
     pub loading_lint: bool,
 }
