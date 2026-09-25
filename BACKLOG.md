@@ -166,6 +166,14 @@ Tier definitions:
 
 #### Product, from the 2026-09-25 review
 
+- [ ] **Decision: should a TUI rebuild render red?** MCP annotates
+  `rebuild` destructive (`Verb::destructive` — it replaces every
+  instance), while the TUI's `Action::confirm_in_red` deliberately
+  shows only terminate and `ssm-run` in red, pinned by
+  `action_destructive_covers_terminate_and_ssm_run`. The 0.45 release
+  review found the two disagreeing under one name; they were renamed by
+  meaning rather than changed. One line to align if wanted.
+
 - [ ] **Decision: should lifting `--read-only` be harder?** 0112e6d
   audits `:readonly off`; it still needs no confirmation, so a session
   started `--read-only` is one keystroke from writable. Options: sticky

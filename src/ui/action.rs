@@ -25,7 +25,7 @@ pub(crate) fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
             let items: Vec<ListItem> = ACTIONS
                 .iter()
                 .map(|a| {
-                    let style = if a.destructive() {
+                    let style = if a.confirm_in_red() {
                         Style::default()
                             .fg(theme.health_red)
                             .add_modifier(Modifier::BOLD)
@@ -34,7 +34,7 @@ pub(crate) fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
                     };
                     // Per-action glyph in muted (or red for destructive) so the
                     // shape carries the signal without competing with the label.
-                    let glyph_style = if a.destructive() {
+                    let glyph_style = if a.confirm_in_red() {
                         Style::default().fg(theme.health_red)
                     } else {
                         Style::default().fg(theme.title_alt)
@@ -130,7 +130,7 @@ pub(crate) fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
             let popup = overlay_rect(OverlaySize::Small, area);
             f.render_widget(Clear, popup);
             // Treat scale-to-zero as destructive at the modal level even
-            // though `Action::Scale.destructive() == false` — dropping
+            // though `Action::Scale.confirm_in_red() == false` — dropping
             // an env to 0 instances serves zero requests, which is
             // operator-visible as severe as Terminate. `Action::Scale`
             // stays non-destructive in the type system so non-zero
@@ -140,7 +140,7 @@ pub(crate) fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
             let scale_to_zero = modal.action == Action::Scale
                 && modal.params.scale_min == Some(0)
                 && modal.params.scale_max == Some(0);
-            let render_destructive = modal.action.destructive() || scale_to_zero;
+            let render_destructive = modal.action.confirm_in_red() || scale_to_zero;
             let accent = if render_destructive {
                 theme.health_red
             } else {

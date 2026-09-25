@@ -121,9 +121,20 @@ impl Action {
             Self::SsmRun => "Run SSM shell command",
         }
     }
-    pub(crate) fn destructive(self) -> bool {
-        // SsmRun is flagged destructive so the confirm modal renders
-        // in red — operator-explicit shell exec across instances is
+    /// Does the TUI draw this action's menu entry and confirm modal in
+    /// red? A UX choice, NOT the destructiveness classification — that
+    /// is `Verb::destructive`, which MCP's annotations use.
+    ///
+    /// They differ on purpose, and the names now say so: this was also
+    /// called `destructive()`, beside `Verb::destructive` and a replay
+    /// gate of the same name, and the three answered three different
+    /// questions (0.45 release review). Rebuild is destructive to MCP
+    /// and deliberately not red here — pinned by
+    /// `action_destructive_covers_terminate_and_ssm_run`; whether it
+    /// should be is recorded as a question for the maintainer.
+    pub(crate) fn confirm_in_red(self) -> bool {
+        // SsmRun is flagged so the confirm modal renders in red —
+        // operator-explicit shell exec across instances is
         // treat-as-write. Operators using it for read-only probes
         // (`uptime`, `ls`) still see red; the visual prominence is
         // worth more than the false-positive on a probe.

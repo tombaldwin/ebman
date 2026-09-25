@@ -98,9 +98,12 @@ impl ReplayVerb {
         self.verb().audit_label()
     }
 
-    /// Mirrors `ebman action`'s gate: terminate is the destructive
-    /// verb requiring `--yes`.
-    fn destructive(self) -> bool {
+    /// Mirrors `ebman action`'s gate: terminate is the verb that needs
+    /// `--yes`. A GATE, not a classification — it was named
+    /// `destructive`, beside two other `destructive()`s that disagreed
+    /// with it and with each other; rebuild is destructive
+    /// (`Verb::destructive`) and still replays without `--yes`.
+    fn requires_yes(self) -> bool {
         matches!(self, ReplayVerb::Terminate)
     }
 }
@@ -279,7 +282,7 @@ pub(crate) async fn run_replay(args: &[String]) -> Result<()> {
         plan.verb.label(),
     )
     .await;
-    if plan.verb.destructive() && !yes {
+    if plan.verb.requires_yes() && !yes {
         eprintln!(
             "ebman audit replay: '{}' is destructive; re-run with --yes to confirm",
             plan.verb.label()
@@ -430,7 +433,7 @@ mod tests {
         assert_eq!(plan.profile.as_deref(), Some("staging"));
         assert_eq!(plan.region.as_deref(), Some("eu-west-1"));
         assert!(plan.version.is_none());
-        assert!(!plan.verb.destructive());
+        assert!(!plan.verb.requires_yes());
     }
 
     #[test]
@@ -478,7 +481,7 @@ mod tests {
             "2026-07-15T10:11:12+00:00\taccount=1\tprofile=p\tregion=r\tstage=dispatched action=Terminate target=old-env",
         );
         let plan = replay_plan(&e).unwrap();
-        assert!(plan.verb.destructive());
+        assert!(plan.verb.requires_yes());
     }
 
     #[test]
