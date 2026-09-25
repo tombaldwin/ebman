@@ -909,6 +909,11 @@ impl App {
                         .unwrap_or(false);
                     if is_red(&e.health) && !prev_red {
                         self.newly_red.insert(e.name.clone());
+                        // The ROW's region, not the home one: under a
+                        // multi-region fan-out the env that went red is
+                        // usually elsewhere, and this line is what an
+                        // operator's own notifier keys off.
+                        let region = e.region.as_deref().unwrap_or(&self.context.region);
                         // Surface the transition via tracing + the audit log
                         // so operators can wire their own notifier (Slack,
                         // pager, etc.) off the audit stream. The previous
@@ -918,13 +923,13 @@ impl App {
                             env = %e.name,
                             application = %e.application,
                             health = %e.health,
-                            region = %self.context.region,
+                            region = %region,
                             "env transitioned into Red",
                         );
                         crate::audit::append_red_transition(
                             self.context.account_id.as_deref(),
                             self.context.profile.as_deref(),
-                            &self.context.region,
+                            region,
                             &e.name,
                             &e.application,
                             &e.health,
