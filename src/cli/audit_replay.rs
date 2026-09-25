@@ -83,15 +83,19 @@ enum ReplayVerb {
 }
 
 impl ReplayVerb {
-    fn label(self) -> &'static str {
+    /// The shared verb this replays.
+    fn verb(self) -> crate::verb::Verb {
+        use crate::verb::Verb;
         match self {
-            ReplayVerb::Rebuild => "Rebuild",
-            // Canonical = the TUI's Debug name; `parse` still
-            // accepts the historical CLI spelling.
-            ReplayVerb::Restart => "RestartAppServer",
-            ReplayVerb::Terminate => "Terminate",
-            ReplayVerb::Deploy => "Deploy",
+            ReplayVerb::Rebuild => Verb::Rebuild,
+            ReplayVerb::Restart => Verb::RestartAppServer,
+            ReplayVerb::Terminate => Verb::Terminate,
+            ReplayVerb::Deploy => Verb::Deploy,
         }
+    }
+
+    fn label(self) -> &'static str {
+        self.verb().audit_label()
     }
 
     /// Mirrors `ebman action`'s gate: terminate is the destructive
@@ -141,21 +145,24 @@ fn replay_plan(entry: &audit_log::AuditEntry) -> Result<ReplayPlan, String> {
         }
         None => return Err("line carries no stage= field — not a replayable action line".into()),
     }
-    let verb = match entry.action.as_deref() {
-        Some("Rebuild") => ReplayVerb::Rebuild,
-        // Both spellings: the TUI has always written the Debug name
-        // and the CLI wrote "Restart" until 0.30.3, so a log spans
-        // both. Refusing either makes the most common restart in the
-        // file — the TUI's — unreplayable, which is what it did.
-        Some("RestartAppServer") | Some("Restart") => ReplayVerb::Restart,
-        Some("Terminate") => ReplayVerb::Terminate,
-        Some("Deploy") => ReplayVerb::Deploy,
-        Some(other) => {
+    // Through the shared vocabulary, so every spelling a verb has ever
+    // been written under replays — a log spans them (the CLI wrote
+    // "Restart" until 0.30.3, MCP until 0.45). This parser used to keep
+    // its own copy of the aliases.
+    use crate::verb::Verb;
+    let Some(label) = entry.action.as_deref() else {
+        return Err("line carries no action= field — not a replayable action line".into());
+    };
+    let verb = match Verb::from_audit_label(label) {
+        Some(Verb::Rebuild) => ReplayVerb::Rebuild,
+        Some(Verb::RestartAppServer) => ReplayVerb::Restart,
+        Some(Verb::Terminate) => ReplayVerb::Terminate,
+        Some(Verb::Deploy) => ReplayVerb::Deploy,
+        _ => {
             return Err(format!(
-                "action '{other}' isn't replayable via the CLI (supported: Rebuild / RestartAppServer / Terminate / Deploy)"
+                "action '{label}' isn't replayable via the CLI (supported: Rebuild / RestartAppServer / Terminate / Deploy)"
             ))
         }
-        None => return Err("line carries no action= field — not a replayable action line".into()),
     };
     let Some(env) = entry.target.as_deref().filter(|t| !t.is_empty()) else {
         return Err("line carries no target= env — not a replayable action line".into());

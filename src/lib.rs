@@ -135,6 +135,7 @@ pub(crate) mod theme;
 pub(crate) mod ui;
 pub(crate) mod update_check;
 pub mod util;
+pub(crate) mod verb;
 
 use std::io::Stdout;
 

@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- **Every surface now writes one audit spelling per verb.** A restart is
+  `RestartAppServer` and an option write is `SetOption`, from the TUI,
+  the CLI and MCP alike. Before, MCP wrote a restart as `Restart`, and
+  TUI forms and deploys wrote option changes as `UpdateOptionSettings`.
+  **If you filter the audit log by name, new lines use the new
+  spellings;** `ebman audit --action` matches either spelling, so old
+  and new lines are found together. An MCP restart plan's `action`
+  field now reads `RestartAppServer` too.
+
 ### Fixed
 
 - **`ebman audit --action RestartAppServer` finds MCP restarts too.**

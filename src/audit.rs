@@ -304,34 +304,7 @@ impl<'a> AuditFilter<'a> {
     }
 }
 
-/// Action labels that name the SAME operation, spelled differently by
-/// different surfaces. First spelling is the comparison key.
-///
-/// MCP audits a restart as `Restart`; the TUI, CLI and replay write
-/// `RestartAppServer`. Option writes are `SetOption` from MCP, batch and
-/// `lint --fix`, and `UpdateOptionSettings` from TUI forms and deploy —
-/// every one of them the same `update_env_option_settings` call. The
-/// filter matched labels exactly, so `ebman audit --action
-/// RestartAppServer` silently missed every MCP restart. `audit replay`
-/// had already learned to accept both restart spellings; the filter had
-/// not.
-///
-/// Reader-side on purpose: the log keeps what each surface wrote, so
-/// nothing already on disk changes meaning. Which spelling every
-/// surface should WRITE is the typed-verb refactor's decision.
-const ACTION_ALIASES: &[&[&str]] = &[
-    &["RestartAppServer", "Restart"],
-    &["SetOption", "UpdateOptionSettings"],
-];
-
-/// The key an action label is compared under: its alias group's first
-/// spelling, or the label itself.
-pub(crate) fn action_key(label: &str) -> &str {
-    ACTION_ALIASES
-        .iter()
-        .find(|group| group.contains(&label))
-        .map_or(label, |group| group[0])
-}
+pub(crate) use crate::verb::action_key;
 
 /// Render audit entries as a pretty text table (TS / REGION / STAGE /
 /// ACTION / TARGET / OUTCOME). Empty input yields a one-line `(no
@@ -776,7 +749,10 @@ pub(crate) fn append_lint_fix(
     err: Option<&str>,
 ) {
     let mut tail: Vec<(&str, Field<'_>)> = vec![
-        ("action", Field::Token("SetOption")),
+        (
+            "action",
+            Field::Token(crate::verb::Verb::SetOption.audit_label()),
+        ),
         ("target", Field::Text(env)),
         ("rule_id", Field::Text(rule_id)),
         ("namespace", Field::Text(namespace)),

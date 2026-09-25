@@ -85,7 +85,7 @@ impl App {
             self.context.account_id.as_deref(),
             self.context.profile.as_deref(),
             &self.region_for_name(&env_name),
-            "sqs-delete",
+            crate::verb::Verb::DlqDelete.audit_label(),
             &env_name,
             &[("queue", queue_label), ("msg_id", &msg.id)],
         );
@@ -152,7 +152,7 @@ impl App {
             self.context.account_id.as_deref(),
             self.context.profile.as_deref(),
             &self.region_for_name(&env_name),
-            "dlq-resend",
+            crate::verb::Verb::DlqResend.audit_label(),
             &env_name,
             &[("msg_id", &msg.id)],
         );
@@ -210,7 +210,7 @@ impl App {
             self.context.account_id.as_deref(),
             self.context.profile.as_deref(),
             &self.region_for_name(&env_name),
-            "dlq-purge",
+            crate::verb::Verb::DlqPurge.audit_label(),
             &env_name,
             &[],
         );

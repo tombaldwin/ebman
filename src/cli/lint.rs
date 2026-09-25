@@ -875,7 +875,11 @@ pub async fn run(args: &[String]) -> Result<()> {
     // :incident (a --dry-run plans nothing, so it stays allowed).
     // This path had the same blind spot action/replay had.
     if fix && yes {
-        crate::cli::refuse_if_frozen("ebman lint --fix", "SetOption").await;
+        crate::cli::refuse_if_frozen(
+            "ebman lint --fix",
+            crate::verb::Verb::SetOption.audit_label(),
+        )
+        .await;
     }
     if webhook.is_some() {
         // CLI mode installs no tracing subscriber — route webhook
@@ -2356,7 +2360,7 @@ async fn apply_fixes_for_env(
             // The label the fix DISPATCH logs, so a
             // refusal correlates with it under `ebman
             // audit --action SetOption`.
-            "SetOption",
+            crate::verb::Verb::SetOption.audit_label(),
         )
     } else {
         crate::cli::write_refusal_unaudited(safety_cfg, &env.name, active_profile_for_safety, None)

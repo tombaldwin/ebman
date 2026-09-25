@@ -254,7 +254,7 @@ impl App {
             self.context.account_id.as_deref(),
             self.context.profile.as_deref(),
             &self.region_for_name(&env_name),
-            "UpdateOptionSettings",
+            crate::verb::Verb::SetOption.audit_label(),
             env_name.as_str(),
             &[("summary", summary.as_str())],
         );
@@ -326,7 +326,7 @@ impl App {
                 account.as_deref(),
                 profile.as_deref(),
                 &region,
-                "UpdateOptionSettings",
+                crate::verb::Verb::SetOption.audit_label(),
                 &env_for_msg,
                 result.as_ref().map(|_| ()).map_err(|e| e.as_str()),
                 &[("summary", &summary_for_msg)],

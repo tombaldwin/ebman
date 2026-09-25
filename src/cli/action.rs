@@ -86,7 +86,7 @@ impl CliAction {
         match self {
             // Matches the two `append_action_dispatched` sites in
             // `run_deploy`.
-            CliAction::Deploy => "Deploy",
+            CliAction::Deploy => crate::verb::Verb::Deploy.audit_label(),
             CliAction::Verb(v) => v.audit_label(),
         }
     }
@@ -109,14 +109,22 @@ enum CliVerb {
 impl CliVerb {
     /// Every variant, so the parser and the tests can't disagree about
     /// what exists.
-    const ALL: &'static [(&'static str, CliVerb, &'static str)] = &[
-        ("rebuild", CliVerb::Rebuild, "Rebuild"),
+    const ALL: &'static [(&'static str, CliVerb, crate::verb::Verb)] = &[
+        ("rebuild", CliVerb::Rebuild, crate::verb::Verb::Rebuild),
         // "RestartAppServer", not "Restart": the TUI audits every
         // action under its Debug name, so a CLI-written "Restart"
         // split the same operation into two names in one log —
         // `ebman audit --action` matched half the history either way.
-        ("restart", CliVerb::Restart, "RestartAppServer"),
-        ("terminate", CliVerb::Terminate, "Terminate"),
+        (
+            "restart",
+            CliVerb::Restart,
+            crate::verb::Verb::RestartAppServer,
+        ),
+        (
+            "terminate",
+            CliVerb::Terminate,
+            crate::verb::Verb::Terminate,
+        ),
     ];
 
     fn parse(name: &str) -> Option<Self> {
@@ -133,7 +141,7 @@ impl CliVerb {
         Self::ALL
             .iter()
             .find(|(_, v, _)| *v == self)
-            .map(|(_, _, l)| *l)
+            .map(|(_, _, shared)| shared.audit_label())
             .unwrap_or("Unknown")
     }
 
@@ -405,7 +413,7 @@ async fn run_deploy(
         None,
         cli_profile.as_deref(),
         &aws.context.region,
-        "Deploy",
+        crate::verb::Verb::Deploy.audit_label(),
         env,
         &[("version", &version)],
     );
@@ -415,7 +423,7 @@ async fn run_deploy(
             None,
             cli_profile.as_deref(),
             &aws.context.region,
-            "Deploy",
+            crate::verb::Verb::Deploy.audit_label(),
             env,
             Err(&msg),
             &[("version", &version)],
@@ -427,7 +435,7 @@ async fn run_deploy(
         None,
         cli_profile.as_deref(),
         &aws.context.region,
-        "Deploy",
+        crate::verb::Verb::Deploy.audit_label(),
         env,
         Ok(()),
         &[("version", &version)],
@@ -505,7 +513,7 @@ async fn run_deploy(
                     None,
                     cli_profile.as_deref(),
                     &aws.context.region,
-                    "Deploy",
+                    crate::verb::Verb::Deploy.audit_label(),
                     env,
                     &[("version", &snapshot_label), ("auto_rollback_of", &version)],
                 );
@@ -1263,8 +1271,7 @@ mod tests {
         // `unreachable!()` in a release binary.
         for (name, verb, label) in CliVerb::ALL {
             assert_eq!(CliVerb::parse(name), Some(*verb), "{name} parses");
-            assert_eq!(verb.audit_label(), *label, "{name} labels");
-            assert!(!label.is_empty());
+            assert_eq!(verb.audit_label(), label.audit_label(), "{name} labels");
         }
         assert_eq!(CliVerb::parse("rollout"), None, "has its own path");
         assert_eq!(CliVerb::parse("deploy"), None, "has its own path");

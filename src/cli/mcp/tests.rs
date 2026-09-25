@@ -136,7 +136,7 @@ async fn two_phase_happy_path_demo() {
     let (err, plan) = call(&s, "restart", json!({"env": env})).await;
     assert!(!err);
     assert_eq!(plan["pending"], true);
-    assert_eq!(plan["plan"]["action"], "Restart");
+    assert_eq!(plan["plan"]["action"], "RestartAppServer");
     let token = plan["confirm_token"].as_str().unwrap().to_string();
     let (err2, out) = call(&s, "confirm_action", json!({"confirm_token": token})).await;
     assert!(!err2);
