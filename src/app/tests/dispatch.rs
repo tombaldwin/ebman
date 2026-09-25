@@ -3061,3 +3061,53 @@ fn unreleased_changes_are_written_down() {
          mechanical."
     );
 }
+
+/// Turning `:readonly` off is audited, in both directions.
+///
+/// It re-enables every destructive action in the session, and it left
+/// no line: `--read-only` is the audit-friendly posture the README
+/// advertises, and one keystroke undid it invisibly.
+#[test]
+fn toggling_read_only_is_audited() {
+    let profile = "readonly-audit-probe-profile";
+    let mut app = test_app();
+    app.demo_mode = false;
+    app.context.profile = Some(profile.into());
+    app.read_only = true;
+    let path = crate::util::cache_dir().join("audit.log");
+    let before = std::fs::read_to_string(&path).unwrap_or_default();
+
+    app.execute_command("readonly off");
+    assert!(!app.read_only);
+    app.execute_command("readonly on");
+    assert!(app.read_only);
+    // A no-op toggle changes nothing and records nothing.
+    app.execute_command("readonly on");
+
+    let after = std::fs::read_to_string(&path).unwrap_or_default();
+    let lines: Vec<&str> = after
+        .strip_prefix(&before)
+        .expect("the audit log is append-only")
+        .lines()
+        .filter(|l| l.contains(profile) && l.contains("action=ReadOnly"))
+        .collect();
+    assert_eq!(lines.len(), 2, "one line per CHANGE: {lines:#?}");
+    assert!(lines[0].contains("state=off"), "{}", lines[0]);
+    assert!(lines[1].contains("state=on"), "{}", lines[1]);
+}
+
+/// ...and demo mode writes nothing, as everywhere else.
+#[test]
+fn toggling_read_only_in_demo_writes_no_audit() {
+    let profile = "readonly-demo-probe-profile";
+    let mut app = test_app();
+    app.demo_mode = true;
+    app.context.profile = Some(profile.into());
+    app.read_only = true;
+    let path = crate::util::cache_dir().join("audit.log");
+    let before = std::fs::read_to_string(&path).unwrap_or_default();
+    app.execute_command("readonly off");
+    let after = std::fs::read_to_string(&path).unwrap_or_default();
+    let delta = after.strip_prefix(&before).expect("append-only");
+    assert!(!delta.contains(profile), "{delta}");
+}
