@@ -3089,9 +3089,15 @@ fn toggling_read_only_is_audited() {
         .strip_prefix(&before)
         .expect("the audit log is append-only")
         .lines()
-        .filter(|l| l.contains(profile) && l.contains("action=ReadOnly"))
+        .filter(|l| l.contains(profile) && l.contains("kind=read_only"))
         .collect();
     assert_eq!(lines.len(), 2, "one line per CHANGE: {lines:#?}");
+    // An event, not a dispatched write: a `dispatched` line with no
+    // `completed` is how this log marks a crash mid-write.
+    for l in &lines {
+        assert!(l.contains("stage=event"), "{l}");
+        assert!(!l.contains("stage=dispatched"), "{l}");
+    }
     assert!(lines[0].contains("state=off"), "{}", lines[0]);
     assert!(lines[1].contains("state=on"), "{}", lines[1]);
 }
