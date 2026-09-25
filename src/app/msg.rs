@@ -181,8 +181,11 @@ impl App {
                 self.handle_unavailability_estimate(env_name, line)
             }
             AppMsg::ConfirmModalLint {
-                env_name, issues, ..
-            } => self.handle_confirm_modal_lint(env_name, issues),
+                env_name,
+                issues,
+                unavailable,
+                ..
+            } => self.handle_confirm_modal_lint(env_name, issues, unavailable),
             AppMsg::LintInputsCached {
                 env_name,
                 tags,
@@ -826,7 +829,12 @@ impl App {
     /// (operator sees positive feedback by absence). Generation
     /// guard upstream means stale results from a previous
     /// modal-open won't land here.
-    fn handle_confirm_modal_lint(&mut self, env_name: String, issues: Vec<crate::lint::Issue>) {
+    fn handle_confirm_modal_lint(
+        &mut self,
+        env_name: String,
+        issues: Vec<crate::lint::Issue>,
+        unavailable: Option<String>,
+    ) {
         let Some(ActionFlow::Confirm(modal)) = self.action_flow.as_mut() else {
             return;
         };
@@ -835,6 +843,7 @@ impl App {
         }
         modal.loading_lint = false;
         modal.lint_issues = Some(issues);
+        modal.lint_unavailable = unavailable;
     }
 
     /// 0.21: write freshly-fetched lint inputs into the App caches

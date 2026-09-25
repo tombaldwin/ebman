@@ -275,3 +275,32 @@ fn the_tui_lint_paths_use_the_shared_assembly() {
         );
     }
 }
+
+/// The pre-deploy lint reports a failed run as a reason, never as an
+/// empty list. `Err(_) => Vec::new()` is the shape that made "could
+/// not check" render exactly like "checked, clean" in the confirm
+/// modal; the handler and the render are pinned elsewhere, and this
+/// pins the sender, which runs in a spawned task no unit test reaches.
+#[test]
+fn the_pre_deploy_lint_reports_a_failed_run() {
+    let prod = super::scan::production_source("app/spawn_deploy.rs");
+    let body = prod
+        .split("fn spawn_confirm_lint(")
+        .nth(1)
+        .and_then(|rest| rest.split("\n    }\n").next())
+        .unwrap_or_else(|| panic!("spawn_confirm_lint not found"));
+    let code: String = body
+        .lines()
+        .map(super::scan::strip_line_comment)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        !code.contains("Err(_) => Vec::new()"),
+        "a failed lint must not become an empty — i.e. clean — issue list"
+    );
+    assert!(
+        code.matches("unavailable: Some(").count() + code.matches("unavailable = Some(").count()
+            >= 2,
+        "both failure paths (client, option fetch) must carry a reason"
+    );
+}

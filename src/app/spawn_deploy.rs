@@ -840,15 +840,20 @@ impl App {
         let cache_env_name = env.name.clone();
         tokio::spawn(async move {
             // The confirm modal's lint pane is advisory — an
-            // unreachable client means no findings rather than a
-            // blocked confirm, same as a failed fetch below.
-            let Ok(aws) = client.resolve().await else {
-                let _ = tx.send(AppMsg::ConfirmModalLint {
-                    gen,
-                    env_name: env_for_msg,
-                    issues: Vec::new(),
-                });
-                return;
+            // unreachable client does not block the confirm. But it
+            // is REPORTED: an empty pane is what a clean result looks
+            // like, and "lint could not run" is a different fact.
+            let aws = match client.resolve().await {
+                Ok(aws) => aws,
+                Err(e) => {
+                    let _ = tx.send(AppMsg::ConfirmModalLint {
+                        gen,
+                        env_name: env_for_msg,
+                        issues: Vec::new(),
+                        unavailable: Some(e.to_string()),
+                    });
+                    return;
+                }
             };
             // Parallel fetch: option settings (always), tags + health
             // (only if not cached). The `tags_fut` / `health_fut`
@@ -902,6 +907,7 @@ impl App {
             // EBL010 skips on that rather than firing for every key.
             let env_tag_keys_owned: Option<Vec<String>> = tags_opt;
             let healthy_count_owned = health_opt;
+            let mut unavailable: Option<String> = None;
             let issues = match opts_res {
                 Ok(opts) => {
                     let mut ctx = crate::lint::LintContext::for_env(&env, &opts)
@@ -921,12 +927,19 @@ impl App {
                     let rules = crate::lint::default_rules(&disabled);
                     crate::lint::run_rules(&rules, &ctx)
                 }
-                Err(_) => Vec::new(),
+                Err(e) => {
+                    // Was `Err(_) => Vec::new()`: a failed option fetch
+                    // produced an empty pane — the same thing a clean
+                    // env produces — right before a deploy.
+                    unavailable = Some(e.to_string());
+                    Vec::new()
+                }
             };
             let _ = tx.send(AppMsg::ConfirmModalLint {
                 gen,
                 env_name: env_for_msg,
                 issues,
+                unavailable,
             });
         });
     }

@@ -1145,6 +1145,37 @@ async fn a_terraform_managed_env_is_flagged_in_the_confirm_modal() {
     );
 }
 
+/// A lint that could not run is SHOWN in the confirm modal.
+///
+/// With no warnings the lint pane renders nothing — which is also how a
+/// clean env renders — so a failed pre-deploy lint was invisible at the
+/// point of the write. The discriminating half is the same modal with
+/// no reason: the line must not appear.
+#[tokio::test]
+async fn a_lint_that_could_not_run_is_shown_in_the_confirm_modal() {
+    let frame_for = |why: Option<&str>| {
+        let mut app = test_app();
+        app.environments = vec![mk_env("api-prod", "poly", "Web", "Green")];
+        app.rebuild_view();
+        app.mode = Mode::Action;
+        let mut modal = mk_modal(Action::Rebuild, "api-prod");
+        modal.lint_issues = Some(Vec::new());
+        modal.lint_unavailable = why.map(str::to_owned);
+        app.action_flow = Some(crate::app::ActionFlow::Confirm(modal));
+        render(&mut app, 160, 40)
+    };
+    let failed = frame_for(Some("DescribeConfigurationSettings failed: AccessDenied"));
+    assert!(
+        failed.contains("lint could not run") && failed.contains("AccessDenied"),
+        "the operator must see that lint did not run; got:\n{failed}"
+    );
+    let clean = frame_for(None);
+    assert!(
+        !clean.contains("lint could not run"),
+        "a clean lint must not claim it failed; got:\n{clean}"
+    );
+}
+
 #[tokio::test]
 async fn an_env_not_managed_by_terraform_gets_no_drift_warning() {
     // The false-positive direction: warning on every env trains the
