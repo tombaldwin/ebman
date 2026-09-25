@@ -1528,6 +1528,7 @@ fn a_typed_error_code_beats_sniffing_the_debug_dump() {
         code: Some("ThrottlingException".into()),
         message: None,
         request_id: Some("abc-123".into()),
+        cause: None,
     };
     let report = crate::aws::aws_report(color_eyre::eyre::eyre!("service error"), meta);
     let flat = crate::app::flatten_err_to_string(&report);
@@ -1555,6 +1556,7 @@ fn an_env_named_throttling_does_not_arm_the_back_off() {
         code: Some("AccessDeniedException".into()),
         message: None,
         request_id: None,
+        cause: None,
     };
     let report = crate::aws::aws_report(
         color_eyre::eyre::eyre!("environment throttling-test: not authorized"),
@@ -1581,6 +1583,7 @@ fn the_request_id_survives_to_the_log() {
         code: Some("ThrottlingException".into()),
         message: None,
         request_id: Some("req-9f3c".into()),
+        cause: None,
     };
     assert!(meta.to_string().contains("req-9f3c"), "{meta}");
 }

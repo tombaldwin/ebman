@@ -5258,3 +5258,25 @@ fn a_failure_that_never_reached_the_service_keeps_its_cause() {
         "the cause must survive a plain `{{e}}`: {plain}"
     );
 }
+
+/// The cause of a non-service failure must not read to the TUI as the
+/// service's own answer. The first cut of the fix above stored it in
+/// `message`, and `flatten_err_to_string` returns early on a message —
+/// before the sniff that adds `ThrottlingException:` — so a rate limit
+/// hit while loading credentials no longer armed the refresh back-off.
+#[test]
+fn a_non_service_cause_is_still_classified_by_the_tui() {
+    use aws_sdk_elasticbeanstalk::config::http::HttpResponse;
+    use aws_sdk_elasticbeanstalk::error::SdkError;
+    use aws_sdk_elasticbeanstalk::operation::describe_environments::DescribeEnvironmentsError;
+    let r: Result<(), SdkError<DescribeEnvironmentsError, HttpResponse>> = Err(
+        SdkError::construction_failure("TooManyRequestsException: Rate exceeded"),
+    );
+    let e = super::SdkResultExt::aws_ctx(r, "DescribeEnvironments failed").expect_err("failed");
+    let flat = crate::app::flatten_err_to_string(&e);
+    assert!(
+        crate::app::is_throttling_error(&flat),
+        "a throttle that never reached the service must still back off: {flat}"
+    );
+    assert!(flat.contains("Rate exceeded"), "and keep its cause: {flat}");
+}
