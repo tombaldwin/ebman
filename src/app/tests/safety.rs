@@ -276,11 +276,44 @@ async fn handle_confirm_modal_lint_stuffs_issues_into_modal() {
         gen: app.generation,
         env_name: "prod".into(),
         issues: vec![],
+        unavailable: None,
     });
     match &app.action_flow {
         Some(ActionFlow::Confirm(modal)) => {
             assert!(!modal.loading_lint, "loading flag should clear");
             assert_eq!(modal.lint_issues.as_ref().map(|v| v.len()), Some(0));
+        }
+        _ => panic!("expected confirm modal open"),
+    }
+}
+
+/// A lint that could not run reaches the modal as a reason, not as an
+/// empty issue list.
+///
+/// The pre-deploy lint turned a failed option fetch into
+/// `Vec::new()` — and an empty list renders as nothing, which is also
+/// how a clean env renders. So "could not check" and "checked, clean"
+/// looked identical immediately before a deploy.
+#[tokio::test]
+async fn a_lint_that_could_not_run_reaches_the_modal_as_a_reason() {
+    let mut app = test_app();
+    app.environments = vec![mk_env("prod", "shop", "Web", "Green")];
+    app.rebuild_view();
+    app.table_state.select(Some(0));
+    app.execute_command("deploy build-900");
+    app.handle_msg(AppMsg::ConfirmModalLint {
+        gen: app.generation,
+        env_name: "prod".into(),
+        issues: vec![],
+        unavailable: Some("DescribeConfigurationSettings failed: AccessDenied".into()),
+    });
+    match &app.action_flow {
+        Some(ActionFlow::Confirm(modal)) => {
+            assert!(!modal.loading_lint);
+            assert_eq!(
+                modal.lint_unavailable.as_deref(),
+                Some("DescribeConfigurationSettings failed: AccessDenied")
+            );
         }
         _ => panic!("expected confirm modal open"),
     }
@@ -314,6 +347,7 @@ async fn handle_confirm_modal_lint_drops_stale_target_results() {
             suggestion: None,
             fields: Default::default(),
         }],
+        unavailable: None,
     });
     match &app.action_flow {
         Some(ActionFlow::Confirm(modal)) => {

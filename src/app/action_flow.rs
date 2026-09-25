@@ -226,6 +226,7 @@ impl App {
                         unavailability_line: None,
                         loading_unavailability: false,
                         lint_issues: None,
+                        lint_unavailable: None,
                         loading_lint: false,
                     }));
                 }
@@ -398,6 +399,7 @@ impl App {
                     unavailability_line: None,
                     loading_unavailability: false,
                     lint_issues: None,
+                    lint_unavailable: None,
                     loading_lint: false,
                 }));
                 if wants_preflight {
@@ -468,6 +470,7 @@ impl App {
                     unavailability_line: None,
                     loading_unavailability: false,
                     lint_issues: None,
+                    lint_unavailable: None,
                     loading_lint: false,
                 }));
             }
@@ -638,6 +641,7 @@ impl App {
             // SsmRun also skips lint — running an ad-hoc shell command
             // isn't gated by EB-config-health rules; firing them here
             // would be noise.
+            lint_unavailable: None,
             loading_lint: !self.demo_mode && action != Action::SsmRun,
         };
         let needs_health_check_probe = modal.loading_health_check;

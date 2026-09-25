@@ -386,6 +386,18 @@ pub(crate) fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
                     }
                 }
             }
+            // Lint that could not run says so. With no warnings the
+            // pane above renders nothing — which is also how a clean
+            // env renders — so without this line a failed check was
+            // indistinguishable from a passed one, right before a
+            // deploy.
+            if let Some(why) = &modal.lint_unavailable {
+                lines.push(Line::from(""));
+                lines.push(Line::from(Span::styled(
+                    format!("  lint could not run — not a clean result: {why}"),
+                    Style::default().fg(theme.health_yellow),
+                )));
+            }
             // Pre-flight events: last 3 events on this env.
             if let Some(events) = &modal.recent_events {
                 if !events.is_empty() {

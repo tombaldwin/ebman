@@ -234,6 +234,7 @@ pub(super) fn mk_modal(action: Action, env: &str) -> ConfirmModal {
         unavailability_line: None,
         loading_unavailability: false,
         lint_issues: None,
+        lint_unavailable: None,
         loading_lint: false,
     }
 }

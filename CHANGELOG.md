@@ -8,6 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- **A pre-deploy lint that could not run now says so in the confirm
+  modal.** A failed option fetch — or an unreachable client — became an
+  empty issue list, and an empty list renders as nothing, which is also
+  how a clean env renders: "could not check" looked like "checked,
+  clean" at the moment of the write. The modal now shows "lint could not
+  run — not a clean result", with the reason.
+
 - **The TUI's `:lint` no longer shows "✓ No issues found" over checks
   that did not run.** It had its own copy of the lint assembly, which
   dropped tag and health failures in silence and never ran the EBL020 /
