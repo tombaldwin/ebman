@@ -165,6 +165,127 @@ pub(crate) fn is_test_path(path: &str) -> bool {
     path.contains("/tests/") || path.ends_with("/tests.rs") || path.ends_with("tests.rs")
 }
 
+/// Every file git tracks — which is what `cargo package` publishes,
+/// bar `Cargo.toml`'s `exclude` and two files cargo generates.
+///
+/// `None` ONLY when there is genuinely no repository: `cargo mutants`
+/// builds in a scratch copy of the tree with no `.git`, so `git
+/// ls-files` fails there through no fault of the code under test. Any
+/// other git failure panics — "git errored" and "there is no repo" are
+/// different, and treating the first as the second is how a guard goes
+/// quiet in the environment that matters.
+///
+/// Carries its own floor, like [`source_files`]: a listing that finds
+/// almost nothing is a broken listing, and a guard over it passes
+/// vacuously.
+pub(crate) fn tracked_files() -> Option<Vec<String>> {
+    let out = match std::process::Command::new("git")
+        .args(["ls-files"])
+        // `LC_ALL=C`, so the stderr match below is not locale-dependent.
+        // git translates "not a git repository" — Apple Git ships no
+        // translations, Homebrew and Linux git do — so on a localised
+        // machine the skip condition would not match and every caller
+        // would fail loudly instead of skipping. Loud is the safer wrong
+        // direction, but a guard that cannot run where `cargo mutants`
+        // runs is not much of a guard.
+        .env("LC_ALL", "C")
+        .output()
+    {
+        Ok(out) => out,
+        Err(e) => panic!("could not run git: {e}"),
+    };
+    if !out.status.success() {
+        let no_repo = String::from_utf8_lossy(&out.stderr).contains("not a git repository");
+        assert!(
+            no_repo,
+            "git ls-files failed for a reason other than a missing \
+             repository: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        return None;
+    }
+    let files: Vec<String> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(str::to_owned)
+        .collect();
+    assert!(
+        files.len() > 50,
+        "only {} tracked files — the listing failed and a guard over it \
+         would pass on an empty result",
+        files.len()
+    );
+    Some(files)
+}
+
+/// The account IDs AWS's own documentation uses as placeholders. A
+/// fixture using one of these is recognisably a fixture.
+pub(crate) const AWS_DOC_ACCOUNT_IDS: &[&str] = &[
+    "123456789012",
+    "111122223333",
+    "444455556666",
+    "555555555555",
+    "777788889999",
+];
+
+/// Every token in `text` that could be a REAL AWS account ID, as
+/// (1-based line, value).
+///
+/// A candidate is a run of exactly twelve ASCII digits with no ASCII
+/// letter, digit or `_` on either side — the shape of an account ID
+/// standing alone, or as the account field of an ARN, where it sits
+/// between `:` delimiters. So one rule covers both halves of the
+/// backlog item: a separate ARN check would find nothing this does not.
+///
+/// The alphanumeric boundary is what keeps `Cargo.lock` quiet: its
+/// checksums are hex, and hex routinely holds a twelve-digit run
+/// between two letters.
+///
+/// Not candidates: [`AWS_DOC_ACCOUNT_IDS`], and repdigits
+/// (`000000000000`, `111111111111`, …). The risk this exists for is a
+/// real value that LOOKS like a fixture, and nobody mistakes a
+/// repdigit for anything but a placeholder — so excluding the class is
+/// a rule about the shape, not an allowlist of values.
+pub(crate) fn account_id_candidates(text: &str) -> Vec<(usize, &str)> {
+    let is_word = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    let mut hits = Vec::new();
+    for (idx, line) in text.lines().enumerate() {
+        let bytes = line.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() {
+            if !bytes[i].is_ascii_digit() {
+                i += 1;
+                continue;
+            }
+            let start = i;
+            while i < bytes.len() && bytes[i].is_ascii_digit() {
+                i += 1;
+            }
+            let bounded = (start == 0 || !is_word(bytes[start - 1]))
+                && (i == bytes.len() || !is_word(bytes[i]));
+            if i - start != 12 || !bounded {
+                continue;
+            }
+            // ASCII digits only, so this slice is on char boundaries.
+            let run = &line[start..i];
+            let repdigit = run.bytes().all(|b| b == run.as_bytes()[0]);
+            if !repdigit && !AWS_DOC_ACCOUNT_IDS.contains(&run) {
+                hits.push((idx + 1, run));
+            }
+        }
+    }
+    hits
+}
+
+/// `123456789012` -> `12…12`: enough to find in `path:line`, not
+/// enough to be the leak. A guard whose job is stopping a real account
+/// ID being published must not print one into a public CI log.
+pub(crate) fn mask_account_id(id: &str) -> String {
+    match (id.get(..2), id.get(id.len().saturating_sub(2)..)) {
+        (Some(head), Some(tail)) if id.len() > 4 => format!("{head}…{tail}"),
+        _ => "…".to_owned(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -275,49 +396,16 @@ mod packaging {
     /// `.gitignore`.
     #[test]
     fn no_backup_or_scratch_files_are_tracked() {
-        // `cargo mutants` builds in a scratch COPY of the tree with no
-        // `.git`, so `git ls-files` fails there through no fault of the
-        // code under test. Skipping is right — but only after proving
-        // the repository is genuinely absent, never on any git failure:
-        // "git errored" and "there is no repo" are different, and
-        // treating the first as the second is how this guard would go
-        // quiet in the environment that matters.
-        let out = match std::process::Command::new("git")
-            .args(["ls-files"])
-            // `LC_ALL=C`, so the stderr match below is not
-            // locale-dependent. git translates "not a git repository" —
-            // Apple Git ships no translations, Homebrew and Linux git
-            // do — so on a localised machine the skip condition would
-            // not match and this would fail loudly instead of skipping.
-            // Loud is the safer wrong direction, but a guard that
-            // cannot run where `cargo mutants` runs is not much of a
-            // guard.
-            .env("LC_ALL", "C")
-            .output()
-        {
-            Ok(out) => out,
-            Err(e) => panic!("could not run git: {e}"),
-        };
-        if !out.status.success() {
-            let no_repo = String::from_utf8_lossy(&out.stderr).contains("not a git repository");
-            assert!(
-                no_repo,
-                "git ls-files failed for a reason other than a missing \
-                 repository: {}",
-                String::from_utf8_lossy(&out.stderr)
-            );
+        // Through the shared helper, which skips only when there is
+        // genuinely no repository (the `cargo mutants` scratch copy) and
+        // carries the floor this guard used to hold inline.
+        let Some(files) = super::tracked_files() else {
             return;
-        }
-        let files = String::from_utf8_lossy(&out.stdout);
-        assert!(
-            files.lines().count() > 50,
-            "only {} tracked files — the listing failed and this guard \
-             would pass on an empty result",
-            files.lines().count()
-        );
+        };
 
         let bad: Vec<&str> = files
-            .lines()
+            .iter()
+            .map(String::as_str)
             .filter(|f| {
                 f.ends_with(".bak")
                     || f.ends_with(".orig")
@@ -331,6 +419,159 @@ mod packaging {
             "these are tracked and would be published in the crate \
              tarball: {bad:?}"
         );
+    }
+
+    /// No published file may carry an account ID that could be real.
+    ///
+    /// Everything git tracks ships to crates.io, and docs.rs renders the
+    /// test modules as browsable HTML. A crates.io version cannot be
+    /// unpublished, only yanked, and a yanked version stays downloadable
+    /// — so a real account ID pasted as a fixture is published, indexed
+    /// and permanent. 0.34.1 was yanked for publishing a hostname; this
+    /// is the same door.
+    ///
+    /// Review cannot be relied on for it: a real value beside genuine
+    /// placeholders reads as "12 digits, test file, fine". The likeliest
+    /// source is a test of redaction or masking — pasting a real value
+    /// is how you prove the masking works — and `CHANGELOG.md`, which
+    /// carries field reports from real fleets.
+    ///
+    /// Reads every tracked file lossily rather than skipping the ones
+    /// that are not UTF-8: a text file with one stray byte must not drop
+    /// out of the scan in silence.
+    #[test]
+    fn no_published_file_carries_a_real_looking_account_id() {
+        let Some(files) = super::tracked_files() else {
+            return;
+        };
+        let mut scanned = 0usize;
+        let mut hits = Vec::new();
+        for path in &files {
+            // A tracked file deleted in the working tree is not read;
+            // the floor below stops that becoming a vacuous pass.
+            let Ok(bytes) = std::fs::read(path) else {
+                continue;
+            };
+            scanned += 1;
+            let text = String::from_utf8_lossy(&bytes);
+            for (line, id) in super::account_id_candidates(&text) {
+                hits.push(format!("{path}:{line}: {}", super::mask_account_id(id)));
+            }
+        }
+        assert!(
+            scanned > 50,
+            "only {scanned} tracked files could be read — a scan over \
+             nothing passes vacuously"
+        );
+        assert!(
+            hits.is_empty(),
+            "these look like real AWS account IDs and would be published \
+             permanently in the crate: {hits:#?}\n\
+             Replace each with one of AWS's documentation placeholders \
+             ({:?}) or a repdigit. Do NOT add it to the placeholder list: \
+             that list is AWS's, and widening it to quiet this guard is a \
+             stop condition in CLAUDE.md. If it is not an account ID at \
+             all, the detector is wrong for that shape — fix the detector.",
+            super::AWS_DOC_ACCOUNT_IDS
+        );
+    }
+}
+
+/// The account-ID detector, tested apart from the tree it scans.
+///
+/// Every fixture here is ASSEMBLED at runtime from four-digit pieces.
+/// This file is itself scanned by the guard above, so a twelve-digit
+/// literal written out in a test would make the guard fire on the
+/// tests that prove it works.
+#[cfg(test)]
+mod account_ids {
+    use super::{account_id_candidates, mask_account_id, AWS_DOC_ACCOUNT_IDS};
+
+    /// Twelve digits that are not a placeholder or a repdigit.
+    fn plausible() -> String {
+        ["1234", "5678", "9013"].concat()
+    }
+
+    #[test]
+    fn a_bare_id_is_found_with_its_line() {
+        let id = plausible();
+        let text = format!("first line\naccount = {id}\nlast");
+        assert_eq!(account_id_candidates(&text), vec![(2, id.as_str())]);
+    }
+
+    /// The ARN half of the backlog item, which the digit rule covers
+    /// without a second check: the account field sits between `:`s.
+    #[test]
+    fn the_account_field_of_an_arn_is_found() {
+        let id = plausible();
+        let arn = format!("arn:aws:iam::{id}:role/deploy");
+        assert_eq!(account_id_candidates(&arn), vec![(1, id.as_str())]);
+    }
+
+    #[test]
+    fn a_candidate_at_either_end_of_a_line_is_found() {
+        let id = plausible();
+        assert_eq!(account_id_candidates(&id), vec![(1, id.as_str())]);
+        assert_eq!(
+            account_id_candidates(&format!("\"{id}\"")),
+            vec![(1, id.as_str())]
+        );
+    }
+
+    #[test]
+    fn aws_documentation_placeholders_are_not_candidates() {
+        for id in AWS_DOC_ACCOUNT_IDS {
+            let arn = format!("arn:aws:sts::{id}:assumed-role/x/y");
+            assert!(
+                account_id_candidates(&arn).is_empty(),
+                "{id} is an AWS documentation placeholder"
+            );
+        }
+    }
+
+    #[test]
+    fn repdigits_are_not_candidates() {
+        for d in '0'..='9' {
+            let rep: String = std::iter::repeat_n(d, 12).collect();
+            assert!(account_id_candidates(&rep).is_empty(), "{rep}");
+        }
+    }
+
+    /// Each of these was a live false positive, or is one shape away
+    /// from one: `Cargo.lock` checksums are hex and hold twelve-digit
+    /// runs between letters; `999999999999d` is a duration literal.
+    #[test]
+    fn digits_inside_a_larger_word_are_not_candidates() {
+        let id = plausible();
+        for text in [
+            format!("checksum = \"ab{id}cd\""),
+            format!("{id}d"),
+            format!("x_{id}"),
+            format!("{id}_x"),
+            format!("{id}4"),     // thirteen digits
+            format!("4{id}"),     // thirteen digits
+            id[..11].to_string(), // eleven digits
+        ] {
+            assert!(account_id_candidates(&text).is_empty(), "{text}");
+        }
+    }
+
+    #[test]
+    fn a_masked_id_locates_without_leaking() {
+        let id = plausible();
+        let masked = mask_account_id(&id);
+        assert_eq!(masked, "12…13");
+        assert!(!masked.contains(&id[2..10]));
+    }
+
+    /// Too short to mask meaningfully: reveal nothing rather than most
+    /// of it. Unreachable from the detector, which only yields twelve
+    /// digits — but it is a public helper and its edge is its contract.
+    #[test]
+    fn a_value_too_short_to_mask_reveals_nothing() {
+        for short in ["", "1", "1234"] {
+            assert_eq!(mask_account_id(short), "…", "{short:?}");
+        }
     }
 }
 

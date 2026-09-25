@@ -4035,3 +4035,70 @@ Deferred for one day as a 13-module sweep past the stop condition,
 then done in full because the guard could not exist without it — the
 alternative was an allowlist naming the unconverted modules, which is
 the shape CLAUDE.md names as the cheapest wrong path.
+
+## A test that fails when a fixture looks real (2026-09-25)
+
+- [x] **A test that fails the build when a fixture looks real.** `cargo
+  package` ships everything git tracks bar `exclude`, so every dedicated
+  test file — 21 under `src/app/tests/`, 3 under `src/cli/mcp/tests/`,
+  plus `src/cli/mcp/tests.rs` — and every inline `#[cfg(test)]` module
+  across the 66 files that carry one go to crates.io verbatim, and
+  docs.rs then renders them as browsable HTML. A placeholder
+  that isn't one is therefore published, indexed, and — since a crates.io
+  version cannot be unpublished, only yanked, and a yanked version stays
+  downloadable — permanent.
+
+  The check: fail on a bare 12-digit number outside an allowlist of the AWS
+  documentation dummies (`123456789012`, `111122223333`, `444455556666`,
+  `555555555555`, `777788889999`), and on anything ARN-shaped carrying an
+  account field that isn't in it. Same shape as the existing
+  `docs_drift::` tests, which is the precedent for a test that guards a
+  property of the repo rather than of the code.
+
+  **Why a linter of this kind earns its place:** the failure mode is that a
+  real value looks exactly like a fixture to a reviewer, and doubly so
+  beside genuine dummies — the eye reads "12 digits, test file, fine". No
+  amount of care at review time catches that reliably; a mechanical check
+  catches it every time and costs nothing to run.
+
+  Worth extending to the same question one level out: a test of a redaction
+  or masking function is the single likeliest place for a real value to be
+  pasted, because pasting one is how you prove the masking works.
+
+  **Done 2026-09-25** as `scan::packaging::no_published_file_carries_a_real_looking_account_id`,
+  over `git ls-files` — which is what `cargo package` ships (verified:
+  the two lists differ only by the two files cargo generates). Not
+  `source_files()`: that walks `src/**/*.rs`, and `CHANGELOG.md`, which
+  carries field reports from real fleets, is the likelier place for a
+  pasted account ID than any test.
+
+  Shaped by what the tree already held rather than by the spec alone.
+  The spec's rule fired on 16 `Cargo.lock` checksums (twelve-digit runs
+  inside hex) and on the repdigit fixtures (`111111111111`,
+  `000000000000`, …). Both became rules about SHAPE — an alphanumeric
+  boundary, and repdigits are never real-looking — not entries in the
+  allowlist, which stays AWS's five documentation IDs. The ARN half of
+  the spec needed no separate check: an ARN's account field is twelve
+  digits between `:`s, which the digit rule already finds, and a test
+  pins that it does.
+
+  The failure message MASKS the value (`12…34`). Printing it would put
+  a leaked account ID into a public CI log — the guard committing the
+  offence it exists to prevent.
+
+  On its first run it flagged its own author: a doc-comment example
+  spelled out a plausible value. The detector's test fixtures are
+  assembled from four-digit pieces for exactly that reason; the comment
+  had not been.
+
+  Nine mutations CAUGHT: a planted value in a tracked `.rs` fixture and
+  in `CHANGELOG.md` (the case `source_files()` could never reach); each
+  detector rule dropped in turn (boundary, repdigit, placeholder list,
+  exact length); both mask branches; and an empty listing, which trips
+  the shared floor for BOTH packaging guards — proving the older guard
+  really does go through the extracted `tracked_files()` helper.
+
+  Known limit, not built for because nothing in the tree has it: the
+  last segment of a UUID can be twelve digits — RFC 4122's own example
+  UUID ends in one. (Not quoted here: this file is scanned too.) If one appears, teach the detector the UUID
+  shape; do not add the value to the list.
