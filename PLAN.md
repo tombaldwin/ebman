@@ -141,6 +141,12 @@ now head the list.*
    a typed event stream, or a writer?), so they need a ruling
    rather than a guess. Split accordingly when it is picked up.
 
+   **2026-09-25: the maintainer does not have a preference.** The
+   recommendation stands on its own: a TYPED report (events the cycle
+   returns, rendered by `run`), because the MCP `lint` tool is a second
+   consumer and a writer or pre-rendered lines would make it re-parse
+   text. The two `run_cycle` sites are mechanical either way.
+
    Evidence the class is live, not cosmetic: chasing it on
    2026-09-24 turned up a real bug at `:1089` — a partly-failed
    EBL015 pass printed behind `!quiet` and exited clean. Fixed

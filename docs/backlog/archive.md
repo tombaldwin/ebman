@@ -4720,3 +4720,20 @@ Surfaced by a critical console-vs-ebman + ebman-vs-peer-TUI comparison. Ranked b
 - **Split `src/app.rs`** — shipped as task #66 (ten `cmd_*.rs` sub-modules); app.rs 14,277 → 12,478.
 - **`sts:AssumeRole` account switcher** — shipped in 0.3.0 (`accounts.NAME.role_arn` config + `:account NAME` switcher). [[multi-account-discovery]].
 
+### Decided 2026-09-25: keep the MCP write default
+
+Maintainer ruling: **no** — a bare registration on a client that can ask
+keeps serving every write verb, `terminate` and `dlq_purge` included,
+each put to the operator; `--read-only` and `--allow-writes=VERBS`
+remain the ways to narrow it. The setup and `--help` text already say
+so (959cb8f). Recorded so the question is not re-raised by the next
+review.
+
+- [x] **Decision: the MCP write default.** A bare registration on a
+  client that can ask serves every write verb, `terminate` and
+  `dlq_purge` included (959cb8f made the setup text say so). The
+  product review recommends keeping those two behind an explicit
+  `--allow-writes` even on clients that can ask — the gate is only as
+  good as the attached client, and ebman cannot tell a person answering
+  from a client answering itself.
+

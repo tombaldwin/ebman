@@ -157,14 +157,6 @@ Tier definitions:
 
 #### Product, from the 2026-09-25 review
 
-- [ ] **Decision: the MCP write default.** A bare registration on a
-  client that can ask serves every write verb, `terminate` and
-  `dlq_purge` included (959cb8f made the setup text say so). The
-  product review recommends keeping those two behind an explicit
-  `--allow-writes` even on clients that can ask — the gate is only as
-  good as the attached client, and ebman cannot tell a person answering
-  from a client answering itself.
-
 - [ ] **Decision: should lifting `--read-only` be harder?** 0112e6d
   audits `:readonly off`; it still needs no confirmation, so a session
   started `--read-only` is one keystroke from writable. Options: sticky
