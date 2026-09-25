@@ -36,13 +36,187 @@ Tier definitions:
 - **Tier 7** — polish and quality of life.
 - **Tier 8** — maybe / unprioritised; not committed to scope.
 
-#### Tier 0 — fixture hygiene (2026-09-16)
+#### Refactors and test hygiene
 
-#### 0.29 queue — 0.28 pre-tag review deferrals (2026-08-20)
+- [ ] **Merged doc comments on `pub(crate)` items are still
+  unguarded.** 0.42.0 closed this for the PUBLIC surface —
+  `#![warn(missing_docs)]` in `lib.rs`, plus docs for the 18 public
+  items that lacked them — because the robbed half of a stolen doc has
+  a mechanical signature: the original item ends up undocumented.
+  Verified by staging the bug; the robbed function fails the build
+  under CI's `-D warnings`.
 
-The write/freeze pre-tag review (2 lenses) fixed 2 Critical + 2 Important + 1 Minor before tag (see CHANGELOG). Deferred, non-blocking:
+  It does not reach `pub(crate)`, which is most of the tree.
+  `clippy::missing_docs_in_private_items` is the obvious lever and is
+  far too noisy — it demands a doc on every private field and helper.
+
+  Worth considering: restrict the lint to *items that already have a
+  sibling doc*, or lint only modules where doc density is already
+  high. Both need a custom lint or a source scan, and a scan for the
+  COMMENT's shape is a dead end — see below.
+
+  **The comment-shape scan is retired.** It returned 19 candidates
+  across 15 files in the 0.40 era. Re-run against the 0.42 tree, both
+  a strict and a loose form return 2 candidates, and both are false
+  positives (a lead-in to a bullet list, and a legitimate
+  several-single-sentence-paragraph doc). The real merges named in the
+  old entry — `src/app/spawn_refresh.rs`, `src/cli/action.rs` — now
+  read correctly. Scoped claim: the tree is clean by those two
+  signatures, which is not the same as no merged doc existing
+  anywhere. The scan cannot become a guard at a 100% false-positive
+  rate, exactly as the old entry predicted.
+
+- [ ] **Move the last 13 `include_str!` guards onto
+  `scan::production_source`.** Not a defect today — each crosses a
+  directory boundary explicitly. Two latent properties remain: they
+  re-point silently if the test file moves, and they read the target
+  RAW, so a "this appears nowhere" check also searches the target's
+  test module and can be satisfied by a fixture.
+
+  `src/app/tests/parsing.rs:377-382, 400`; `src/terraform.rs:1150-1152`;
+  `src/commands.rs:1063, 1129, 1198`. (The three in `app/tests/lint.rs`
+  went on 2026-09-25, when that guard moved to all production source.)
+
+  *Restored 2026-09-25:* feabbbc removed this from the backlog without
+  archiving it, and the guards were still unmigrated. Its own lesson,
+  demonstrated the same day: a list-based guard went blind when the code
+  it watched moved files (0a81d5e).
+
+- [ ] **`App::new` and `App::for_tests` each build the ~115-field struct
+  by hand** (`src/app.rs`, two literals of ~260 and ~175 lines).
+  `for_tests` is production code too — `new_demo` builds on it — and
+  nothing checks that the two agree on defaults, so every new field is
+  two edits. Shape: a shared `App::assemble(aws, config, seed)`. S–M.
+  From the 2026-09-25 implementation review.
+
+- [ ] **Demo audit suppression in one place.** Done per call site: MCP
+  checks `Backend::Demo` at seven sites, the TUI `!self.demo_mode` at
+  several more, and it has already leaked once. Evidence it is still
+  inconsistent: `:thaw-deploys` writes an audit line in demo mode, and
+  0112e6d's `:readonly` does not. Shape: a process-wide audit sink mode
+  set once at startup, as `set_notify_webhook` does. S.
+
+- [ ] **Eleven hand-rolled `read_dir` walks in guards bypass
+  `scan::source_files`** (`app/tests/dispatch.rs` ×7, `refresh.rs`,
+  `aws/tests.rs`, `cli/mod.rs`). None is wrong today — each uses
+  `strip_line_comment` — so this is consolidation, not a fix, but it is
+  the house rule. S.
+
+- [ ] **`refuse_if_frozen` decides outside `write_gate::decide`**
+  (`cli/mod.rs:86`, used by `lint --fix`). It hard-codes
+  `Refusal::Frozen`, skipping `decide`'s precedence: with an unreadable
+  safety config AND an active freeze, `lint --fix` reports "frozen"
+  rather than "unreadable". S.
+
+- [ ] **Functions over the 300-line trigger** (2026-09-25 count):
+  `draw_action` 673, `draw_why_red_overlay` 474, `execute_command` 418
+  (a flat dispatch; judged fine), `draw_detail_health` 410, `draw_table`
+  408, `run_rollout` 402, `App::new` 348, `handle_detail_mode_key` 343,
+  `apply_refresh` 334, `draw_help` 321, `lint::run` 318. Worth doing
+  first: `run_rollout` (parses args inline with `eprintln!` exits — the
+  side-channel class PLAN.md item 2 is closing in lint) and
+  `draw_action` (one function per `ActionFlow` arm).
+  **Blocked on a ruling for `draw_action`:**
+  `every_render_surface_is_accounted_for` counts top-level `fn draw_*`
+  NAMES (`KNOWN = 41`), so extracting `draw_action_menu` means raising
+  `KNOWN` — a stop condition. Should it count dispatch-reachable
+  surfaces, or should helpers be named `render_*`?
+
+- [ ] **The account-ID guard misses the dashed form** (`1234-5678-9012`,
+  as the AWS console displays IDs). A limit of 7cb8335's detector, not a
+  false pass. Teach it the 4-4-4 shape; do not list values.
+
+#### Correctness and safety, from the 2026-09-25 reviews
+
+- [ ] **`lint --fix --yes` checks the incident freeze once per run.**
+  `refuse_if_frozen` runs up front and `apply_fixes_for_env` passes
+  `active_freeze: None`, deliberately — a per-env check printed the same
+  refusal N times. But a freeze declared DURING a long multi-region run
+  does not stop later envs, while MCP re-checks after every approval and
+  rollout re-checks per region. **Design fork, hence skipped:** on a
+  mid-run freeze, skip the remaining envs or abort the run?
+
+- [ ] **An approval near the end of the ask window leaves ~20 s to
+  dispatch.** `ASK_WAIT_SECS` is 280 of a 300 s outer budget. A
+  10-message DLQ batch (a re-read plus ~20 SQS calls) can hit the outer
+  timeout after writes happened: the dispatched lines then have no
+  completed lines and the agent is told "timed out" for writes that
+  went out. Plausible, not reproduced.
+
+- [ ] **The pre-deploy lint is still its own copy of the assembly.**
+  960d702 made a failed run visible in the confirm modal; the fetch
+  itself still differs from `lint::inputs`: silent `.ok()` on tags and
+  health, and no EBL020/EBL018 probes. **Two rulings needed:** how its
+  latency cache (`env_tag_cache` / `env_health_cache`) fits the shared
+  fetch, and whether a confirm modal should pay for the IAM/WAF probes.
+
+- [ ] **The MCP side of "a disabled EBL008 does not degrade" is
+  unpinned.** e15d62b pins it for the CLI; the MCP tool reads
+  `lint.disable` from the config file, which the orchestration harness
+  cannot inject.
+
+#### Product, from the 2026-09-25 review
+
+- [ ] **Decision: the MCP write default.** A bare registration on a
+  client that can ask serves every write verb, `terminate` and
+  `dlq_purge` included (959cb8f made the setup text say so). The
+  product review recommends keeping those two behind an explicit
+  `--allow-writes` even on clients that can ask — the gate is only as
+  good as the attached client, and ebman cannot tell a person answering
+  from a client answering itself.
+
+- [ ] **Decision: should lifting `--read-only` be harder?** 0112e6d
+  audits `:readonly off`; it still needs no confirmation, so a session
+  started `--read-only` is one keystroke from writable. Options: sticky
+  for the session, or a typed confirm to lift it.
+
+- [ ] **The incident freeze dies with the TUI session.** `:incident` /
+  `:freeze-deploys` last as long as the process: quitting, or losing an
+  SSH connection, lifts a fleet-wide freeze mid-incident. There is no
+  CLI or MCP way to declare one. Shape: `ebman freeze`, persistent until
+  an explicit thaw, and "the freeze lifted because the session ended"
+  surfaced to the next reader.
+
+- [ ] **`--help` on every subcommand, and a complete exit-code table.**
+  `lint --help` fails with "unknown flag" (verified); the review
+  reports the same for `drift`, `audit`, `explain`, `envs`, that
+  `ctl --help` tries the socket and prints a source location, and that
+  `ebman action` exits 4 (wait-timeout) and 5 (rolled back) while
+  `docs/headless.md` documents 0–3 (not verified 2026-09-25).
+
+- [ ] **Six doc contradictions** (reviewer-verified): `commands.md:3`
+  says tab-completion is not implemented (`keys.md:46` documents it, and
+  it exists); `commands.md:66` says five write verbs (eight);
+  `headless.md:51` omits EBL009's auto-fix; `headless.md:140-147` lists
+  worker queues and `:why` as not exposed over MCP, and says DLQ writes
+  need `--allow-writes`; `headless.md:257` names `deny_write`, an
+  internal function, as if it were config; `safety-and-privacy.md:264`
+  repeats a sentence.
+
+- [ ] **The docs read as a design log.** Operator pages carry history
+  and rationale ("Measured, 2026-09-19 …", "Before 0.30 …"), and
+  CHANGELOG entries name internal tests. Split each page into reference
+  (what is true now) and rationale.
+
+- [ ] **Surface parity.** `:rollback` — the README's headline fix — is
+  TUI-only, so it cannot be scripted or proposed by an agent; `why`,
+  events and logs exist in the TUI and MCP but not the CLI; names differ
+  (`:versions` / `versions` / `list_versions`, `envs` /
+  `list_environments`).
+
+- [ ] **The demo cannot show the triage story.** The demo fleet has no
+  Red environment, while the README walkthrough starts from one; the
+  header showed "Last: 10720501s ago". Add one Red web env and one
+  worker with DLQ messages; format ages in human units.
+
+- [ ] **Breadth vs the daily core.** 131 commands; two unrelated
+  "freezes" (`f` pauses auto-refresh; `:freeze-deploys` locks writes —
+  rename the first to "pause"); consider a `?` "top 15" view. Also:
+  MCP `recent_logs` reads CloudWatch only, so an env without log
+  streaming may return nothing — say so in the tool description.
+
 - [ ] **`draw_table`'s `DisplayRow::Env` arm is still inline** (165
-  lines of a 389-line function — re-measured 2026-08-28, it was recorded
+  lines of what is now a 408-line function (`ui/table.rs:594`, re-measured 2026-09-25; 389 on 2026-08-28), it was recorded
   as ~200).
 
   **Re-assessed 2026-08-28 and still not worth it.** The arm reads 12
@@ -67,6 +241,12 @@ The write/freeze pre-tag review (2 lenses) fixed 2 Critical + 2 Important + 1 Mi
   lets `&mut app.table_state` coexist).
 
 - [ ] **Whole-tree mutation sweep: triage the remaining survivors.**
+  **Re-scope before working it (2026-09-25):** the figures below are
+  from 2026-08-28. The scheduled run of 2026-09-21 recorded 2118
+  survivors (`docs/backlog/archive.md`, "From the scheduled mutation
+  sweep"), and PLAN.md's rule is to track REACHABLE survivors, not the
+  headline. Start from that run.
+
   The first complete-ish sweep (2026-08-25, 16 shards, ~95% of the tree)
   produced 2832 caught / 2599 missed — a 52% kill rate on viable
   mutants.
@@ -108,12 +288,6 @@ The write/freeze pre-tag review (2 lenses) fixed 2 Critical + 2 Important + 1 Mi
   investigated were equivalent (the byte-identical `AbortUpdate` arm,
   the redundant whitespace skip in `parse_kv_pairs`), and both pointed
   at real duplication rather than missing tests.
-
-#### `aws/` fourth review pass — 2026-08-22
-
-Reviewed the third-review fixes and the write-safety tests. Fifteen findings; the severe ones were all defects in those fixes.
-
-Still open, recorded rather than fixed:
 
 #### Supply-chain + API gates — 2026-08-22
 
@@ -197,8 +371,14 @@ Three gates added to CI. Two of them found something on the first run, which is 
   Sub-60 terminals are rare but reachable in a tmux split.
 
 
-#### Minor (batchable)
-Also queued from the 0.26 pre-tag architecture review: rewrite_credential_error + probe helpers out of app.rs; ui.rs submodule split; MCP registry unification (gate on v2 writes); EBL015 warnings surface in MCP; per-tool client dedup.
+#### Minor
+
+- [ ] **Per-tool AWS client dedup in the MCP server.** `Server::client`
+  (`src/cli/mcp/tools.rs:781`) builds a fresh `AwsClient` — twelve SDK
+  clients plus `aws_config::load()` — on EVERY tool call, while the TUI
+  reuses one per profile+region through `aws::cached_client`. Verified
+  2026-09-25. Rescued from a one-line list of five follow-ups where it
+  had been the only one still open.
 
 #### ARCHITECTURE rule guards — 2026-08-25
 
@@ -281,7 +461,7 @@ Since extended to nineteen — `tf_managed_envs` (the IaC drift
   `src/ui/*.rs`, and counts a field as covered when it appears in
   `render.rs` / `overlays.rs` / `detail.rs`. That second half is
   *directional, not exact*: it proves the field is set in some test,
-  not that the rendered output was asserted. Treat 13 as an upper bound
+  not that the rendered output was asserted. Treat twenty as an upper bound
   on what is genuinely pinned and a lower bound on what is left.
 
 
@@ -289,14 +469,8 @@ Since extended to nineteen — `tf_managed_envs` (the IaC drift
 
 Ten new ideas surfaced by a backlog/peer-TUI review after the 0.7.0 ship. Ordered roughly by operator-value-per-hour. None overlap with already-tracked items; the niche items already on the backlog (custom-platform create, topology graph, Route 53, etc.) stay where they are. Sized for a 0.9 batch — pick from the top.
 
-- ~~**`:upgrade`**~~ Withdrawn (2026-05-24). The existing `:update` (`src/app.rs:9168`) carries an explicit design comment against auto-upgrade: "Doesn't actually upgrade — operators on AWS-touching tools prefer conscious upgrades, and self-replacing the binary across Cellar / cargo-bin / tarball layouts has too many platform footguns." That decision predates this BACKLOG entry; the entry was written without checking. `:update` already detects the install channel and yanks the right `brew upgrade ebman` / `cargo install ebman --force` command to the clipboard, so the gap is just "paste vs press enter." Not worth pushing against the existing design call without a fresh prompt.
 - [ ] **`:queue` action-queue inspector** — Builds on `:pending`. Show currently-dispatched + recently-completed writes across *all* envs (not just selected), with per-row abort for cancellable ops (best-effort; most EB writes aren't cancellable but the dispatch ack can be discarded). Useful when running batch ops — operator sees what's still in flight without scrolling event tape. **Held (2026-05-24)** — `:pending` already shows the same data globally (iterates `self.pending_actions` across all envs). The genuinely new piece would be per-row abort, but most EB writes (UpdateEnvironment, deploys, restarts) aren't cancellable server-side — only the local dispatch ack can be dropped, which limits the operational meaning of an "abort" action. Without abort, `:queue` collapses to `:pending --in-flight` (one line of filter logic). Defer until the abort semantics are designed honestly.
-- ~~**Profile / region quick-chord**~~ Withdrawn (2026-05-24) — already shipped, just not as Ctrl chords. `p` and `r` (plain keys in Normal mode at `src/app.rs:3311-3312`) open the Profile / Region picker overlays directly. Better than the Ctrl chords the BACKLOG entry proposed: no modifier required, and `Ctrl-R` would have clashed with the existing manual-refresh keybind anyway. The BACKLOG entry was written without re-grepping the existing keybinds — closing the loop honestly.
-### Top priority — console-parity + peer-TUI polish (2026-05-21)
-
-Surfaced by a critical console-vs-ebman + ebman-vs-peer-TUI comparison. Ranked by user-value-per-hour. The smaller ergonomics items in particular (autocompletion, did-you-mean, first-run hint) are the gap that makes ebman look unpolished next to k9s / lazygit — high impact, low cost.
-
-**Secondary** (same review, smaller payoff or design call needed):
+### Console parity — polish (2026-05-21)
 
 - [ ] **Mouse: column resize via drag + right-click row menus** — PARTIAL: drag already exists for the events-panel divider (`input.rs` `drag_origin`), so the interaction pattern is proven; what's missing is table COLUMN resize and right-click menus. Wheel + click-to-select is the current floor. Operators coming from console expect drag + right-click. TBD whether this is worth the design cost for a primarily-keyboard tool.
 ### UI polish — deferred candidates (2026-05-20)
@@ -339,16 +513,12 @@ Gaps surfaced during the 2026-05-19 console-vs-ebman comparison. Each entry is a
 
 Populated by autonomous runs per `CLAUDE.md` stop-conditions. Each entry: one-line reason. Drop the entry once retried (successfully or with the user's deliberate decision to defer further).
 
-- **Embedded asciinema recorder (Tier 6)** — needs its own input-capture/replay infrastructure; defer.
-- **`:custom-platform-create` (0.25 BONUS)** — S3-bundle upload plumbing + minutes-scale CreatePlatformVersion polling with multiple reasonable shapes; unverifiable against live EB in an autonomous run. Slipped to 0.26 as the lineup anticipated.
-- **EBL015 / EBL018 (0.25 lint batch)** — each needs new AWS surface (per-platform DescribePlatformVersion dates / aws-sdk-wafv2 GetWebACLForResource); recorded in docs/lint-rules.md roadmap with reasons.
-
-**Retried successfully** (kept here briefly so the history's discoverable):
-
-- **README screenshots / demo gif** — rendered 2026-06-04 from an interactive session (`vhs demo.tape`), so the no-TTY blocker no longer applies. The fixture was reskinned to the PROJECT IRONWOOD world (`poly` fleet + the Grey `ironwood` env on a distinct Go platform); see the demo-lore Done entry above.
-- **Option settings editor** — shipped in 0.3.0 (`:env`, `:set-option`, `:capacity` modal, every per-namespace command).
-- **Split `src/app.rs`** — shipped as task #66 (ten `cmd_*.rs` sub-modules); app.rs 14,277 → 12,478.
-- **`sts:AssumeRole` account switcher** — shipped in 0.3.0 (`accounts.NAME.role_arn` config + `:account NAME` switcher). [[multi-account-discovery]].
+- **The `lint --fix` freeze re-check (2026-09-25)** — design fork: see
+  the open item.
+- **Unifying the pre-deploy lint (2026-09-25)** — two rulings needed:
+  see the open item.
+- **The typed verb vocabulary (2026-09-25)** — needs a spelling ruling:
+  PLAN.md item 3′.
 
 ---
 
@@ -371,101 +541,3 @@ Populated by autonomous runs per `CLAUDE.md` stop-conditions. Each entry: one-li
 - **[bottom](https://github.com/ClementTsang/bottom)** — ratatui dashboard widget patterns; Metrics tab follows this.
 - **[harlequin](https://github.com/tconbeer/harlequin)** / **[atuin](https://github.com/atuinsh/atuin)** — fuzzy-find UI patterns for filtering long streams.
 - **[tig](https://github.com/jonas/tig)** — paged event-log + ref panel for timeline views.
-
-- [ ] **Split `cli::write_refusal` the way `app/safety.rs` is split.**
-  0.37 extracted `write_refusal_parts` (decide + render, pure) with
-  `write_refusal` as the auditing funnel, which fixed the demo-mode
-  leak. It stops short of the TUI's three-way shape (`refusal_for` /
-  `render_refusal` / `audit_refusal`): the CLI's rendering is still
-  inline in the pure half. Worth finishing when stage 5's `Decision`
-  lands, since that changes the return type anyway. Raised by the 0.37
-  architecture review.
-
-- [ ] **A neutral action vocabulary, shared by refusals and dispatches.**
-  0.37.1 gave TUI refusals the dispatch label via a checked table
-  (`REFUSAL_ACTION_LABELS`) plus an explicit override where an `Action`
-  is in scope. That is correct but partial by construction: verbs that
-  guard a chooser rather than a specific write have no single dispatch
-  label, and the labels themselves are still string literals scattered
-  across the dispatch sites rather than one vocabulary. The table would
-  become derived rather than maintained once that vocabulary exists —
-  which is the same thing the MCP annotations item below needs. Do them
-  together, at stage 5.
-
-- [ ] **The MCP annotations table is the wrong long-term home for the
-  action vocabulary.** `src/cli/mcp/annotations.rs` is `pub(super)`
-  inside the transport module and keyed by MCP tool names — including
-  `confirm_action`, which is transport machinery rather than an action —
-  and covers only the 14 MCP tools, while the action space the
-  protection levels must govern is wider (DLQ purge, alarm-create,
-  rollback, swap). When stage 5 needs it, move it to a neutral module
-  keyed by action verb and derive the MCP annotations from that, rather
-  than wiring the levels engine to `cli::mcp::annotations` and growing a
-  second table that drifts. Raised by the 0.37 architecture review.
-
-- [ ] **Merged doc comments on `pub(crate)` items are still
-  unguarded.** 0.42.0 closed this for the PUBLIC surface —
-  `#![warn(missing_docs)]` in `lib.rs`, plus docs for the 18 public
-  items that lacked them — because the robbed half of a stolen doc has
-  a mechanical signature: the original item ends up undocumented.
-  Verified by staging the bug; the robbed function fails the build
-  under CI's `-D warnings`.
-
-  It does not reach `pub(crate)`, which is most of the tree.
-  `clippy::missing_docs_in_private_items` is the obvious lever and is
-  far too noisy — it demands a doc on every private field and helper.
-
-  Worth considering: restrict the lint to *items that already have a
-  sibling doc*, or lint only modules where doc density is already
-  high. Both need a custom lint or a source scan, and a scan for the
-  COMMENT's shape is a dead end — see below.
-
-  **The comment-shape scan is retired.** It returned 19 candidates
-  across 15 files in the 0.40 era. Re-run against the 0.42 tree, both
-  a strict and a loose form return 2 candidates, and both are false
-  positives (a lead-in to a bullet list, and a legitimate
-  several-single-sentence-paragraph doc). The real merges named in the
-  old entry — `src/app/spawn_refresh.rs`, `src/cli/action.rs` — now
-  read correctly. Scoped claim: the tree is clean by those two
-  signatures, which is not the same as no merged doc existing
-  anywhere. The scan cannot become a guard at a 100% false-positive
-  rate, exactly as the old entry predicted.
-
-- [ ] **Two accepted equivalent mutants on the undo window.** Recorded
-  so nobody re-investigates them. `remember_deleted`'s prune compares
-  `elapsed < UNDO_WINDOW_SECS`; mutating that to `<=` or `==` survives
-  the suite.
-
-  Both differ from the original at exactly one instant — `elapsed ==
-  600s` — and `tokio::time::advance` with auto-advance will not
-  reliably land there, so the distinguishing case is not constructible
-  without contorting the test. The operational difference is whether a
-  message is recoverable at the 600.000000s mark.
-
-  `>` on the same line IS caught, by observing the buffer directly
-  rather than through `recoverable()` — which prunes again on read, so
-  anything the push-time prune leaks is cleaned up before observation.
-  That was the real finding: the line was executed and could not
-  affect any assertion.
-
-- [ ] **Possible flake in `a_derived_dlq_that_does_not_exist_still_answers`.**
-  One failure in ~46 runs, reported by the 0.39.0 release review and
-  never reproduced: 45 follow-ups by the reviewer, then 60 isolated runs,
-  12 whole-module runs and 40 orchestration-module runs here. 157 clean
-  runs against one observation.
-
-  Two hypotheses tested and both wrong. Cross-test rule sharing: the
-  fixtures construct a fresh `Rule` per call, so nothing is shared.
-  `RuleMode::MatchAny` exhaustion: `MatchAny` does not consume rules,
-  which is why it is used — the tests that need a rule served repeatedly
-  already depend on that.
-
-  The likeliest remaining explanation is the reviewer's own note that
-  its full-suite run failed on a DIFFERENT, uncommitted test in a shared
-  tree while two agents edited it. That is consistent with one confused
-  observation and needs no defect.
-
-  Left open rather than closed because unreproducible is not absent. If
-  CI ever sees it, the thing to capture is the panic itself — every
-  reproduction attempt so far has had to infer from a pass/fail count.
-

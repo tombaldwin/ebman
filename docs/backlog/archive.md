@@ -4591,3 +4591,132 @@ From the software-architect pass. Reviewed after each stage, as asked.
    Three of these predate the refactor by months. The relocation did
    not cause them; it is what made them visible, which is the argument
    for doing this kind of move at all.
+
+## BACKLOG grooming, 2026-09-25
+
+*Moved verbatim from `BACKLOG.md` by the grooming pass that followed
+the 2026-09-25 plan/backlog review. Each block says why it left.*
+
+### Absorbed into PLAN.md item 3′ (the typed verb vocabulary) — the stage-5 re-scope of 2026-09-25 kept only the vocabulary, and these three were parked on it
+
+- [ ] **Split `cli::write_refusal` the way `app/safety.rs` is split.**
+  0.37 extracted `write_refusal_parts` (decide + render, pure) with
+  `write_refusal` as the auditing funnel, which fixed the demo-mode
+  leak. It stops short of the TUI's three-way shape (`refusal_for` /
+  `render_refusal` / `audit_refusal`): the CLI's rendering is still
+  inline in the pure half. Worth finishing when stage 5's `Decision`
+  lands, since that changes the return type anyway. Raised by the 0.37
+  architecture review.
+
+- [ ] **A neutral action vocabulary, shared by refusals and dispatches.**
+  0.37.1 gave TUI refusals the dispatch label via a checked table
+  (`REFUSAL_ACTION_LABELS`) plus an explicit override where an `Action`
+  is in scope. That is correct but partial by construction: verbs that
+  guard a chooser rather than a specific write have no single dispatch
+  label, and the labels themselves are still string literals scattered
+  across the dispatch sites rather than one vocabulary. The table would
+  become derived rather than maintained once that vocabulary exists —
+  which is the same thing the MCP annotations item below needs. Do them
+  together, at stage 5.
+
+- [ ] **The MCP annotations table is the wrong long-term home for the
+  action vocabulary.** `src/cli/mcp/annotations.rs` is `pub(super)`
+  inside the transport module and keyed by MCP tool names — including
+  `confirm_action`, which is transport machinery rather than an action —
+  and covers only the 14 MCP tools, while the action space the
+  protection levels must govern is wider (DLQ purge, alarm-create,
+  rollback, swap). When stage 5 needs it, move it to a neutral module
+  keyed by action verb and derive the MCP annotations from that, rather
+  than wiring the levels engine to `cli::mcp::annotations` and growing a
+  second table that drifts. Raised by the 0.37 architecture review.
+
+### Recorded knowledge, not a task (no next action)
+
+- [ ] **Two accepted equivalent mutants on the undo window.** Recorded
+  so nobody re-investigates them. `remember_deleted`'s prune compares
+  `elapsed < UNDO_WINDOW_SECS`; mutating that to `<=` or `==` survives
+  the suite.
+
+  Both differ from the original at exactly one instant — `elapsed ==
+  600s` — and `tokio::time::advance` with auto-advance will not
+  reliably land there, so the distinguishing case is not constructible
+  without contorting the test. The operational difference is whether a
+  message is recoverable at the 600.000000s mark.
+
+  `>` on the same line IS caught, by observing the buffer directly
+  rather than through `recoverable()` — which prunes again on read, so
+  anything the push-time prune leaks is cleaned up before observation.
+  That was the real finding: the line was executed and could not
+  affect any assertion.
+
+### Recorded knowledge, not a task — a watch with a conditional action. Note for whoever sees it next: on 2026-09-25 a DIFFERENT intermittent failure (`cached_client_reuses_one_client_per_profile_and_region`, 7/8 under a filter) turned out to be two tests clearing the shared client cache without its lock — fixed in 8632769 with a guard. Not claimed to be this one's cause; the same shape is worth checking first if it recurs.
+
+- [ ] **Possible flake in `a_derived_dlq_that_does_not_exist_still_answers`.**
+  One failure in ~46 runs, reported by the 0.39.0 release review and
+  never reproduced: 45 follow-ups by the reviewer, then 60 isolated runs,
+  12 whole-module runs and 40 orchestration-module runs here. 157 clean
+  runs against one observation.
+
+  Two hypotheses tested and both wrong. Cross-test rule sharing: the
+  fixtures construct a fresh `Rule` per call, so nothing is shared.
+  `RuleMode::MatchAny` exhaustion: `MatchAny` does not consume rules,
+  which is why it is used — the tests that need a rule served repeatedly
+  already depend on that.
+
+  The likeliest remaining explanation is the reviewer's own note that
+  its full-suite run failed on a DIFFERENT, uncommitted test in a shared
+  tree while two agents edited it. That is consistent with one confused
+  observation and needs no defect.
+
+  Left open rather than closed because unreproducible is not absent. If
+  CI ever sees it, the thing to capture is the panic itself — every
+  reproduction attempt so far has had to infer from a pass/fail count.
+
+### Stale section intro (the section held items from other reviews too)
+
+#### 0.29 queue — 0.28 pre-tag review deferrals (2026-08-20)
+
+The write/freeze pre-tag review (2 lenses) fixed 2 Critical + 2 Important + 1 Minor before tag (see CHANGELOG). Deferred, non-blocking:
+
+### Empty section — 'Still open, recorded rather than fixed:' with nothing under it
+
+#### `aws/` fourth review pass — 2026-08-22
+
+Reviewed the third-review fixes and the write-safety tests. Fifteen findings; the severe ones were all defects in those fixes.
+
+Still open, recorded rather than fixed:
+
+### Five follow-ups buried in one prose line. Verified 2026-09-25: rewrite_credential_error moved (now aws.rs); ui split done (src/ui/); MCP registry unified (tools.rs); EBL015 in MCP done (e15d62b). The fifth, per-tool client dedup, is still open and is now its own item
+
+#### Minor (batchable)
+Also queued from the 0.26 pre-tag architecture review: rewrite_credential_error + probe helpers out of app.rs; ui.rs submodule split; MCP registry unification (gate on v2 writes); EBL015 warnings surface in MCP; per-tool client dedup.
+
+### Withdrawn 2026-05-24 — left in the open file
+
+- ~~**`:upgrade`**~~ Withdrawn (2026-05-24). The existing `:update` (`src/app.rs:9168`) carries an explicit design comment against auto-upgrade: "Doesn't actually upgrade — operators on AWS-touching tools prefer conscious upgrades, and self-replacing the binary across Cellar / cargo-bin / tarball layouts has too many platform footguns." That decision predates this BACKLOG entry; the entry was written without checking. `:update` already detects the install channel and yanks the right `brew upgrade ebman` / `cargo install ebman --force` command to the clipboard, so the gap is just "paste vs press enter." Not worth pushing against the existing design call without a fresh prompt.
+
+### Withdrawn 2026-05-24 — left in the open file
+
+- ~~**Profile / region quick-chord**~~ Withdrawn (2026-05-24) — already shipped, just not as Ctrl chords. `p` and `r` (plain keys in Normal mode at `src/app.rs:3311-3312`) open the Profile / Region picker overlays directly. Better than the Ctrl chords the BACKLOG entry proposed: no modifier required, and `Ctrl-R` would have clashed with the existing manual-refresh keybind anyway. The BACKLOG entry was written without re-grepping the existing keybinds — closing the loop honestly.
+
+### Stale 'Top priority' framing over a section holding one secondary item
+
+### Top priority — console-parity + peer-TUI polish (2026-05-21)
+
+Surfaced by a critical console-vs-ebman + ebman-vs-peer-TUI comparison. Ranked by user-value-per-hour. The smaller ergonomics items in particular (autocompletion, did-you-mean, first-run hint) are the gap that makes ebman look unpolished next to k9s / lazygit — high impact, low cost.
+
+**Secondary** (same review, smaller payoff or design call needed):
+
+### Skipped-section entries resolved: EBL015/EBL018 shipped in 0.26 (docs/lint-rules.md); recorder and :custom-platform-create duplicated their open items; 'Retried successfully' is done history
+
+- **Embedded asciinema recorder (Tier 6)** — needs its own input-capture/replay infrastructure; defer.
+- **`:custom-platform-create` (0.25 BONUS)** — S3-bundle upload plumbing + minutes-scale CreatePlatformVersion polling with multiple reasonable shapes; unverifiable against live EB in an autonomous run. Slipped to 0.26 as the lineup anticipated.
+- **EBL015 / EBL018 (0.25 lint batch)** — each needs new AWS surface (per-platform DescribePlatformVersion dates / aws-sdk-wafv2 GetWebACLForResource); recorded in docs/lint-rules.md roadmap with reasons.
+
+**Retried successfully** (kept here briefly so the history's discoverable):
+
+- **README screenshots / demo gif** — rendered 2026-06-04 from an interactive session (`vhs demo.tape`), so the no-TTY blocker no longer applies. The fixture was reskinned to the PROJECT IRONWOOD world (`poly` fleet + the Grey `ironwood` env on a distinct Go platform); see the demo-lore Done entry above.
+- **Option settings editor** — shipped in 0.3.0 (`:env`, `:set-option`, `:capacity` modal, every per-namespace command).
+- **Split `src/app.rs`** — shipped as task #66 (ten `cmd_*.rs` sub-modules); app.rs 14,277 → 12,478.
+- **`sts:AssumeRole` account switcher** — shipped in 0.3.0 (`accounts.NAME.role_arn` config + `:account NAME` switcher). [[multi-account-discovery]].
+
