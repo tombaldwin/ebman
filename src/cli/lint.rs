@@ -1012,6 +1012,10 @@ where
     // Pure, so computed here rather than threaded in.
     let rules = lint::default_rules(disabled);
     let multi_region = regions.len() > 1;
+    // For `--env NAME` across several regions: was NAME seen anywhere,
+    // and did every region actually answer? See `env_not_found_anywhere`.
+    let mut env_found = false;
+    let mut every_region_answered = true;
     for region_opt in regions {
         // Through the seam, not `AwsClient::with` directly — the
         // latter is what made this loop unreachable from a test.
@@ -1022,6 +1026,7 @@ where
                 report.degrade(format!(
                     "skipping region '{region_label}' — AwsClient::with: {e}"
                 ));
+                every_region_answered = false;
                 continue;
             }
         };
@@ -1032,6 +1037,7 @@ where
                 report.degrade(format!(
                     "skipping region '{region_label}' — list_environments: {e}"
                 ));
+                every_region_answered = false;
                 continue;
             }
         };
@@ -1066,7 +1072,10 @@ where
 
         let targets: Vec<&aws::Environment> = match env_name.as_deref() {
             Some(name) => match envs.iter().find(|e| e.name == name) {
-                Some(env) => vec![env],
+                Some(env) => {
+                    env_found = true;
+                    vec![env]
+                }
                 None => {
                     if multi_region && !quiet {
                         let region_label = region_opt.as_deref().unwrap_or("default");
@@ -1211,7 +1220,39 @@ where
             }
         }
     }
+    if let Some(msg) = env_not_found_anywhere(
+        env_name.as_deref(),
+        regions.len(),
+        env_found,
+        every_region_answered,
+    ) {
+        report.usage_error = Some(msg);
+    }
     report
+}
+
+/// `--env NAME` across several regions, found in none of them: a usage
+/// error, exactly as it is for one region.
+///
+/// Each region used to print "not in region X — skipping" (behind
+/// `--quiet`) and move on, and nothing checked afterwards whether NAME
+/// had turned up ANYWHERE. So a typo'd env in a multi-region CI gate
+/// exited 0 with "No issues found".
+///
+/// Only when every region answered. If one could not be listed, NAME
+/// may be there — the run is already degraded, and calling it a typo
+/// would be a claim the evidence does not support. Single-region runs
+/// return their usage error inside the loop, so this is `None` for
+/// them. Shared by `lint` and `drift`, which had the same gap.
+pub(crate) fn env_not_found_anywhere(
+    env_name: Option<&str>,
+    region_count: usize,
+    found: bool,
+    every_region_answered: bool,
+) -> Option<String> {
+    let name = env_name?;
+    (region_count > 1 && !found && every_region_answered)
+        .then(|| format!("env '{name}' not found in any of the {region_count} regions checked"))
 }
 
 /// `ebman lint` — run the diagnostic rule engine over the fleet.
@@ -2056,6 +2097,43 @@ mod lost_coverage {
     }
 }
 
+/// `env_not_found_anywhere`, shared by `lint` and `drift`.
+#[cfg(test)]
+mod env_not_found {
+    use super::env_not_found_anywhere as f;
+
+    #[test]
+    fn a_name_found_nowhere_across_answering_regions_is_an_error() {
+        let msg = f(Some("typo-env"), 3, false, true).expect("usage error");
+        assert!(
+            msg.contains("typo-env") && msg.contains("3 regions"),
+            "{msg}"
+        );
+    }
+
+    #[test]
+    fn found_anywhere_is_not_an_error() {
+        assert!(f(Some("real"), 3, true, true).is_none());
+    }
+
+    #[test]
+    fn a_region_that_did_not_answer_withholds_the_verdict() {
+        assert!(f(Some("maybe"), 3, false, false).is_none());
+    }
+
+    /// One region reports its usage error inside the loop; this must not
+    /// report a second one.
+    #[test]
+    fn a_single_region_run_is_left_to_the_loop() {
+        assert!(f(Some("typo"), 1, false, true).is_none());
+    }
+
+    #[test]
+    fn no_env_asked_for_is_never_an_error() {
+        assert!(f(None, 3, false, true).is_none());
+    }
+}
+
 #[cfg(test)]
 mod degrade_guard {
     /// Every degrade must go through `degrade`, so that printing the
@@ -2870,6 +2948,8 @@ mod cycle_wiring {
         health_rejected: bool,
         /// `ListAvailableSolutionStacks` is rejected: EBL008's input is lost.
         stacks_rejected: bool,
+        /// `DescribeEnvironments` is rejected: the region does not answer.
+        listing_rejected: bool,
     }
 
     /// The branch whose platform dates the mock refuses to report.
@@ -2909,8 +2989,10 @@ mod cycle_wiring {
         let failing_update = faults.update_rejected;
         use aws_sdk_elasticbeanstalk::operation::describe_environments::DescribeEnvironmentsOutput;
         use aws_sdk_elasticbeanstalk::types::EnvironmentDescription;
+        let listing_rejected = faults.listing_rejected;
         let listing =
             aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::describe_environments)
+                .match_requests(move |_| !listing_rejected)
                 .then_output(move || {
                     let mut b = DescribeEnvironmentsOutput::builder();
                     for e in &envs {
@@ -3076,6 +3158,16 @@ mod cycle_wiring {
                     .build(),
             )
         });
+        let listing_denied =
+            aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::describe_environments)
+                .then_error(|| {
+                    aws_sdk_elasticbeanstalk::operation::describe_environments::DescribeEnvironmentsError::generic(
+                        aws_smithy_types::error::ErrorMetadata::builder()
+                            .code("AccessDeniedException")
+                            .message("not authorized")
+                            .build(),
+                    )
+                });
         let mut rules: Vec<&aws_smithy_mocks::Rule> = vec![
             &listing,
             &stacks,
@@ -3090,6 +3182,9 @@ mod cycle_wiring {
         }
         if faults.platform_date_rejected {
             rules.push(&platform_date);
+        }
+        if faults.listing_rejected {
+            rules.push(&listing_denied);
         }
         let eb = aws_smithy_mocks::mock_client!(
             aws_sdk_elasticbeanstalk,
@@ -3455,10 +3550,34 @@ mod cycle_wiring {
         assert!(report.issues.is_empty(), "{:?}", report.issues);
     }
 
-    /// The same mistake under multi-region is a WARNING, not a usage
-    /// error: the env may legitimately live in another region.
+    /// Under multi-region, NAME missing from one region is not a usage
+    /// error when it lives in another — the sweep keeps looking. This is
+    /// what the test it replaces meant to protect; its fixture put the
+    /// env in NO region, and so pinned the typo-passes-CI defect instead.
     #[tokio::test]
-    async fn an_unknown_env_under_multi_region_is_not_a_usage_error() {
+    async fn an_env_in_another_region_is_not_a_usage_error() {
+        let report = run_with_opts(
+            vec![Some("eu-west-1".into()), Some("eu-west-2".into())],
+            CycleOpts {
+                env_name: Some("target-env".into()),
+                ..CycleOpts::default()
+            },
+            |region| async move {
+                Ok(match region.as_deref() {
+                    Some("eu-west-2") => mock_client(vec!["target-env".into()]),
+                    _ => mock_client(vec!["other-env".into()]),
+                })
+            },
+        )
+        .await;
+        assert!(report.usage_error.is_none(), "{:?}", report.usage_error);
+    }
+
+    /// NAME in NO region, with every region answering, is a usage error
+    /// — exactly as it is for one region. It used to exit 0 with "No
+    /// issues found", so a typo'd env passed a multi-region CI gate.
+    #[tokio::test]
+    async fn an_env_in_no_region_is_a_usage_error() {
         let report = run_with_opts(
             vec![Some("eu-west-1".into()), Some("eu-west-2".into())],
             CycleOpts {
@@ -3468,11 +3587,65 @@ mod cycle_wiring {
             |_| async { Ok(mock_client(vec!["real-env".into()])) },
         )
         .await;
+        let msg = report.usage_error.expect("a typo is a usage error");
         assert!(
-            report.usage_error.is_none(),
-            "a multi-region sweep must keep looking: {:?}",
-            report.usage_error
+            msg.contains("no-such-env") && msg.contains("2 regions"),
+            "{msg}"
         );
+    }
+
+    /// The other way a region fails to answer: its client builds, but
+    /// listing its environments is refused. Same verdict.
+    #[tokio::test]
+    async fn an_env_missing_where_a_region_would_not_list_is_not_a_usage_error() {
+        let report = run_with_opts(
+            vec![Some("eu-west-1".into()), Some("eu-west-2".into())],
+            CycleOpts {
+                env_name: Some("maybe-env".into()),
+                ..CycleOpts::default()
+            },
+            |region| async move {
+                Ok(match region.as_deref() {
+                    Some("eu-west-2") => mock_client_inner(
+                        vec![],
+                        MockFaults {
+                            listing_rejected: true,
+                            ..MockFaults::default()
+                        },
+                    ),
+                    _ => mock_client(vec!["other-env".into()]),
+                })
+            },
+        )
+        .await;
+        assert!(report.usage_error.is_none(), "{:?}", report.usage_error);
+        assert!(
+            report.degraded(),
+            "the region that would not list degrades the run"
+        );
+    }
+
+    /// ...but not when a region could not be listed: NAME may be there.
+    /// The cycle is degraded instead, which already fails the run —
+    /// calling it a typo would claim more than was seen.
+    #[tokio::test]
+    async fn an_env_missing_where_a_region_did_not_answer_is_not_a_usage_error() {
+        let report = run_with_opts(
+            vec![Some("eu-west-1".into()), Some("eu-west-2".into())],
+            CycleOpts {
+                env_name: Some("maybe-env".into()),
+                ..CycleOpts::default()
+            },
+            |region| async move {
+                match region.as_deref() {
+                    Some("eu-west-2") => Err(color_eyre::eyre::eyre!("no credentials")),
+                    _ => Ok(mock_client(vec!["other-env".into()])),
+                }
+            },
+        )
+        .await;
+        assert!(report.usage_error.is_none(), "{:?}", report.usage_error);
+        assert!(report.degraded(), "the unanswered region degrades the run");
     }
 
     /// A region whose client cannot be built degrades the cycle, and

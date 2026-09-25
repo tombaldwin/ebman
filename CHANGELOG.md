@@ -8,6 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- **`lint` and `drift` with `--env NAME --regions a,b` exited 0 when
+  NAME existed in no region.** Each region warned "not in region —
+  skipping" (silenced by `--quiet`) and nothing checked afterwards that
+  NAME had turned up anywhere, so a typo passed a multi-region CI gate
+  with "No issues found". It is now a usage error (exit 2), as it
+  always was for one region — unless a region could not be listed, when
+  the run is degraded (exit 1) instead, because NAME may be there.
+
 - **The MCP `lint` tool reported clean when EBL008 or EBL015 could not
   run.** A failed stack listing became an empty map under a comment
   claiming "same tolerance as the CLI path", false since 0.44; a failed
