@@ -108,7 +108,7 @@ what the remaining stages are for.*
   the operator; `--read-only`; batch DLQ plans; caller identity in every
   plan; `writes_via`. Live on crates.io, Homebrew and the MCP Registry,
   and **exercised against real infrastructure**: a dead-lettered message
-  cleared on the uFlexi fleet through plan → dialog → approve.
+  cleared on a production fleet through plan → dialog → approve.
 - **The elicitation round-trip is observed, not inferred** — approve,
   decline and walk-away, against a real client. Stage 3's instrument is
   no longer dead.

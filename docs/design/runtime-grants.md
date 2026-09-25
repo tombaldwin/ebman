@@ -340,7 +340,7 @@ for the default user is nothing. The trigger rule above settles it.
 
 **Designed, not built. Target: a release soon.** Recorded here at the
 maintainer's request so it can ship without being redesigned. It buys
-nothing for a setup that already runs as admin — uFlexi's does — and is
+nothing for a setup that already runs as admin — the production setup it was first used on does — and is
 aimed at everyone else.
 
 **Rewritten after request-as-unit.** An earlier draft sold this as
