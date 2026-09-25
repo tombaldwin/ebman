@@ -5056,3 +5056,130 @@ mod typed_queue_does_not_exist {
         assert!(!chain.contains("unhandled error"), "{chain}");
     }
 }
+
+/// Every test that can reach the process-global client cache takes
+/// `CACHE_TEST_LOCK`.
+///
+/// The lock existed, and two tests that clear the cache did not take
+/// it: `handle_msg(AppMsg::Rebuild { .. Ok .. })` reaches
+/// `apply_rebuild`, which calls `clear_client_cache()`. Whenever one of
+/// them ran beside `cached_client_reuses_one_client_per_profile_and_region`,
+/// the clear landed between that test's two lookups and it failed —
+/// seven runs in eight under `cargo test -- region`. The full suite
+/// happened to schedule them apart, so CI stayed green and the race
+/// stayed invisible from where it fired.
+///
+/// Conservative on purpose: a test that names an entry point to the
+/// cache must take the lock even if its particular inputs happen not
+/// to clear (a stale-epoch rebuild returns early). Taking an
+/// uncontended lock costs nothing; working out which inputs reach the
+/// clear is exactly the reasoning that went wrong.
+///
+/// Scope, stated: it sees DIRECT entry points only. A test that reaches
+/// the cache through a longer production path is not caught here.
+#[cfg(test)]
+mod cache_lock_guard {
+    use syn::spanned::Spanned;
+    use syn::visit::Visit;
+
+    /// Calls that reach the global client cache from a test.
+    const ENTRY_POINTS: &[&str] = &["apply_rebuild(", "clear_client_cache(", "cached_client("];
+
+    /// Does this test body reach the cache? A `Rebuild` message reaches
+    /// it only when DISPATCHED: a test that merely constructs one to
+    /// inspect a field (`generation()`) touches nothing.
+    fn reaches_cache(body: &str) -> bool {
+        ENTRY_POINTS.iter().any(|e| body.contains(e))
+            || (body.contains("AppMsg::Rebuild") && body.contains("handle_msg("))
+    }
+
+    /// `(fn name, body text)` of every `#[test]` / `#[tokio::test]` fn.
+    struct TestFns<'a> {
+        lines: &'a [&'a str],
+        out: Vec<(String, String)>,
+    }
+
+    impl<'ast> Visit<'ast> for TestFns<'_> {
+        fn visit_item_fn(&mut self, f: &'ast syn::ItemFn) {
+            let is_test = f.attrs.iter().any(|a| {
+                let p = a.path();
+                p.is_ident("test") || p.segments.last().is_some_and(|s| s.ident == "test")
+            });
+            if is_test {
+                let span = f.block.span();
+                let (start, end) = (span.start().line, span.end().line);
+                let body: String = self.lines[start.saturating_sub(1)..end.min(self.lines.len())]
+                    .iter()
+                    .map(|l| crate::app::tests::scan::strip_line_comment(l))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                self.out.push((f.sig.ident.to_string(), body));
+            }
+            syn::visit::visit_item_fn(self, f);
+        }
+    }
+
+    /// Test fns in `src` that name a cache entry point and do not take
+    /// the lock.
+    pub(super) fn unlocked(src: &str) -> Vec<String> {
+        let Ok(file) = syn::parse_file(src) else {
+            return Vec::new();
+        };
+        let lines: Vec<&str> = src.lines().collect();
+        let mut v = TestFns {
+            lines: &lines,
+            out: Vec::new(),
+        };
+        v.visit_file(&file);
+        v.out
+            .into_iter()
+            .filter(|(_, body)| reaches_cache(body) && !body.contains("CACHE_TEST_LOCK"))
+            .map(|(name, _)| name)
+            .collect()
+    }
+
+    #[test]
+    fn every_test_that_reaches_the_client_cache_takes_the_lock() {
+        let mut offenders = Vec::new();
+        let mut parsed = 0usize;
+        for (path, src) in crate::app::tests::scan::source_files() {
+            if syn::parse_file(&src).is_ok() {
+                parsed += 1;
+            }
+            for name in unlocked(&src) {
+                offenders.push(format!("{path}: {name}"));
+            }
+        }
+        assert!(
+            parsed > 50,
+            "only {parsed} files parsed — a guard over nothing passes vacuously"
+        );
+        assert!(
+            offenders.is_empty(),
+            "these tests reach the process-global client cache without \
+             `crate::aws::CACHE_TEST_LOCK` and race the cache tests: {offenders:#?}"
+        );
+    }
+
+    /// The detector detects: a test that clears the cache unlocked is
+    /// reported, and the same test holding the lock is not.
+    #[test]
+    fn the_detector_flags_an_unlocked_clear_and_passes_a_locked_one() {
+        let unlocked_src =
+            "#[tokio::test]\nasync fn racy() {\n    crate::aws::clear_client_cache();\n}\n";
+        assert_eq!(unlocked(unlocked_src), vec!["racy".to_string()]);
+        let locked_src = "#[tokio::test]\nasync fn safe() {\n    let _g = crate::aws::CACHE_TEST_LOCK.lock().await;\n    crate::aws::clear_client_cache();\n}\n";
+        assert!(unlocked(locked_src).is_empty());
+        // A comment mentioning the lock does not count as taking it.
+        let commented = "#[test]\nfn sly() {\n    // CACHE_TEST_LOCK\n    crate::aws::clear_client_cache();\n}\n";
+        assert_eq!(unlocked(commented), vec!["sly".to_string()]);
+        // A non-test fn is not a test.
+        assert!(unlocked("fn helper() { crate::aws::clear_client_cache(); }").is_empty());
+        // A dispatched Rebuild reaches the cache; a constructed one does not.
+        let dispatched = "#[tokio::test]\nasync fn switch() {\n    app.handle_msg(AppMsg::Rebuild { epoch: 1, result: r });\n}\n";
+        assert_eq!(unlocked(dispatched), vec!["switch".to_string()]);
+        let constructed =
+            "#[test]\nfn shape() {\n    let m = AppMsg::Rebuild { epoch: 1, result: r };\n}\n";
+        assert!(unlocked(constructed).is_empty());
+    }
+}

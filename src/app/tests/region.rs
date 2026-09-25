@@ -583,6 +583,9 @@ async fn a_write_whose_row_left_the_table_still_goes_to_its_region() {
 
 #[tokio::test]
 async fn remembered_regions_do_not_survive_a_context_switch() {
+    // Dispatching a current-epoch rebuild clears the process-global
+    // client cache; see `cache_lock_guard`.
+    let _cache_guard = crate::aws::CACHE_TEST_LOCK.lock().await;
     // A same-named env in another account or partition is a different
     // environment. Carrying the old answer across would aim a write at
     // a region the new context may not even have.

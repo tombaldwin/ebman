@@ -1430,6 +1430,9 @@ async fn apply_refresh_errors_when_deadline_passed_but_no_snapshot() {
 
 #[tokio::test]
 async fn stale_rebuild_arrival_is_dropped() {
+    // Dispatching a current-epoch rebuild clears the process-global
+    // client cache; see `cache_lock_guard`.
+    let _cache_guard = crate::aws::CACHE_TEST_LOCK.lock().await;
     // Two rapid context switches: the SLOW first one landing after
     // the fast second must not overwrite the operator's last
     // choice.
@@ -1761,6 +1764,9 @@ async fn a_failed_client_refresh_is_silent_and_keeps_the_old_client() {
 
 #[tokio::test]
 async fn a_stale_rebuild_ok_never_overwrites_the_newer_context() {
+    // Dispatching a current-epoch rebuild clears the process-global
+    // client cache; see `cache_lock_guard`.
+    let _cache_guard = crate::aws::CACHE_TEST_LOCK.lock().await;
     // The existing guard test drives the Err path, which proves the
     // early return runs but not what it protects. The Ok arm is the
     // dangerous one: it swaps `aws`, replaces `context`, bumps
