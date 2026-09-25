@@ -65,6 +65,8 @@ ebman completions <bash|zsh|fish>                                           # pr
 
 Exit-code convention (CI scripts can branch on these): `0` clean, `1` AWS-layer error, `2` usage error, `3` issues / drift found.
 
+An `--env NAME` that matches no environment is a usage error (`2`) for `lint` and `drift`, across `--regions` too — unless a region could not be listed, in which case NAME may be there and the run exits `1` as degraded instead.
+
 `3` also covers **refused and halted writes**, which is worth spelling
 out because a script branching on "issues found" will otherwise
 misread them:

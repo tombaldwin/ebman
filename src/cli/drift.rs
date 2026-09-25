@@ -228,6 +228,10 @@ pub async fn run(args: &[String]) -> Result<()> {
     // must exit 1 (the documented AWS-error code), not report a clean
     // 0 built from whatever survived the outage.
     let mut degraded = false;
+    // `--env NAME` across regions: seen anywhere, and did every region
+    // answer? See `lint::env_not_found_anywhere`, shared with `lint`.
+    let mut env_found = false;
+    let mut every_region_answered = true;
     for region_opt in &regions {
         let aws = match aws::AwsClient::with(None, region_opt.clone()).await {
             Ok(c) => c,
@@ -237,6 +241,7 @@ pub async fn run(args: &[String]) -> Result<()> {
                     eprintln!("warning: skipping region '{region_label}' — AwsClient::with: {e}");
                 }
                 degraded = true;
+                every_region_answered = false;
                 continue;
             }
         };
@@ -248,13 +253,17 @@ pub async fn run(args: &[String]) -> Result<()> {
                     eprintln!("warning: skipping region '{region_label}' — list_environments: {e}");
                 }
                 degraded = true;
+                every_region_answered = false;
                 continue;
             }
         };
 
         let targets: Vec<&aws::Environment> = match env_name.as_deref() {
             Some(name) => match live_envs.iter().find(|e| e.name == name) {
-                Some(env) => vec![env],
+                Some(env) => {
+                    env_found = true;
+                    vec![env]
+                }
                 None => {
                     if multi_region && !quiet {
                         let region_label = region_opt.as_deref().unwrap_or("default");
@@ -311,6 +320,16 @@ pub async fn run(args: &[String]) -> Result<()> {
             }
             reports.push((region_opt.clone(), env.name.clone(), tf_managed, drift));
         }
+    }
+    // Printed regardless of `--quiet`: it is the reason for the exit.
+    if let Some(msg) = crate::cli::lint::env_not_found_anywhere(
+        env_name.as_deref(),
+        regions.len(),
+        env_found,
+        every_region_answered,
+    ) {
+        eprintln!("ebman drift: {msg}");
+        std::process::exit(2);
     }
 
     if !quiet {
