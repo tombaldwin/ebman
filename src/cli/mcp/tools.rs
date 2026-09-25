@@ -960,6 +960,7 @@ impl Server {
                         &latest_stacks,
                         false,
                         &disabled,
+                        &required_tags,
                     ));
                 }
                 let fetched: Vec<Result<EnvLintInputs, String>> = futures::stream::iter(fetches)

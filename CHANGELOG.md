@@ -8,6 +8,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- **`lint` no longer passes clean when it could not check tags or
+  instance health.** A failed `ListTagsForResource` (EBL010) or
+  `DescribeEnvironmentHealth` (EBL012) was turned into a silent skip, so
+  an IAM denial or throttling exited 0 and `--baseline` adopted the run
+  — contradicting the documented "exits 1 when a check could not run".
+  Both now degrade the run and name the call, in the CLI and in the MCP
+  `lint` tool's `skipped_envs`. Only when the rule could actually have
+  fired: EBL010 needs `required_tags`, and EBL012 needs a Ready/Green
+  env on enhanced health — `DescribeEnvironmentHealth` is unavailable on
+  basic health by design, and treating that as a failure would degrade
+  every run on an ordinary configuration.
+
 - **MCP `dlq_undo` could restore the same message repeatedly, and left
   no trace.** It restored from a copy of the held message and never
   removed the original, so calling it N times with one id enqueued N

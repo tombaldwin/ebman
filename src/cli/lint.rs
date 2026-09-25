@@ -306,20 +306,54 @@ pub(crate) async fn fetch_env_lint_inputs(
     // remedy short of changing IAM. The documented escape hatch has to
     // actually be one.
     disabled: &[String],
+    // EBL010 can only fire when the operator declared required tags,
+    // so a failed tag fetch only costs coverage when there are some.
+    required_tags: &[String],
 ) -> Result<EnvLintInputs, String> {
     let opts_fut = aws.fetch_env_option_settings(&env.application, &env.name);
     let tags_fut = async {
         match env.arn.as_deref() {
-            Some(arn) => aws.list_tags(arn).await.ok(),
+            Some(arn) => Some(aws.list_tags(arn).await),
             None => None,
         }
     };
     let health_fut = aws.fetch_env_instance_counts(&env.name);
     let (opts_res, tags_opt, health_res) = tokio::join!(opts_fut, tags_fut, health_fut);
     let options = opts_res.map_err(|e| e.to_string())?;
-    let env_tag_keys: Option<Vec<String>> =
-        tags_opt.map(|t| t.into_iter().map(|(k, _)| k).collect());
-    let healthy_count = health_res.ok().map(|c| c.healthy as i64);
+    // A failed fetch still leaves the input `None`, so the rule skips —
+    // a failed fetch must never become a false positive. What changed
+    // is that it is no longer SILENT: `.ok()` on both of these turned
+    // AccessDenied or throttling into a skip indistinguishable from a
+    // clean pass, so `lint` exited 0 and `--baseline` adopted a run
+    // whose EBL010/EBL012 checks never happened. The rule's own comment
+    // said "a FAILED fetch is a different thing and the caller reports
+    // it"; no caller did.
+    let mut fetch_warnings: Vec<String> = Vec::new();
+    let env_tag_keys: Option<Vec<String>> = match tags_opt {
+        Some(Ok(t)) => Some(t.into_iter().map(|(k, _)| k).collect()),
+        Some(Err(e)) => {
+            if ebl010_could_fire(disabled, required_tags) {
+                fetch_warnings.extend(
+                    ProbeOutcome::Unknown(format!("ListTagsForResource: {e:#}"))
+                        .coverage_warning("EBL010", &env.name),
+                );
+            }
+            None
+        }
+        None => None,
+    };
+    let healthy_count = match health_res {
+        Ok(c) => Some(c.healthy as i64),
+        Err(e) => {
+            if ebl012_could_fire(disabled, env, &options) {
+                fetch_warnings.extend(
+                    ProbeOutcome::Unknown(format!("DescribeEnvironmentHealth: {e:#}"))
+                        .coverage_warning("EBL012", &env.name),
+                );
+            }
+            None
+        }
+    };
     let newer_stack = aws::newer_stack_version(&env.solution_stack, latest_stacks);
     // EBL020 probe — only when the env actually has X-Ray on (rare),
     // so the common path pays no IAM calls. Probe failures leave the
@@ -345,13 +379,17 @@ pub(crate) async fn fetch_env_lint_inputs(
     } else {
         None
     };
-    let coverage_warnings = [
-        xray_outcome.coverage_warning("EBL020", &env.name),
-        waf_outcome.coverage_warning("EBL018", &env.name),
-    ]
-    .into_iter()
-    .flatten()
-    .collect();
+    let coverage_warnings = fetch_warnings
+        .into_iter()
+        .chain(
+            [
+                xray_outcome.coverage_warning("EBL020", &env.name),
+                waf_outcome.coverage_warning("EBL018", &env.name),
+            ]
+            .into_iter()
+            .flatten(),
+        )
+        .collect();
     Ok(EnvLintInputs {
         options,
         env_tag_keys,
@@ -362,6 +400,39 @@ pub(crate) async fn fetch_env_lint_inputs(
         waf_missing: waf_outcome.verdict(),
         coverage_warnings,
     })
+}
+
+/// Could EBL010 have fired, had the tag fetch succeeded? Only when it
+/// is enabled and the operator declared required tags — otherwise a
+/// failed fetch costs no coverage, and reporting it would mark a run
+/// degraded over a check that could never have run.
+fn ebl010_could_fire(disabled: &[String], required_tags: &[String]) -> bool {
+    !disabled.iter().any(|d| d == "EBL010") && !required_tags.is_empty()
+}
+
+/// Could EBL012 have fired, had the health fetch succeeded?
+///
+/// Only for an env that is Ready and Green — the rule's own
+/// preconditions — and not on BASIC health reporting, where
+/// `DescribeEnvironmentHealth` is unavailable by design. Without that
+/// last condition every basic-health env would fail the fetch and mark
+/// every run degraded: a false alarm on an ordinary configuration,
+/// which is worse than the silence it replaces.
+fn ebl012_could_fire(
+    disabled: &[String],
+    env: &aws::Environment,
+    options: &[(String, String, String)],
+) -> bool {
+    let basic = options.iter().any(|(ns, name, value)| {
+        ns == "aws:elasticbeanstalk:healthreporting:system"
+            && name == "SystemType"
+            && value.eq_ignore_ascii_case("basic")
+    });
+    let green = env.health.eq_ignore_ascii_case("Green") || env.health.eq_ignore_ascii_case("Ok");
+    !disabled.iter().any(|d| d == "EBL012")
+        && !basic
+        && env.status.eq_ignore_ascii_case("Ready")
+        && green
 }
 
 /// Whether `lint --fix` may dispatch option-setting writes.
@@ -1019,6 +1090,7 @@ where
                 &latest_stacks,
                 probe_live,
                 disabled,
+                &safety_cfg.required_tags,
             )
             .await
             {
@@ -1893,6 +1965,93 @@ mod disabled_rule_wiring {
     }
 }
 
+/// When a failed EBL010/EBL012 input fetch is lost COVERAGE, and so
+/// must be reported, versus a check that could never have fired.
+#[cfg(test)]
+mod lost_coverage {
+    use super::{ebl010_could_fire, ebl012_could_fire};
+
+    fn env(status: &str, health: &str) -> crate::aws::Environment {
+        crate::aws::Environment {
+            name: "api-prod".into(),
+            application: "poly".into(),
+            status: status.into(),
+            health: health.into(),
+            platform: "Java 17".into(),
+            solution_stack: "64bit Amazon Linux 2023 running Corretto 17".into(),
+            tier: "Web".into(),
+            cname: String::new(),
+            version_label: "build-1".into(),
+            arn: None,
+            updated: None,
+            id: None,
+            region: None,
+        }
+    }
+
+    fn system_type(v: &str) -> Vec<(String, String, String)> {
+        vec![(
+            "aws:elasticbeanstalk:healthreporting:system".into(),
+            "SystemType".into(),
+            v.into(),
+        )]
+    }
+
+    #[test]
+    fn ebl010_is_lost_only_when_enabled_with_required_tags() {
+        let tags = vec!["owner".to_string()];
+        assert!(ebl010_could_fire(&[], &tags));
+        assert!(!ebl010_could_fire(&["EBL010".into()], &tags), "disabled");
+        assert!(
+            !ebl010_could_fire(&[], &[]),
+            "no required tags: nothing to check"
+        );
+    }
+
+    #[test]
+    fn ebl012_is_lost_on_a_ready_green_enhanced_env() {
+        let enhanced = system_type("enhanced");
+        assert!(ebl012_could_fire(&[], &env("Ready", "Green"), &enhanced));
+        assert!(
+            ebl012_could_fire(&[], &env("Ready", "Ok"), &enhanced),
+            "Ok is Green"
+        );
+        // No SystemType reported at all: not known to be basic, so a
+        // failure still counts.
+        assert!(ebl012_could_fire(&[], &env("Ready", "Green"), &[]));
+    }
+
+    /// The false alarm this guards against: `DescribeEnvironmentHealth`
+    /// is unavailable on basic health by design, so every basic-health
+    /// env would otherwise degrade every run.
+    #[test]
+    fn ebl012_is_not_lost_on_basic_health() {
+        for v in ["basic", "Basic", "BASIC"] {
+            assert!(
+                !ebl012_could_fire(&[], &env("Ready", "Green"), &system_type(v)),
+                "{v}"
+            );
+        }
+    }
+
+    /// Outside the rule's own preconditions it could not have fired.
+    #[test]
+    fn ebl012_is_not_lost_when_the_rule_could_not_apply() {
+        let enhanced = system_type("enhanced");
+        assert!(!ebl012_could_fire(
+            &[],
+            &env("Updating", "Green"),
+            &enhanced
+        ));
+        assert!(!ebl012_could_fire(&[], &env("Ready", "Red"), &enhanced));
+        assert!(!ebl012_could_fire(
+            &["EBL012".into()],
+            &env("Ready", "Green"),
+            &enhanced
+        ));
+    }
+}
+
 #[cfg(test)]
 mod degrade_guard {
     /// Every degrade must go through `degrade`, so that printing the
@@ -2701,6 +2860,10 @@ mod cycle_wiring {
         /// One custom platform exists and its `DescribePlatformVersion`
         /// is rejected: EBL015 coverage that PARTLY failed.
         platform_date_rejected: bool,
+        /// `ListTagsForResource` is rejected: EBL010's input is lost.
+        tags_rejected: bool,
+        /// `DescribeEnvironmentHealth` is rejected: EBL012's input is lost.
+        health_rejected: bool,
     }
 
     /// The branch whose platform dates the mock refuses to report.
@@ -2748,6 +2911,9 @@ mod cycle_wiring {
                         b = b.environments(
                             EnvironmentDescription::builder()
                                 .environment_name(e)
+                                .environment_arn(format!(
+                            "arn:aws:elasticbeanstalk:us-west-1:123456789012:environment/poly/{e}"
+                        ))
                                 .application_name("poly")
                                 .status("Ready".into())
                                 .health("Green".into())
@@ -2799,18 +2965,38 @@ mod cycle_wiring {
             }
             out.build()
         });
-        let tags = aws_smithy_mocks::mock!(
-            aws_sdk_elasticbeanstalk::Client::list_tags_for_resource
-        )
-        .then_output(|| {
-            aws_sdk_elasticbeanstalk::operation::list_tags_for_resource::ListTagsForResourceOutput::builder().build()
-        });
-        let health = aws_smithy_mocks::mock!(
-            aws_sdk_elasticbeanstalk::Client::describe_environment_health
-        )
-        .then_output(|| {
-            aws_sdk_elasticbeanstalk::operation::describe_environment_health::DescribeEnvironmentHealthOutput::builder().build()
-        });
+        let denied = |what: &str| {
+            aws_smithy_types::error::ErrorMetadata::builder()
+                .code("AccessDeniedException")
+                .message(format!("User is not authorized to perform {what}"))
+                .build()
+        };
+        let tags = if faults.tags_rejected {
+            aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::list_tags_for_resource)
+                .then_error(move || {
+                    aws_sdk_elasticbeanstalk::operation::list_tags_for_resource::ListTagsForResourceError::generic(
+                        denied("elasticbeanstalk:ListTagsForResource"),
+                    )
+                })
+        } else {
+            aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::list_tags_for_resource)
+                .then_output(|| {
+                    aws_sdk_elasticbeanstalk::operation::list_tags_for_resource::ListTagsForResourceOutput::builder().build()
+                })
+        };
+        let health = if faults.health_rejected {
+            aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::describe_environment_health)
+                .then_error(move || {
+                    aws_sdk_elasticbeanstalk::operation::describe_environment_health::DescribeEnvironmentHealthError::generic(
+                        denied("elasticbeanstalk:DescribeEnvironmentHealth"),
+                    )
+                })
+        } else {
+            aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::describe_environment_health)
+                .then_output(|| {
+                    aws_sdk_elasticbeanstalk::operation::describe_environment_health::DescribeEnvironmentHealthOutput::builder().build()
+                })
+        };
         let resources = aws_smithy_mocks::mock!(
             aws_sdk_elasticbeanstalk::Client::describe_environment_resources
         )
@@ -2996,6 +3182,68 @@ mod cycle_wiring {
         assert!(
             !report.degraded(),
             "the fleet WAS seen — a rejected write is not incomplete coverage: {:?}",
+            report.degrade_reasons
+        );
+    }
+
+    fn with_required_tag() -> config::Config {
+        config::Config {
+            required_tags: vec!["owner".into()],
+            ..config::Config::default()
+        }
+    }
+
+    /// A rejected tag fetch DEGRADES the cycle when EBL010 could have
+    /// fired. `.ok()` used to turn it into a silent skip: exit 0, and
+    /// `--baseline` adopted a run whose tag check never happened.
+    #[tokio::test]
+    async fn a_rejected_tag_fetch_degrades_the_cycle() {
+        let report = run_with_opts(
+            vec![None],
+            CycleOpts {
+                safety_cfg: with_required_tag(),
+                ..CycleOpts::default()
+            },
+            |_| async {
+                Ok(mock_client_inner(
+                    vec!["poly-prod-web".into()],
+                    MockFaults {
+                        tags_rejected: true,
+                        ..MockFaults::default()
+                    },
+                ))
+            },
+        )
+        .await;
+        assert!(
+            report
+                .degrade_reasons
+                .iter()
+                .any(|r| r.contains("EBL010") && r.contains("ListTagsForResource")),
+            "{:?}",
+            report.degrade_reasons
+        );
+    }
+
+    /// The same for EBL012 and the health fetch, on a Ready/Green env.
+    #[tokio::test]
+    async fn a_rejected_health_fetch_degrades_the_cycle() {
+        let report = run_with(vec![None], |_| async {
+            Ok(mock_client_inner(
+                vec!["poly-prod-web".into()],
+                MockFaults {
+                    health_rejected: true,
+                    ..MockFaults::default()
+                },
+            ))
+        })
+        .await;
+        assert!(
+            report
+                .degrade_reasons
+                .iter()
+                .any(|r| r.contains("EBL012") && r.contains("DescribeEnvironmentHealth")),
+            "{:?}",
             report.degrade_reasons
         );
     }
