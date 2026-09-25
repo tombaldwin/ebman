@@ -183,9 +183,9 @@ impl App {
             AppMsg::ConfirmModalLint {
                 env_name,
                 issues,
-                unavailable,
+                not_run,
                 ..
-            } => self.handle_confirm_modal_lint(env_name, issues, unavailable),
+            } => self.handle_confirm_modal_lint(env_name, issues, not_run),
             AppMsg::LintInputsCached {
                 env_name,
                 tags,
@@ -833,7 +833,7 @@ impl App {
         &mut self,
         env_name: String,
         issues: Vec<crate::lint::Issue>,
-        unavailable: Option<String>,
+        not_run: Vec<String>,
     ) {
         let Some(ActionFlow::Confirm(modal)) = self.action_flow.as_mut() else {
             return;
@@ -843,7 +843,7 @@ impl App {
         }
         modal.loading_lint = false;
         modal.lint_issues = Some(issues);
-        modal.lint_unavailable = unavailable;
+        modal.lint_not_run = not_run;
     }
 
     /// 0.21: write freshly-fetched lint inputs into the App caches

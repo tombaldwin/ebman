@@ -869,10 +869,11 @@ pub(crate) enum AppMsg {
         gen: u64,
         env_name: String,
         issues: Vec<crate::lint::Issue>,
-        /// Why lint could not run, when it could not. `issues` is then
-        /// empty, and the modal must say so rather than show nothing —
-        /// which is what it shows for a clean result.
-        unavailable: Option<String>,
+        /// The checks that could not run, each with why: the whole lint
+        /// (client or option fetch failed) or one rule's input. Listed
+        /// because an empty `issues` renders as nothing, which is also
+        /// how a clean result renders.
+        not_run: Vec<String>,
     },
     /// 0.21: side-channel cache update for the lint-input caches.
     /// Emitted by `spawn_confirm_lint` (and any future lint call site)

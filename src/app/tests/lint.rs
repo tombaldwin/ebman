@@ -299,10 +299,37 @@ fn the_pre_deploy_lint_reports_a_failed_run() {
         "a failed lint must not become an empty — i.e. clean — issue list"
     );
     assert!(
-        code.matches("unavailable: Some(").count() + code.matches("unavailable = Some(").count()
-            >= 2,
-        "both failure paths (client, option fetch) must carry a reason"
+        code.matches("lint could not run").count() >= 2,
+        "both whole-lint failure paths (client, option fetch) must carry a reason"
     );
+    // And the per-rule inputs: a denied tag or health fetch was dropped
+    // by `.ok()`, so the pane stayed empty — "clean" — over a check that
+    // never ran (0.45 release review). Each fetch must keep its error.
+    for call in [".list_tags(", ".fetch_env_instance_counts("] {
+        let at = code
+            .find(call)
+            .unwrap_or_else(|| panic!("spawn_confirm_lint no longer calls {call}"));
+        // The whole expression, not a fixed window: rustfmt splits the
+        // chain one call per line, and a 160-char window ended before the
+        // fourth line of the tag fetch — so `.ok()` there passed.
+        let tail = code[at..].split(';').next().unwrap_or_default();
+        assert!(
+            !tail.contains(".ok()"),
+            "{call} drops its error with `.ok()` — a failed fetch must be reported: {tail}"
+        );
+    }
+    // And the kept errors must reach the reporting helper: a call that
+    // passed `None` for either would compile and list nothing.
+    let at = code
+        .find("pre_deploy_coverage_gaps(")
+        .unwrap_or_else(|| panic!("spawn_confirm_lint no longer reports coverage gaps"));
+    let args = code[at..].split(';').next().unwrap_or_default();
+    for arg in ["tags_res.as_ref()", "&health_res"] {
+        assert!(
+            args.contains(arg),
+            "pre_deploy_coverage_gaps is not given {arg}: {args}"
+        );
+    }
 }
 
 /// Only `src/lint/` builds a `LintContext`: every surface gets its lint
@@ -350,4 +377,67 @@ fn only_the_shared_assembly_builds_a_lint_context() {
              assembly. Use `lint::inputs::fetch_env_lint_inputs` + `run_rules_for_env`."
         );
     }
+}
+
+#[test]
+fn a_failed_tag_or_health_fetch_is_listed_as_not_run_before_a_deploy() {
+    use super::super::spawn_deploy::pre_deploy_coverage_gaps;
+    let env = fake_env("api-prod", "Ready", "Green", "v1");
+    let tags = vec!["Owner".to_string()];
+    let enhanced: Vec<(String, String, String)> = Vec::new();
+    let gaps = pre_deploy_coverage_gaps(
+        &env,
+        &[],
+        &tags,
+        Some(&Err("AccessDenied".to_string())),
+        &Err("Throttling".to_string()),
+        Some(&enhanced),
+    );
+    assert_eq!(gaps.len(), 2, "{gaps:?}");
+    assert!(gaps[0].starts_with("EBL010 could not be evaluated for api-prod"));
+    assert!(gaps[0].contains("ListTagsForResource: AccessDenied"));
+    assert!(gaps[1].starts_with("EBL012 could not be evaluated for api-prod"));
+    assert!(gaps[1].contains("DescribeEnvironmentHealth: Throttling"));
+}
+
+#[test]
+fn a_failed_fetch_is_not_listed_when_its_rule_could_not_have_fired() {
+    use super::super::spawn_deploy::pre_deploy_coverage_gaps;
+    let env = fake_env("api-prod", "Ready", "Green", "v1");
+    let basic = vec![(
+        "aws:elasticbeanstalk:healthreporting:system".to_string(),
+        "SystemType".to_string(),
+        "basic".to_string(),
+    )];
+    // No required tags → EBL010 cannot fire; basic health → EBL012 cannot.
+    let quiet = pre_deploy_coverage_gaps(
+        &env,
+        &[],
+        &[],
+        Some(&Err("AccessDenied".to_string())),
+        &Err("Throttling".to_string()),
+        Some(&basic),
+    );
+    assert!(quiet.is_empty(), "{quiet:?}");
+    // Disabled rules are silent too.
+    let disabled = vec!["EBL010".to_string(), "EBL012".to_string()];
+    let off = pre_deploy_coverage_gaps(
+        &env,
+        &disabled,
+        &["Owner".to_string()],
+        Some(&Err("AccessDenied".to_string())),
+        &Err("Throttling".to_string()),
+        Some(&[]),
+    );
+    assert!(off.is_empty(), "{off:?}");
+    // Fetches that succeeded report nothing.
+    let clean = pre_deploy_coverage_gaps(
+        &env,
+        &[],
+        &["Owner".to_string()],
+        Some(&Ok(vec!["Owner".to_string()])),
+        &Ok(2),
+        Some(&[]),
+    );
+    assert!(clean.is_empty(), "{clean:?}");
 }

@@ -38,8 +38,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   modal.** A failed option fetch — or an unreachable client — became an
   empty issue list, and an empty list renders as nothing, which is also
   how a clean env renders: "could not check" looked like "checked,
-  clean" at the moment of the write. The modal now shows "lint could not
-  run — not a clean result", with the reason.
+  clean" at the moment of the write. The modal now lists the checks that
+  could not run, with the reason — including a single rule that lost its
+  input: a denied tag fetch (EBL010) or health fetch (EBL012) was
+  dropped the same way, when either rule could otherwise have fired.
 
 - **The TUI's `:lint` no longer shows "✓ No issues found" over checks
   that did not run.** It had its own copy of the lint assembly, which

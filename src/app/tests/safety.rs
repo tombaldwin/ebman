@@ -276,7 +276,7 @@ async fn handle_confirm_modal_lint_stuffs_issues_into_modal() {
         gen: app.generation,
         env_name: "prod".into(),
         issues: vec![],
-        unavailable: None,
+        not_run: vec![],
     });
     match &app.action_flow {
         Some(ActionFlow::Confirm(modal)) => {
@@ -305,14 +305,19 @@ async fn a_lint_that_could_not_run_reaches_the_modal_as_a_reason() {
         gen: app.generation,
         env_name: "prod".into(),
         issues: vec![],
-        unavailable: Some("DescribeConfigurationSettings failed: AccessDenied".into()),
+        not_run: vec![
+            "lint could not run: DescribeConfigurationSettings failed: AccessDenied".into(),
+        ],
     });
     match &app.action_flow {
         Some(ActionFlow::Confirm(modal)) => {
             assert!(!modal.loading_lint);
             assert_eq!(
-                modal.lint_unavailable.as_deref(),
-                Some("DescribeConfigurationSettings failed: AccessDenied")
+                modal.lint_not_run,
+                vec![
+                    "lint could not run: DescribeConfigurationSettings failed: AccessDenied"
+                        .to_string()
+                ]
             );
         }
         _ => panic!("expected confirm modal open"),
@@ -347,7 +352,7 @@ async fn handle_confirm_modal_lint_drops_stale_target_results() {
             suggestion: None,
             fields: Default::default(),
         }],
-        unavailable: None,
+        not_run: vec![],
     });
     match &app.action_flow {
         Some(ActionFlow::Confirm(modal)) => {
