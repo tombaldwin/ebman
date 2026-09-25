@@ -281,7 +281,7 @@ fn the_tui_lint_paths_use_the_shared_assembly() {
         (
             "app/spawn_deploy.rs",
             "fn spawn_confirm_lint(",
-            "snap.finish(inputs",
+            "snap.finish_fetched(",
         ),
     ] {
         let prod = super::scan::production_source(file);
@@ -314,22 +314,21 @@ fn the_tui_lint_paths_use_the_shared_assembly() {
 
 #[test]
 fn a_cached_input_that_is_missing_is_reported_not_read_as_clean() {
-    use crate::app::tui_lint::worker_dlq;
-    use crate::lint::inputs::{
-        dlq_depth_gap, explain_verdict, input_gaps, ExplainVerdict, Platforms, WorkerDlq,
-    };
-    let web = mk_env("api", "poly", "WebServer", "Green");
+    use crate::app::tui_lint::{dlq_depth_gap, platforms_from_cache, worker_dlq, WorkerDlq};
+    use crate::lint::inputs::{explain_verdict, input_gaps, ExplainVerdict, Platforms};
+    let mut web = mk_env("api", "poly", "WebServer", "Green");
+    web.solution_stack = "64bit Amazon Linux 2023 v4.1.0 running Corretto 17".into();
     let worker = mk_env("jobs", "poly", "Worker", "Green");
     let stacks: std::collections::HashMap<String, String> =
         [("Java".to_string(), "4.1".to_string())]
             .into_iter()
             .collect();
-    let loaded = Platforms::from_cache(&stacks, None);
+    let loaded = platforms_from_cache(&stacks, None, "us-east-1", "us-east-1");
 
     // Platform list not loaded, or failed → EBL008 could not run, and
     // the gap says which.
     let empty = std::collections::HashMap::new();
-    let waiting = Platforms::from_cache(&empty, None);
+    let waiting = platforms_from_cache(&empty, None, "us-east-1", "us-east-1");
     let gaps = input_gaps(&web, &[], &[], &waiting, None, None, &[]);
     assert_eq!(gaps.len(), 1, "{gaps:?}");
     assert!(
@@ -342,9 +341,11 @@ fn a_cached_input_that_is_missing_is_reported_not_read_as_clean() {
         explain_verdict("EBL008", &[], &gaps),
         ExplainVerdict::NotEvaluated(_)
     ));
-    let denied = Platforms::from_cache(
+    let denied = platforms_from_cache(
         &empty,
         Some("ListAvailableSolutionStacks failed: AccessDenied"),
+        "us-east-1",
+        "us-east-1",
     );
     let gaps = input_gaps(&web, &[], &[], &denied, None, None, &[]);
     assert!(
@@ -355,6 +356,23 @@ fn a_cached_input_that_is_missing_is_reported_not_read_as_clean() {
     assert!(input_gaps(&web, &[], &[], &loaded, None, None, &[]).is_empty());
     let off = vec!["EBL008".to_string()];
     assert!(input_gaps(&web, &off, &[], &waiting, None, None, &[]).is_empty());
+    // The cache is the home region's: an env elsewhere is not judged
+    // against it, and says so.
+    let Platforms::Unavailable(why) = platforms_from_cache(&stacks, None, "us-east-1", "eu-west-2")
+    else {
+        panic!("another region's env must not read the home catalogue as loaded");
+    };
+    assert!(
+        why.contains("us-east-1") && why.contains("eu-west-2"),
+        "{why}"
+    );
+    // A custom platform has no version family to compare: nothing lost.
+    let mut custom = web.clone();
+    custom.solution_stack = String::new();
+    assert!(
+        input_gaps(&custom, &[], &[], &waiting, None, None, &[]).is_empty(),
+        "EBL008 cannot apply to an env with no versioned platform"
+    );
 
     // The worker-queue poll, as lint may use it. A failed last check is
     // never a usable answer — not the depth kept for the alert pill, and
@@ -430,20 +448,18 @@ fn the_pre_deploy_lint_reports_a_failed_run() {
             "{call} drops its error with `.ok()` — a failed fetch must be reported: {tail}"
         );
     }
-    // And the kept errors must reach the shared gap helper: a call that
-    // passed `None` for either would compile and list nothing.
+    // And the kept results must reach the shared assembly, errors and
+    // all: a call that passed `None` / `Ok` would compile and list nothing.
     let at = code
-        .find("input_gaps(")
-        .unwrap_or_else(|| panic!("spawn_confirm_lint no longer reports input gaps"));
+        .find("snap.finish_fetched(")
+        .unwrap_or_else(|| panic!("spawn_confirm_lint no longer finishes through the snapshot"));
     let args = code[at..].split(';').next().unwrap_or_default();
-    for arg in ["tags_err", "health_err", "&snap.platforms"] {
-        assert!(args.contains(arg), "input_gaps is not given {arg}: {args}");
+    for arg in ["options", "tags_res", "health_res", "&disabled"] {
+        assert!(
+            args.contains(arg),
+            "finish_fetched is not given {arg}: {args}"
+        );
     }
-    assert!(
-        code.contains("Some(Err(e)) => Some(e.as_str())")
-            && code.contains("health_res.as_ref().err()"),
-        "tags_err / health_err must come from the fetch results"
-    );
 }
 
 /// Only `src/lint/` builds a `LintContext`: every surface gets its lint
@@ -557,26 +573,27 @@ fn a_failed_platform_listing_reaches_lint_as_a_gap_on_every_surface() {
         Platforms::Loaded(m) if !m.is_empty()
     ));
 
-    // Outside the TUI's cache handler, a listing reaches lint only
-    // through `from_listing`.
-    for file in ["cli/lint.rs", "cli/explain.rs", "cli/mcp/tools.rs"] {
-        let prod = super::scan::production_source(file);
-        assert!(
-            prod.contains("Platforms::from_listing("),
-            "{file} lists platforms for lint without `Platforms::from_listing`"
-        );
-        assert!(
-            !prod.contains("latest_stack_versions("),
-            "{file} builds the platform map itself — a failure becomes an empty map again"
-        );
-    }
+    // `ebman explain` reaches the listing through `from_listing`. Its
+    // exit is `process::exit`, which no test can observe, so the wiring
+    // is pinned here; `ebman lint` and MCP are tested through their
+    // mock backends (`a_failed_stack_listing_*`).
+    let prod = super::scan::production_source("cli/explain.rs");
+    assert!(
+        prod.contains("Platforms::from_listing("),
+        "cli/explain.rs lists platforms for lint without `Platforms::from_listing`"
+    );
+    assert!(
+        !prod.contains("latest_stack_versions(") && !prod.contains("report_once("),
+        "explain is per env: it must not build the map itself, nor report the gap once"
+    );
 }
 
 /// The snapshot reads the App caches the way lint must use them, and
 /// `complete` carries the DLQ answer and its gap into the inputs.
 #[tokio::test]
 async fn the_lint_snapshot_reads_the_caches_as_lint_may_use_them() {
-    use crate::lint::inputs::{EnvLintInputs, Platforms, WorkerDlq};
+    use crate::app::tui_lint::WorkerDlq;
+    use crate::lint::inputs::{EnvLintInputs, Platforms};
     let mut app = test_app();
     let worker = mk_env("jobs", "poly", "Worker", "Green");
 
@@ -587,6 +604,24 @@ async fn the_lint_snapshot_reads_the_caches_as_lint_may_use_them() {
         panic!("an empty cache is not a loaded list");
     };
     assert!(why.contains("AccessDenied"), "{why}");
+
+    // The cache is the home region's: a row in another region under a
+    // fan-out is not judged against it.
+    app.latest_stacks = [("Java".to_string(), "4.1".to_string())]
+        .into_iter()
+        .collect();
+    app.latest_stacks_error = None;
+    let mut abroad = mk_env("far", "poly", "WebServer", "Green");
+    abroad.region = Some("eu-west-2".into());
+    app.environments = vec![abroad.clone()];
+    let Platforms::Unavailable(why) = &app.lint_snapshot(&abroad).platforms else {
+        panic!("another region's env read the home catalogue as loaded");
+    };
+    assert!(why.contains("eu-west-2"), "{why}");
+    assert!(matches!(
+        app.lint_snapshot(&worker).platforms,
+        Platforms::Loaded(_)
+    ));
 
     // A depth in hand is used — EBL011 fires on it...
     app.worker_dlq_depths.insert("jobs".into(), 250);
@@ -645,4 +680,102 @@ async fn the_platform_fetch_error_is_cleared_by_a_success_and_a_context_switch()
         app.latest_stacks_error.is_none(),
         "a context switch clears it"
     );
+}
+
+/// Within `src/app`, only `tui_lint.rs` calls the lint engine.
+///
+/// The per-function pins above can only see the functions they name; a
+/// fourth TUI lint path calling `fetch_env_lint_inputs` +
+/// `run_rules_for_env` directly would pass them, and skip the snapshot,
+/// the DLQ gap and the stale-cache rule. Asked the other way round, it
+/// fails. `explain_verdict` is allowed: it reads a finished run.
+#[test]
+fn only_tui_lint_calls_the_lint_engine_in_app() {
+    const ENGINE: &[&str] = &[
+        "fetch_env_lint_inputs(",
+        "run_rules_for_env(",
+        "default_rules(",
+        "inputs::assemble(",
+        "input_gaps(",
+        "EnvLintInputs",
+        "LintContext",
+        "lint::run_rules(",
+    ];
+    let mut offenders: Vec<String> = Vec::new();
+    let mut scanned = 0usize;
+    for (path, full) in super::scan::source_files() {
+        if !path.contains("src/app/")
+            || super::scan::is_test_path(&path)
+            || path.ends_with("src/app/tui_lint.rs")
+        {
+            continue;
+        }
+        scanned += 1;
+        let prod = super::scan::production_half(&full);
+        for line in prod.lines().map(super::scan::strip_line_comment) {
+            if let Some(hit) = ENGINE.iter().find(|n| line.contains(*n)) {
+                offenders.push(format!("{path}: {hit}"));
+            }
+        }
+    }
+    assert!(scanned > 30, "scanned only {scanned} app files");
+    assert!(
+        offenders.is_empty(),
+        "these call the lint engine outside `app::tui_lint` — go through \
+         `LintSnapshot` so the cached inputs and their gaps come along: {offenders:?}"
+    );
+}
+
+/// `assemble` carries every fetched input through, so the rules fire on
+/// them: the three below fire only if tags, health and the newer
+/// platform version reached the context. Every fetch path goes through
+/// it, so a dropped input here is dropped on every surface.
+#[test]
+fn assemble_carries_every_fetched_input_to_the_rules() {
+    use crate::lint::inputs::{assemble, run_rules_for_env, Platforms};
+    let mut env = mk_env("api", "poly", "WebServer", "Green");
+    env.solution_stack = "64bit Amazon Linux 2023 v4.1.0 running Corretto 17".into();
+    let newest: std::collections::HashMap<String, String> = [(
+        "64bit Amazon Linux 2023 running Corretto 17".to_string(),
+        "4.2.0".to_string(),
+    )]
+    .into_iter()
+    .collect();
+    assert!(
+        crate::aws::newer_stack_version(&env.solution_stack, &newest).is_some(),
+        "fixture: the catalogue must hold a newer version of the env's family"
+    );
+    let required = vec!["Owner".to_string()];
+    let inputs = assemble(
+        &env,
+        Vec::new(),
+        Some(Ok(vec!["Team".to_string()])),
+        Ok(0),
+        &Platforms::Loaded(newest),
+        &[],
+        &required,
+    );
+    assert_eq!(
+        inputs.env_tag_keys.as_deref(),
+        Some(&["Team".to_string()][..])
+    );
+    assert_eq!(inputs.healthy_count, Some(0));
+    assert_eq!(inputs.newer_stack.as_deref(), Some("4.2.0"));
+    assert!(
+        inputs.coverage_warnings.is_empty(),
+        "{:?}",
+        inputs.coverage_warnings
+    );
+
+    let rules = crate::lint::default_rules(&[]);
+    let fired: Vec<String> = run_rules_for_env(&rules, &env, &inputs, &required)
+        .into_iter()
+        .map(|i| i.rule_id)
+        .collect();
+    for rule in ["EBL008", "EBL010", "EBL012"] {
+        assert!(
+            fired.iter().any(|r| r == rule),
+            "{rule} did not fire: {fired:?}"
+        );
+    }
 }

@@ -628,10 +628,9 @@ where
         // to justify it as "the same tolerance pattern the per-env
         // fetches use below"; those fetches degrade.
         //
-        // The failure is carried in `Platforms` and reported per env by
-        // the shared assembly (`lint::inputs::input_gaps`), as each
-        // env's coverage warnings below — the one path every surface
-        // now shares, and which skips a disabled EBL008.
+        // The failure is carried in `Platforms`, and reported once for
+        // the region below (`Platforms::report_once`) once the envs in
+        // scope are known.
         let platforms =
             lint::inputs::Platforms::from_listing(aws.list_solution_stacks().await, |e| {
                 e.to_string()
@@ -659,6 +658,18 @@ where
             },
             None => envs.iter().collect(),
         };
+        // One failed listing is one degrade line for the region, naming
+        // it — not one per env over the same cause — and only when an
+        // env in scope could have had EBL008 fire.
+        let platforms = platforms.report_once(
+            targets
+                .iter()
+                .any(|e| lint::inputs::ebl008_could_fire(disabled, e)),
+            |why| {
+                let region_label = region_opt.as_deref().unwrap_or("default");
+                report.degrade(format!("EBL008 skipped — region '{region_label}': {why}"));
+            },
+        );
 
         for env in targets {
             // Fetch + build + run via the shared assembly path
@@ -2577,6 +2588,11 @@ mod cycle_wiring {
                             "arn:aws:elasticbeanstalk:us-west-1:123456789012:environment/poly/{e}"
                         ))
                                 .application_name("poly")
+                                // A versioned platform, so EBL008 applies
+                                // and a failed stack listing costs it.
+                                .solution_stack_name(
+                                    "64bit Amazon Linux 2023 v4.1.0 running Corretto 17",
+                                )
                                 .status("Ready".into())
                                 .health("Green".into())
                                 .build(),
@@ -2941,7 +2957,8 @@ mod cycle_wiring {
 
     fn stacks_rejected() -> aws::AwsClient {
         mock_client_inner(
-            vec!["poly-prod-web".into()],
+            // Two envs: one failed listing must still be one line.
+            vec!["poly-prod-web".into(), "poly-prod-api".into()],
             MockFaults {
                 stacks_rejected: true,
                 ..MockFaults::default()
@@ -2953,13 +2970,18 @@ mod cycle_wiring {
     #[tokio::test]
     async fn a_failed_stack_listing_degrades_the_cycle() {
         let report = run_with(vec![None], |_| async { Ok(stacks_rejected()) }).await;
+        let ebl008: Vec<_> = report
+            .degrade_reasons
+            .iter()
+            .filter(|r| r.contains("EBL008"))
+            .collect();
+        // Once for the region, naming it — not once per env over the
+        // same cause.
+        assert_eq!(ebl008.len(), 1, "{:?}", report.degrade_reasons);
         assert!(
-            report
-                .degrade_reasons
-                .iter()
-                .any(|r| r.contains("EBL008") && r.contains("ListAvailableSolutionStacks")),
-            "{:?}",
-            report.degrade_reasons
+            ebl008[0].contains("ListAvailableSolutionStacks") && ebl008[0].contains("region '"),
+            "{}",
+            ebl008[0]
         );
     }
 

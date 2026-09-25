@@ -66,6 +66,10 @@ Tier definitions:
   makes the impossible combinations unrepresentable; lint already reads
   them through one function (`tui_lint::worker_dlq`). Touches the alert
   calc, the table chip and Detail, so its own change. *0.45 re-review.*
+  The same for the platform cache: `latest_stacks` and
+  `latest_stacks_error` are one fact in two fields, and the cache is the
+  HOME region's only — lint now reports an env elsewhere as not
+  evaluated, but a per-region cache would let EBL008 run for it.
 - [ ] **`src/app/tests/scan.rs` has outgrown its name and location**
   (~1,100 lines): source-scan primitives, git/packaging checks (account
   IDs, protected names) and the `write_gate` guard, under `app/tests/`
@@ -201,8 +205,8 @@ Tier definitions:
 
 - [ ] **The pre-deploy lint still fetches its own way.** Since 0.45 it
   shares everything after the fetch with `:lint` / `:explain` (the
-  snapshot, `input_gaps`, `LintSnapshot::finish`), and a failed tag or
-  health fetch is listed. What differs is the fetch: it reads the
+  snapshot, `lint::inputs::assemble`, `LintSnapshot::finish`), and a
+  failed tag or health fetch is listed. What differs is the fetch: it reads the
   lint-input cache first, and it never runs the EBL020 / EBL018 probes
   — so those two rules cannot fire in the confirm modal, and nothing
   there says so. **Two rulings needed:** how the latency cache

@@ -62,7 +62,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   modal alike: EBL008 before the platform list has loaded, or naming the
   failure when it could not be fetched; and EBL011 for a worker whose
   queue has not been checked yet, or whose last check failed — lint no
-  longer judges on the depth kept from before the failure.
+  longer judges on the depth kept from before the failure. The TUI's
+  platform list is fetched for the home region only, so under a
+  multi-region fan-out an env elsewhere reports EBL008 as not evaluated
+  rather than being judged against another region's catalogue.
 
 - **A red transition is audited under the environment's own region.**
   Under a multi-region fan-out the line — which operators wire their own
@@ -115,7 +118,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   tells agents to look. The undocumented `warnings` array that carried
   per-branch failures is gone; they are in `skipped_envs` with the rest.
   In the CLI and MCP alike, a failed stack listing no longer degrades a
-  run when EBL008 is disabled. Every `skipped_envs` entry now carries
+  run when EBL008 is disabled, or when no env in scope is on a versioned
+  platform (a custom platform has nothing for EBL008 to compare). A
+  failed listing is one line for the run — one `skipped_envs` entry, one
+  degrade reason naming the region — not one per env. Every
+  `skipped_envs` entry now carries
   the `aws sso login` fix when the failure in it was an expired session;
   the per-env coverage warnings and per-branch EBL015 warnings carried
   the raw SDK error.

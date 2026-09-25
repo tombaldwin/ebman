@@ -257,45 +257,39 @@ pub(crate) async fn fetch_env_lint_inputs(
     let health_fut = aws.fetch_env_instance_counts(&env.name);
     let (opts_res, tags_opt, health_res) = tokio::join!(opts_fut, tags_fut, health_fut);
     let options = opts_res.map_err(|e| e.to_string())?;
-    // A failed fetch still leaves the input `None`, so the rule skips —
-    // a failed fetch must never become a false positive. What changed
-    // is that it is no longer SILENT: `.ok()` on both of these turned
-    // AccessDenied or throttling into a skip indistinguishable from a
-    // clean pass, so `lint` exited 0 and `--baseline` adopted a run
-    // whose EBL010/EBL012 checks never happened. The rule's own comment
-    // said "a FAILED fetch is a different thing and the caller reports
-    // it"; no caller did.
-    let tags_err = match &tags_opt {
-        Some(Err(e)) => Some(e.to_string()),
-        _ => None,
-    };
-    let health_err = health_res.as_ref().err().map(|e| e.to_string());
-    let fetch_warnings = input_gaps(
+    // A failed fetch leaves its input unset, so the rule skips — never a
+    // false positive — and `assemble` lists the skip. `.ok()` on these
+    // two once made AccessDenied or throttling a skip indistinguishable
+    // from a clean pass, so `lint` exited 0 and `--baseline` adopted a
+    // run whose EBL010/EBL012 checks never happened.
+    let tags = tags_opt.map(|r| {
+        r.map(|kvs| kvs.into_iter().map(|(k, _)| k).collect())
+            .map_err(|e| e.to_string())
+    });
+    let health = health_res
+        .map(|c| c.healthy as i64)
+        .map_err(|e| e.to_string());
+    let mut inputs = assemble(
         env,
+        options,
+        tags,
+        health,
+        platforms,
         disabled,
         required_tags,
-        platforms,
-        tags_err.as_deref(),
-        health_err.as_deref(),
-        &options,
     );
-    let env_tag_keys: Option<Vec<String>> = match tags_opt {
-        Some(Ok(t)) => Some(t.into_iter().map(|(k, _)| k).collect()),
-        _ => None,
-    };
-    let healthy_count = health_res.ok().map(|c| c.healthy as i64);
-    let newer_stack = platforms.newer_for(env);
     // EBL020 probe — only when the env actually has X-Ray on (rare),
     // so the common path pays no IAM calls. Probe failures leave the
     // field unset: skip, never false-positive.
-    let xray_outcome = probe_xray_trace_denied(aws, &options, disabled).await;
+    let xray_outcome = probe_xray_trace_denied(aws, &inputs.options, disabled).await;
     // EBL018 probe — only for prod-named ALB envs (both gates checked
     // inside), so the common path pays no WAF calls.
-    let waf_outcome = probe_waf_missing(aws, env, &options, disabled).await;
+    let waf_outcome = probe_waf_missing(aws, env, &inputs.options, disabled).await;
     // EBL016 probe — opt-in via `probe_live` (one curl HEAD per env
     // is too slow for default lint). Only a FAILURE is recorded.
     let probe_failure: Option<String> = if probe_live && !env.cname.is_empty() {
-        let path = options
+        let path = inputs
+            .options
             .iter()
             .find_map(|(ns, n, v)| {
                 (ns == "aws:elasticbeanstalk:application"
@@ -309,28 +303,28 @@ pub(crate) async fn fetch_env_lint_inputs(
     } else {
         None
     };
-    let coverage_warnings = fetch_warnings
+    inputs.coverage_warnings.extend(
+        [
+            xray_outcome.coverage_warning("EBL020", &env.name),
+            waf_outcome.coverage_warning("EBL018", &env.name),
+        ]
         .into_iter()
-        .chain(
-            [
-                xray_outcome.coverage_warning("EBL020", &env.name),
-                waf_outcome.coverage_warning("EBL018", &env.name),
-            ]
-            .into_iter()
-            .flatten(),
-        )
-        .collect();
-    Ok(EnvLintInputs {
-        options,
-        env_tag_keys,
-        healthy_count,
-        xray_denied: xray_outcome.verdict(),
-        probe_failure,
-        newer_stack,
-        waf_missing: waf_outcome.verdict(),
-        coverage_warnings,
-        dlq_depth: None,
-    })
+        .flatten(),
+    );
+    inputs.xray_denied = xray_outcome.verdict();
+    inputs.waf_missing = waf_outcome.verdict();
+    inputs.probe_failure = probe_failure;
+    Ok(inputs)
+}
+
+/// Could EBL008 have fired, had the platform list loaded? Only for an
+/// env on a versioned platform (`… v4.1.0 running …`): a custom platform,
+/// or no stack at all, has no family to compare, so a missing list costs
+/// it nothing — and once the gap became per env, reporting it would put a
+/// line against every such env in the fleet.
+pub(crate) fn ebl008_could_fire(disabled: &[String], env: &aws::Environment) -> bool {
+    !disabled.iter().any(|d| d == "EBL008")
+        && aws::stack_family_version(&env.solution_stack).is_some()
 }
 
 /// Could EBL010 have fired, had the tag fetch succeeded? Only when it
@@ -371,13 +365,17 @@ pub(crate) fn ebl012_could_fire(
 /// used to handle its failure its own way — the CLI degraded, MCP
 /// skipped, the TUI read an empty map as "nothing newer", and `ebman
 /// explain` warned and then reported the rule clean. Carrying the
-/// failure in the type lets [`input_gaps`] report it once, for all.
+/// failure in the type makes each caller say how it is reported.
 pub(crate) enum Platforms {
     Loaded(std::collections::HashMap<String, String>),
-    /// Why the list is missing, as the operator should read it: the
-    /// failed call (already credential-rewritten where the surface
-    /// does that), or "not loaded yet" from the TUI's cache.
+    /// Missing, with why: reported per env by [`input_gaps`] — the shape
+    /// the per-env surfaces want (the TUI, `ebman explain`).
     Unavailable(String),
+    /// Missing, and a fleet surface (`ebman lint`, MCP `lint`) reported
+    /// it once for the run, so no env repeats it: one failed call is one
+    /// line, not one per env with the same cause (and, on MCP, the same
+    /// credential hint N times). See [`Platforms::report_once`].
+    ReportedOnce,
 }
 
 impl Platforms {
@@ -393,27 +391,69 @@ impl Platforms {
         }
     }
 
-    /// The TUI's cached list. `failed` is the last fetch's error, if it
-    /// failed; an empty list with no error has not loaded yet. (A region
-    /// always has platforms, so empty never means "none".)
-    pub(crate) fn from_cache(
-        latest: &std::collections::HashMap<String, String>,
-        failed: Option<&str>,
-    ) -> Self {
-        match failed {
-            Some(e) if latest.is_empty() => Self::Unavailable(e.to_string()),
-            _ if latest.is_empty() => {
-                Self::Unavailable("the platform-version list has not loaded yet".into())
+    /// For a fleet surface: report a missing list once, through
+    /// `report`, when it cost anything — `affected` is whether any env
+    /// in scope could have had EBL008 fire ([`ebl008_could_fire`]), so a
+    /// disabled rule, or a region of custom platforms, reports nothing.
+    pub(crate) fn report_once(self, affected: bool, report: impl FnOnce(&str)) -> Self {
+        match self {
+            Self::Unavailable(why) => {
+                if affected {
+                    report(&why);
+                }
+                Self::ReportedOnce
             }
-            _ => Self::Loaded(latest.clone()),
+            other => other,
         }
     }
 
     pub(crate) fn newer_for(&self, env: &aws::Environment) -> Option<String> {
         match self {
             Self::Loaded(latest) => aws::newer_stack_version(&env.solution_stack, latest),
-            Self::Unavailable(_) => None,
+            Self::Unavailable(_) | Self::ReportedOnce => None,
         }
+    }
+}
+
+/// One env's inputs from what was fetched, pure: the options, the tag
+/// and health results (an `Err` is the failed call, as it renders), and
+/// the platform list. Every fetch path goes through here, so a new input
+/// cannot be set in one and forgotten in another — the pre-deploy lint
+/// built its inputs by hand from `EnvLintInputs::bare`, where a new
+/// field silently defaults to `None`. The probes are not here: they are
+/// fetches, and `fetch_env_lint_inputs` adds them.
+pub(crate) fn assemble(
+    env: &aws::Environment,
+    options: Vec<(String, String, String)>,
+    tags: Option<Result<Vec<String>, String>>,
+    health: Result<i64, String>,
+    platforms: &Platforms,
+    disabled: &[String],
+    required_tags: &[String],
+) -> EnvLintInputs {
+    let tags_err = match &tags {
+        Some(Err(e)) => Some(e.as_str()),
+        _ => None,
+    };
+    let coverage_warnings = input_gaps(
+        env,
+        disabled,
+        required_tags,
+        platforms,
+        tags_err,
+        health.as_ref().err().map(String::as_str),
+        &options,
+    );
+    EnvLintInputs {
+        env_tag_keys: tags.and_then(Result::ok),
+        healthy_count: health.ok(),
+        newer_stack: platforms.newer_for(env),
+        coverage_warnings,
+        options,
+        xray_denied: None,
+        probe_failure: None,
+        waf_missing: None,
+        dlq_depth: None,
     }
 }
 
@@ -434,7 +474,7 @@ pub(crate) fn input_gaps(
 ) -> Vec<String> {
     let mut gaps = Vec::new();
     if let Platforms::Unavailable(why) = platforms {
-        if !disabled.iter().any(|d| d == "EBL008") {
+        if ebl008_could_fire(disabled, env) {
             gaps.extend(ProbeOutcome::Unknown(why.clone()).coverage_warning("EBL008", &env.name));
         }
     }
@@ -449,45 +489,6 @@ pub(crate) fn input_gaps(
         }
     }
     gaps
-}
-
-/// EBL011's input, from the TUI's worker-queue poll.
-pub(crate) enum WorkerDlq {
-    Depth(i64),
-    /// The last check found no DLQ configured: nothing to check.
-    NoDlq,
-    /// No usable answer, with why — the first poll has not landed, or
-    /// the last one failed. A failed poll keeps the previous depth for
-    /// the alert pill, but lint does not judge on it: the rule would
-    /// fire, or pass, on a number nobody has seen since.
-    Unknown(String),
-}
-
-impl WorkerDlq {
-    pub(crate) fn depth(&self) -> Option<i64> {
-        match self {
-            Self::Depth(d) => Some(*d),
-            _ => None,
-        }
-    }
-}
-
-/// EBL011's input gap: a worker with no usable DLQ answer read the same
-/// as a clean one — including every worker in the seconds before the
-/// first poll lands, and one whose checks have been failing since an
-/// earlier "no DLQ".
-pub(crate) fn dlq_depth_gap(
-    env: &aws::Environment,
-    disabled: &[String],
-    dlq: &WorkerDlq,
-) -> Option<String> {
-    let WorkerDlq::Unknown(why) = dlq else {
-        return None;
-    };
-    if !env.tier.eq_ignore_ascii_case("Worker") || disabled.iter().any(|d| d == "EBL011") {
-        return None;
-    }
-    ProbeOutcome::Unknown(why.clone()).coverage_warning("EBL011", &env.name)
 }
 
 /// EBL015 account-level assembly, shared by `run` and the MCP `lint`
