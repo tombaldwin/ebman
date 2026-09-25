@@ -948,7 +948,12 @@ impl Server {
                     Ok(stacks) => aws::latest_stack_versions(&stacks),
                     Err(e) => {
                         if !disabled.iter().any(|d| d == "EBL008") {
-                            skipped.push(format!("EBL008 skipped — {e}"));
+                            skipped.push(rule_skipped(
+                                &profile,
+                                "EBL008",
+                                "ListAvailableSolutionStacks",
+                                &e.to_string(),
+                            ));
                         }
                         std::collections::HashMap::new()
                     }
@@ -1020,9 +1025,12 @@ impl Server {
                             // `skipped_envs` is where lost coverage is.
                             skipped.extend(branch_warnings);
                         }
-                        Err(e) => {
-                            skipped.push(format!("EBL015 skipped — ListPlatformVersions: {e}"))
-                        }
+                        Err(e) => skipped.push(rule_skipped(
+                            &profile,
+                            "EBL015",
+                            "ListPlatformVersions",
+                            &e.to_string(),
+                        )),
                     }
                 }
             }
@@ -1863,6 +1871,14 @@ pub(super) fn tool_error(profile: &Option<String>, op: &str, msg: &str) -> Strin
         | Some(crate::aws::CredentialHint::Invalid(text)) => text,
         None => format!("{op} failed: {msg}"),
     }
+}
+
+/// A whole rule pass that could not run, as a `skipped_envs` entry.
+/// Through [`tool_error`] like the per-env entries, so an expired SSO
+/// session still reaches the agent as the fix, not a raw SDK error:
+/// these two were the only entries that bypassed it.
+pub(super) fn rule_skipped(profile: &Option<String>, rule: &str, op: &str, msg: &str) -> String {
+    format!("{rule} skipped — {}", tool_error(profile, op, msg))
 }
 
 #[cfg(test)]
