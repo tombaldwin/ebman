@@ -681,6 +681,20 @@ pub(super) struct DeletedMessage {
 /// line and the undo's, which must agree to correlate.
 pub(super) const NOT_A_WORKER_TASK: &str = "(not an EB worker task)";
 
+/// The error for a restore that did not go through. `held` is
+/// [`Server::finish_restore`]'s answer: whether the message can still be
+/// retried, or the window closed while the restore was running.
+pub(super) fn restore_failed(why: &str, held: bool) -> String {
+    if held {
+        format!("restoring the message failed: {why} — it is still held and can be retried")
+    } else {
+        format!(
+            "restoring the message failed: {why} — and its {UNDO_WINDOW_SECS}s window closed \
+             while the restore was running, so it is no longer held"
+        )
+    }
+}
+
 /// How long an undo's claim on a held message stands: twice the tool
 /// timeout, so a restore still running is never raced, and a claim left
 /// behind by one whose call was DROPPED — the tool timeout firing
@@ -748,7 +762,6 @@ impl Server {
         Some(UNDO_WINDOW_SECS)
     }
 
-    /// What is still recoverable, newest first.
     /// Claim one held message for a restore, under the lock.
     ///
     /// A CLAIM, not a removal. The first cut of the take-once fix
@@ -784,16 +797,26 @@ impl Server {
     }
 
     /// End a claim: drop the message if it was restored, otherwise make
-    /// it restorable again for the rest of its window.
-    pub(super) async fn finish_restore(&self, id: &str, restored: bool) {
+    /// it restorable again for the rest of its window. Returns whether
+    /// it is still held: a restore claimed at 9:59 that fails after
+    /// 10:00 releases a message the window has already closed on, and
+    /// the failure must say so rather than imply a retry will work.
+    pub(super) async fn finish_restore(&self, id: &str, restored: bool) -> bool {
         let mut buf = self.deleted.lock().await;
         if restored {
             buf.retain(|d| d.original_id != id);
-        } else if let Some(d) = buf.iter_mut().find(|d| d.original_id == id) {
-            d.restoring_since = None;
+            return false;
+        }
+        match buf.iter_mut().find(|d| d.original_id == id) {
+            Some(d) => {
+                d.restoring_since = None;
+                d.at.elapsed().as_secs() < UNDO_WINDOW_SECS
+            }
+            None => false,
         }
     }
 
+    /// What is still recoverable, newest first.
     pub(super) async fn recoverable(&self) -> Vec<DeletedMessage> {
         let mut buf = self.deleted.lock().await;
         buf.retain(|d| d.at.elapsed().as_secs() < UNDO_WINDOW_SECS);
@@ -1540,7 +1563,7 @@ pub(super) fn write_tool_descriptors() -> Vec<Value> {
         }),
         json!({
             "name": "dlq_undo",
-            "description": "Put back a dead-lettered message THIS server deleted, within 10 minutes. Call with no arguments to list what is still recoverable. Single-phase — no plan/confirm — because it is the least destructive action here and is reached for under time pressure. CAVEATS: held in memory by this server only, so a restart loses them and nothing deleted by another process is here; purges are never recoverable; and the restore is a re-send, so the message id changes, receive_count resets to 0 and the enqueue time becomes now. Body and attributes come back verbatim. Each message can be restored ONCE, to the region and profile it was deleted from; a failed or interrupted restore leaves it recoverable, and a second call while one is running is told so.",
+            "description": "Put back a dead-lettered message THIS server deleted, within 10 minutes. Call with no arguments to list what is still recoverable. Single-phase — no plan/confirm — because it is the least destructive action here and is reached for under time pressure. CAVEATS: held in memory by this server only, so a restart loses them and nothing deleted by another process is here; purges are never recoverable; and the restore is a re-send, so the message id changes, receive_count resets to 0 and the enqueue time becomes now. Body and attributes come back verbatim. Each message can be restored ONCE, to the region and profile it was deleted from; a failed or interrupted restore leaves it recoverable for the rest of its 10 minutes (the failure says if they have run out), and a second call while one is running is told so.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -2759,7 +2782,9 @@ impl Server {
         if let Some(refused) =
             self.gate_refusal(&d.env, &d.profile, d.region.as_deref(), "dlq-undo")
         {
-            self.finish_restore(&d.original_id, false).await;
+            // A refusal is decided before anything is sent, well
+            // inside the window: nothing to add to it.
+            let _ = self.finish_restore(&d.original_id, false).await;
             return Err(WriteError::Refused(refused));
         }
 
@@ -2772,8 +2797,8 @@ impl Server {
             let client = match self.client(&client_args).await {
                 Ok(c) => c,
                 Err(e) => {
-                    self.finish_restore(&d.original_id, false).await;
-                    return Err(e.into());
+                    let held = self.finish_restore(&d.original_id, false).await;
+                    return Err(restore_failed(&e.to_string(), held).into());
                 }
             };
             // Audited like every other write. A restore is a real
@@ -2813,7 +2838,7 @@ impl Server {
             let sent = client
                 .send_message(&d.queue_url, &d.body, &d.attributes)
                 .await
-                .map_err(|e| format!("restoring the message failed: {e}"));
+                .map_err(|e| e.to_string());
             crate::audit::append_action_completed(
                 None,
                 audit_profile.as_deref(),
@@ -2823,12 +2848,12 @@ impl Server {
                 sent.as_ref().map(|_| ()).map_err(|e| e.as_str()),
                 &refs,
             );
-            self.finish_restore(&d.original_id, sent.is_ok()).await;
+            let held = self.finish_restore(&d.original_id, sent.is_ok()).await;
             if let Err(e) = sent {
-                return Err(e.into());
+                return Err(restore_failed(&e, held).into());
             }
         } else {
-            self.finish_restore(&d.original_id, true).await;
+            let _ = self.finish_restore(&d.original_id, true).await;
         }
 
         // Rule 6: say what could NOT be restored. The body and every
