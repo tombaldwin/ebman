@@ -699,30 +699,35 @@ async fn the_platform_fetch_error_is_cleared_by_a_success_and_a_context_switch()
     );
 }
 
-/// Within `src/app`, only `tui_lint.rs` calls the lint engine.
+/// Outside `src/lint` and `src/cli`, only `app/tui_lint.rs` calls the
+/// lint engine.
 ///
 /// The per-function pins above can only see the functions they name; a
 /// fourth TUI lint path calling `fetch_env_lint_inputs` +
 /// `run_rules_for_env` directly would pass them, and skip the snapshot,
 /// the DLQ gap and the stale-cache rule. Asked the other way round, it
-/// fails. `explain_verdict` is allowed: it reads a finished run.
+/// fails — anywhere, `src/app.rs`, `src/ui` and `src/mode_*` included,
+/// which a first cut scoped to `src/app/` could not see. The needles are
+/// bare names, so a `use` import cannot get a call past them.
+/// `explain_verdict` is not a needle: it reads a finished run.
 #[test]
-fn only_tui_lint_calls_the_lint_engine_in_app() {
+fn only_tui_lint_calls_the_lint_engine_outside_lint_and_cli() {
     const ENGINE: &[&str] = &[
         "fetch_env_lint_inputs(",
         "run_rules_for_env(",
         "default_rules(",
-        "inputs::assemble(",
+        "assemble(",
         "input_gaps(",
         "EnvLintInputs",
         "LintContext",
-        "lint::run_rules(",
+        "run_rules(",
     ];
     let mut offenders: Vec<String> = Vec::new();
     let mut scanned = 0usize;
     for (path, full) in super::scan::source_files() {
-        if !path.contains("src/app/")
-            || super::scan::is_test_path(&path)
+        if super::scan::is_test_path(&path)
+            || path.contains("src/lint/")
+            || path.contains("src/cli/")
             || path.ends_with("src/app/tui_lint.rs")
         {
             continue;
@@ -735,11 +740,46 @@ fn only_tui_lint_calls_the_lint_engine_in_app() {
             }
         }
     }
-    assert!(scanned > 30, "scanned only {scanned} app files");
+    assert!(scanned > 60, "scanned only {scanned} files");
     assert!(
         offenders.is_empty(),
         "these call the lint engine outside `app::tui_lint` — go through \
          `LintSnapshot` so the cached inputs and their gaps come along: {offenders:?}"
+    );
+}
+
+/// `Platforms::ReportedOnce` says "already reported for the run". Built
+/// anywhere but `report_once`, it silences every per-env gap with
+/// nothing reported — the exact failure the type exists to prevent.
+#[test]
+fn reported_once_is_built_only_by_report_once() {
+    let mut offenders: Vec<String> = Vec::new();
+    for (path, full) in super::scan::source_files() {
+        if super::scan::is_test_path(&path) || path.ends_with("src/lint/inputs.rs") {
+            continue;
+        }
+        let prod = super::scan::production_half(&full);
+        if prod
+            .lines()
+            .map(super::scan::strip_line_comment)
+            .any(|l| l.contains("ReportedOnce"))
+        {
+            offenders.push(path);
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "built outside report_once: {offenders:?}"
+    );
+    let inputs = super::scan::production_source("lint/inputs.rs");
+    let built = inputs
+        .lines()
+        .map(super::scan::strip_line_comment)
+        .filter(|l| l.contains("Self::ReportedOnce") && !l.contains("=>"))
+        .count();
+    assert_eq!(
+        built, 1,
+        "lint/inputs.rs builds ReportedOnce outside report_once"
     );
 }
 

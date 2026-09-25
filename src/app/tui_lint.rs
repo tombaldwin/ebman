@@ -6,9 +6,9 @@
 //! them its own way. A fix to one then missed the others: the cached-
 //! input gaps landed in `:lint` and `:explain` and not in the confirm
 //! modal, the surface where a missed check matters most. The snapshot is
-//! taken in one place and the run finished in one place, and within
-//! `src/app` only this module calls the lint engine (pinned by
-//! `only_tui_lint_calls_the_lint_engine_in_app`).
+//! taken in one place and the run finished in one place, and outside
+//! `src/lint` and `src/cli` only this module calls the lint engine
+//! (pinned by `only_tui_lint_calls_the_lint_engine_outside_lint_and_cli`).
 //!
 //! The cache readings live here, not in `lint::inputs`: nothing but the
 //! TUI has a platform cache or a queue poll, and the shared module stays

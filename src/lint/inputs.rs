@@ -374,7 +374,10 @@ pub(crate) enum Platforms {
     /// Missing, and a fleet surface (`ebman lint`, MCP `lint`) reported
     /// it once for the run, so no env repeats it: one failed call is one
     /// line, not one per env with the same cause (and, on MCP, the same
-    /// credential hint N times). See [`Platforms::report_once`].
+    /// credential hint N times). Construct it ONLY through
+    /// [`Platforms::report_once`]: built directly, it silences every
+    /// per-env gap with nothing reported (pinned by
+    /// `reported_once_is_built_only_by_report_once`).
     ReportedOnce,
 }
 
