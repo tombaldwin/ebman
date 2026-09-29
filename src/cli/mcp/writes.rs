@@ -1419,7 +1419,7 @@ pub(super) struct PendingWrite {
 
 /// Token TTL — long enough for an agent round-trip, short enough
 /// that a stale plan can't be confirmed against changed reality.
-const CONFIRM_TTL_SECS: u64 = 60;
+pub(super) const CONFIRM_TTL_SECS: u64 = 60;
 
 /// `set_option` per-call cap (spec-locked).
 const SET_OPTION_MAX: usize = 10;
