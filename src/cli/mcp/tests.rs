@@ -3751,6 +3751,57 @@ fn the_summary_says_whether_confirmations_are_put_to_a_person() {
     }
 }
 
+/// Every granted surface tells the agent what a denial from its own
+/// HOST means — and that routing around it is the wrong answer.
+///
+/// Field report: under Claude Code's auto mode the host's classifier
+/// refused `confirm_action` before ebman saw it. The agent had only a
+/// generic harness denial, the operator never saw ebman's dialog, and
+/// nothing ebman said covered it — so the obvious next move was the AWS
+/// CLI, which skips every pin, the audit line and the undo.
+///
+/// The allow rule means opposite things on the two connections: with
+/// the ask, it hands the decision back to a person; without it, it IS
+/// a standing grant. Saying the first on the second would invite an
+/// operator to wave through writes nobody will ever see.
+#[test]
+fn a_granted_surface_says_what_a_host_denial_means() {
+    for scope in [WriteScope::All, WriteScope::Only(vec!["dlq_delete".into()])] {
+        for can_ask in [true, false] {
+            let t = scope.agent_summary(None, can_ask, false);
+            assert!(
+                t.contains("IF YOUR HOST DENIES"),
+                "{scope:?}/{can_ask}: {t}"
+            );
+            assert!(
+                t.contains("AWS CLI"),
+                "must name the workaround to refuse: {t}"
+            );
+            assert!(t.contains("permissions.allow"), "must name the fix: {t}");
+            assert!(
+                t.contains(&format!("{} seconds", super::writes::CONFIRM_TTL_SECS)),
+                "must say the token lapses, or a retry of a dead token reads as a fault: {t}"
+            );
+            assert!(
+                !t.contains("  "),
+                "a wrapped literal missing its `\\` puts a hole in the text: {t:?}"
+            );
+            assert_eq!(
+                t.contains("not a formality"),
+                !can_ask,
+                "the allow rule is a standing grant exactly when nothing else asks: {t}"
+            );
+        }
+    }
+    // Nothing to deny where nothing can be written.
+    assert!(!WriteScope::None
+        .agent_summary(None, true, false)
+        .contains("IF YOUR HOST DENIES"));
+    assert!(!WriteScope::All
+        .agent_summary(Some("read_only is set."), true, true)
+        .contains("IF YOUR HOST DENIES"));
+}
+
 /// A standing refusal still outranks the ask note.
 ///
 /// Otherwise a server that refuses every write tells the agent to

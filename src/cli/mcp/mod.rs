@@ -548,6 +548,7 @@ impl WriteScope {
                 if opened_by_ask {
                     t.push_str(OPENED_BY_ASK_NOTE);
                 }
+                t.push_str(&host_denial_note(can_ask));
                 t
             }
             WriteScope::Only(v) => {
@@ -562,6 +563,7 @@ impl WriteScope {
                  concludes it is broken.",
                     v.join(", ")
                 ) + if can_ask { ASK_NOTE } else { "" }
+                    + &host_denial_note(can_ask)
             }
         }
     }
@@ -615,6 +617,46 @@ const ASK_NOTE: &str = "\n\nEach confirmation is sent to your CLIENT to put to t
      they settled days ago — turns a gate they approved of into a tax they resent, and \
      the tax is charged on every single write. Say what you are about to do in a line, \
      and let the dialog do the rest.";
+
+/// Appended to every granted-writes summary: what a denial from the
+/// CLIENT's own permission layer means, and what not to do about it.
+///
+/// Field report, 0.42: under Claude Code's auto mode the host's
+/// classifier refused `confirm_action` before it reached ebman. The
+/// operator never saw ebman's confirmation, the agent saw only a
+/// generic harness denial, and the easy next move — `aws sqs` from a
+/// shell — would have dropped the plan, the pins, the audit line and
+/// the undo. Nothing ebman said covered it. The agent is the only
+/// channel to the operator, so this is authored text, not protocol
+/// metadata.
+///
+/// Whether allowing the tool hands the decision to a person depends on
+/// `can_ask`: on a connection that cannot elicit, nothing else asks, so
+/// the allow rule IS the standing grant and must be named as one.
+fn host_denial_note(can_ask: bool) -> String {
+    let ttl = writes::CONFIRM_TTL_SECS;
+    let consequence = if can_ask {
+        "ebman then puts each confirmation to them itself, so the host stops deciding \
+         and they do"
+    } else {
+        "on THIS connection nothing else asks them — the allow rule would let every \
+         confirmation through unseen, so it is their decision to grant, not a formality"
+    };
+    format!(
+        "\n\nIF YOUR HOST DENIES THE CALL: your client's own permission layer (a \
+         permission mode, a classifier, a policy hook) can refuse `confirm_action` or \
+         `dlq_undo` before ebman receives it. That is neither ebman's gate nor the \
+         operator's answer: nothing was dispatched and nothing was audited. Do NOT route \
+         around it with the AWS CLI or any other tool — that bypasses the safety pins, \
+         the audit line and the undo. Tell the operator the host blocked it. They can \
+         approve that one call through their client (in Claude Code, `/permissions`, \
+         Recently denied), or allow the exact tool name you called (in Claude Code, \
+         `mcp__<server>__confirm_action` under `permissions.allow`); {consequence}. A \
+         plan's token lasts {ttl} seconds, so re-plan if it has expired rather than \
+         retrying it. A denied `dlq_undo` is urgent: its window is closing, so say how \
+         long is left."
+    )
+}
 
 /// The write verbs, for the docs-drift guard in `app::tests`.
 ///
