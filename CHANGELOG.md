@@ -4,6 +4,21 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Claude Code's auto mode no longer blocks MCP writes without
+  explanation.** Auto mode is the default starting mode in current Claude Code, and
+  its classifier can refuse `confirm_action` before ebman can put the
+  confirmation to you. You saw no dialog, and the agent saw only a
+  generic denial. `ebman mcp setup` now prints the
+  `permissions.allow` entry (`"mcp__ebman__confirm_action"`) that
+  lets ebman's own confirmation decide. The server instructions tell
+  the agent that such a denial never reached ebman, not to work
+  around it with the AWS CLI, and what to tell you. `doctor` says the
+  layer exists without claiming to detect it.
+
 ## [0.45.0] - 2026-09-25
 
 ### Changed
