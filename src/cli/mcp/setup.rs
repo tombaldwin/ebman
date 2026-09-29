@@ -128,6 +128,18 @@ pub(super) fn render(scope: &WriteScope) -> String {
             s.push('\n');
         }
     }
+    // Every scope above can write on Claude Code, which can ask — so
+    // every scope needs this. Under auto mode (Claude Code's default
+    // starting mode) the host's classifier can refuse confirm_action
+    // before ebman sees it, and the operator never sees ebman's dialog.
+    // A field report found exactly that, with nothing in ebman saying
+    // why or what to do.
+    s.push_str("Claude Code in auto mode (its default) may refuse confirm_action\n");
+    s.push_str("before ebman can ask you. To let ebman's own confirmation decide,\n");
+    s.push_str("add this to permissions.allow in your Claude Code settings:\n\n");
+    s.push_str("  \"mcp__ebman__confirm_action\"\n\n");
+    s.push_str("Claude Code can ask, so ebman still puts every write to you. Do\n");
+    s.push_str("not allow it on a client that cannot ask: there, nothing would.\n\n");
     s.push_str("If your shell exports AWS_REGION, pin it at registration — the\n");
     s.push_str("server takes the environment's region, not any project's:\n");
     s.push_str(&format!(
@@ -242,6 +254,30 @@ mod tests {
             assert!(!lower.contains("http"), "no URLs / remote fetch");
             assert!(!lower.contains("follow it"), "no fetch-and-obey framing");
             assert!(!lower.contains("curl"), "no piped-remote-script install");
+        }
+    }
+
+    /// Every scope can write on Claude Code, so every scope names the
+    /// allow rule that lets ebman's confirmation — not the host's auto
+    /// mode classifier — decide, and names it for the server THIS text
+    /// registers. A rule for a different name allows nothing, and the
+    /// operator would find out only at their first blocked write.
+    #[test]
+    fn every_scope_names_the_allow_rule_for_the_server_it_registers() {
+        for scope in all_scopes() {
+            let s = render(&scope);
+            let name = s
+                .split("claude mcp add ")
+                .nth(1)
+                .and_then(|rest| rest.split_whitespace().next())
+                .unwrap_or_else(|| panic!("no registration line: {s}"));
+            assert!(
+                s.contains(&format!("\"mcp__{name}__confirm_action\"")),
+                "{scope:?} must name the allow rule for `{name}`: {s}"
+            );
+            assert!(s.contains("permissions.allow"), "{s}");
+            // And the condition that makes it safe.
+            assert!(s.contains("client that cannot ask"), "{s}");
         }
     }
 
