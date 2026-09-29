@@ -4698,6 +4698,55 @@ async fn doctor_says_a_declared_capability_is_not_proof_of_a_human() {
     );
 }
 
+/// doctor names the permission layer it cannot see — wherever a write
+/// could be attempted, and nowhere else.
+///
+/// Field report: Claude Code's auto-mode classifier refused
+/// `confirm_action` before ebman saw it, while doctor reported writes
+/// as available. True from ebman's side; misleading from the agent's,
+/// which had nothing to connect the generic denial to. On a surface
+/// with no writes, or one refusing all of them, the note would be
+/// noise about a call that cannot happen.
+#[tokio::test]
+async fn doctor_names_the_host_permission_layer_it_cannot_see() {
+    async fn notes(s: &Server) -> Vec<String> {
+        let d = call(s, "doctor", json!({})).await.1;
+        d["notes"]
+            .as_array()
+            .unwrap_or_else(|| panic!("no notes in {d}"))
+            .iter()
+            .filter_map(|n| n.as_str().map(str::to_string))
+            .collect()
+    }
+    let host = |n: &[String]| n.iter().any(|n| n.contains("ebman cannot see"));
+
+    let asked = demo_server();
+    asked
+        .client_supports_elicitation
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let n = notes(&asked).await;
+    assert!(host(&n), "writes via elicitation: {n:?}");
+    assert!(
+        n.iter().any(|n| n.contains("AWS CLI")),
+        "and must say what not to do about it: {n:?}"
+    );
+    assert!(host(&notes(&demo_writes_server()).await), "writes via flag");
+
+    assert!(
+        !host(&notes(&demo_server()).await),
+        "no writes, nothing for a host to deny"
+    );
+    let cfg = crate::config::Config {
+        safety_read_only: true,
+        ..crate::config::Config::default()
+    };
+    let refused = Server::with_config(true, false, WriteScope::All, cfg);
+    assert!(
+        !host(&notes(&refused).await),
+        "every write refused by ebman first"
+    );
+}
+
 /// Nothing claims a person declined.
 ///
 /// Measured 2026-09-20 against headless `claude -p`: it declares
