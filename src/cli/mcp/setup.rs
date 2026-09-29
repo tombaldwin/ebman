@@ -134,9 +134,10 @@ pub(super) fn render(scope: &WriteScope) -> String {
     // before ebman sees it, and the operator never sees ebman's dialog.
     // A field report found exactly that, with nothing in ebman saying
     // why or what to do.
-    s.push_str("Claude Code in auto mode (its default) may refuse confirm_action\n");
-    s.push_str("before ebman can ask you. To let ebman's own confirmation decide,\n");
-    s.push_str("add this to permissions.allow in your Claude Code settings:\n\n");
+    s.push_str("Claude Code in auto mode (default in current versions) may refuse\n");
+    s.push_str("confirm_action before ebman can ask you. To let ebman's own\n");
+    s.push_str("confirmation decide, add this to permissions.allow in your\n");
+    s.push_str("Claude Code settings:\n\n");
     s.push_str("  \"mcp__ebman__confirm_action\"\n\n");
     s.push_str("Claude Code can ask, so ebman still puts every write to you. Do\n");
     s.push_str("not allow it on a client that cannot ask: there, nothing would.\n\n");
