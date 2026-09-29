@@ -3791,6 +3791,24 @@ fn a_granted_surface_says_what_a_host_denial_means() {
                 !can_ask,
                 "the allow rule is a standing grant exactly when nothing else asks: {t}"
             );
+            // Declaring elicitation is not proof a person sees anything
+            // (headless `claude -p` declares it and declines by itself).
+            assert!(
+                !t.contains("they do") && !t.contains("puts each confirmation to them itself"),
+                "must not claim a person decides: {t}"
+            );
+            assert_eq!(t.contains("not proof a person will see it"), can_ask, "{t}");
+            // `dlq_undo` never asks, on any client: allowing it is a
+            // standing grant whatever the connection.
+            assert!(t.contains("`dlq_undo` never asks anyone"), "{t}");
+            assert!(
+                t.contains(&format!(
+                    "{} minutes from the delete",
+                    super::writes::UNDO_WINDOW_SECS / 60
+                )),
+                "a denied undo is urgent: say how long the window is: {t}"
+            );
+            assert!(t.contains("NOT a declined confirmation"), "{t}");
         }
     }
     // Nothing to deny where nothing can be written.
@@ -4730,12 +4748,31 @@ async fn doctor_names_the_host_permission_layer_it_cannot_see() {
         n.iter().any(|n| n.contains("AWS CLI")),
         "and must say what not to do about it: {n:?}"
     );
+    // The whole remedy, not a pointer: the instructions' long form is
+    // past Claude Code's 2048-character cut, and doctor's output is not.
+    let note = n
+        .iter()
+        .find(|n| n.contains("ebman cannot see"))
+        .expect("the host note");
+    for part in [
+        "mcp__<server>__confirm_action",
+        "Recently denied",
+        "`dlq_undo` never asks anyone",
+        "not proof a person will see it",
+    ] {
+        assert!(note.contains(part), "doctor must carry `{part}`: {note}");
+    }
+    assert!(!note.contains("  "), "no indentation hole: {note:?}");
     assert!(host(&notes(&demo_writes_server()).await), "writes via flag");
 
     assert!(
         !host(&notes(&demo_server()).await),
         "no writes, nothing for a host to deny"
     );
+    // An empty narrow grant lists no write tool (`tools/list` goes by
+    // `.any()`), so the note has nothing to be about there either.
+    let empty = Server::with_scope(true, false, WriteScope::Only(vec![]));
+    assert!(!host(&notes(&empty).await), "an empty grant writes nothing");
     let cfg = crate::config::Config {
         safety_read_only: true,
         ..crate::config::Config::default()
@@ -4849,4 +4886,46 @@ async fn the_must_know_digest_survives_a_2048_char_cut() {
             }
         }
     }
+}
+
+/// `docs/headless.md` states the confirm token's lifetime and the undo
+/// window as numbers; the code has them as constants. Every place the doc
+/// states one must agree with the code, or the doc tells an operator to
+/// expect a window that is not there.
+#[test]
+fn headless_md_states_the_token_and_undo_windows_the_code_has() {
+    let doc = std::fs::read_to_string("docs/headless.md").expect("read docs/headless.md");
+    let number_after = |needle: &str| -> Vec<u64> {
+        doc.match_indices(needle)
+            .map(|(i, _)| {
+                doc[i + needle.len()..]
+                    .chars()
+                    .take_while(char::is_ascii_digit)
+                    .collect::<String>()
+                    .parse()
+                    .unwrap_or_else(|_| panic!("no number after `{needle}` at byte {i}"))
+            })
+            .collect()
+    };
+    let ttl = super::writes::CONFIRM_TTL_SECS;
+    let mut seen = 0;
+    for needle in ["token lasts ", "confirm token lives ", "single-use with a "] {
+        for n in number_after(needle) {
+            assert_eq!(
+                n, ttl,
+                "headless.md says `{needle}{n}`; the code's TTL is {ttl}s"
+            );
+            seen += 1;
+        }
+    }
+    assert!(
+        seen >= 3,
+        "found only {seen} TTL statements — the needles no longer match the doc"
+    );
+    let undo = number_after("Its window is ");
+    assert_eq!(
+        undo,
+        vec![super::writes::UNDO_WINDOW_SECS / 60],
+        "headless.md's dlq_undo window must be the code's, in minutes"
+    );
 }

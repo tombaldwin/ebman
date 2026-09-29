@@ -274,36 +274,44 @@ not overrule one you set.
 #### When your client refuses first (Claude Code auto mode)
 
 Your client can have a permission layer of its own, and it runs
-*before* ebman. Claude Code's auto mode, the default starting mode in current
-versions, sends each tool call to a classifier, which can refuse
-`confirm_action` as a change to shared infrastructure. The call never
-reaches ebman. You see no confirmation, nothing is dispatched, and
-nothing is audited. The agent sees only a generic denial.
+*before* ebman. Claude Code's auto mode (its default starting mode in
+recent versions) sends tool calls to a classifier, which can refuse
+`confirm_action`. The call never reaches ebman: you see no
+confirmation, nothing is dispatched, and nothing is audited. The agent
+sees only a generic denial.
 
-To let ebman's confirmation make the decision, allow the one tool in
-your Claude Code settings. The name is the server name you registered:
+To hand that decision to ebman's own confirmation, allow the one tool
+in your Claude Code settings. The part after `mcp__` is the name you
+registered the server under; a rule for another name allows nothing:
 
 ```json
 { "permissions": { "allow": ["mcp__ebman__confirm_action"] } }
 ```
 
-This is safe on Claude Code because Claude Code can ask: every write
-is still put to you, and terminate and purge still make you type the
-environment name. **Do not add this rule on a client that cannot
-ask.** There it would let every confirmation through unseen. For a
-single call, you can approve the denied action instead from
-`/permissions` → **Recently denied**. A plan's token lasts 60 seconds,
-so the agent may have to plan again first.
+The rule only stops the classifier deciding first. ebman still sends
+every write to Claude Code to put to you as a confirmation, and
+terminate and purge still ask you to type the environment name. That
+Claude Code shows you that dialog is its capability, not something
+ebman can check. **Do not add this rule on a client that cannot
+ask:** with nothing to put the write to you, it would let every
+confirmation through unseen. For a single call, approve the denied
+action instead from `/permissions` → **Recently denied**. A plan's
+token lasts 60 seconds, so the agent will usually have to plan again
+by the time you have.
 
-`dlq_undo` runs in one step and never asks you, so under auto mode
-the classifier is its only gate. If a denied undo is not approved
-before its window closes, the message is gone.
+`dlq_undo` runs in one step and never asks, on any client, so under
+auto mode the classifier is its only gate. Allowing it permanently
+lets every undo run unasked; approving the one denied call is the
+narrow fix. Its window is 10 minutes from the delete, and once it
+closes the message is gone.
 
 MCP gives a server no signal for the client's permission mode, so
-`doctor` cannot tell you which mode you are in. It only notes that
-the layer exists. The server instructions tell the agent that a host
-denial never reached ebman, and not to route around it with the AWS
-CLI, which would skip the pins, the audit line and the undo.
+`doctor` cannot tell you which mode you are in; it names the layer and
+the remedy. Claude Code shows an agent only the first 2048 characters
+of the server instructions, so ebman leads them with a short
+must-know digest — including that a host denial never reached ebman
+and must not be routed around with the AWS CLI, which would skip the
+pins, the audit line and the undo.
 
 #### Several messages, one confirmation (0.42+)
 
