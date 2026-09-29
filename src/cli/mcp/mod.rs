@@ -502,6 +502,70 @@ impl WriteScope {
     /// version line above exists to prevent, and it has the same cost
     /// — an agent reporting a capability gap that is really a config
     /// choice, instead of asking the operator to widen the grant.
+    /// The must-know points, first and short.
+    ///
+    /// Claude Code shows an agent only the first 2048 characters of the
+    /// server instructions. Measured: on every path where the client can
+    /// ask, the capabilities list and the `doctor` pointer had been past
+    /// that cut since 0.42, and 0.45.1's host-denial note landed past it
+    /// too — the one fix aimed at Claude Code, invisible on Claude Code.
+    /// So each point an agent must act on gets one line here, and
+    /// [`WriteScope::agent_summary`] follows with the reasons for clients
+    /// that show it all. Pinned by
+    /// `the_must_know_digest_survives_a_2048_char_cut`.
+    fn agent_digest(
+        &self,
+        standing_refusal: Option<&str>,
+        can_ask: bool,
+        opened_by_ask: bool,
+    ) -> String {
+        let mut d = String::from(
+            "MUST-KNOW (the full text follows; your client may cut it off, and `doctor` \
+             repeats what matters, uncut):\n",
+        );
+        let writes = standing_refusal.is_none() && self.any();
+        match (standing_refusal, self) {
+            (Some(why), _) => d.push_str(&format!(
+                "- Writes are REFUSED here, whatever the grant: {why} Do not plan writes.\n"
+            )),
+            (None, WriteScope::None) => d.push_str(
+                "- READ-ONLY: no write tool. Ask the operator to restart with --allow-writes; \
+                 do not edit the MCP config yourself.\n",
+            ),
+            (None, WriteScope::All) => {
+                d.push_str("- Writes: every verb, by plan then `confirm_action`.\n")
+            }
+            (None, WriteScope::Only(v)) => d.push_str(&format!(
+                "- Writes: {} only. The rest is NOT GRANTED, not missing: ask to widen it.\n",
+                v.join(", ")
+            )),
+        }
+        if writes && opened_by_ask {
+            d.push_str(
+                "- Tell the operator once, before your first write: writes are open only \
+                 because your client can ask them. That is every verb, `terminate` included; \
+                 `--allow-writes=verb,verb` narrows it and `--read-only` closes it.\n",
+            );
+        }
+        if writes && can_ask {
+            d.push_str(
+                "- Each write is sent to your client to put to the operator. A decline is \
+                 final: say it was declined and stop. Do not re-plan, widen or call it a \
+                 fault, and do not say a person refused unless you know one was there.\n",
+            );
+        }
+        if writes {
+            d.push_str(
+                "- If your HOST refuses `confirm_action` or `dlq_undo` (Claude Code's auto \
+                 mode can), ebman never got the call: nothing ran and nothing was audited. \
+                 Never do the write another way: the AWS CLI skips ebman's pins, audit line \
+                 and undo. Tell the operator; `doctor` says how they can allow it.\n",
+            );
+        }
+        d.push_str("- Before reporting a capability as missing, call `doctor`.\n\nIN FULL:\n\n");
+        d
+    }
+
     /// `can_ask` is whether this connection's client declared
     /// elicitation. It changes what a confirm *means* — with the ask,
     /// a human sees the action and may say no — and an agent that does
@@ -1319,6 +1383,28 @@ impl Server {
                 } else {
                     PROTOCOL_VERSION
                 };
+                // Parse errors FIRST, matching `write_gate::decide`'s
+                // precedence. Reversed, an operator with both set was
+                // told to clear `safety.read_only` while every actual
+                // refusal rendered as "safety config unreadable" — they
+                // clear it, are still refused, and have been sent to the
+                // wrong control by the text that exists to name the
+                // right one. Computed once: the digest and the long form
+                // must describe the same connection.
+                let refusal: Option<&str> = if !self.safety_cfg.safety_parse_errors.is_empty() {
+                    Some("the safety config could not be parsed, which fails closed.")
+                } else if self.safety_cfg.safety_read_only {
+                    Some("safety.read_only is set in config.toml.")
+                } else {
+                    None
+                };
+                // Recorded from this same `initialize` request above.
+                let can_ask = self
+                    .client_supports_elicitation
+                    .load(std::sync::atomic::Ordering::Relaxed);
+                // Opened by the ask alone: no flag was given, so
+                // `effective_scope` widened `None` on capability.
+                let opened_by_ask = !self.write_scope.any() && can_ask;
                 Some(json!({
                     "jsonrpc": "2.0",
                     "id": id,
@@ -1344,45 +1430,25 @@ impl Server {
                         // precisely because they are not boilerplate;
                         // a discoverability block that grows into prose
                         // gets skimmed like a licence.
+                        // The digest comes first and must fit: Claude
+                        // Code shows an agent only the first 2048
+                        // characters of these instructions. Measured, not
+                        // assumed — every client-can-ask path lost the
+                        // capabilities list and the `doctor` pointer to
+                        // that cut from 0.42 on, and 0.45.1's host-denial
+                        // note landed past it too. The long form follows
+                        // for clients that show it all; `doctor` repeats
+                        // what matters, uncut. Pinned by
+                        // `the_must_know_digest_survives_a_2048_char_cut`.
                         "instructions": format!(
-                            "{}{}\n\n{}",
+                            "{}{}{}\n\n{}",
                             concat!(
                             "ebman ", env!("CARGO_PKG_VERSION"),
                             " — a fleet console for AWS Elastic Beanstalk. This surface exposes reads, ",
                             "plus two-phase writes. Whether writes are available to YOU is said below; ",
                             "it depends on this connection, not on the binary.\n\n"),
-                            self.effective_scope().agent_summary(
-                                // Parse errors FIRST, matching
-                                // `write_gate::decide`'s precedence.
-                                // Reversed, an operator with both set
-                                // was told to clear `safety.read_only`
-                                // while every actual refusal rendered
-                                // as "safety config unreadable" — they
-                                // clear it, are still refused, and have
-                                // been sent to the wrong control by the
-                                // text that exists to name the right
-                                // one.
-                                if !self.safety_cfg.safety_parse_errors.is_empty() {
-                                    Some("the safety config could not be parsed, which \
-                                          fails closed.")
-                                } else if self.safety_cfg.safety_read_only {
-                                    Some("safety.read_only is set in config.toml.")
-                                } else {
-                                    None
-                                },
-                                // Recorded from this same `initialize`
-                                // request a few lines above, so it is
-                                // already correct for this connection.
-                                self.client_supports_elicitation
-                                    .load(std::sync::atomic::Ordering::Relaxed),
-                                // Opened by the ask alone: no flag was
-                                // given, so `effective_scope` widened
-                                // `None` on capability.
-                                !self.write_scope.any()
-                                    && self
-                                        .client_supports_elicitation
-                                        .load(std::sync::atomic::Ordering::Relaxed),
-                            ),
+                            self.effective_scope().agent_digest(refusal, can_ask, opened_by_ask),
+                            self.effective_scope().agent_summary(refusal, can_ask, opened_by_ask),
                             concat!(
                             // NOT redundant with `serverInfo.version`.
                             // Confirmed, not assumed: an agent on Claude

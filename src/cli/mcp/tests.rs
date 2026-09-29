@@ -4783,3 +4783,70 @@ fn a_decline_does_not_assert_that_a_person_made_it() {
              knows a `-p` run declines by itself can say something useful: {guidance}"
     );
 }
+
+/// Claude Code shows an agent only the first 2048 characters of the
+/// server instructions. Everything an agent must act on has to be whole
+/// inside that cut, on every combination of grant and client.
+///
+/// Measured before this existed: on every path where the client can ask
+/// — Claude Code's own — the capabilities list and the `doctor` pointer
+/// had been past the cut since 0.42, and the host-denial note written
+/// for Claude Code's auto mode started at character 2218. A test of the
+/// note's TEXT passed throughout; only its position was wrong.
+#[tokio::test]
+async fn the_must_know_digest_survives_a_2048_char_cut() {
+    const CUT: usize = 2048;
+    let scopes = [
+        WriteScope::None,
+        WriteScope::All,
+        WriteScope::Only(vec![
+            "dlq_delete".into(),
+            "dlq_resend".into(),
+            "restart".into(),
+        ]),
+    ];
+    for scope in scopes {
+        for can_ask in [true, false] {
+            let s = Server::with_scope(true, false, scope.clone());
+            let caps = if can_ask {
+                json!({"elicitation": {}})
+            } else {
+                json!({})
+            };
+            let init = rpc(
+                &s,
+                json!({"jsonrpc":"2.0","id":0,"method":"initialize",
+                       "params":{"protocolVersion":"2025-06-18","capabilities":caps,
+                                 "clientInfo":{"name":"t","version":"0"}}}),
+            )
+            .await
+            .expect("initialize");
+            let full = init["result"]["instructions"].as_str().unwrap_or_default();
+            let seen: String = full.chars().take(CUT).collect();
+            let writes = s.effective_scope().any();
+            let opened = !scope.any() && can_ask;
+            let label = format!("{scope:?}, can_ask={can_ask}");
+            let mut must: Vec<&str> = vec!["call `doctor`.\n"];
+            if writes {
+                must.push("Never do the write another way");
+                must.push("Tell the operator; `doctor` says how they can allow it.\n");
+            }
+            if writes && can_ask {
+                must.push("A decline is final");
+                must.push("unless you know one was there.\n");
+            }
+            if opened {
+                must.push("Tell the operator once, before your first write");
+                must.push("`--read-only` closes it.\n");
+            }
+            for line in must {
+                assert!(
+                    seen.contains(line),
+                    "{label}: `{line}` is not whole inside the first {CUT} characters \
+                     ({} in all):\n{seen}",
+                    full.chars().count()
+                );
+            }
+        }
+    }
+}
