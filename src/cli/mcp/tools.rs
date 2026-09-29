@@ -1350,6 +1350,23 @@ impl Server {
                     .into(),
             );
         }
+        // The layer doctor cannot see. MCP gives a server no signal for
+        // the client's own permission mode, so this cannot be a
+        // detection — it is the failure mode, stated where an agent
+        // reads it. A field report: Claude Code's auto-mode classifier
+        // refused `confirm_action` before ebman saw it, and doctor said
+        // writes were available, which from ebman's side they were.
+        if !matches!(self.effective_scope(), super::WriteScope::None) && !all_refused {
+            notes.push(
+                "Your client may have its own permission layer, which ebman cannot see: \
+                 MCP carries no signal for it, so nothing here reflects it. If it denies \
+                 `confirm_action` or `dlq_undo` (Claude Code's auto mode can), the call \
+                 never reached ebman — nothing was dispatched or audited. Do not route \
+                 around it with the AWS CLI; tell the operator, as the server \
+                 instructions describe."
+                    .into(),
+            );
+        }
         if !self.redact {
             notes.push(
                 "Redaction is OFF (--no-redact): `get_option_settings` and `why` return \
