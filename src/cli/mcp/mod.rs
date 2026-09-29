@@ -685,7 +685,7 @@ const ASK_NOTE: &str = "\n\nEach confirmation is sent to your CLIENT to put to t
 /// Appended to every granted-writes summary: what a denial from the
 /// CLIENT's own permission layer means, and what not to do about it.
 ///
-/// Field report, 0.42: under Claude Code's auto mode the host's
+/// A field report: under Claude Code's auto mode the host's
 /// classifier refused `confirm_action` before it reached ebman. The
 /// operator never saw ebman's confirmation, the agent saw only a
 /// generic harness denial, and the easy next move — `aws sqs` from a
@@ -699,9 +699,14 @@ const ASK_NOTE: &str = "\n\nEach confirmation is sent to your CLIENT to put to t
 /// the allow rule IS the standing grant and must be named as one.
 fn host_denial_note(can_ask: bool) -> String {
     let ttl = writes::CONFIRM_TTL_SECS;
+    let undo_mins = writes::UNDO_WINDOW_SECS / 60;
+    // Hedged on purpose: a client that declares elicitation is not proof
+    // a person sees the dialog — headless `claude -p` declares it and
+    // declines by itself (see `ASK_NOTE`). Nor has anyone yet watched
+    // ebman's dialog appear under auto mode once the rule is added.
     let consequence = if can_ask {
-        "ebman then puts each confirmation to them itself, so the host stops deciding \
-         and they do"
+        "ebman's own confirmation is then sent to their client to put to them — a \
+         capability that client declared, not proof a person will see it"
     } else {
         "on THIS connection nothing else asks them — the allow rule would let every \
          confirmation through unseen, so it is their decision to grant, not a formality"
@@ -709,16 +714,19 @@ fn host_denial_note(can_ask: bool) -> String {
     format!(
         "\n\nIF YOUR HOST DENIES THE CALL: your client's own permission layer (a \
          permission mode, a classifier, a policy hook) can refuse `confirm_action` or \
-         `dlq_undo` before ebman receives it. That is neither ebman's gate nor the \
-         operator's answer: nothing was dispatched and nothing was audited. Do NOT route \
-         around it with the AWS CLI or any other tool — that bypasses the safety pins, \
-         the audit line and the undo. Tell the operator the host blocked it. They can \
-         approve that one call through their client (in Claude Code, `/permissions`, \
-         Recently denied), or allow the exact tool name you called (in Claude Code, \
-         `mcp__<server>__confirm_action` under `permissions.allow`); {consequence}. A \
-         plan's token lasts {ttl} seconds, so re-plan if it has expired rather than \
-         retrying it. A denied `dlq_undo` is urgent: its window is closing, so say how \
-         long is left."
+         `dlq_undo` before ebman receives it. That is NOT a declined confirmation: ebman \
+         never received the call, so nothing was dispatched and nothing was audited, and \
+         it is not the operator's answer either. Do NOT route around it with the AWS CLI \
+         or any other tool — that bypasses the safety pins, the audit line and the undo. \
+         Tell the operator the host blocked it. For `confirm_action` they can approve that \
+         one call through their client (in Claude Code, `/permissions`, Recently denied), \
+         or allow the tool (in Claude Code, `mcp__<server>__confirm_action` under \
+         `permissions.allow`); {consequence}. A plan's token lasts {ttl} seconds, and by \
+         the time they have done either it has usually expired: re-plan rather than \
+         retry. `dlq_undo` never asks anyone, on any client, so allowing it permanently \
+         lets every undo run unasked; it only restores, but that is their call, and \
+         approving the one denied call is the narrow fix. A denied undo is urgent: its \
+         window is {undo_mins} minutes from the delete, so say roughly how much is left."
     )
 }
 

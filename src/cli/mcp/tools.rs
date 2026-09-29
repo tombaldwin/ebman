@@ -1356,16 +1356,21 @@ impl Server {
         // reads it. A field report: Claude Code's auto-mode classifier
         // refused `confirm_action` before ebman saw it, and doctor said
         // writes were available, which from ebman's side they were.
-        if !matches!(self.effective_scope(), super::WriteScope::None) && !all_refused {
-            notes.push(
-                "Your client may have its own permission layer, which ebman cannot see: \
-                 MCP carries no signal for it, so nothing here reflects it. If it denies \
-                 `confirm_action` or `dlq_undo` (Claude Code's auto mode can), the call \
-                 never reached ebman — nothing was dispatched or audited. Do not route \
-                 around it with the AWS CLI; tell the operator, as the server \
-                 instructions describe."
-                    .into(),
-            );
+        //
+        // The whole remedy, not a pointer to the instructions: Claude
+        // Code cuts those at 2048 characters and the long form of this
+        // is past the cut, while doctor's output is not cut. Gated on
+        // `.any()`, the predicate the write tools are listed on, so the
+        // note never appears where no write tool does.
+        if self.effective_scope().any() && !all_refused {
+            let can_ask = self
+                .client_supports_elicitation
+                .load(std::sync::atomic::Ordering::Relaxed);
+            notes.push(format!(
+                "Your client may have its own permission layer, which ebman cannot see: MCP \
+                 carries no signal for it, so nothing here reflects it.{}",
+                super::host_denial_note(can_ask).replacen("\n\n", " ", 1)
+            ));
         }
         if !self.redact {
             notes.push(

@@ -129,18 +129,35 @@ pub(super) fn render(scope: &WriteScope) -> String {
         }
     }
     // Every scope above can write on Claude Code, which can ask — so
-    // every scope needs this. Under auto mode (Claude Code's default
-    // starting mode) the host's classifier can refuse confirm_action
-    // before ebman sees it, and the operator never sees ebman's dialog.
-    // A field report found exactly that, with nothing in ebman saying
-    // why or what to do.
-    s.push_str("Claude Code in auto mode (default in current versions) may refuse\n");
-    s.push_str("confirm_action before ebman can ask you. To let ebman's own\n");
-    s.push_str("confirmation decide, add this to permissions.allow in your\n");
-    s.push_str("Claude Code settings:\n\n");
-    s.push_str("  \"mcp__ebman__confirm_action\"\n\n");
-    s.push_str("Claude Code can ask, so ebman still puts every write to you. Do\n");
-    s.push_str("not allow it on a client that cannot ask: there, nothing would.\n\n");
+    // every scope needs this. Under auto mode the host's classifier can
+    // refuse confirm_action before ebman sees it, and the operator never
+    // sees ebman's dialog. A field report found exactly that, with
+    // nothing in ebman saying why or what to do.
+    //
+    // Claims kept as wide as what was checked: allowing the tool stops
+    // the classifier deciding; that a person then sees ebman's dialog is
+    // the client's capability, not something ebman can promise.
+    for line in [
+        "Claude Code's auto mode (its default starting mode in recent",
+        "versions) may refuse confirm_action before ebman can ask you. To",
+        "hand that decision to ebman's own confirmation instead, add this",
+        "to permissions.allow in your Claude Code settings (not needed if",
+        "you registered with --read-only):",
+        "",
+        "  \"mcp__ebman__confirm_action\"",
+        "",
+        "The part after mcp__ is the name you registered (ebman above);",
+        "a rule for another name allows nothing. ebman still sends every",
+        "write to Claude Code to put to you. Do not add the rule on a",
+        "client that cannot ask: with nothing to put the write to you, it",
+        "would let every write through unseen. dlq_undo never asks, on",
+        "any client, so leave it out unless you mean every undo to run",
+        "unasked.",
+        "",
+    ] {
+        s.push_str(line);
+        s.push('\n');
+    }
     s.push_str("If your shell exports AWS_REGION, pin it at registration — the\n");
     s.push_str("server takes the environment's region, not any project's:\n");
     s.push_str(&format!(
@@ -279,6 +296,13 @@ mod tests {
             assert!(s.contains("permissions.allow"), "{s}");
             // And the condition that makes it safe.
             assert!(s.contains("client that cannot ask"), "{s}");
+            // The rule is named after the registration, and says so:
+            // an operator who registered another name gets nothing.
+            assert!(s.contains("the name you registered"), "{s}");
+            // dlq_undo never asks, so it is not covered by that safety.
+            assert!(s.contains("dlq_undo never asks"), "{s}");
+            // No claim that a person decides: that is the client's.
+            assert!(!s.contains("ebman still puts every write to you"), "{s}");
         }
     }
 

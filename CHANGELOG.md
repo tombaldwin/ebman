@@ -8,16 +8,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
-- **Claude Code's auto mode no longer blocks MCP writes without
-  explanation.** Auto mode is the default starting mode in current Claude Code, and
-  its classifier can refuse `confirm_action` before ebman can put the
-  confirmation to you. You saw no dialog, and the agent saw only a
-  generic denial. `ebman mcp setup` now prints the
-  `permissions.allow` entry (`"mcp__ebman__confirm_action"`) that
-  lets ebman's own confirmation decide. The server instructions tell
-  the agent that such a denial never reached ebman, not to work
-  around it with the AWS CLI, and what to tell you. `doctor` says the
-  layer exists without claiming to detect it.
+- **A write refused by Claude Code's auto mode is now explained, and
+  `mcp setup` names the rule that hands the decision to ebman.** Auto
+  mode (Claude Code's default starting mode in recent versions) can
+  refuse `confirm_action` before ebman can put the confirmation to you:
+  you saw no dialog, and the agent saw only a generic denial. `ebman mcp
+  setup` now prints the `permissions.allow` entry
+  (`"mcp__ebman__confirm_action"`, named after the server you
+  registered), and says when not to add it. The agent is told that such
+  a denial never reached ebman, not to work around it with the AWS CLI,
+  and what to tell you; `doctor` carries the full remedy. That Claude
+  Code then shows you ebman's dialog is the client's capability, and
+  the text says so rather than promising it.
+
+- **The server instructions lead with what an agent must act on.**
+  Claude Code shows an agent only the first 2048 characters of them.
+  Since 0.42, on every client that can ask — Claude Code's own — the
+  list of what this surface does not expose and the "call `doctor`
+  first" pointer were past that cut, and so was the auto-mode note
+  above. A short must-know digest now comes first on every combination
+  of grant and client, with the full text after it.
 
 ## [0.45.0] - 2026-09-25
 

@@ -238,7 +238,9 @@ Tier definitions:
   shows only the token, then ebman's elicitation, which shows the plan);
   no allow rule can remove the first; and `dontAsk` mode denies the call
   outright. Descriptor-only change in `tools/list`. Found triaging a
-  field report of auto mode blocking a DLQ delete.
+  field report of auto mode blocking a DLQ delete. *The Claude Code
+  behaviour above (the version, "no classifier", `dontAsk` denying) is
+  from its documentation, not observed against ebman; check it first.*
 
 - [ ] **Decision: should lifting `--read-only` be harder?** 0112e6d
   audits `:readonly off`; it still needs no confirmation, so a session
