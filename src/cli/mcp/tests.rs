@@ -4786,6 +4786,15 @@ async fn doctor_names_the_host_permission_layer_it_cannot_see() {
         !host(&notes(&refused).await),
         "every write refused by ebman first"
     );
+    let unparseable = crate::config::Config {
+        safety_parse_errors: vec!["bad toml".into()],
+        ..crate::config::Config::default()
+    };
+    let refused = Server::with_config(true, false, WriteScope::All, unparseable);
+    assert!(
+        !host(&notes(&refused).await),
+        "an unreadable safety config refuses every write too"
+    );
 }
 
 /// Nothing claims a person declined.
@@ -4865,6 +4874,12 @@ async fn the_must_know_digest_survives_a_2048_char_cut() {
             false,
         ),
         ("unparseable safety", WriteScope::All, unparseable, false),
+        (
+            "only(nothing)",
+            WriteScope::Only(vec![]),
+            Default::default(),
+            false,
+        ),
     ];
     for (name, scope, cfg, read_only_flag) in cases {
         for can_ask in [true, false] {
@@ -4892,6 +4907,8 @@ async fn the_must_know_digest_survives_a_2048_char_cut() {
             // The scope line, whichever it is, whole inside the cut.
             let scope_line = if refused {
                 "do not report it as a fault: `doctor` reports it too.\n"
+            } else if matches!(&scope, WriteScope::Only(v) if v.is_empty()) {
+                "- Writes: none granted.\n"
             } else if !writes {
                 "if they set it); do not edit the MCP config yourself.\n"
             } else if matches!(scope, WriteScope::Only(_)) {
@@ -4923,7 +4940,9 @@ async fn the_must_know_digest_survives_a_2048_char_cut() {
             // Nothing about writing where nothing can write.
             if !writes {
                 assert!(
-                    !seen.contains("If your HOST refuses") && !seen.contains("A decline is final"),
+                    !seen.contains("If your HOST refuses")
+                        && !seen.contains("A decline is final")
+                        && !seen.contains("Tell the operator once"),
                     "{label}: write guidance on a surface that cannot write:\n{seen}"
                 );
             }

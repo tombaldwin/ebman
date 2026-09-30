@@ -241,6 +241,10 @@ Tier definitions:
   field report of auto mode blocking a DLQ delete. *The Claude Code
   behaviour above (the version, "no classifier", `dontAsk` denying) is
   from its documentation, not observed against ebman; check it first.*
+  The baseline it competes with is now verified: with the allow rule,
+  Claude Code 2.1.285 in auto mode passes the call through and shows
+  ebman's dialog (2026-09-30). So the only thing this buys is skipping
+  the one setup step, against a second prompt on every write.
 
 - [ ] **The MCP guidance lives in three copies.** The decline rule, the
   tell-once note and the host-denial remedy each exist in the

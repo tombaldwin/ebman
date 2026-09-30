@@ -532,7 +532,8 @@ impl WriteScope {
                      step).\n",
             ),
             (None, WriteScope::Only(v)) => d.push_str(&format!(
-                "- Writes: {} only. The rest is NOT GRANTED, not missing: ask to widen it.\n",
+                "- Writes: {} only, by plan then `confirm_action` (`dlq_undo` is one step). \
+                 The rest is NOT GRANTED, not missing: ask to widen it.\n",
                 v.join(", ")
             )),
         }
@@ -624,6 +625,11 @@ impl WriteScope {
                 }
                 t.push_str(&host_denial_note(can_ask));
                 t
+            }
+            // The parser cannot produce an empty grant, but the type can:
+            // it lists no write tool, so it reads as none.
+            WriteScope::Only(v) if v.is_empty() => {
+                "No write verb is granted on this server, so no write tool is listed.".to_string()
             }
             WriteScope::Only(v) => {
                 format!(
@@ -723,8 +729,11 @@ fn host_denial_body(can_ask: bool) -> String {
     let undo_mins = writes::UNDO_WINDOW_SECS / 60;
     // Hedged on purpose: a client that declares elicitation is not proof
     // a person sees the dialog — headless `claude -p` declares it and
-    // declines by itself (see `ASK_NOTE`). Nor has anyone yet watched
-    // ebman's dialog appear under auto mode once the rule is added.
+    // declines by itself (see `ASK_NOTE`). The Claude Code case is
+    // verified (2.1.285, auto mode, 2026-09-30): with the allow rule the
+    // call reached ebman and the operator saw and answered the dialog;
+    // unanswered, it timed out and nothing dispatched. The agent cannot
+    // tell which client it is on, so its text keeps the general hedge.
     let consequence = if can_ask {
         "ebman's own confirmation is then sent to their client to put to them — a \
          capability that client declared, not proof a person will see it"
