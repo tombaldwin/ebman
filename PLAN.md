@@ -178,6 +178,11 @@ now head the list.*
 
 ### Released
 
+**0.45.2 (2026-09-30)**: the MCP server instructions are one text,
+pinned whole under Claude Code's 2048-character cut (longest 1693); the
+long form is gone and its rules folded in. `requiresUserInteraction`
+decided against (archived).
+
 **0.45.1 (2026-09-30)**: MCP writes under Claude Code's auto mode. The
 instructions now lead with a digest that survives Claude Code's
 2048-character cut, and the allow-rule path was verified live on 2.1.285.
