@@ -244,8 +244,8 @@ Tool calls run concurrently with a 30s bound — except `confirm_action` on a cl
 
 If your client declared **elicitation** at handshake — it can put a
 question to you in the middle of a request — the write tools are
-available with no flag and no restart, and every `confirm_action` shows
-you the action and waits for your answer.
+available with no flag and no restart, and every `confirm_action` sends
+the action to your client to show you, and waits for the answer.
 
 That is the same bargain as the TUI. There, you press `r`, read the
 confirmation, and press `y`. Here your agent proposes the action, you

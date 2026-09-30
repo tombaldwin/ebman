@@ -4954,7 +4954,7 @@ async fn the_whole_instructions_text_fits_a_2048_char_cut() {
             }
             if writes && !scope.any() && can_ask {
                 must.push("Tell the operator once, before you plan a write");
-                must.push("still sent to them to accept or decline.");
+                must.push("still sent to their client for them to accept or decline.");
                 must.push("not a reason to avoid proposing work.\n");
             }
             assert!(

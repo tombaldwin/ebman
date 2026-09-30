@@ -585,7 +585,7 @@ impl WriteScope {
                 "- Tell the operator once, before you plan a write: writes are open only \
                  because YOUR CLIENT can ask them. That is every verb, `terminate` included; \
                  `--allow-writes=verb,verb` narrows it and `--read-only` closes it; each \
-                 write is still sent to them to accept or decline. This is not a reason to \
+                 write is still sent to their client for them to accept or decline. This is not a reason to \
                  avoid proposing work.\n",
             );
         }
