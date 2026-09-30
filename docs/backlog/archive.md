@@ -4824,7 +4824,7 @@ review.
   applies. Should the long form shrink to the reasons only, with
   `doctor` the uncut reference? *0.45.1 re-review.*
   **Done 2026-09-30 (0.45.2):** decided to drop the long form rather
-  than shrink it. The instructions are one text of at most ~1.5k
+  than shrink it. The instructions are one text of at most ~1.7k
   characters on every combination, pinned whole under the cut; the
   reasons moved to `WriteScope::agent_rules`' doc comment; `doctor`
   stays the uncut reference for the host-denial remedy.

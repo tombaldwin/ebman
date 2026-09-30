@@ -13,7 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   them; 0.45.1 put a must-know digest in front of a long form that ran
   to ~5.5k characters, most of it never seen there and all of it to be
   kept in step with the digest and `doctor`. The long form is gone: the
-  instructions are one rule per line, at most ~1.5k characters on any
+  instructions are one rule per line, at most ~1.7k characters on any
   combination of grant and client, and now include the three rules only
   the long form had — surface a plan in a line rather than re-arguing
   it, a granted verb you cannot see usually means the client needs a
