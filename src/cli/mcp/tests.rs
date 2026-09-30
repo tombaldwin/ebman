@@ -4280,7 +4280,7 @@ async fn doctor_says_why_writes_are_available_not_just_how_wide() {
         .store(true, std::sync::atomic::Ordering::Relaxed);
     let d = doctor(&asked).await;
     assert!(
-        d.contains("client-elicitation") && d.contains("may decline"),
+        d.contains("client-elicitation") && d.contains("may be declined"),
         "an elicitation-gated surface must say so, or the agent tells its user \
              it can act when it can only propose: {d}"
     );
@@ -4305,7 +4305,7 @@ async fn doctor_says_why_writes_are_available_not_just_how_wide() {
         "the flag is still where the scope came from: {d}"
     );
     assert!(
-        d.contains("still put to them") && d.contains("may decline"),
+        d.contains("still sent to their client") && d.contains("may be declined"),
         "and the ask fires on capability regardless of the flag, so doctor must \
              not report this as a bare standing grant: {d}"
     );

@@ -1256,15 +1256,17 @@ impl Server {
             let base = "--allow-writes - a standing grant from the operator";
             if elicits {
                 format!(
-                    "{base}, AND every write is still put to them, who may decline or \
-                     not answer"
+                    "{base}, AND every write is still sent to their client to put to \
+                     them (the client's word, not proof a person sees it); it may be \
+                     declined or go unanswered"
                 )
             } else {
                 base.to_string()
             }
         } else {
-            "client-elicitation - EVERY write is put to the operator, who may decline \
-             or not answer"
+            "client-elicitation - EVERY write is sent to your client to put to the \
+             operator (the client's word, not proof a person sees it); it may be declined \
+             or go unanswered"
                 .to_string()
         };
 
