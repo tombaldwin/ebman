@@ -1364,14 +1364,18 @@ impl Server {
         // is past the cut, while doctor's output is not cut. Gated on
         // `.any()`, the predicate the write tools are listed on, so the
         // note never appears where no write tool does.
-        if self.effective_scope().any() && !all_refused {
+        //
+        // Not suppressed by a deploy freeze: a freeze lifts mid-connection,
+        // and the digest in the instructions (sent once, at connect) points
+        // here for the remedy whatever the freeze is doing now.
+        if self.effective_scope().any() && !(self.safety_cfg.safety_read_only || unreadable) {
             let can_ask = self
                 .client_supports_elicitation
                 .load(std::sync::atomic::Ordering::Relaxed);
             notes.push(format!(
-                "Your client may have its own permission layer, which ebman cannot see: MCP \
-                 carries no signal for it, so nothing here reflects it.{}",
-                super::host_denial_note(can_ask).replacen("\n\n", " ", 1)
+                "{} ebman cannot see that layer: MCP carries no signal for it, so nothing \
+                 in this report reflects it.",
+                super::host_denial_body(can_ask)
             ));
         }
         if !self.redact {

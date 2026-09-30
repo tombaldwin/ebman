@@ -494,14 +494,6 @@ impl WriteScope {
         }
     }
 
-    /// How this grant reads to the AGENT, for the `instructions` block.
-    ///
-    /// A withheld tool is simply absent from `tools/list`, and absent
-    /// is ambiguous: it reads as "ebman cannot do this" when it means
-    /// "you were not granted this". That is the same confusion the
-    /// version line above exists to prevent, and it has the same cost
-    /// — an agent reporting a capability gap that is really a config
-    /// choice, instead of asking the operator to widen the grant.
     /// The must-know points, first and short.
     ///
     /// Claude Code shows an agent only the first 2048 characters of the
@@ -519,22 +511,26 @@ impl WriteScope {
         can_ask: bool,
         opened_by_ask: bool,
     ) -> String {
-        let mut d = String::from(
-            "MUST-KNOW (the full text follows; your client may cut it off, and `doctor` \
-             repeats what matters, uncut):\n",
-        );
+        let mut d =
+            String::from("MUST-KNOW (the full text follows, and your client may cut it off):\n");
         let writes = standing_refusal.is_none() && self.any();
         match (standing_refusal, self) {
             (Some(why), _) => d.push_str(&format!(
-                "- Writes are REFUSED here, whatever the grant: {why} Do not plan writes.\n"
+                "- Writes are REFUSED here, whatever the grant: {why} Do not plan writes, and \
+                 do not report it as a fault: `doctor` reports it too.\n"
             )),
             (None, WriteScope::None) => d.push_str(
-                "- READ-ONLY: no write tool. Ask the operator to restart with --allow-writes; \
-                 do not edit the MCP config yourself.\n",
+                "- READ-ONLY: no write tool. Ask the operator to restart with --allow-writes \
+                 (and without --read-only, if they set it); do not edit the MCP config \
+                 yourself.\n",
             ),
-            (None, WriteScope::All) => {
-                d.push_str("- Writes: every verb, by plan then `confirm_action`.\n")
-            }
+            // The parser cannot produce an empty grant, but the type
+            // can: it lists no write tool, so it reads as none.
+            (None, WriteScope::Only(v)) if v.is_empty() => d.push_str("- Writes: none granted.\n"),
+            (None, WriteScope::All) => d.push_str(
+                "- Writes: every verb, by plan then `confirm_action` (`dlq_undo` is one \
+                     step).\n",
+            ),
             (None, WriteScope::Only(v)) => d.push_str(&format!(
                 "- Writes: {} only. The rest is NOT GRANTED, not missing: ask to widen it.\n",
                 v.join(", ")
@@ -562,13 +558,27 @@ impl WriteScope {
                  and undo. Tell the operator; `doctor` says how they can allow it.\n",
             );
         }
-        d.push_str("- Before reporting a capability as missing, call `doctor`.\n\nIN FULL:\n\n");
+        d.push_str(
+            "- Not on this surface: a live, streaming log tail (the TUI has it; \
+             `recent_logs` is point-in-time). Before reporting any other capability as \
+             missing, call `doctor`.\n\nIN FULL:\n\n",
+        );
         d
     }
 
+    /// How this grant reads to the AGENT, for the `instructions` block.
+    ///
+    /// A withheld tool is simply absent from `tools/list`, and absent
+    /// is ambiguous: it reads as "ebman cannot do this" when it means
+    /// "you were not granted this". That is the same confusion the
+    /// version line above exists to prevent, and it has the same cost
+    /// — an agent reporting a capability gap that is really a config
+    /// choice, instead of asking the operator to widen the grant.
+    ///
     /// `can_ask` is whether this connection's client declared
     /// elicitation. It changes what a confirm *means* — with the ask,
-    /// a human sees the action and may say no — and an agent that does
+    /// the client is sent the action to put to a person (its word, not
+    /// proof one saw it) — and an agent that does
     /// not know that reads a decline as a bug and retries it. This is
     /// authored text for exactly that reason: the capability is
     /// negotiated in protocol metadata the client sees, which never
@@ -627,7 +637,8 @@ impl WriteScope {
                  concludes it is broken.",
                     v.join(", ")
                 ) + if can_ask { ASK_NOTE } else { "" }
-                    + &host_denial_note(can_ask)
+                    // Nothing to deny where no write tool is listed.
+                    + &if self.any() { host_denial_note(can_ask) } else { String::new() }
             }
         }
     }
@@ -699,6 +710,15 @@ const ASK_NOTE: &str = "\n\nEach confirmation is sent to your CLIENT to put to t
 /// `can_ask`: on a connection that cannot elicit, nothing else asks, so
 /// the allow rule IS the standing grant and must be named as one.
 fn host_denial_note(can_ask: bool) -> String {
+    format!(
+        "\n\nIF YOUR HOST DENIES THE CALL: {}",
+        host_denial_body(can_ask)
+    )
+}
+
+/// [`host_denial_note`] without its heading: `doctor` puts it in a note of
+/// its own, where a shouted heading reads as noise.
+fn host_denial_body(can_ask: bool) -> String {
     let ttl = writes::CONFIRM_TTL_SECS;
     let undo_mins = writes::UNDO_WINDOW_SECS / 60;
     // Hedged on purpose: a client that declares elicitation is not proof
@@ -713,7 +733,7 @@ fn host_denial_note(can_ask: bool) -> String {
          confirmation through unseen, so it is their decision to grant, not a formality"
     };
     format!(
-        "\n\nIF YOUR HOST DENIES THE CALL: your client's own permission layer (a \
+        "Your client's own permission layer (a \
          permission mode, a classifier, a policy hook) can refuse `confirm_action` or \
          `dlq_undo` before ebman receives it. That is NOT a declined confirmation: ebman \
          never received the call, so nothing was dispatched and nothing was audited, and \

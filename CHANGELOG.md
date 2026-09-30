@@ -24,10 +24,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **The server instructions lead with what an agent must act on.**
   Claude Code shows an agent only the first 2048 characters of them.
   Since 0.42, on every client that can ask — Claude Code's own — the
-  list of what this surface does not expose and the "call `doctor`
-  first" pointer were past that cut, and so was the auto-mode note
-  above. A short must-know digest now comes first on every combination
-  of grant and client, with the full text after it.
+  "call `doctor` first" pointer and the list of what this surface does
+  not expose were past that cut, and so was the auto-mode note above. A
+  short must-know digest now comes first on every combination of grant
+  and client: the grant, telling you once when writes opened on their
+  own, a decline being final, what a host denial means, the one thing
+  this surface lacks (a live log tail), and `doctor`. The full text
+  follows for clients that show it.
 
 ## [0.45.0] - 2026-09-25
 
