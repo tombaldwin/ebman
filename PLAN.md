@@ -178,6 +178,12 @@ now head the list.*
 
 ### Released
 
+**0.45.1 (2026-09-30)**: MCP writes under Claude Code's auto mode. The
+instructions now lead with a digest that survives Claude Code's
+2048-character cut, and the allow-rule path was verified live on 2.1.285.
+Open decisions from it are in BACKLOG.md (`requiresUserInteraction`, the
+three copies of the guidance).
+
 **0.45.0 (2026-09-25)** carries everything the window above marked done,
 plus the release review's fixes: the lint assembly shared by every
 surface (`lint::inputs` + `app::tui_lint`), coverage gaps that say what
