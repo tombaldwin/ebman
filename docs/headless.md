@@ -290,9 +290,12 @@ registered the server under; a rule for another name allows nothing:
 
 The rule only stops the classifier deciding first. ebman still sends
 every write to Claude Code to put to you as a confirmation, and
-terminate and purge still ask you to type the environment name. That
-Claude Code shows you that dialog is its capability, not something
-ebman can check. **Do not add this rule on a client that cannot
+terminate and purge still ask you to type the environment name.
+Checked on Claude Code 2.1.285 in auto mode (2026-09-30): with the
+rule, the call reaches ebman and Claude Code shows the confirmation;
+left unanswered, it times out and nothing is dispatched. (A client can
+declare it will ask and then answer for itself, as headless `claude -p`
+does, so ebman still cannot check this per call.) **Do not add this rule on a client that cannot
 ask:** with nothing to put the write to you, it would let every
 confirmation through unseen. For a single call, approve the denied
 action instead from `/permissions` → **Recently denied**. A plan's

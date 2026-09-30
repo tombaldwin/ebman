@@ -17,9 +17,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   (`"mcp__ebman__confirm_action"`, named after the server you
   registered), and says when not to add it. The agent is told that such
   a denial never reached ebman, not to work around it with the AWS CLI,
-  and what to tell you; `doctor` carries the full remedy. That Claude
-  Code then shows you ebman's dialog is the client's capability, and
-  the text says so rather than promising it.
+  and what to tell you; `doctor` carries the full remedy. Checked on
+  Claude Code 2.1.285 in auto mode: with the rule, `confirm_action`
+  reaches ebman and Claude Code shows you the confirmation; left
+  unanswered, it times out and nothing is dispatched.
 
 - **The server instructions lead with what an agent must act on.**
   Claude Code shows an agent only the first 2048 characters of them.
