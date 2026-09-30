@@ -1359,14 +1359,14 @@ impl Server {
         // refused `confirm_action` before ebman saw it, and doctor said
         // writes were available, which from ebman's side they were.
         //
-        // The whole remedy, not a pointer to the instructions: Claude
-        // Code cuts those at 2048 characters and the long form of this
-        // is past the cut, while doctor's output is not cut. Gated on
+        // The whole remedy: the instructions must fit Claude Code's
+        // 2048-character cut, so they carry one line of it and point
+        // here, and doctor's output is not cut. Gated on
         // `.any()`, the predicate the write tools are listed on, so the
         // note never appears where no write tool does.
         //
         // Not suppressed by a deploy freeze: a freeze lifts mid-connection,
-        // and the digest in the instructions (sent once, at connect) points
+        // and the instructions (sent once, at connect) point
         // here for the remedy whatever the freeze is doing now.
         if self.effective_scope().any() && !(self.safety_cfg.safety_read_only || unreadable) {
             let can_ask = self

@@ -18,7 +18,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   the long form had — surface a plan in a line rather than re-arguing
   it, a granted verb you cannot see usually means the client needs a
   restart, and read the tool CAVEATS. `doctor` still carries the full
-  remedies, uncut. A test fails the build if the text outgrows the cut.
+  host-denial remedy, uncut. A test fails the build if the text outgrows
+  the cut.
 
 ## [0.45.1] - 2026-09-30
 

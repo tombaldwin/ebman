@@ -501,12 +501,13 @@ impl WriteScope {
     /// 2048 characters of the server instructions. It used to be a long
     /// form of ~5.5k characters with the reasons in it; on every path where
     /// the client can ask — Claude Code's own — the capabilities list and
-    /// the `doctor` pointer had been past that cut since 0.42, and 0.45.1's
+    /// the `doctor` pointer were past that cut (measured on 0.44 and 0.45;
+    /// likely since 0.42, when the ask note grew the text), and 0.45.1's
     /// host-denial note landed past it too. 0.45.1 put a digest in front;
     /// 0.45.2 dropped the long form, since on Claude Code nobody read it and
     /// it tripled the text to keep in step. The rules stay here; the
     /// reasons live in these comments, and `doctor` (never cut) carries the
-    /// full remedies. Pinned by `the_whole_instructions_text_fits_a_2048_char_cut`.
+    /// full host-denial remedy. Pinned by `the_whole_instructions_text_fits_a_2048_char_cut`.
     ///
     /// Why each rule is here:
     /// - READ-ONLY names whose edit the grant is: a peer agent on 0.40
@@ -548,15 +549,21 @@ impl WriteScope {
         let writes = standing_refusal.is_none() && self.any();
         match (standing_refusal, self) {
             (Some(why), _) => d.push_str(&format!(
-                "- Writes are REFUSED here, whatever the grant: {why} Do not plan writes, and \
-                 do not report it as a fault: `doctor` reports it too.\n"
+                "- Writes are REFUSED here, whatever the grant: {why} No confirmation lifts \
+                 it; only the operator changing that control can. Do not plan writes, and do \
+                 not report it as a fault: `doctor` reports it too.\n"
             )),
-            (None, WriteScope::None) => d.push_str(
-                "- READ-ONLY: no write tool. Ask the operator to restart with --allow-writes \
-                 (and without --read-only, if they set it). Do not edit the MCP config \
+            // The write verbs are named, from the tool table: unlisted, a
+            // read-only agent cannot tell ebman HAS them, and reaches for
+            // the AWS CLI — the failure the reasons above describe.
+            (None, WriteScope::None) => d.push_str(&format!(
+                "- READ-ONLY: no write tool. Ask the operator to restart with --allow-writes, \
+                 or --allow-writes=verb,verb for just what you need (and without --read-only, \
+                 if they set it); ebman's write verbs are {}. Do not edit the MCP config \
                  yourself: the grant is theirs, and a client may refuse that edit as \
                  self-modification.\n",
-            ),
+                writes::write_verb_names().join(", ")
+            )),
             (None, WriteScope::All) => d.push_str(
                 "- Writes ENABLED: every verb, by plan then `confirm_action` (`dlq_undo` is \
                  one step).\n",
@@ -577,8 +584,9 @@ impl WriteScope {
             d.push_str(
                 "- Tell the operator once, before you plan a write: writes are open only \
                  because YOUR CLIENT can ask them. That is every verb, `terminate` included; \
-                 `--allow-writes=verb,verb` narrows it and `--read-only` closes it. This is \
-                 not a reason to avoid proposing work.\n",
+                 `--allow-writes=verb,verb` narrows it and `--read-only` closes it; each \
+                 write is still sent to them to accept or decline. This is not a reason to \
+                 avoid proposing work.\n",
             );
         }
         if writes && can_ask {
@@ -586,6 +594,7 @@ impl WriteScope {
                 "- Each write is sent to your client to put to the operator. A decline is \
                  final: say it was declined and stop. Do not re-plan, widen or call it a \
                  fault, and do not say a person refused unless you know one was there. \
+                 `confirm_action` can take as long as a person takes, or come back at once. \
                  Surface the plan in a line; do not restate the case for it.\n",
             );
         }
@@ -594,7 +603,8 @@ impl WriteScope {
                 "- If your HOST refuses `confirm_action` or `dlq_undo` (Claude Code's auto \
                  mode can), ebman never got the call: nothing ran and nothing was audited. \
                  Never do the write another way: the AWS CLI skips ebman's pins, audit line \
-                 and undo. Tell the operator; `doctor` says how they can allow it.\n",
+                 and undo. Tell the operator (a denied undo is urgent: its window is \
+                 closing); `doctor` says how they can allow it.\n",
             );
         }
         d.push_str(
@@ -1325,8 +1335,7 @@ impl Server {
                 // refusal rendered as "safety config unreadable" — they
                 // clear it, are still refused, and have been sent to the
                 // wrong control by the text that exists to name the
-                // right one. Computed once: the digest and the long form
-                // must describe the same connection.
+                // right one.
                 let refusal: Option<&str> = if !self.safety_cfg.safety_parse_errors.is_empty() {
                     Some("the safety config could not be parsed, which fails closed.")
                 } else if self.safety_cfg.safety_read_only {
