@@ -4763,6 +4763,10 @@ async fn doctor_names_the_host_permission_layer_it_cannot_see() {
         assert!(note.contains(part), "doctor must carry `{part}`: {note}");
     }
     assert!(!note.contains("  "), "no indentation hole: {note:?}");
+    assert!(
+        !note.contains('\n'),
+        "one paragraph in a JSON note: {note:?}"
+    );
     assert!(host(&notes(&demo_writes_server()).await), "writes via flag");
 
     assert!(
@@ -4833,18 +4837,40 @@ fn a_decline_does_not_assert_that_a_person_made_it() {
 #[tokio::test]
 async fn the_must_know_digest_survives_a_2048_char_cut() {
     const CUT: usize = 2048;
-    let scopes = [
-        WriteScope::None,
-        WriteScope::All,
-        WriteScope::Only(vec![
-            "dlq_delete".into(),
-            "dlq_resend".into(),
-            "restart".into(),
-        ]),
+    // Every grant the digest words differently, the LONGEST narrow grant
+    // (the scope line grows with it), and each standing refusal.
+    let every_verb = super::writes::write_verb_names();
+    let refused_by_config = crate::config::Config {
+        safety_read_only: true,
+        ..crate::config::Config::default()
+    };
+    let unparseable = crate::config::Config {
+        safety_parse_errors: vec!["bad toml".into()],
+        ..crate::config::Config::default()
+    };
+    let cases: Vec<(&str, WriteScope, crate::config::Config, bool)> = vec![
+        ("bare", WriteScope::None, Default::default(), false),
+        ("all", WriteScope::All, Default::default(), false),
+        (
+            "only(every verb)",
+            WriteScope::Only(every_verb),
+            Default::default(),
+            false,
+        ),
+        ("--read-only", WriteScope::None, Default::default(), true),
+        (
+            "safety.read_only",
+            WriteScope::All,
+            refused_by_config,
+            false,
+        ),
+        ("unparseable safety", WriteScope::All, unparseable, false),
     ];
-    for scope in scopes {
+    for (name, scope, cfg, read_only_flag) in cases {
         for can_ask in [true, false] {
-            let s = Server::with_scope(true, false, scope.clone());
+            let s = Server::with_config(true, false, scope.clone(), cfg.clone());
+            s.mcp_read_only
+                .store(read_only_flag, std::sync::atomic::Ordering::Relaxed);
             let caps = if can_ask {
                 json!({"elicitation": {}})
             } else {
@@ -4860,10 +4886,20 @@ async fn the_must_know_digest_survives_a_2048_char_cut() {
             .expect("initialize");
             let full = init["result"]["instructions"].as_str().unwrap_or_default();
             let seen: String = full.chars().take(CUT).collect();
-            let writes = s.effective_scope().any();
-            let opened = !scope.any() && can_ask;
-            let label = format!("{scope:?}, can_ask={can_ask}");
-            let mut must: Vec<&str> = vec!["call `doctor`.\n"];
+            let label = format!("{name}, can_ask={can_ask}");
+            let refused = cfg.safety_read_only || !cfg.safety_parse_errors.is_empty();
+            let writes = s.effective_scope().any() && !refused;
+            // The scope line, whichever it is, whole inside the cut.
+            let scope_line = if refused {
+                "do not report it as a fault: `doctor` reports it too.\n"
+            } else if !writes {
+                "if they set it); do not edit the MCP config yourself.\n"
+            } else if matches!(scope, WriteScope::Only(_)) {
+                "not missing: ask to widen it.\n"
+            } else {
+                "(`dlq_undo` is one step).\n"
+            };
+            let mut must: Vec<&str> = vec![scope_line, "missing, call `doctor`.\n"];
             if writes {
                 must.push("Never do the write another way");
                 must.push("Tell the operator; `doctor` says how they can allow it.\n");
@@ -4872,11 +4908,11 @@ async fn the_must_know_digest_survives_a_2048_char_cut() {
                 must.push("A decline is final");
                 must.push("unless you know one was there.\n");
             }
-            if opened {
+            if writes && !scope.any() && can_ask {
                 must.push("Tell the operator once, before your first write");
                 must.push("`--read-only` closes it.\n");
             }
-            for line in must {
+            for line in &must {
                 assert!(
                     seen.contains(line),
                     "{label}: `{line}` is not whole inside the first {CUT} characters \
@@ -4884,6 +4920,17 @@ async fn the_must_know_digest_survives_a_2048_char_cut() {
                     full.chars().count()
                 );
             }
+            // Nothing about writing where nothing can write.
+            if !writes {
+                assert!(
+                    !seen.contains("If your HOST refuses") && !seen.contains("A decline is final"),
+                    "{label}: write guidance on a surface that cannot write:\n{seen}"
+                );
+            }
+            assert!(
+                !full.contains("  "),
+                "{label}: a wrapped literal missing its `\\` left a hole:\n{full}"
+            );
         }
     }
 }

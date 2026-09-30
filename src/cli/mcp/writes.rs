@@ -1480,7 +1480,7 @@ pub(super) const UNDO_TOOL: &str = "dlq_undo";
 /// honest).
 pub(super) fn write_tool_descriptors() -> Vec<Value> {
     let batch_note = format!("ONE CALL COVERS SEVERAL: pass `message_ids` (an array, up to {DLQ_BATCH_CAP}) to handle a set in one plan and ONE confirmation. Prefer it over calling this repeatedly — each plan asks the operator separately, and a person answering the same dialog eight times stops reading it. Over {DLQ_BATCH_CAP} is refused rather than truncated: the cap is what keeps the list readable, and `dlq_purge` is the action for emptying a queue. Give `message_id` or `message_ids`, not both.");
-    let confirm_note = "TWO-PHASE: this tool DISPATCHES NOTHING. It validates and returns {pending:true, confirm_token, plan}; you must surface the plan, then call confirm_action with the token (60s TTL, single-use) to dispatch. Dispatch-only — poll the read tools for progress.";
+    let confirm_note = format!("TWO-PHASE: this tool DISPATCHES NOTHING. It validates and returns {{pending:true, confirm_token, plan}}; you must surface the plan, then call confirm_action with the token ({CONFIRM_TTL_SECS}s TTL, single-use) to dispatch. Dispatch-only — poll the read tools for progress.");
     vec![
         json!({
             "name": "deploy",
@@ -1563,7 +1563,7 @@ pub(super) fn write_tool_descriptors() -> Vec<Value> {
         }),
         json!({
             "name": "dlq_undo",
-            "description": "Put back a dead-lettered message THIS server deleted, within 10 minutes. Call with no arguments to list what is still recoverable. Single-phase — no plan/confirm — because it is the least destructive action here and is reached for under time pressure. CAVEATS: held in memory by this server only, so a restart loses them and nothing deleted by another process is here; purges are never recoverable; and the restore is a re-send, so the message id changes, receive_count resets to 0 and the enqueue time becomes now. Body and attributes come back verbatim. Each message can be restored ONCE, to the region and profile it was deleted from; a failed or interrupted restore leaves it recoverable for the rest of its 10 minutes (the failure says if they have run out), and a second call while one is running is told so.",
+            "description": format!("Put back a dead-lettered message THIS server deleted, within {undo_mins} minutes. Call with no arguments to list what is still recoverable. Single-phase — no plan/confirm — because it is the least destructive action here and is reached for under time pressure. CAVEATS: held in memory by this server only, so a restart loses them and nothing deleted by another process is here; purges are never recoverable; and the restore is a re-send, so the message id changes, receive_count resets to 0 and the enqueue time becomes now. Body and attributes come back verbatim. Each message can be restored ONCE, to the region and profile it was deleted from; a failed or interrupted restore leaves it recoverable for the rest of its {undo_mins} minutes (the failure says if they have run out), and a second call while one is running is told so.", undo_mins = UNDO_WINDOW_SECS / 60),
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1575,7 +1575,7 @@ pub(super) fn write_tool_descriptors() -> Vec<Value> {
         }),
         json!({
             "name": "confirm_action",
-            "description": "Phase 2 of every write tool: dispatch the pending plan identified by confirm_token (single-use, 60s TTL). terminate additionally requires confirm_name equal to the plan's env name. Writes are serialized — a confirm while another dispatch is in flight is refused.",
+            "description": format!("Phase 2 of every write tool: dispatch the pending plan identified by confirm_token (single-use, {CONFIRM_TTL_SECS}s TTL). terminate additionally requires confirm_name equal to the plan's env name. Writes are serialized — a confirm while another dispatch is in flight is refused."),
             "inputSchema": {
                 "type": "object",
                 "properties": {
