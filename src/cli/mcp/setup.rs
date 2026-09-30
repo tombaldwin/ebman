@@ -112,9 +112,10 @@ pub(super) fn render(scope: &WriteScope) -> String {
             // dangerous direction, on the official setup path.
             s.push_str("What this registration can do depends on your client:\n");
             s.push_str("  - A client that can ask you (Claude Code can): EVERY write\n");
-            s.push_str("    verb, terminate and dlq_purge included. Each write is put\n");
-            s.push_str("    to you as a confirmation you can decline; terminate and\n");
-            s.push_str("    dlq_purge make you type the environment name.\n");
+            s.push_str("    verb, terminate and dlq_purge included. Each write is sent\n");
+            s.push_str("    to your client to put to you as a confirmation you can\n");
+            s.push_str("    decline; terminate and dlq_purge ask for the environment\n");
+            s.push_str("    name.\n");
             s.push_str("  - A client that cannot ask: reads only (list_environments,\n");
             s.push_str("    lint, drift, cost, …).\n\n");
             s.push_str("To keep it read-only whatever the client supports:\n");

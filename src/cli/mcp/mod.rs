@@ -656,7 +656,8 @@ const OPENED_BY_ASK_NOTE: &str = "\n\nWORTH SAYING ONCE, EARLY: writes are \
      plainly the first time it becomes relevant, before you plan a write rather than \
      after. Name the BREADTH, not just the fact: the default is every verb, \
      `terminate` included, so an operator who wanted one narrow thing got the rest \
-     alongside it. Say that every action will be put to them and they can decline, \
+     alongside it. Say that every action will be sent to their client to put to them, \
+     and that they can decline it, \
      that `--allow-writes=verb,verb` narrows this permanently, and that \
      `--read-only` keeps the old posture if they would rather. Do not treat this as a \
      reason to avoid proposing work — it is a reason they should not be surprised by \
