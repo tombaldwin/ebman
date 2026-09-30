@@ -229,23 +229,6 @@ Tier definitions:
   review found the two disagreeing under one name; they were renamed by
   meaning rather than changed. One line to align if wanted.
 
-- [ ] **Decision: mark `confirm_action` with
-  `_meta["anthropic/requiresUserInteraction"]`?** Claude Code (v2.1.199+)
-  then prompts a person on every call in every mode, auto included, and
-  sends it to no classifier. That makes writes work in auto mode with no
-  setup, instead of needing the `permissions.allow` rule `mcp setup` now
-  prints. The costs: two prompts per write (Claude Code's card, which
-  shows only the token, then ebman's elicitation, which shows the plan);
-  no allow rule can remove the first; and `dontAsk` mode denies the call
-  outright. Descriptor-only change in `tools/list`. Found triaging a
-  field report of auto mode blocking a DLQ delete. *The Claude Code
-  behaviour above (the version, "no classifier", `dontAsk` denying) is
-  from its documentation, not observed against ebman; check it first.*
-  The baseline it competes with is now verified: with the allow rule,
-  Claude Code 2.1.285 in auto mode passes the call through and shows
-  ebman's dialog (2026-09-30). So the only thing this buys is skipping
-  the one setup step, against a second prompt on every write.
-
 - [ ] **The MCP guidance lives in three copies.** The decline rule, the
   tell-once note and the host-denial remedy each exist in the
   instructions' must-know digest, their long form, and `doctor`. On a

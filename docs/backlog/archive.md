@@ -4789,3 +4789,30 @@ review.
    compatible with every existing log; it changes what NEW lines say.
    Recommendation: `RestartAppServer` (the majority, and the AWS API
    name) and `SetOption` (the verb, not the call; shorter in a filter).
+
+## Decided 2026-09-30
+
+- [x] **Decided 2026-09-30 — no: mark `confirm_action` with
+  `_meta["anthropic/requiresUserInteraction"]`?** Claude Code (v2.1.199+)
+  then prompts a person on every call in every mode, auto included, and
+  sends it to no classifier. That makes writes work in auto mode with no
+  setup, instead of needing the `permissions.allow` rule `mcp setup` now
+  prints. The costs: two prompts per write (Claude Code's card, which
+  shows only the token, then ebman's elicitation, which shows the plan);
+  no allow rule can remove the first; and `dontAsk` mode denies the call
+  outright. Descriptor-only change in `tools/list`. Found triaging a
+  field report of auto mode blocking a DLQ delete. *The Claude Code
+  behaviour above (the version, "no classifier", `dontAsk` denying) is
+  from its documentation, not observed against ebman; check it first.*
+  The baseline it competes with is now verified: with the allow rule,
+  Claude Code 2.1.285 in auto mode passes the call through and shows
+  ebman's dialog (2026-09-30). So the only thing this buys is skipping
+  the one setup step, against a second prompt on every write.
+  **Ruling (maintainer): keep the allow rule; do not add
+  `requiresUserInteraction`.** It would put two prompts on every write
+  (Claude Code's card showing only the token, then ebman's dialog
+  showing the plan), no allow rule could remove the first, and `dontAsk`
+  mode would deny the call outright. What it buys (skipping the one
+  setup step) is already covered: the allow rule is verified on Claude
+  Code 2.1.285 in auto mode, `mcp setup` prints it, and an operator who
+  skipped setup gets a denial the agent now explains, with the fix.
