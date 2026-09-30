@@ -4827,4 +4827,4 @@ review.
   than shrink it. The instructions are one text of at most ~1.5k
   characters on every combination, pinned whole under the cut; the
   reasons moved to `WriteScope::agent_rules`' doc comment; `doctor`
-  stays the uncut reference for the remedies.
+  stays the uncut reference for the host-denial remedy.

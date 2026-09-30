@@ -3730,7 +3730,7 @@ fn the_summary_says_whether_confirmations_are_put_to_a_person() {
         let asked = scope.agent_rules(None, true, false);
         let silent = scope.agent_rules(None, false, false);
         assert!(
-            asked.contains("put to the operator") || asked.contains("put to the"),
+            asked.contains("put to the operator"),
             "a granted scope on an ask-capable client must say the confirmation \
                  reaches a person: {asked}"
         );
@@ -3836,8 +3836,10 @@ fn a_granted_surface_says_what_a_host_denial_means() {
 fn a_standing_refusal_outranks_the_ask_note() {
     let t = WriteScope::All.agent_rules(Some("safety.read_only is set."), true, true);
     assert!(t.contains("REFUSED"), "{t}");
+    // Lower case, as the ask line writes it: the upper-case needle this
+    // used matched nothing in the text, so it could not fail.
     assert!(
-        !t.contains("OPERATOR"),
+        !t.contains("put to the operator") && !t.contains("A decline is final"),
         "nothing will be put to anyone on a server that refuses every write: {t}"
     );
 }
@@ -4755,8 +4757,8 @@ async fn doctor_names_the_host_permission_layer_it_cannot_see() {
         n.iter().any(|n| n.contains("AWS CLI")),
         "and must say what not to do about it: {n:?}"
     );
-    // The whole remedy, not a pointer: the instructions' long form is
-    // past Claude Code's 2048-character cut, and doctor's output is not.
+    // The whole remedy, not a pointer: the instructions carry one line
+    // of it to fit Claude Code's 2048-character cut; doctor is not cut.
     let note = n
         .iter()
         .find(|n| n.contains("ebman cannot see"))
@@ -4854,7 +4856,7 @@ fn a_decline_does_not_assert_that_a_person_made_it() {
 #[tokio::test]
 async fn the_whole_instructions_text_fits_a_2048_char_cut() {
     const CUT: usize = 2048;
-    // Every grant the digest words differently, the LONGEST narrow grant
+    // Every grant the text words differently, the LONGEST narrow grant
     // (the scope line grows with it), and each standing refusal.
     let every_verb = super::writes::write_verb_names();
     let refused_by_config = crate::config::Config {
@@ -4913,9 +4915,16 @@ async fn the_whole_instructions_text_fits_a_2048_char_cut() {
             longest = longest.max(len);
             let seen = full;
             let label = format!("{name}, can_ask={can_ask}");
+            let mut must_extra: Vec<&str> = Vec::new();
             let refused = cfg.safety_read_only || !cfg.safety_parse_errors.is_empty();
             let writes = s.effective_scope().any() && !refused;
             // The scope line, whichever it is, whole inside the cut.
+            if refused {
+                must_extra.push("No confirmation lifts it");
+            } else if !writes && !matches!(&scope, WriteScope::Only(v) if v.is_empty()) {
+                // The read-only line names the verbs ebman has, from the table.
+                must_extra.push("dlq_purge");
+            }
             let scope_line = if refused {
                 "do not report it as a fault: `doctor` reports it too.\n"
             } else if matches!(&scope, WriteScope::Only(v) if v.is_empty()) {
@@ -4935,14 +4944,17 @@ async fn the_whole_instructions_text_fits_a_2048_char_cut() {
             ];
             if writes {
                 must.push("Never do the write another way");
-                must.push("Tell the operator; `doctor` says how they can allow it.\n");
+                must.push("a denied undo is urgent");
+                must.push("`doctor` says how they can allow it.\n");
             }
             if writes && can_ask {
                 must.push("A decline is final");
+                must.push("or come back at once.");
                 must.push("do not restate the case for it.\n");
             }
             if writes && !scope.any() && can_ask {
                 must.push("Tell the operator once, before you plan a write");
+                must.push("still sent to them to accept or decline.");
                 must.push("not a reason to avoid proposing work.\n");
             }
             assert!(
@@ -4950,6 +4962,7 @@ async fn the_whole_instructions_text_fits_a_2048_char_cut() {
                 "{label}: the instructions are {len} characters; Claude Code shows the \
                  agent only the first {CUT}:\n{full}"
             );
+            must.extend(must_extra);
             for line in &must {
                 assert!(seen.contains(line), "{label}: `{line}` is missing:\n{seen}");
             }

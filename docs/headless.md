@@ -143,14 +143,16 @@ about an upgrade that came later. The notice names the running version
 and says to reconnect (in Claude Code: `/mcp`, Reconnect), which
 re-spawns the child from the current binary and re-runs the handshake.
 
-The `initialize` response carries an `instructions` block naming the
-capabilities ebman has that this surface does **not** expose — worker
-queue depth and message peek, the `:why` correlation bundle, the live
-log tail — and where they live in the TUI. An agent can only see the
-tool list, so without that a TUI-only capability is indistinguishable
-from one ebman lacks; on a real incident that sent the diagnosis out
-into raw `aws sqs` calls while ebman had had a DLQ peek all along. A
-test fails if a tool ships that makes the block stale.
+The `initialize` response carries an `instructions` block: the build
+version, the write surface this connection has and the rules for it,
+the one capability ebman has that this surface does **not** expose (a
+live, streaming log tail, which is in the TUI), and a pointer to
+`doctor` before reporting anything else as missing. An agent can only
+see the tool list, so without that a TUI-only capability is
+indistinguishable from one ebman lacks; on a real incident that sent the
+diagnosis out into raw `aws sqs` calls while ebman had a DLQ peek all
+along. A test fails if a tool ships that makes the block stale, and
+another if the block outgrows the 2048 characters Claude Code shows.
 
 The block also opens with the running build's version. That is **not**
 redundant with `serverInfo.version`: a client consumes the handshake and
