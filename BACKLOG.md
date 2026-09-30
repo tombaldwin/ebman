@@ -229,14 +229,6 @@ Tier definitions:
   review found the two disagreeing under one name; they were renamed by
   meaning rather than changed. One line to align if wanted.
 
-- [ ] **The MCP guidance lives in three copies.** The decline rule, the
-  tell-once note and the host-denial remedy each exist in the
-  instructions' must-know digest, their long form, and `doctor`. On a
-  bare Claude Code registration the instructions run to ~5.5k
-  characters, over 60% of it past the 2048-character cut Claude Code
-  applies. Should the long form shrink to the reasons only, with
-  `doctor` the uncut reference? *0.45.1 re-review.*
-
 - [ ] **Decision: should lifting `--read-only` be harder?** 0112e6d
   audits `:readonly off`; it still needs no confirmation, so a session
   started `--read-only` is one keystroke from writable. Options: sticky

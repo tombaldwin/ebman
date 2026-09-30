@@ -3220,7 +3220,7 @@ fn only_the_mcp_daemon_opens_a_log_file() {
 /// "go and enable them".
 #[test]
 fn the_instructions_say_a_grant_is_not_the_agents_to_make() {
-    let read_only = WriteScope::None.agent_summary(None, false, false);
+    let read_only = WriteScope::None.agent_rules(None, false, false);
     assert!(
         read_only.contains("Do not edit the MCP config yourself"),
         "a read-only server must say whose job the grant is: {read_only}"
@@ -3232,13 +3232,16 @@ fn the_instructions_say_a_grant_is_not_the_agents_to_make() {
 
     // A narrow grant needs the other half: the verb it is missing
     // may have been granted already and not picked up.
-    let narrow = WriteScope::Only(vec!["dlq_delete".into()]).agent_summary(None, false, false);
+    let narrow = WriteScope::Only(vec!["dlq_delete".into()]).agent_rules(None, false, false);
     assert!(
         narrow.contains("restart the client"),
         "a client that reconnects without re-reading its config shows the \
              verb as absent, which reads as a broken feature: {narrow}"
     );
-    assert!(narrow.contains("Asking is your part"), "{narrow}");
+    assert!(
+        narrow.contains("asking to widen it is your part"),
+        "{narrow}"
+    );
 }
 
 /// A standing refusal outranks the grant in the instructions.
@@ -3288,7 +3291,7 @@ async fn a_standing_refusal_outranks_the_grant_in_the_instructions() {
     let b = Server::with_config(true, false, WriteScope::All, broken);
     assert!(
         b.write_scope
-            .agent_summary(Some("the safety config could not be parsed."), false, false)
+            .agent_rules(Some("the safety config could not be parsed."), false, false)
             .contains("REFUSED"),
         "a fail-closed parse refuses every write and the block must say so"
     );
@@ -3302,7 +3305,7 @@ async fn a_standing_refusal_outranks_the_grant_in_the_instructions() {
     );
     assert!(
         open.write_scope
-            .agent_summary(None, false, false)
+            .agent_rules(None, false, false)
             .contains("ENABLED"),
         "without a standing refusal the grant is the right thing to describe"
     );
@@ -3724,8 +3727,8 @@ fn the_summary_says_whether_confirmations_are_put_to_a_person() {
         WriteScope::All,
         WriteScope::Only(vec!["restart".into(), "dlq_delete".into()]),
     ] {
-        let asked = scope.agent_summary(None, true, false);
-        let silent = scope.agent_summary(None, false, false);
+        let asked = scope.agent_rules(None, true, false);
+        let silent = scope.agent_rules(None, false, false);
         assert!(
             asked.contains("put to the operator") || asked.contains("put to the"),
             "a granted scope on an ask-capable client must say the confirmation \
@@ -3768,11 +3771,15 @@ fn the_summary_says_whether_confirmations_are_put_to_a_person() {
 fn a_granted_surface_says_what_a_host_denial_means() {
     for scope in [WriteScope::All, WriteScope::Only(vec!["dlq_delete".into()])] {
         for can_ask in [true, false] {
-            let t = scope.agent_summary(None, can_ask, false);
+            // The instructions carry the rule and point at doctor...
+            let line = scope.agent_rules(None, can_ask, false);
             assert!(
-                t.contains("IF YOUR HOST DENIES"),
-                "{scope:?}/{can_ask}: {t}"
+                line.contains("If your HOST refuses") && line.contains("AWS CLI"),
+                "{scope:?}/{can_ask}: {line}"
             );
+            assert!(line.contains("`doctor` says how"), "{line}");
+            // ...and doctor carries the remedy, uncut.
+            let t = super::host_denial_body(can_ask);
             assert!(
                 t.contains("AWS CLI"),
                 "must name the workaround to refuse: {t}"
@@ -3813,11 +3820,11 @@ fn a_granted_surface_says_what_a_host_denial_means() {
     }
     // Nothing to deny where nothing can be written.
     assert!(!WriteScope::None
-        .agent_summary(None, true, false)
-        .contains("IF YOUR HOST DENIES"));
+        .agent_rules(None, true, false)
+        .contains("If your HOST refuses"));
     assert!(!WriteScope::All
-        .agent_summary(Some("read_only is set."), true, true)
-        .contains("IF YOUR HOST DENIES"));
+        .agent_rules(Some("read_only is set."), true, true)
+        .contains("If your HOST refuses"));
 }
 
 /// A standing refusal still outranks the ask note.
@@ -3827,7 +3834,7 @@ fn a_granted_surface_says_what_a_host_denial_means() {
 /// and wait on a question that will never be put.
 #[test]
 fn a_standing_refusal_outranks_the_ask_note() {
-    let t = WriteScope::All.agent_summary(Some("safety.read_only is set."), true, true);
+    let t = WriteScope::All.agent_rules(Some("safety.read_only is set."), true, true);
     assert!(t.contains("REFUSED"), "{t}");
     assert!(
         !t.contains("OPERATOR"),
@@ -4443,7 +4450,7 @@ fn a_reply_to_a_forgotten_ask_is_dropped_not_answered() {
 /// agent saying so.
 #[test]
 fn an_ask_opened_surface_tells_the_agent_to_warn_the_operator() {
-    let opened = WriteScope::All.agent_summary(None, true, true);
+    let opened = WriteScope::All.agent_rules(None, true, true);
     assert!(
         opened.contains("YOUR CLIENT") && opened.contains("--read-only"),
         "the agent must be told to explain WHY writes exist and name the way \
@@ -4477,13 +4484,13 @@ fn an_ask_opened_surface_tells_the_agent_to_warn_the_operator() {
 
     // A flag-granted surface says nothing: the operator typed the
     // flag, so there is nothing they did not know.
-    let flagged = WriteScope::All.agent_summary(None, true, false);
+    let flagged = WriteScope::All.agent_rules(None, true, false);
     assert!(
         !flagged.contains("YOUR CLIENT"),
         "an operator who passed --allow-writes already knows: {flagged}"
     );
     // And a standing refusal still outranks both.
-    let refused = WriteScope::All.agent_summary(Some("read_only is set."), true, true);
+    let refused = WriteScope::All.agent_rules(Some("read_only is set."), true, true);
     assert!(!refused.contains("YOUR CLIENT"), "{refused}");
 }
 
@@ -4835,16 +4842,17 @@ fn a_decline_does_not_assert_that_a_person_made_it() {
 }
 
 /// Claude Code shows an agent only the first 2048 characters of the
-/// server instructions. Everything an agent must act on has to be whole
-/// inside that cut, on every combination of grant and client.
+/// server instructions, so the WHOLE text must fit, on every combination
+/// of grant, client and standing refusal — there is no long form behind
+/// it any more (0.45.2).
 ///
-/// Measured before this existed: on every path where the client can ask
-/// — Claude Code's own — the capabilities list and the `doctor` pointer
-/// had been past the cut since 0.42, and the host-denial note written
-/// for Claude Code's auto mode started at character 2218. A test of the
-/// note's TEXT passed throughout; only its position was wrong.
+/// Measured before the 0.45.1 digest: on every path where the client can
+/// ask — Claude Code's own — the capabilities list and the `doctor`
+/// pointer had been past the cut since 0.42, and the host-denial note
+/// written for Claude Code's auto mode started at character 2218. A test
+/// of the note's TEXT passed throughout; only its position was wrong.
 #[tokio::test]
-async fn the_must_know_digest_survives_a_2048_char_cut() {
+async fn the_whole_instructions_text_fits_a_2048_char_cut() {
     const CUT: usize = 2048;
     // Every grant the digest words differently, the LONGEST narrow grant
     // (the scope line grows with it), and each standing refusal.
@@ -4881,6 +4889,7 @@ async fn the_must_know_digest_survives_a_2048_char_cut() {
             false,
         ),
     ];
+    let mut longest = 0usize;
     for (name, scope, cfg, read_only_flag) in cases {
         for can_ask in [true, false] {
             let s = Server::with_config(true, false, scope.clone(), cfg.clone());
@@ -4900,7 +4909,9 @@ async fn the_must_know_digest_survives_a_2048_char_cut() {
             .await
             .expect("initialize");
             let full = init["result"]["instructions"].as_str().unwrap_or_default();
-            let seen: String = full.chars().take(CUT).collect();
+            let len = full.chars().count();
+            longest = longest.max(len);
+            let seen = full;
             let label = format!("{name}, can_ask={can_ask}");
             let refused = cfg.safety_read_only || !cfg.safety_parse_errors.is_empty();
             let writes = s.effective_scope().any() && !refused;
@@ -4910,32 +4921,37 @@ async fn the_must_know_digest_survives_a_2048_char_cut() {
             } else if matches!(&scope, WriteScope::Only(v) if v.is_empty()) {
                 "- Writes: none granted.\n"
             } else if !writes {
-                "if they set it); do not edit the MCP config yourself.\n"
+                "refuse that edit as self-modification.\n"
             } else if matches!(scope, WriteScope::Only(_)) {
-                "not missing: ask to widen it.\n"
+                "ask them to restart the client.\n"
             } else {
-                "(`dlq_undo` is one step).\n"
+                "one step).\n"
             };
-            let mut must: Vec<&str> = vec![scope_line, "missing, call `doctor`.\n"];
+            let mut must: Vec<&str> = vec![
+                scope_line,
+                "Tool descriptions carry CAVEATS",
+                "a LIVE log tail",
+                "a choice the operator made.\n",
+            ];
             if writes {
                 must.push("Never do the write another way");
                 must.push("Tell the operator; `doctor` says how they can allow it.\n");
             }
             if writes && can_ask {
                 must.push("A decline is final");
-                must.push("unless you know one was there.\n");
+                must.push("do not restate the case for it.\n");
             }
             if writes && !scope.any() && can_ask {
-                must.push("Tell the operator once, before your first write");
-                must.push("`--read-only` closes it.\n");
+                must.push("Tell the operator once, before you plan a write");
+                must.push("not a reason to avoid proposing work.\n");
             }
+            assert!(
+                len <= CUT,
+                "{label}: the instructions are {len} characters; Claude Code shows the \
+                 agent only the first {CUT}:\n{full}"
+            );
             for line in &must {
-                assert!(
-                    seen.contains(line),
-                    "{label}: `{line}` is not whole inside the first {CUT} characters \
-                     ({} in all):\n{seen}",
-                    full.chars().count()
-                );
+                assert!(seen.contains(line), "{label}: `{line}` is missing:\n{seen}");
             }
             // Nothing about writing where nothing can write.
             if !writes {
@@ -4952,6 +4968,7 @@ async fn the_must_know_digest_survives_a_2048_char_cut() {
             );
         }
     }
+    eprintln!("longest instructions: {longest} of {CUT} characters");
 }
 
 /// `docs/headless.md` states the confirm token's lifetime and the undo

@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **The MCP server instructions are one short text, whole on every
+  client.** Claude Code shows an agent only the first 2048 characters of
+  them; 0.45.1 put a must-know digest in front of a long form that ran
+  to ~5.5k characters, most of it never seen there and all of it to be
+  kept in step with the digest and `doctor`. The long form is gone: the
+  instructions are one rule per line, at most ~1.5k characters on any
+  combination of grant and client, and now include the three rules only
+  the long form had — surface a plan in a line rather than re-arguing
+  it, a granted verb you cannot see usually means the client needs a
+  restart, and read the tool CAVEATS. `doctor` still carries the full
+  remedies, uncut. A test fails the build if the text outgrows the cut.
+
 ## [0.45.1] - 2026-09-30
 
 ### Fixed

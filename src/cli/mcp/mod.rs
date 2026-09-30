@@ -494,25 +494,57 @@ impl WriteScope {
         }
     }
 
-    /// The must-know points, first and short.
+    /// The whole of what an agent is told about this connection, one
+    /// rule per line.
     ///
-    /// Claude Code shows an agent only the first 2048 characters of the
-    /// server instructions. Measured: on every path where the client can
-    /// ask, the capabilities list and the `doctor` pointer had been past
-    /// that cut since 0.42, and 0.45.1's host-denial note landed past it
-    /// too — the one fix aimed at Claude Code, invisible on Claude Code.
-    /// So each point an agent must act on gets one line here, and
-    /// [`WriteScope::agent_summary`] follows with the reasons for clients
-    /// that show it all. Pinned by
-    /// `the_must_know_digest_survives_a_2048_char_cut`.
-    fn agent_digest(
+    /// ONE text, and it must fit: Claude Code shows an agent only the first
+    /// 2048 characters of the server instructions. It used to be a long
+    /// form of ~5.5k characters with the reasons in it; on every path where
+    /// the client can ask — Claude Code's own — the capabilities list and
+    /// the `doctor` pointer had been past that cut since 0.42, and 0.45.1's
+    /// host-denial note landed past it too. 0.45.1 put a digest in front;
+    /// 0.45.2 dropped the long form, since on Claude Code nobody read it and
+    /// it tripled the text to keep in step. The rules stay here; the
+    /// reasons live in these comments, and `doctor` (never cut) carries the
+    /// full remedies. Pinned by `the_whole_instructions_text_fits_a_2048_char_cut`.
+    ///
+    /// Why each rule is here:
+    /// - READ-ONLY names whose edit the grant is: a peer agent on 0.40
+    ///   tried to scope its own server and its client refused the edit as
+    ///   self-modification — a wasted attempt nothing had warned against.
+    /// - A narrow grant says an absent verb is NOT GRANTED, not missing: a
+    ///   withheld tool is simply absent from `tools/list`, which reads as
+    ///   "ebman cannot", and a verb granted but unseen is usually a client
+    ///   that reconnected without re-reading its config.
+    /// - A standing refusal outranks the grant, said first and alone:
+    ///   describing the grant on a server that refuses every write told the
+    ///   agent "Writes are ENABLED" while nothing could write.
+    /// - Tell the operator once: on a bare registration the write surface
+    ///   arrives when the client reconnects against 0.42+, an action taken
+    ///   for unrelated reasons, and the agent is the only channel to say so
+    ///   — naming the breadth (`terminate` too), the way to narrow it, and
+    ///   that it is not a reason to stop proposing work.
+    /// - A decline is final, and not a person's unless known: elicitation is
+    ///   the client's word — headless `claude -p` declares it and declines by
+    ///   itself — and an agent not told reads a decline as a permission
+    ///   error and retries. Surface the plan in a line: re-arguing it in the
+    ///   agent's own message turns a gate the operator approved of into a
+    ///   tax charged on every write.
+    /// - A host denial never reached ebman: a field report of Claude Code's
+    ///   auto mode refusing `confirm_action`, where the easy next move — the
+    ///   AWS CLI — skips the pins, the audit line and the undo.
+    /// - CAVEATS, the version, and what is not exposed: a capability the TUI
+    ///   has and this surface lacks is indistinguishable from one ebman
+    ///   lacks, which sent a real incident's diagnosis to raw `aws sqs`; and
+    ///   a reader on an old binary reported gaps for two days without
+    ///   knowing it was two releases behind.
+    fn agent_rules(
         &self,
         standing_refusal: Option<&str>,
         can_ask: bool,
         opened_by_ask: bool,
     ) -> String {
-        let mut d =
-            String::from("MUST-KNOW (the full text follows, and your client may cut it off):\n");
+        let mut d = String::new();
         let writes = standing_refusal.is_none() && self.any();
         match (standing_refusal, self) {
             (Some(why), _) => d.push_str(&format!(
@@ -521,34 +553,40 @@ impl WriteScope {
             )),
             (None, WriteScope::None) => d.push_str(
                 "- READ-ONLY: no write tool. Ask the operator to restart with --allow-writes \
-                 (and without --read-only, if they set it); do not edit the MCP config \
-                 yourself.\n",
+                 (and without --read-only, if they set it). Do not edit the MCP config \
+                 yourself: the grant is theirs, and a client may refuse that edit as \
+                 self-modification.\n",
+            ),
+            (None, WriteScope::All) => d.push_str(
+                "- Writes ENABLED: every verb, by plan then `confirm_action` (`dlq_undo` is \
+                 one step).\n",
             ),
             // The parser cannot produce an empty grant, but the type
             // can: it lists no write tool, so it reads as none.
             (None, WriteScope::Only(v)) if v.is_empty() => d.push_str("- Writes: none granted.\n"),
-            (None, WriteScope::All) => d.push_str(
-                "- Writes: every verb, by plan then `confirm_action` (`dlq_undo` is one \
-                     step).\n",
-            ),
             (None, WriteScope::Only(v)) => d.push_str(&format!(
-                "- Writes: {} only, by plan then `confirm_action` (`dlq_undo` is one step). \
-                 The rest is NOT GRANTED, not missing: ask to widen it.\n",
+                "- Writes ENABLED for {} only, by plan then `confirm_action` (`dlq_undo` is \
+                 one step). The rest is NOT GRANTED, not missing: asking to widen it is your \
+                 part, the config edit theirs. A verb they granted but you lack usually means the \
+                 client reconnected without re-reading its config: ask them to restart the \
+                 client.\n",
                 v.join(", ")
             )),
         }
         if writes && opened_by_ask {
             d.push_str(
-                "- Tell the operator once, before your first write: writes are open only \
-                 because your client can ask them. That is every verb, `terminate` included; \
-                 `--allow-writes=verb,verb` narrows it and `--read-only` closes it.\n",
+                "- Tell the operator once, before you plan a write: writes are open only \
+                 because YOUR CLIENT can ask them. That is every verb, `terminate` included; \
+                 `--allow-writes=verb,verb` narrows it and `--read-only` closes it. This is \
+                 not a reason to avoid proposing work.\n",
             );
         }
         if writes && can_ask {
             d.push_str(
                 "- Each write is sent to your client to put to the operator. A decline is \
                  final: say it was declined and stop. Do not re-plan, widen or call it a \
-                 fault, and do not say a person refused unless you know one was there.\n",
+                 fault, and do not say a person refused unless you know one was there. \
+                 Surface the plan in a line; do not restate the case for it.\n",
             );
         }
         if writes {
@@ -560,176 +598,36 @@ impl WriteScope {
             );
         }
         d.push_str(
-            "- Not on this surface: a live, streaming log tail (the TUI has it; \
+            "- Tool descriptions carry CAVEATS naming what each tool cannot see: a clean \
+             result does not clear what it never checked.\n\
+             - Not on this surface: a LIVE log tail (streaming; the TUI has it, and \
              `recent_logs` is point-in-time). Before reporting any other capability as \
-             missing, call `doctor`.\n\nIN FULL:\n\n",
+             missing, call `doctor`: it tells a gap in ebman from one in your client or \
+             a choice the operator made.\n",
         );
         d
     }
-
-    /// How this grant reads to the AGENT, for the `instructions` block.
-    ///
-    /// A withheld tool is simply absent from `tools/list`, and absent
-    /// is ambiguous: it reads as "ebman cannot do this" when it means
-    /// "you were not granted this". That is the same confusion the
-    /// version line above exists to prevent, and it has the same cost
-    /// — an agent reporting a capability gap that is really a config
-    /// choice, instead of asking the operator to widen the grant.
-    ///
-    /// `can_ask` is whether this connection's client declared
-    /// elicitation. It changes what a confirm *means* — with the ask,
-    /// the client is sent the action to put to a person (its word, not
-    /// proof one saw it) — and an agent that does
-    /// not know that reads a decline as a bug and retries it. This is
-    /// authored text for exactly that reason: the capability is
-    /// negotiated in protocol metadata the client sees, which never
-    /// reaches the agent reading these instructions.
-    fn agent_summary(
-        &self,
-        standing_refusal: Option<&str>,
-        can_ask: bool,
-        opened_by_ask: bool,
-    ) -> String {
-        // A standing refusal OUTRANKS the scope, so it is said first
-        // and the scope is not said at all. Describing the grant on a
-        // server that refuses every write told the agent "Writes are
-        // ENABLED for every verb" while nothing could write — true
-        // about the flag, false about the server, and wrong in the one
-        // channel an agent is guaranteed to read.
-        if let Some(why) = standing_refusal {
-            return format!(
-                "Writes are REFUSED on this server, regardless of any grant: {why} No plan \
-                 will dispatch and no confirmation will lift it. Only the operator changing \
-                 that control can. Do not plan writes and do not report this as a fault — \
-                 `doctor` reports it too."
-            );
-        }
-        match self {
-            WriteScope::None => "This server is READ-ONLY: no write tool is available. ASK the \
-                 operator to restart it with --allow-writes (optionally \
-                 --allow-writes=verb,verb to grant only what you need) — asking \
-                 is the whole of your part in it. Do not edit the MCP config \
-                 yourself: a grant is not yours to make, and in at least one \
-                 client that edit is refused as self-modification, so trying it \
-                 costs a denial and teaches nothing."
-                .to_string(),
-            WriteScope::All => {
-                let mut t = "Writes are ENABLED for every verb, via the two-phase \
-                     plan-then-confirm protocol."
-                    .to_string();
-                if can_ask {
-                    t.push_str(ASK_NOTE);
-                }
-                if opened_by_ask {
-                    t.push_str(OPENED_BY_ASK_NOTE);
-                }
-                t.push_str(&host_denial_note(can_ask));
-                t
-            }
-            // The parser cannot produce an empty grant, but the type can:
-            // it lists no write tool, so it reads as none.
-            WriteScope::Only(v) if v.is_empty() => {
-                "No write verb is granted on this server, so no write tool is listed.".to_string()
-            }
-            WriteScope::Only(v) => {
-                format!(
-                    "Writes are NARROWLY granted: {} only, via the two-phase plan-then-confirm \
-                 protocol. Any other write verb is absent from this list because it was NOT \
-                 GRANTED, not because ebman lacks it — say so and ask the operator to widen \
-                 the grant rather than reporting it as unsupported. Asking is your part; \
-                 the config edit is theirs. If they say they granted a verb and it is still \
-                 missing here, the likeliest cause is a client that reconnected without \
-                 re-reading its config — ask them to restart the client before either of you \
-                 concludes it is broken.",
-                    v.join(", ")
-                ) + if can_ask { ASK_NOTE } else { "" }
-                    // Nothing to deny where no write tool is listed.
-                    + &if self.any() { host_denial_note(can_ask) } else { String::new() }
-            }
-        }
-    }
 }
 
-/// Appended when the write surface exists ONLY because this client can
-/// be asked — no `--allow-writes` was given.
+/// What a denial from the CLIENT's own permission layer means, and the
+/// remedy — carried whole by `doctor`, whose output is never cut; the
+/// instructions carry one line pointing here.
 ///
-/// The operator never made a config edit to enable this. On 0.42 a
-/// bare registration gains the write surface the moment the client
-/// reconnects against a 0.42 binary, so the act that granted it was
-/// pressing Reconnect — something operators do for unrelated reasons,
-/// and did twice in one afternoon during this release's own testing.
-///
-/// ebman has no channel to the operator except a dialog, and raising
-/// a dialog to announce a capability would be its own kind of rude.
-/// The agent is the only path to them, so the agent is asked to say
-/// it once. A peer session working on live infrastructure spotted
-/// this and told its operator before touching anything, which is the
-/// behaviour this text exists to make ordinary rather than
-/// exceptional.
-const OPENED_BY_ASK_NOTE: &str = "\n\nWORTH SAYING ONCE, EARLY: writes are \
-     available here because YOUR CLIENT can put a question to the operator, not \
-     because they passed a flag. They may not know the surface widened — on a bare \
-     registration it widens when the client reconnects against this build. Tell them \
-     plainly the first time it becomes relevant, before you plan a write rather than \
-     after. Name the BREADTH, not just the fact: the default is every verb, \
-     `terminate` included, so an operator who wanted one narrow thing got the rest \
-     alongside it. Say that every action will be sent to their client to put to them, \
-     and that they can decline it, \
-     that `--allow-writes=verb,verb` narrows this permanently, and that \
-     `--read-only` keeps the old posture if they would rather. Do not treat this as a \
-     reason to avoid proposing work — it is a reason they should not be surprised by \
-     it.";
-
-/// Appended to a granted-writes summary when the operator can be asked.
-///
-/// Kept whole rather than inlined twice: the two grant arms said the
-/// same thing about confirmation and drifted apart once already.
-const ASK_NOTE: &str = "\n\nEach confirmation is sent to your CLIENT to put to the \
-     operator. Expect `confirm_action` to take as long as a person takes — or to come \
-     back at once, which is what a non-interactive client does when it answers for \
-     itself. A decline is FINAL — not an error, not a missing permission: do not \
-     re-plan the same action, do not ask for the grant to be widened, and do not \
-     report it as a fault. Say the confirmation was declined, and stop. Do NOT tell \
-     your user a person refused unless you independently know one was there: ebman \
-     cannot tell an operator answering a dialog from a client answering for itself, \
-     and saying otherwise puts a decision in someone's mouth.\n\nSURFACE THE PLAN; \
-     DO NOT RESTATE THE CASE FOR IT. The confirmation already names the action, the \
-     targets, the identity and what it forecloses, and the operator is about to read \
-     it. Re-deriving the reasoning in your own message — especially reasoning you and \
-     they settled days ago — turns a gate they approved of into a tax they resent, and \
-     the tax is charged on every single write. Say what you are about to do in a line, \
-     and let the dialog do the rest.";
-
-/// Appended to every granted-writes summary: what a denial from the
-/// CLIENT's own permission layer means, and what not to do about it.
-///
-/// A field report: under Claude Code's auto mode the host's
-/// classifier refused `confirm_action` before it reached ebman. The
-/// operator never saw ebman's confirmation, the agent saw only a
-/// generic harness denial, and the easy next move — `aws sqs` from a
-/// shell — would have dropped the plan, the pins, the audit line and
-/// the undo. Nothing ebman said covered it. The agent is the only
-/// channel to the operator, so this is authored text, not protocol
-/// metadata.
+/// A field report: under Claude Code's auto mode the host's classifier
+/// refused `confirm_action` before it reached ebman. The operator never
+/// saw ebman's confirmation, the agent saw only a generic harness denial,
+/// and the easy next move — `aws sqs` from a shell — would have dropped
+/// the plan, the pins, the audit line and the undo.
 ///
 /// Whether allowing the tool hands the decision to a person depends on
 /// `can_ask`: on a connection that cannot elicit, nothing else asks, so
 /// the allow rule IS the standing grant and must be named as one.
-fn host_denial_note(can_ask: bool) -> String {
-    format!(
-        "\n\nIF YOUR HOST DENIES THE CALL: {}",
-        host_denial_body(can_ask)
-    )
-}
-
-/// [`host_denial_note`] without its heading: `doctor` puts it in a note of
-/// its own, where a shouted heading reads as noise.
 fn host_denial_body(can_ask: bool) -> String {
     let ttl = writes::CONFIRM_TTL_SECS;
     let undo_mins = writes::UNDO_WINDOW_SECS / 60;
     // Hedged on purpose: a client that declares elicitation is not proof
     // a person sees the dialog — headless `claude -p` declares it and
-    // declines by itself (see `ASK_NOTE`). The Claude Code case is
+    // declines by itself. The Claude Code case is
     // verified (2.1.285, auto mode, 2026-09-30): with the allow rule the
     // call reached ebman and the operator saw and answered the dialog;
     // unanswered, it timed out and nothing dispatched. The agent cannot
@@ -1450,95 +1348,24 @@ impl Server {
                         "protocolVersion": version,
                         "capabilities": {"tools": {}},
                         "serverInfo": {"name": "ebman", "version": env!("CARGO_PKG_VERSION")},
-                        // What this surface does NOT expose, and where
-                        // it lives instead.
-                        //
-                        // An agent can only see the tool list, so a
-                        // capability that exists in the TUI and not here
-                        // is indistinguishable from one ebman does not
-                        // have — and the agent reasonably concludes the
-                        // gap is absolute and reaches for raw `aws`
-                        // calls. That happened on a real incident: the
-                        // whole diagnosis hinged on a DLQ peek this
-                        // server had no tool for, while the TUI had had
-                        // one all along.
-                        //
-                        // Deliberately short and specific. The tool
-                        // CAVEATS are the most-read part of this surface
-                        // precisely because they are not boilerplate;
-                        // a discoverability block that grows into prose
-                        // gets skimmed like a licence.
-                        // The digest comes first and must fit: Claude
-                        // Code shows an agent only the first 2048
-                        // characters of these instructions. Measured, not
-                        // assumed — every client-can-ask path lost the
-                        // capabilities list and the `doctor` pointer to
-                        // that cut from 0.42 on, and 0.45.1's host-denial
-                        // note landed past it too. The long form follows
-                        // for clients that show it all; `doctor` repeats
-                        // what matters, uncut. Pinned by
-                        // `the_must_know_digest_survives_a_2048_char_cut`.
+                        // One text that fits Claude Code's 2048-character
+                        // cut whole: the rules, with the reasons in
+                        // `WriteScope::agent_rules`' doc comment. Pinned by
+                        // `the_whole_instructions_text_fits_a_2048_char_cut`.
                         "instructions": format!(
-                            "{}{}{}\n\n{}",
+                            "{}{}",
+                            // The build, IN the text: `serverInfo.version`
+                            // is consumed by the client and never reaches
+                            // the agent (confirmed on Claude Code), and the
+                            // rules below are a claim about this build.
                             concat!(
-                            "ebman ", env!("CARGO_PKG_VERSION"),
-                            " — a fleet console for AWS Elastic Beanstalk. This surface exposes reads, ",
-                            "plus two-phase writes. Whether writes are available to YOU is said below; ",
-                            "it depends on this connection, not on the binary.\n\n"),
-                            self.effective_scope().agent_digest(refusal, can_ask, opened_by_ask),
-                            self.effective_scope().agent_summary(refusal, can_ask, opened_by_ask),
-                            concat!(
-                            // NOT redundant with `serverInfo.version`.
-                            // Confirmed, not assumed: an agent on Claude
-                            // Code went looking for `serverInfo` and
-                            // could not reach it — the client consumes
-                            // the handshake and never passes server
-                            // identity through. So this block is the
-                            // only version signal an MCP client is
-                            // GUARANTEED to see, because it is content
-                            // the server authors rather than protocol
-                            // metadata the client may drop.
-                            //
-                            // The general rule, worth keeping in mind
-                            // for anything added here: "the client can
-                            // see X in the handshake" and "the agent can
-                            // see X" are different claims, and the gap
-                            // between them is invisible from this side.
-                            // Anything an agent MUST know goes in
-                            // authored content. Annotations are the
-                            // other case and are fine — they are aimed
-                            // at the client, which does read them.
-                            //
-                            // It matters because the list below is a
-                            // claim about what a specific build can do:
-                            // a reader on an old binary spent two days
-                            // reporting capability gaps as facts without
-                            // knowing it was two releases behind, and
-                            // had no way to tell from where it sat.
-                            "Check this against the latest release before reporting a capability as missing — ",
-                            "this list describes THIS build.\n\n",
-                            "Capabilities ebman HAS that this surface does NOT expose — ask the operator to run them, ",
-                            "or ask for them to be exposed here:\n",
-                            "- Nothing queue-related: depth and peek are `worker_queues`, and resend / delete / ",
-                            "purge are `dlq_resend` / `dlq_delete` / `dlq_purge` under --allow-writes.\n",
-                            "- A LIVE log tail (streaming, follows new lines): TUI, Detail view, Logs tab. ",
-                            "Point-in-time log queries ARE exposed here, as `recent_logs`.\n\n",
-                            "Tool descriptions carry CAVEATS naming what each tool cannot see. They are accurate and ",
-                            "worth reading: a clean result from a tool does not clear what that tool never checked.\n\n",
-                            // The version line above answers "is this
-                            // build capable?". This answers the three
-                            // questions it does not: is this CLIENT
-                            // capable, has the operator forbidden it,
-                            // and is this server even real. All three
-                            // otherwise present as "ebman cannot do
-                            // this", which is the report that wastes a
-                            // maintainer's afternoon.
-                            "Before reporting ANY capability as missing, call `doctor`. It names this build, what ",
-                            "your client declared, the write surface in force, and the operator's standing ",
-                            "restrictions — which is how you tell \"ebman cannot\" from \"your client cannot\" from ",
-                            "\"the operator said no\". Those three are indistinguishable from where you sit, and only ",
-                            "the first is a bug worth reporting."
-                        ))
+                                "ebman ", env!("CARGO_PKG_VERSION"),
+                                " — a fleet console for AWS Elastic Beanstalk: reads, plus two-phase ",
+                                "writes where granted. This describes THIS build and THIS connection; ",
+                                "check the latest release before reporting a capability as missing.\n\n"
+                            ),
+                            self.effective_scope().agent_rules(refusal, can_ask, opened_by_ask),
+                        )
                     }
                 }))
             }

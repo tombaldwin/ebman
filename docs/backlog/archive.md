@@ -4816,3 +4816,15 @@ review.
   setup step) is already covered: the allow rule is verified on Claude
   Code 2.1.285 in auto mode, `mcp setup` prints it, and an operator who
   skipped setup gets a denial the agent now explains, with the fix.
+- [x] **The MCP guidance lives in three copies.** The decline rule, the
+  tell-once note and the host-denial remedy each exist in the
+  instructions' must-know digest, their long form, and `doctor`. On a
+  bare Claude Code registration the instructions run to ~5.5k
+  characters, over 60% of it past the 2048-character cut Claude Code
+  applies. Should the long form shrink to the reasons only, with
+  `doctor` the uncut reference? *0.45.1 re-review.*
+  **Done 2026-09-30 (0.45.2):** decided to drop the long form rather
+  than shrink it. The instructions are one text of at most ~1.5k
+  characters on every combination, pinned whole under the cut; the
+  reasons moved to `WriteScope::agent_rules`' doc comment; `doctor`
+  stays the uncut reference for the remedies.

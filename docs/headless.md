@@ -311,8 +311,8 @@ closes the message is gone.
 MCP gives a server no signal for the client's permission mode, so
 `doctor` cannot tell you which mode you are in; it names the layer and
 the remedy. Claude Code shows an agent only the first 2048 characters
-of the server instructions, so ebman leads them with a short
-must-know digest — including that a host denial never reached ebman
+of the server instructions, so ebman keeps the whole text under that —
+one rule per line, including that a host denial never reached ebman
 and must not be routed around with the AWS CLI, which would skip the
 pins, the audit line and the undo.
 
