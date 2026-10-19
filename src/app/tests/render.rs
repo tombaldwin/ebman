@@ -1811,3 +1811,67 @@ async fn the_apps_action_menu_moves_and_wraps_on_j_and_k() {
     }
     assert_eq!(cursor_of(&app), 0, "a full cycle returns to the start");
 }
+
+/// Every chrome call site draws in the theme's icon style, not a fixed
+/// one.
+///
+/// The shared helpers take a palette or an icon style per call, so a
+/// call site handed the wrong one, such as `cursor_marker(IconStyle::Unicode)`
+/// or a default theme's palette, compiles and renders. Unit tests of the
+/// helpers cannot see it, and nothing did: both of those mutations
+/// passed the whole suite. This renders the main screen and the detail
+/// screen in each style and checks the glyphs that differ between them.
+#[tokio::test]
+async fn chrome_follows_the_theme_icon_style_on_every_screen() {
+    use crate::theme::IconStyle;
+    fn screens(icons: IconStyle) -> Vec<(&'static str, String)> {
+        let cfg = crate::config::Config {
+            theme: "dark".into(),
+            icons: match icons {
+                IconStyle::Ascii => "ascii",
+                IconStyle::Unicode => "unicode",
+                IconStyle::Powerline => "powerline",
+            }
+            .into(),
+            ..crate::config::Config::default()
+        };
+        let mut app = App::for_tests(crate::aws::AwsClient::stub(), cfg);
+        assert_eq!(app.theme.icons, icons, "the config did not set the style");
+        app.environments = vec![
+            mk_env("api-prod", "poly", "Web", "Green"),
+            mk_env("api-staging", "poly", "Web", "Green"),
+        ];
+        app.view.invalidate();
+        app.rebuild_view();
+        let main = render(&mut app, 160, 30);
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        let detail = render(&mut app, 160, 30);
+        assert!(
+            detail.contains("env: api-"),
+            "Enter did not open the detail screen:\n{detail}"
+        );
+        vec![("main", main), ("detail", detail)]
+    }
+    // Glyphs only the unicode and Powerline styles may draw.
+    const NOT_ASCII: &[&str] = &["╭", "╰", "▌ ", "  •  ", "\u{e0b0}", "\u{e0b1}"];
+    for (name, s) in screens(IconStyle::Ascii) {
+        for g in NOT_ASCII {
+            assert!(!s.contains(g), "ascii {name} screen draws {g:?}:\n{s}");
+        }
+        assert!(
+            s.contains("  |  "),
+            "ascii {name}: no ascii separator:\n{s}"
+        );
+    }
+    for (name, s) in screens(IconStyle::Powerline) {
+        assert!(
+            s.contains("\u{e0b1}"),
+            "powerline {name}: no powerline separator:\n{s}"
+        );
+    }
+    let (_, main) = &screens(IconStyle::Powerline)[0];
+    assert!(
+        main.contains("\u{e0b0} "),
+        "powerline main: the cursor is not the powerline marker:\n{main}"
+    );
+}
