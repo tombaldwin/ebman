@@ -51,6 +51,18 @@ impl Default for Theme {
 }
 
 impl Theme {
+    /// The palette the shared panel helpers (`tui_common::chrome`) draw
+    /// with. Built per call: it is five `Copy` fields.
+    pub(crate) fn chrome(&self) -> tui_common::chrome::Chrome {
+        tui_common::chrome::Chrome {
+            icons: self.icons,
+            border_idle: self.border_idle,
+            border_active: self.border_active,
+            muted: self.muted,
+            text: self.text,
+        }
+    }
+
     pub(crate) fn dark() -> Self {
         Self {
             name: "dark",
@@ -228,6 +240,27 @@ impl Theme {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every field of the shared palette comes from its namesake. Five
+    /// `Color`s of one type: a swap compiles, and idle panels would draw
+    /// with the active border.
+    #[test]
+    fn the_chrome_palette_takes_each_colour_from_its_namesake() {
+        let t = Theme {
+            border_idle: Color::Rgb(1, 0, 0),
+            border_active: Color::Rgb(2, 0, 0),
+            muted: Color::Rgb(3, 0, 0),
+            text: Color::Rgb(4, 0, 0),
+            icons: IconStyle::Powerline,
+            ..Theme::dark()
+        };
+        let c = t.chrome();
+        assert_eq!(c.border_idle, t.border_idle);
+        assert_eq!(c.border_active, t.border_active);
+        assert_eq!(c.muted, t.muted);
+        assert_eq!(c.text, t.text);
+        assert_eq!(c.icons, t.icons);
+    }
 
     #[test]
     fn resolve_known_names() {

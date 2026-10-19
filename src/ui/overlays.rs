@@ -17,7 +17,7 @@ pub(super) fn draw_form(f: &mut Frame, area: Rect, app: &mut App) {
     let popup = overlay_rect(OverlaySize::Text, area);
     f.render_widget(Clear, popup);
     let theme = &app.theme;
-    let outer = titled_block(theme, &form.title, true, theme.title_alt);
+    let outer = titled_block(&theme.chrome(), &form.title, true, theme.title_alt);
     let inner = outer.inner(popup);
     f.render_widget(outer, popup);
 
@@ -237,7 +237,7 @@ pub(super) fn draw_palette(f: &mut Frame, area: Rect, app: &App) {
     // inner layout splits the interior with no internal borders, so the
     // popup reads as one visually-unified widget rather than three stacked
     // boxes.
-    let outer = titled_block(theme, "palette", true, theme.title_alt);
+    let outer = titled_block(&theme.chrome(), "palette", true, theme.title_alt);
     let inner = outer.inner(popup);
     f.render_widget(outer, popup);
     let layout = Layout::default()
@@ -310,7 +310,7 @@ pub(super) fn draw_palette(f: &mut Frame, area: Rect, app: &App) {
                 .bg(theme.row_selected_bg)
                 .add_modifier(Modifier::BOLD),
         )
-        .highlight_symbol(cursor_marker(theme));
+        .highlight_symbol(cursor_marker(theme.icons));
     let mut state = app.palette_state;
     f.render_stateful_widget(list, layout[2], &mut state);
 
@@ -360,7 +360,7 @@ pub(super) fn draw_toasts(f: &mut Frame, area: Rect, app: &App) {
             (ToastKind::Success, IconStyle::Ascii) => (theme.health_green, "ok", "+"),
             (ToastKind::Error, IconStyle::Ascii) => (theme.health_red, "error", "!"),
         };
-        let block = rounded_block(theme, true)
+        let block = rounded_block(&theme.chrome(), true)
             .border_style(Style::default().fg(border_color))
             .title(Span::styled(
                 format!(" {glyph} {label} "),
@@ -562,8 +562,13 @@ pub(super) fn draw_saved_configs_interactive(
         Style::default().fg(theme.muted),
     )));
     let p = Paragraph::new(lines).wrap(Wrap { trim: false }).block(
-        titled_block(&app.theme, "saved configurations", true, app.theme.title)
-            .padding(Padding::uniform(1)),
+        titled_block(
+            &app.theme.chrome(),
+            "saved configurations",
+            true,
+            app.theme.title,
+        )
+        .padding(Padding::uniform(1)),
     );
     f.render_widget(p, popup);
 }
@@ -611,7 +616,7 @@ pub(super) fn draw_tail_overlay_chrome(
     let p = Paragraph::new(paragraph_lines)
         .wrap(Wrap { trim: false })
         .block(
-            titled_block(&app.theme, chrome.title, true, app.theme.title)
+            titled_block(&app.theme.chrome(), chrome.title, true, app.theme.title)
                 .padding(Padding::uniform(1)),
         );
     f.render_widget(p, popup);
@@ -778,7 +783,7 @@ pub(super) fn draw_text_dump_overlay(
     // Pin the close-hint to the bottom row of the popup so it stays
     // visible even when the body overflows. Body region + 1-row footer
     // both render inside the same titled block.
-    let outer = titled_block(&app.theme, title, true, app.theme.title);
+    let outer = titled_block(&app.theme.chrome(), title, true, app.theme.title);
     let inner = outer.inner(popup);
     f.render_widget(outer, popup);
     let chunks = Layout::default()
@@ -915,7 +920,7 @@ pub(super) fn draw_about(f: &mut Frame, area: Rect, app: &App, opened: std::time
         height: ph,
     };
     f.render_widget(Clear, popup);
-    let outer = titled_block(&app.theme, "about ebman", true, app.theme.title)
+    let outer = titled_block(&app.theme.chrome(), "about ebman", true, app.theme.title)
         .padding(Padding::horizontal(1));
     let inner = outer.inner(popup);
     f.render_widget(outer, popup);
@@ -980,8 +985,13 @@ pub(super) fn draw_saved_configs_overlay(f: &mut Frame, area: Rect, app: &App, t
         .collect();
     push_close_hint(&mut lines, &app.theme);
     let p = Paragraph::new(lines).wrap(Wrap { trim: false }).block(
-        titled_block(&app.theme, "saved configurations", true, app.theme.title)
-            .padding(Padding::uniform(1)),
+        titled_block(
+            &app.theme.chrome(),
+            "saved configurations",
+            true,
+            app.theme.title,
+        )
+        .padding(Padding::uniform(1)),
     );
     f.render_widget(p, popup);
 }
@@ -1017,7 +1027,8 @@ pub(super) fn draw_diff_overlay(f: &mut Frame, area: Rect, app: &App, text: &str
         .collect();
     push_close_hint(&mut lines, &app.theme);
     let p = Paragraph::new(lines).wrap(Wrap { trim: false }).block(
-        titled_block(&app.theme, "diff", true, app.theme.title).padding(Padding::uniform(1)),
+        titled_block(&app.theme.chrome(), "diff", true, app.theme.title)
+            .padding(Padding::uniform(1)),
     );
     f.render_widget(p, popup);
 }
@@ -1046,7 +1057,8 @@ pub(super) fn draw_alarms_overlay(f: &mut Frame, area: Rect, app: &App, text: &s
         .collect();
     push_close_hint(&mut lines, &app.theme);
     let p = Paragraph::new(lines).wrap(Wrap { trim: false }).block(
-        titled_block(&app.theme, "alarms", true, app.theme.title).padding(Padding::uniform(1)),
+        titled_block(&app.theme.chrome(), "alarms", true, app.theme.title)
+            .padding(Padding::uniform(1)),
     );
     f.render_widget(p, popup);
 }
@@ -1588,9 +1600,9 @@ pub(super) fn draw_why_red_overlay(f: &mut Frame, area: Rect, app: &mut App) {
         .map(|e| e.health.as_str())
         .unwrap_or("");
     let title = why_overlay_title(env_name, health);
-    let p = Paragraph::new(lines)
-        .wrap(Wrap { trim: false })
-        .block(titled_block(theme, &title, true, theme.title).padding(Padding::uniform(1)));
+    let p = Paragraph::new(lines).wrap(Wrap { trim: false }).block(
+        titled_block(&theme.chrome(), &title, true, theme.title).padding(Padding::uniform(1)),
+    );
     f.render_widget(p, popup);
 
     // Hand the items list to the key handler now that the overlay borrow
@@ -1623,7 +1635,11 @@ pub(super) fn draw_apps_action_menu(
     lines.push(Line::from(""));
     for (i, item) in crate::app::APPS_ACTION_ITEMS.iter().enumerate() {
         let active = i == cursor;
-        let cursor_glyph = if active { cursor_marker(theme) } else { "  " };
+        let cursor_glyph = if active {
+            cursor_marker(theme.icons)
+        } else {
+            "  "
+        };
         // Inline the env count so the operator sees the blast radius
         // for the destructive batch entries without flipping screens.
         let label = match item {
@@ -1656,9 +1672,9 @@ pub(super) fn draw_apps_action_menu(
         Style::default().fg(theme.muted),
     )));
     let title = format!("apps action — {app_name}");
-    let p = Paragraph::new(lines)
-        .wrap(Wrap { trim: false })
-        .block(titled_block(theme, &title, true, theme.title).padding(Padding::uniform(1)));
+    let p = Paragraph::new(lines).wrap(Wrap { trim: false }).block(
+        titled_block(&theme.chrome(), &title, true, theme.title).padding(Padding::uniform(1)),
+    );
     f.render_widget(p, popup);
 }
 
@@ -1727,9 +1743,9 @@ pub(super) fn draw_report_bug_overlay(f: &mut Frame, area: Rect, app: &App, body
         Span::styled(" cancel", Style::default().fg(theme.muted)),
     ]));
     let title = "bug report (scrubbed — review before sending)";
-    let p = Paragraph::new(lines)
-        .wrap(Wrap { trim: false })
-        .block(titled_block(theme, title, true, theme.title).padding(Padding::uniform(1)));
+    let p = Paragraph::new(lines).wrap(Wrap { trim: false }).block(
+        titled_block(&theme.chrome(), title, true, theme.title).padding(Padding::uniform(1)),
+    );
     f.render_widget(p, popup);
 }
 
@@ -1747,7 +1763,8 @@ pub(super) fn draw_history_overlay(f: &mut Frame, area: Rect, app: &App, text: &
         .collect();
     push_close_hint(&mut lines, &app.theme);
     let p = Paragraph::new(lines).wrap(Wrap { trim: false }).block(
-        titled_block(&app.theme, "history", true, app.theme.title).padding(Padding::uniform(1)),
+        titled_block(&app.theme.chrome(), "history", true, app.theme.title)
+            .padding(Padding::uniform(1)),
     );
     f.render_widget(p, popup);
 }
@@ -1766,7 +1783,7 @@ pub(super) fn draw_whatsnew(f: &mut Frame, area: Rect, app: &App, text: &str) {
         .collect();
     let p = Paragraph::new(lines).wrap(Wrap { trim: false }).block(
         titled_block(
-            &app.theme,
+            &app.theme.chrome(),
             "what's new — esc / w / q to close",
             true,
             app.theme.title_alt,
@@ -1790,7 +1807,7 @@ pub(super) fn draw_describe(f: &mut Frame, area: Rect, app: &App, text: &str) {
         .collect();
     let p = Paragraph::new(lines).wrap(Wrap { trim: false }).block(
         titled_block(
-            &app.theme,
+            &app.theme.chrome(),
             "describe — esc / D / q to close",
             true,
             app.theme.title_alt,
@@ -1818,7 +1835,12 @@ pub(super) fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
         ])
         .split(popup);
 
-    let filter_block = titled_block(&theme, picker.title().trim(), true, theme.title_alt);
+    let filter_block = titled_block(
+        &theme.chrome(),
+        picker.title().trim(),
+        true,
+        theme.title_alt,
+    );
     let mut filter_spans = vec![
         Span::styled(
             " /",
@@ -1852,7 +1874,7 @@ pub(super) fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
         })
         .collect();
 
-    let list_block = rounded_block(&theme, true);
+    let list_block = rounded_block(&theme.chrome(), true);
     let list = List::new(items).block(list_block).highlight_style(
         Style::default()
             .bg(theme.row_selected_bg)

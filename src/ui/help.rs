@@ -281,7 +281,7 @@ pub(super) fn draw_help(f: &mut Frame, area: Rect, app: &mut App) {
         .wrap(Wrap { trim: false })
         .scroll((effective_scroll, 0))
         .block(
-            titled_block(&app.theme, "help", true, app.theme.title_alt)
+            titled_block(&app.theme.chrome(), "help", true, app.theme.title_alt)
                 .padding(Padding::uniform(1)),
         );
     f.render_widget(help, popup);
@@ -454,8 +454,13 @@ pub(super) fn draw_help_detail(f: &mut Frame, popup: Rect, app: &App) {
     ];
     let lines = wrap_help_lines(lines, help_text_width(popup));
     let p = Paragraph::new(lines).wrap(Wrap { trim: false }).block(
-        titled_block(&app.theme, "help — Detail", true, app.theme.title_alt)
-            .padding(Padding::uniform(1)),
+        titled_block(
+            &app.theme.chrome(),
+            "help — Detail",
+            true,
+            app.theme.title_alt,
+        )
+        .padding(Padding::uniform(1)),
     );
     f.render_widget(p, popup);
 }
@@ -499,8 +504,13 @@ pub(super) fn draw_help_dlq(f: &mut Frame, popup: Rect, app: &App) {
     ];
     let lines = wrap_help_lines(lines, help_text_width(popup));
     let p = Paragraph::new(lines).wrap(Wrap { trim: false }).block(
-        titled_block(&app.theme, "help — Queue", true, app.theme.title_alt)
-            .padding(Padding::uniform(1)),
+        titled_block(
+            &app.theme.chrome(),
+            "help — Queue",
+            true,
+            app.theme.title_alt,
+        )
+        .padding(Padding::uniform(1)),
     );
     f.render_widget(p, popup);
 }
@@ -546,8 +556,13 @@ pub(super) fn draw_help_action(f: &mut Frame, popup: Rect, app: &App) {
     ];
     let lines = wrap_help_lines(lines, help_text_width(popup));
     let p = Paragraph::new(lines).wrap(Wrap { trim: false }).block(
-        titled_block(&app.theme, "help — Action", true, app.theme.title_alt)
-            .padding(Padding::uniform(1)),
+        titled_block(
+            &app.theme.chrome(),
+            "help — Action",
+            true,
+            app.theme.title_alt,
+        )
+        .padding(Padding::uniform(1)),
     );
     f.render_widget(p, popup);
 }
@@ -595,7 +610,7 @@ pub(super) fn draw_help_saved_configs(f: &mut Frame, popup: Rect, app: &App) {
     let lines = wrap_help_lines(lines, help_text_width(popup));
     let p = Paragraph::new(lines).wrap(Wrap { trim: false }).block(
         titled_block(
-            &app.theme,
+            &app.theme.chrome(),
             "help — Saved Configs",
             true,
             app.theme.title_alt,
@@ -634,8 +649,13 @@ pub(super) fn draw_help_shell(f: &mut Frame, popup: Rect, app: &App) {
     ];
     let lines = wrap_help_lines(lines, help_text_width(popup));
     let p = Paragraph::new(lines).wrap(Wrap { trim: false }).block(
-        titled_block(&app.theme, "help — Shell", true, app.theme.title_alt)
-            .padding(Padding::uniform(1)),
+        titled_block(
+            &app.theme.chrome(),
+            "help — Shell",
+            true,
+            app.theme.title_alt,
+        )
+        .padding(Padding::uniform(1)),
     );
     f.render_widget(p, popup);
 }

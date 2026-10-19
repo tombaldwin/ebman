@@ -46,11 +46,11 @@ pub(crate) fn draw_dlq(f: &mut Frame, area: Rect, app: &mut App) {
             Span::raw("")
         },
     ]))
-    .block(titled_block(&theme, window_title, true, accent));
+    .block(titled_block(&theme.chrome(), window_title, true, accent));
     f.render_widget(header, chunks[0]);
 
     // Message list
-    let block = rounded_block(&theme, true);
+    let block = rounded_block(&theme.chrome(), true);
     if dlq.messages.is_empty() {
         let p = Paragraph::new(Span::styled(
             if dlq.loading {
@@ -117,7 +117,7 @@ pub(crate) fn draw_dlq(f: &mut Frame, area: Rect, app: &mut App) {
                     .bg(theme.row_selected_bg)
                     .add_modifier(Modifier::BOLD),
             )
-            .highlight_symbol(cursor_marker(&theme));
+            .highlight_symbol(cursor_marker(theme.icons));
         f.render_stateful_widget(list, chunks[1], &mut dlq.list_state);
     }
 
