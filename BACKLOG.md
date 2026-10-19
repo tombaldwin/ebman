@@ -543,6 +543,18 @@ Proposed during the Powerline-aesthetic pass but skipped because the cost / payo
 
 - [ ] **TIER / STATUS pill caps in env table (option A)** — every row's pills get a Powerline trailing wedge so they read as ribbon-style tags. ~~Blocker: TIER column is `Constraint::Length(7)`~~ — STALE: TIER is `Length(11)` now and `pill_chain` already renders wedge-capped pills in the header, so the machinery exists and the width objection is gone. What remains is the design call about applying it per-row. Old note: and the existing `" Worker "` pill is already 8 cells; STATUS column is 10 and `" Terminating "` is 13. Caps would overflow more rows. Revisit if/when the table column widths get widened — or render the cap *only* when the cell has room.
 
+- [ ] **`icons = "ascii"` still draws non-ascii text.** Found while
+  moving the chrome helpers onto `tui_common::chrome` (2026-10-19), which
+  made the cursor, separators and corners ascii-safe. Panel titles and
+  labels still carry literal `·` and `—` (`ui/events.rs:43`,
+  `ui/detail.rs:307/851/1565`, `ui/help.rs:31/336`, the version title),
+  and every border is box-drawing (`│─┌`) even in ratatui's Plain set.
+  First decide what the mode promises: "no glyphs a programming font
+  lacks" (box-drawing and `·` pass) or "7-bit ascii" (needs
+  `BorderType`-free borders). Then a guard that renders each screen in
+  ascii mode and checks every cell against that promise, instead of
+  fixing literals one at a time.
+
 ### Console parity — write-side gaps (operators currently open the console for these)
 
 Gaps surfaced during the 2026-05-19 console-vs-ebman comparison. Each entry is a console feature with no ebman equivalent. Ordered by daily-operator frequency.
