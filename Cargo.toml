@@ -27,7 +27,7 @@ exclude = ["mutants.out*", "target", ".protected-names"]
 # what Rust imports as `tui_common`. To co-develop both crates from a
 # side-by-side checkout, uncomment the `[patch.crates-io]` block at the
 # bottom of this file (don't commit it uncommented).
-tui-common = { version = "0.2", package = "tb-tui-common" }
+tui-common = { version = "0.2.2", package = "tb-tui-common" }
 ratatui = "0.30"
 crossterm = { version = "0.29", features = ["event-stream"] }
 # io-util + io-std: the MCP server's stdio JSON-RPC transport.

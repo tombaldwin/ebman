@@ -8,48 +8,16 @@
 
 use super::*;
 
-pub(crate) const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-pub(crate) const ASCII_SPINNER: &[&str] = &["|", "/", "-", "\\"];
-
-pub(crate) fn rounded_block(theme: &Theme, active: bool) -> Block<'static> {
-    let color = if active {
-        theme.border_active
-    } else {
-        theme.border_idle
-    };
-    Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(color))
-}
-
-pub(crate) fn titled_block(
-    theme: &Theme,
-    raw_title: &str,
-    active: bool,
-    accent: Color,
-) -> Block<'static> {
-    let trimmed = raw_title.trim();
-    let decorated = match theme.icons {
-        IconStyle::Ascii => format!("[ {trimmed} ]"),
-        // U+E0B6 / U+E0B4: rounded powerline left/right caps frame the title
-        // like a tab on a folder. Renders as boxes when the font isn't
-        // installed; documented in the config description.
-        IconStyle::Powerline => format!(" {trimmed} "),
-        IconStyle::Unicode => format!("[ ◆ {trimmed} ◆ ]"),
-    };
-    rounded_block(theme, active).title(Span::styled(
-        decorated,
-        Style::default().fg(accent).add_modifier(Modifier::BOLD),
-    ))
-}
-
-pub(crate) fn pill(text: &str, fg: Color, bg: Color) -> Span<'static> {
-    Span::styled(
-        format!(" {text} "),
-        Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD),
-    )
-}
+// The panel vocabulary both apps draw with — blocks, titles, pills,
+// separators, `key: value` fields and the whole-field / whole-hint
+// fitting — lives in `tui_common::chrome`, lifted from this file so
+// pgman draws the same frame. Re-exported here so every `ui` module
+// keeps reaching it through `use super::*`. What stays below is
+// ebman's own.
+pub(crate) use tui_common::chrome::{
+    cursor_marker, glyph, hints_to_fit, join_fields_to_fit, kv, pill, pill_chain, rounded_block,
+    sep, spinner, titled_block,
+};
 
 /// Glyph for the pending-actions pill, gated on the active icon style.
 /// `⏳` (U+23F3) is unicode-only — operators on `icons = "ascii"`
@@ -58,17 +26,6 @@ pub(crate) fn pending_glyph(theme: &Theme) -> &'static str {
     match theme.icons {
         IconStyle::Ascii => "* ",
         _ => "⏳ ",
-    }
-}
-
-/// Pick the ascii fallback for a decorative glyph when the operator's
-/// font can't render unicode (`icons = "ascii"` — the mode's contract
-/// is "stays readable when the font lacks the glyphs", so raw literals
-/// in draw paths are stragglers).
-pub(crate) fn glyph<'a>(icons: IconStyle, unicode: &'a str, ascii: &'a str) -> &'a str {
-    match icons {
-        IconStyle::Ascii => ascii,
-        _ => unicode,
     }
 }
 
@@ -200,17 +157,6 @@ pub(crate) fn health_dot(health: &str, theme: &Theme) -> Span<'static> {
     Span::styled(glyph, Style::default().fg(c).add_modifier(Modifier::BOLD))
 }
 
-pub(crate) fn spinner(elapsed_ms: u128, icons: IconStyle) -> &'static str {
-    match icons {
-        // Powerline-targeted fonts include the braille range, so the same
-        // animation reads well without needing a separate frame set.
-        IconStyle::Unicode | IconStyle::Powerline => {
-            SPINNER_FRAMES[(elapsed_ms / 100) as usize % SPINNER_FRAMES.len()]
-        }
-        IconStyle::Ascii => ASCII_SPINNER[(elapsed_ms / 100) as usize % ASCII_SPINNER.len()],
-    }
-}
-
 pub(crate) fn tab_icon(t: DetailTab, icons: IconStyle) -> &'static str {
     match (icons, t) {
         (IconStyle::Unicode, DetailTab::Health) => "♥",
@@ -340,16 +286,6 @@ pub(crate) fn humanize_duration(secs: u64) -> String {
     }
 }
 
-pub(crate) fn kv<'a>(key: &'a str, value: &'a str, theme: &Theme) -> Vec<Span<'a>> {
-    vec![
-        Span::styled(format!("{key}: "), Style::default().fg(theme.muted)),
-        Span::styled(
-            value.to_string(),
-            Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
-        ),
-    ]
-}
-
 /// The narrowest an overlay should be before it starts wrapping prose
 /// into nonsense — unless the terminal itself is narrower.
 ///
@@ -403,139 +339,6 @@ pub(crate) fn overlay_rect(size: OverlaySize, area: Rect) -> Rect {
     }
 }
 
-/// How many `key: value` fields fit in `available` columns.
-///
-/// Fields are laid out in order with a separator between each, and the
-/// answer is a count so the caller can render exactly the prefix that
-/// fits. Always at least one — a header row showing nothing is worse
-/// than one showing a clipped first field.
-///
-/// The point is to drop WHOLE fields. ratatui clips the right edge, so
-/// an over-long row rendered `Account: 1234  \u{b7}  Region: eu-west-1
-/// \u{b7}  Profile: ` — a label with its value cut off entirely, which
-/// reads as "the profile is empty" rather than "this did not fit". Same
-/// defect as a truncated release date in the title, and the same fix.
-pub(crate) fn fields_that_fit(field_widths: &[usize], sep_width: usize, available: usize) -> usize {
-    if field_widths.is_empty() {
-        return 0;
-    }
-    let mut used = 0usize;
-    let mut fitted = 0usize;
-    for (i, w) in field_widths.iter().enumerate() {
-        let extra = if i == 0 { *w } else { sep_width + *w };
-        if used + extra > available {
-            break;
-        }
-        used += extra;
-        fitted += 1;
-    }
-    fitted.max(1)
-}
-
-/// Join field groups with separators, dropping whole groups that do not
-/// fit `available` columns.
-///
-/// A group is one logical field — `kv("Region", …)`, or a label plus a
-/// coloured pill, or anything else — and its width is measured from the
-/// spans themselves, so a caller does not have to keep a parallel list
-/// of widths in step with the spans. That matters here: the Detail
-/// header rows mix `kv` pairs with status pills and health dots, and a
-/// hand-maintained width table would be one more thing to get wrong.
-///
-/// Whole groups, never part of one. ratatui clips the right edge, which
-/// is how the Detail header came to render `CNAME: api-pr` — a label
-/// promising a value it then cut in half.
-pub(crate) fn join_fields_to_fit<'a>(
-    groups: Vec<Vec<Span<'a>>>,
-    theme: &Theme,
-    available: u16,
-) -> Vec<Span<'a>> {
-    let widths: Vec<usize> = groups
-        .iter()
-        .map(|g| g.iter().map(|s| s.content.chars().count()).sum())
-        .collect();
-    let keep = fields_that_fit(&widths, SEP_WIDTH, available as usize);
-    let mut out: Vec<Span<'a>> = Vec::new();
-    for (i, g) in groups.into_iter().take(keep).enumerate() {
-        if i > 0 {
-            out.push(sep(theme));
-        }
-        out.extend(g);
-    }
-    out
-}
-
-/// Trim a footer key-strip to whole hints.
-///
-/// Hints are separated by two spaces, and ratatui clips the right edge —
-/// which left a bare key with its action gone, `r region  p`, reading as
-/// a hint for a key called "p" that does nothing. A hint you cannot act
-/// on is worse than one you cannot see, because it costs a keystroke to
-/// find out.
-///
-/// Always keeps at least the first hint: a key strip is the only
-/// discoverability surface in the TUI, and an empty one on a very narrow
-/// terminal helps nobody.
-pub(crate) fn hints_to_fit(line: &str, available: u16) -> String {
-    let available = available as usize;
-    if line.chars().count() <= available {
-        return line.to_string();
-    }
-    // Split the TRIMMED line: the first hint carries the strip's own
-    // leading space, and re-adding one below doubled the indent on
-    // exactly the narrow terminals this exists to help.
-    let hints: Vec<&str> = line
-        .trim_start()
-        .split("  ")
-        .filter(|h| !h.is_empty())
-        .collect();
-    let mut out = String::new();
-    for hint in &hints {
-        // Only the non-first case can break — the first hint is always
-        // kept — so there is no candidate length to compute for it. It
-        // used to be computed anyway and thrown away, which meant the
-        // arithmetic could be mutated freely with nothing to notice:
-        // two permanently-surviving mutants standing for dead code
-        // rather than a missing test.
-        if !out.is_empty() && out.chars().count() + 2 + hint.chars().count() > available {
-            break;
-        }
-        if out.is_empty() {
-            out.push(' ');
-        } else {
-            out.push_str("  ");
-        }
-        out.push_str(hint);
-    }
-    // A single hint longer than the whole terminal is the one case where
-    // clipping is unavoidable — there is no smaller whole unit to fall
-    // back to. Do it here rather than leaving ratatui to, so the return
-    // value always honours the width it was given and a caller can rely
-    // on that.
-    // `>` and `>=` are indistinguishable here — at exactly `available`,
-    // `take(available)` is a no-op — so that mutant is equivalent and
-    // will survive every sweep. Noted so the next triage does not spend
-    // time on it.
-    if out.chars().count() > available {
-        out = out.chars().take(available).collect();
-    }
-    out
-}
-
-/// `sep` renders as five cells in every icon style.
-pub(crate) const SEP_WIDTH: usize = 5;
-
-pub(crate) fn sep(theme: &Theme) -> Span<'static> {
-    // U+E0B1 — thin powerline separator — reads as a real divider in
-    // Powerline-patched fonts and falls back to a tofu box otherwise.
-    let glyph = if theme.icons == IconStyle::Powerline {
-        "  \u{e0b1}  "
-    } else {
-        "  •  "
-    };
-    Span::styled(glyph, Style::default().fg(theme.muted))
-}
-
 /// Pure: ASCII-case-insensitive "is `s` any of these?" predicate. Cheap
 /// alternative to `s.to_lowercase().as_str()` matching against a fixed
 /// option list — saves a per-call `String` allocation in the table-row
@@ -543,18 +346,6 @@ pub(crate) fn sep(theme: &Theme) -> Span<'static> {
 /// known-case form anyway.
 pub(crate) fn ieq_any(s: &str, options: &[&str]) -> bool {
     options.iter().any(|o| s.eq_ignore_ascii_case(o))
-}
-
-/// Cursor / row-selection marker prepended to highlighted rows in lists +
-/// tables. Powerline-mode users get the filled U+E0B0 right-triangle so
-/// the marker matches the rest of the ribbon aesthetic; everyone else gets
-/// the half-block ▌ that doesn't need a patched font.
-pub(crate) fn cursor_marker(theme: &Theme) -> &'static str {
-    if theme.icons == IconStyle::Powerline {
-        "\u{e0b0} "
-    } else {
-        "▌ "
-    }
 }
 
 /// Insertion-point caret glyph used as the blinking cursor in the command

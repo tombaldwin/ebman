@@ -8,6 +8,11 @@
 #![cfg(test)]
 
 use super::*;
+// Shared with pgman since tb-tui-common 0.2.1, and not re-exported to
+// the ui modules because nothing there needs them. ebman's tests keep
+// pinning them: they are ebman's rendering contract, and a dependency
+// bump that changed one should fail here, not ship.
+use tui_common::chrome::{fields_that_fit, ASCII_SPINNER, SEP_WIDTH, SPINNER_FRAMES};
 
 #[test]
 fn warn_glyph_falls_back_in_ascii() {
@@ -581,11 +586,13 @@ fn visible_window_handles_empty_and_zero_budget() {
 fn cursor_marker_swaps_per_icon_style() {
     let mut t = Theme::dark();
     t.icons = IconStyle::Unicode;
-    assert_eq!(cursor_marker(&t), "▌ ");
+    assert_eq!(cursor_marker(t.icons), "▌ ");
+    // Ascii is ascii: `▌` here broke the mode's own contract — readable
+    // when the font lacks the glyphs — until tb-tui-common 0.2.
     t.icons = IconStyle::Ascii;
-    assert_eq!(cursor_marker(&t), "▌ ");
+    assert_eq!(cursor_marker(t.icons), "> ");
     t.icons = IconStyle::Powerline;
-    assert!(cursor_marker(&t).contains('\u{e0b0}'));
+    assert!(cursor_marker(t.icons).contains('\u{e0b0}'));
 }
 
 #[test]
@@ -829,7 +836,7 @@ fn pill_chain_uses_left_wedge_for_lead_in_in_powerline_mode() {
     let mut t = Theme::dark();
     t.icons = IconStyle::Powerline;
     let pills = vec![("ALERT".to_string(), Color::White, Color::Red)];
-    let spans = pill_chain(&pills, &t);
+    let spans = pill_chain(&pills, &t.chrome());
     // Expect: lead-in wedge (E0B2) + pill body + trailing wedge (E0B0).
     let first_glyph: String = spans[0].content.to_string();
     assert!(
@@ -850,7 +857,7 @@ fn pill_chain_no_powerline_glyphs_in_unicode_mode() {
     let mut t = Theme::dark();
     t.icons = IconStyle::Unicode;
     let pills = vec![("ALERT".to_string(), Color::White, Color::Red)];
-    let spans = pill_chain(&pills, &t);
+    let spans = pill_chain(&pills, &t.chrome());
     for s in &spans {
         let body = s.content.to_string();
         assert!(
@@ -864,18 +871,20 @@ fn pill_chain_no_powerline_glyphs_in_unicode_mode() {
 fn sep_uses_powerline_glyph_when_opted_in() {
     let mut t = Theme::dark();
     t.icons = IconStyle::Unicode;
-    let unicode_sep = sep(&t).content.to_string();
+    let unicode_sep = sep(&t.chrome()).content.to_string();
     assert!(unicode_sep.contains('•'));
     t.icons = IconStyle::Powerline;
-    let pl_sep = sep(&t).content.to_string();
+    let pl_sep = sep(&t.chrome()).content.to_string();
     assert!(
         pl_sep.contains('\u{e0b1}'),
         "expected U+E0B1 thin separator, got {pl_sep:?}"
     );
-    // ASCII path stays on the bullet — opting *out* of unicode shouldn't
-    // accidentally trigger a powerline glyph.
+    // ASCII must not trigger a powerline glyph — nor any other non-ascii
+    // one: the bullet it used to fall back to is unicode too.
     t.icons = IconStyle::Ascii;
-    assert!(sep(&t).content.to_string().contains('•'));
+    let ascii_sep = sep(&t.chrome()).content.to_string();
+    assert!(ascii_sep.is_ascii(), "{ascii_sep:?}");
+    assert!(ascii_sep.contains('|'), "{ascii_sep:?}");
 }
 
 #[test]
@@ -901,7 +910,7 @@ fn titled_block_decorates_per_icon_style() {
     use ratatui::layout::Rect;
     use ratatui::widgets::Widget;
     let mut t = Theme::dark();
-    let b = titled_block(&t, "ebman", true, t.title);
+    let b = titled_block(&t.chrome(), "ebman", true, t.title);
     let mut buf = Buffer::empty(Rect::new(0, 0, 30, 3));
     b.render(buf.area, &mut buf);
     let rendered = buffer_to_string(&buf);
@@ -909,7 +918,7 @@ fn titled_block_decorates_per_icon_style() {
     assert!(rendered.contains("ebman"));
 
     t.icons = IconStyle::Ascii;
-    let b2 = titled_block(&t, "ebman", true, t.title);
+    let b2 = titled_block(&t.chrome(), "ebman", true, t.title);
     let mut buf = Buffer::empty(Rect::new(0, 0, 30, 3));
     b2.render(buf.area, &mut buf);
     let rendered = buffer_to_string(&buf);
@@ -1535,7 +1544,7 @@ fn join_fields_measures_the_spans_rather_than_trusting_a_width_table() {
         vec![Span::raw("cccc")],                // 4
     ];
     // 4 + 5 + 4 = 13 fits two; a third needs 5 + 4 more.
-    let two = join_fields_to_fit(groups.clone(), &t, 13);
+    let two = join_fields_to_fit(groups.clone(), &t.chrome(), 13);
     let text: String = two.iter().map(|s| s.content.as_ref()).collect();
     assert!(
         text.contains("aaaa") && text.contains("bbbb"),
@@ -1546,7 +1555,7 @@ fn join_fields_measures_the_spans_rather_than_trusting_a_width_table() {
         "third group should not fit: {text:?}"
     );
 
-    let all = join_fields_to_fit(groups.clone(), &t, 100);
+    let all = join_fields_to_fit(groups.clone(), &t.chrome(), 100);
     let text: String = all.iter().map(|s| s.content.as_ref()).collect();
     assert!(text.contains("cccc"), "all three fit at 100: {text:?}");
 }
@@ -1557,10 +1566,10 @@ fn join_fields_never_emits_half_a_group() {
     // narrow row shows fewer fields rather than a truncated one.
     let t = crate::theme::Theme::dark();
     let groups = vec![
-        kv("Region", "us-east-1", &t),
-        kv("CNAME", "api-prod.example.com", &t),
+        kv("Region", "us-east-1", &t.chrome()),
+        kv("CNAME", "api-prod.example.com", &t.chrome()),
     ];
-    let out = join_fields_to_fit(groups, &t, 20);
+    let out = join_fields_to_fit(groups, &t.chrome(), 20);
     let text: String = out.iter().map(|s| s.content.as_ref()).collect();
     assert!(
         !text.contains("CNAME"),
@@ -1955,13 +1964,13 @@ fn fit_helpers_are_exact_at_their_boundaries() {
     // three bytes, so a byte count reads 25 cells as 27.
     let text = |v: Vec<Span>| -> String { v.iter().map(|s| s.content.to_string()).collect() };
     assert_eq!(
-        text(join_fields_to_fit(vec![g(10), g(10)], &t, 25))
+        text(join_fields_to_fit(vec![g(10), g(10)], &t.chrome(), 25))
             .chars()
             .count(),
         25
     );
     assert_eq!(
-        text(join_fields_to_fit(vec![g(10), g(10)], &t, 24))
+        text(join_fields_to_fit(vec![g(10), g(10)], &t.chrome(), 24))
             .chars()
             .count(),
         10
@@ -2303,10 +2312,10 @@ fn sep_width_matches_what_sep_actually_renders() {
 
     for t in [&uni, &ascii, &power] {
         assert_eq!(
-            sep(t).content.chars().count(),
+            sep(&t.chrome()).content.chars().count(),
             SEP_WIDTH,
             "sep() renders {} cells in {:?} but SEP_WIDTH says {SEP_WIDTH}",
-            sep(t).content.chars().count(),
+            sep(&t.chrome()).content.chars().count(),
             t.icons
         );
     }

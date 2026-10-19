@@ -44,8 +44,8 @@ pub(crate) fn draw_events(f: &mut Frame, area: Rect, app: &mut App) {
         None => " · all envs".to_string(),
     };
     let title = format!("Events  {}{}", app.event_panel.events.len(), scope_suffix);
-    let block =
-        titled_block(&app.theme, &title, true, app.theme.title).padding(Padding::horizontal(1));
+    let block = titled_block(&app.theme.chrome(), &title, true, app.theme.title)
+        .padding(Padding::horizontal(1));
 
     if app.event_panel.events.is_empty() {
         let lines = vec![

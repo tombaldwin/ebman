@@ -8,71 +8,6 @@
 
 use super::*;
 
-/// Render a chain of pills with Powerline-style triangular bridges in
-/// `IconStyle::Powerline`, or a plain pill+sep chain in other styles.
-///
-/// In Powerline mode each adjacent pair gets a U+E0B0 right-pointing
-/// triangle whose `fg` matches the left pill's bg and `bg` matches the
-/// right pill's bg — so the colours flow continuously, no gap visible.
-/// A trailing arrow with `bg=default` flows the ribbon back to the
-/// surrounding background.
-///
-/// The returned spans are intended to sit at the *end* of a Line; in
-/// non-Powerline mode the first sep is omitted so the caller controls the
-/// space between any preceding plain-text content and the chain head.
-pub(crate) fn pill_chain(items: &[(String, Color, Color)], theme: &Theme) -> Vec<Span<'static>> {
-    if items.is_empty() {
-        return Vec::new();
-    }
-    let powerline = theme.icons == IconStyle::Powerline;
-    let mut spans: Vec<Span<'static>> = Vec::with_capacity(items.len() * 2 + 1);
-    if powerline {
-        // Lead-in arrow: default bg → first pill's bg. We use U+E0B2 (LEFT-
-        // pointing solid triangle) here, not U+E0B0 — the pill's coloured
-        // base needs to sit on the *right* side of the cell (adjacent to
-        // the pill), with the empty wedge on the left (adjacent to the
-        // preceding plain text). Using E0B0 here would put the base on
-        // the left and leave only a thin point touching the pill, which
-        // visually reads as a much smaller triangle than the matching
-        // trailing E0B0 on the right edge of the chain.
-        let (_, _, first_bg) = items[0];
-        spans.push(Span::styled("\u{e0b2}", Style::default().fg(first_bg)));
-        for (i, (text, fg, bg)) in items.iter().enumerate() {
-            spans.push(Span::styled(
-                format!(" {text} "),
-                Style::default()
-                    .fg(*fg)
-                    .bg(*bg)
-                    .add_modifier(Modifier::BOLD),
-            ));
-            // Bridge to next pill, or trailing arrow back to default bg.
-            let bridge_style = if let Some(next) = items.get(i + 1) {
-                Style::default().fg(*bg).bg(next.2)
-            } else {
-                Style::default().fg(*bg)
-            };
-            spans.push(Span::styled("\u{e0b0}", bridge_style));
-        }
-    } else {
-        // Non-Powerline: classic pill + bullet separator chain. Caller
-        // already injected a leading sep before the first pill — we just
-        // emit pills + interleaved separators.
-        for (i, (text, fg, bg)) in items.iter().enumerate() {
-            if i > 0 {
-                spans.push(sep(theme));
-            }
-            spans.push(Span::styled(
-                format!(" {text} "),
-                Style::default()
-                    .fg(*fg)
-                    .bg(*bg)
-                    .add_modifier(Modifier::BOLD),
-            ));
-        }
-    }
-    spans
-}
-
 /// Builds the contextual pill chain — group/view/redact/alerts/in-flight/
 /// frozen/read-only/update/sso — that sits in the header. Pure: same
 /// inputs → same chain, no time/IO except the SSO countdown which reads
@@ -320,7 +255,7 @@ pub(crate) fn header_layout(app: &App, area_width: u16) -> (u16, bool) {
 
     let mut pills = build_chain_pills(app);
     prune_pills_to_width(&mut pills, &app.theme, inner);
-    let chain_spans = pill_chain(&pills, &app.theme);
+    let chain_spans = pill_chain(&pills, &app.theme.chrome());
     let chain_w: usize = chain_spans.iter().map(|s| s.width()).sum();
     let info_w = estimated_info_row_width(app);
 
@@ -346,7 +281,10 @@ pub(crate) fn prune_pills_to_width(
         return;
     }
     let measure = |slice: &[(String, Color, Color)]| -> usize {
-        pill_chain(slice, theme).iter().map(|s| s.width()).sum()
+        pill_chain(slice, &theme.chrome())
+            .iter()
+            .map(|s| s.width())
+            .sum()
     };
     let original_len = pills.len();
     while pills.len() > 1 && measure(pills) > max_w {
@@ -503,11 +441,11 @@ pub(crate) fn draw_header(f: &mut Frame, area: Rect, app: &App, merge_pills: boo
     // terminal.
     let line1 = join_fields_to_fit(
         vec![
-            kv("Account", &account, theme),
-            kv("Region", &app.context.region, theme),
-            kv("Profile", &profile, theme),
+            kv("Account", &account, &theme.chrome()),
+            kv("Region", &app.context.region, &theme.chrome()),
+            kv("Profile", &profile, &theme.chrome()),
         ],
-        theme,
+        &theme.chrome(),
         usable_width,
     );
     // Ordering on this row matters under width pressure: ratatui clips
@@ -521,12 +459,12 @@ pub(crate) fn draw_header(f: &mut Frame, area: Rect, app: &App, merge_pills: boo
         glyph(app.theme.icons, "↑", "^")
     };
     let sort_label = format!("{}{}", app.view.sort_key().label(), sort_dir);
-    let mut line2 = kv("Sort", &sort_label, theme);
-    line2.push(sep(theme));
+    let mut line2 = kv("Sort", &sort_label, &theme.chrome());
+    line2.push(sep(&theme.chrome()));
     line2.push(Span::raw("Status: "));
     line2.push(status);
-    line2.push(sep(theme));
-    line2.extend(kv("Envs", &env_count, theme));
+    line2.push(sep(&theme.chrome()));
+    line2.extend(kv("Envs", &env_count, &theme.chrome()));
     // Health-bucket delta since the previous refresh, e.g. "▲1 Red ▼1 Yellow".
     for (bucket, delta) in app.health_delta.iter().chain(app.status_delta.iter()) {
         if *delta == 0 {
@@ -551,12 +489,12 @@ pub(crate) fn draw_header(f: &mut Frame, area: Rect, app: &App, merge_pills: boo
             Style::default().fg(color).add_modifier(Modifier::BOLD),
         ));
     }
-    line2.push(sep(theme));
-    line2.extend(kv("Last", &last, theme));
-    line2.push(sep(theme));
-    line2.extend(kv("Caller", &caller, theme));
+    line2.push(sep(&theme.chrome()));
+    line2.extend(kv("Last", &last, &theme.chrome()));
+    line2.push(sep(&theme.chrome()));
+    line2.extend(kv("Caller", &caller, &theme.chrome()));
     if !app.view.filter().is_empty() {
-        line2.push(sep(theme));
+        line2.push(sep(&theme.chrome()));
         let filter_text = app.view.filter().text().to_string();
         line2.push(Span::styled("Filter: ", Style::default().fg(theme.muted)));
         line2.push(Span::styled(
@@ -580,7 +518,7 @@ pub(crate) fn draw_header(f: &mut Frame, area: Rect, app: &App, merge_pills: boo
         // don't butt up against the last field (or the Powerline lead-in
         // wedge — see `pill_chain`).
         line2.push(Span::raw("  "));
-        line2.extend(pill_chain(&chain_pills, theme));
+        line2.extend(pill_chain(&chain_pills, &theme.chrome()));
     }
     let pill_line: Option<Line<'static>> = if merge_pills || chain_pills.is_empty() {
         None
@@ -590,7 +528,7 @@ pub(crate) fn draw_header(f: &mut Frame, area: Rect, app: &App, merge_pills: boo
         // because ratatui truncates the Paragraph at the column boundary.
         let mut spans: Vec<Span<'static>> = Vec::new();
         spans.push(Span::raw("  "));
-        spans.extend(pill_chain(&chain_pills, theme));
+        spans.extend(pill_chain(&chain_pills, &theme.chrome()));
         Some(Line::from(spans))
     };
 
@@ -626,7 +564,7 @@ pub(crate) fn draw_header(f: &mut Frame, area: Rect, app: &App, merge_pills: boo
                     (name.to_string(), fg, bg)
                 })
                 .collect();
-            chips.extend(pill_chain(&pills, theme));
+            chips.extend(pill_chain(&pills, &theme.chrome()));
         } else {
             for (name, encoded) in app.saved_views.iter() {
                 let active = !app.view.filter().is_empty()
@@ -648,7 +586,7 @@ pub(crate) fn draw_header(f: &mut Frame, area: Rect, app: &App, merge_pills: boo
         paragraph_lines.push(Line::from(chips));
     }
     let info = Paragraph::new(paragraph_lines).block(titled_block(
-        theme,
+        &theme.chrome(),
         &version_title(theme, cols[0].width),
         false,
         theme.title,
@@ -681,7 +619,7 @@ pub(crate) fn draw_header(f: &mut Frame, area: Rect, app: &App, merge_pills: boo
         )),
     ])
     .alignment(Alignment::Right)
-    .block(rounded_block(theme, false));
+    .block(rounded_block(&theme.chrome(), false));
     f.render_widget(context_panel, cols[1]);
 }
 

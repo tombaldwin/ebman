@@ -27,7 +27,7 @@ pub(crate) fn draw_shell(f: &mut Frame, area: Rect, app: &mut App) {
     // and bottom, 1 col at left and right) and keeps the pane label
     // visible without crowding the first line of output.
     let title_text = format!(" ⌥ {}    F12 detach    ^D / exit close ", shell.label);
-    let block = rounded_block(theme, true)
+    let block = rounded_block(&theme.chrome(), true)
         .border_style(Style::default().fg(theme.title))
         .title(Span::styled(
             title_text,

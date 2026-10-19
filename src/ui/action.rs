@@ -46,13 +46,18 @@ pub(crate) fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
                 })
                 .collect();
             let list = List::new(items)
-                .block(titled_block(&theme, "action", true, theme.title_alt))
+                .block(titled_block(
+                    &theme.chrome(),
+                    "action",
+                    true,
+                    theme.title_alt,
+                ))
                 .highlight_style(
                     Style::default()
                         .bg(theme.row_selected_bg)
                         .add_modifier(Modifier::BOLD),
                 )
-                .highlight_symbol(cursor_marker(&theme));
+                .highlight_symbol(cursor_marker(theme.icons));
             f.render_stateful_widget(list, layout[0], list_state);
             f.render_widget(
                 Paragraph::new(Span::styled(
@@ -74,7 +79,7 @@ pub(crate) fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
                 ])
                 .split(popup);
             let title = format!("swap CNAMEs: {source} ↔ ?");
-            let block = titled_block(&theme, &title, true, theme.title_alt);
+            let block = titled_block(&theme.chrome(), &title, true, theme.title_alt);
             let mut prompt_spans = vec![
                 Span::styled(
                     " /",
@@ -107,7 +112,7 @@ pub(crate) fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
                 })
                 .collect();
             let list = List::new(items)
-                .block(rounded_block(&theme, true))
+                .block(rounded_block(&theme.chrome(), true))
                 .highlight_style(
                     Style::default()
                         .bg(theme.row_selected_bg)
@@ -146,7 +151,7 @@ pub(crate) fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
             } else {
                 theme.title_alt
             };
-            let block = rounded_block(&theme, true)
+            let block = rounded_block(&theme.chrome(), true)
                 .border_style(Style::default().fg(accent))
                 .title(Span::styled(
                     " confirm ",

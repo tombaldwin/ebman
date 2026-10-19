@@ -66,7 +66,7 @@ pub(super) fn draw_detail(f: &mut Frame, area: Rect, app: &mut App) {
     // The stale-platform badge belongs to the Platform field, so it is
     // part of that group: if Platform is dropped for width the badge
     // goes with it rather than floating loose after Region.
-    let mut platform_group = kv("Platform", &env.platform, theme);
+    let mut platform_group = kv("Platform", &env.platform, &theme.chrome());
     if let Some(newer) = app.view.stale_platforms().get(&env.name) {
         platform_group.push(Span::styled(
             format!("  {}v{newer} available", stale_glyph(theme.icons)),
@@ -86,15 +86,15 @@ pub(super) fn draw_detail(f: &mut Frame, area: Rect, app: &mut App) {
     // screen an operator opens to answer the second question.
     let h1 = join_fields_to_fit(
         vec![
-            kv("Name", &env.name, theme),
+            kv("Name", &env.name, &theme.chrome()),
             vec![
                 Span::styled("Status: ", Style::default().fg(theme.muted)),
                 status_pill(&env.status, theme),
             ],
             health_group,
-            kv("Application", &env.application, theme),
+            kv("Application", &env.application, &theme.chrome()),
         ],
-        theme,
+        &theme.chrome(),
         header_usable,
     );
     // Same rule. Region stays first (it is the one thing Detail has no
@@ -103,22 +103,22 @@ pub(super) fn draw_detail(f: &mut Frame, area: Rect, app: &mut App) {
     // field an operator is least likely to be reading off this screen.
     let h2 = join_fields_to_fit(
         vec![
-            kv("Region", &env_region, theme),
-            kv("Version", &env.version_label, theme),
+            kv("Region", &env_region, &theme.chrome()),
+            kv("Version", &env.version_label, &theme.chrome()),
             platform_group,
-            kv("CNAME", &cname_text, theme),
+            kv("CNAME", &cname_text, &theme.chrome()),
         ],
-        theme,
+        &theme.chrome(),
         header_usable,
     );
     let header_title = format!("env: {}", env.name);
     let header = Paragraph::new(vec![Line::from(h1), Line::from(h2), Line::raw("")]).block(
-        titled_block(&app.theme, &header_title, true, app.theme.title),
+        titled_block(&app.theme.chrome(), &header_title, true, app.theme.title),
     );
     f.render_widget(header, chunks[0]);
 
     // Tab strip
-    let tabs_block = rounded_block(&app.theme, false);
+    let tabs_block = rounded_block(&app.theme.chrome(), false);
     let tab_line = render_tabs(&detail.tabs, detail.tab_idx, &app.theme);
     f.render_widget(Paragraph::new(tab_line).block(tabs_block), chunks[1]);
 
@@ -422,7 +422,7 @@ pub(super) fn draw_detail_health(
     // renderer can prefix interactive rows with the cursor marker.
     let items = crate::app::health_items(detail, now);
     let active_item: Option<crate::app::HealthItem> = items.get(detail.health_cursor).copied();
-    let cursor_glyph = cursor_marker(theme);
+    let cursor_glyph = cursor_marker(theme.icons);
     // Two-cell-wide prefix so cursor/non-cursor rows align.
     let item_prefix = |is_active: bool| -> Span<'static> {
         if is_active {
@@ -801,7 +801,7 @@ pub(super) fn draw_detail_health(
         " ── tab → drill into Events / Instances / Metrics / Queue / Logs / Config ──".into(),
     ));
 
-    let block = rounded_block(theme, false).padding(Padding::horizontal(1));
+    let block = rounded_block(&theme.chrome(), false).padding(Padding::horizontal(1));
     let p = Paragraph::new(lines)
         .wrap(Wrap { trim: false })
         .block(block);
@@ -856,7 +856,7 @@ pub(super) fn draw_detail_events(
     if detail.search_pattern.is_some() {
         title.push_str(&format!("· matches: {matches} "));
     }
-    let outer = rounded_block(theme, true)
+    let outer = rounded_block(&theme.chrome(), true)
         .title(Span::styled(
             title,
             Style::default()
@@ -1007,7 +1007,7 @@ pub(super) fn draw_detail_instances(
     detail: &crate::app::DetailState,
     theme: &Theme,
 ) {
-    let block = rounded_block(theme, true)
+    let block = rounded_block(&theme.chrome(), true)
         .title(Span::styled(
             format!(" Instances [{}] ", detail.instances.len()),
             Style::default()
@@ -1141,7 +1141,8 @@ pub(super) fn draw_detail_metrics(
             humanize_range(detail.metrics_range_secs)
         )
     };
-    let outer = titled_block(theme, &title_text, true, theme.title).padding(Padding::horizontal(1));
+    let outer = titled_block(&theme.chrome(), &title_text, true, theme.title)
+        .padding(Padding::horizontal(1));
     let inner = outer.inner(area);
     f.render_widget(outer, area);
 
@@ -1383,7 +1384,7 @@ pub(super) fn draw_detail_queue(
     redact_on: bool,
     theme: &Theme,
 ) {
-    let block = rounded_block(theme, true)
+    let block = rounded_block(&theme.chrome(), true)
         .title(Span::styled(
             " Queue ",
             Style::default()
@@ -1570,7 +1571,7 @@ pub(super) fn draw_detail_logs(
             tail.by_instance.len()
         )
     };
-    let outer = rounded_block(theme, true)
+    let outer = rounded_block(&theme.chrome(), true)
         .title(Span::styled(
             title,
             Style::default()
@@ -1831,7 +1832,8 @@ pub(super) fn draw_detail_config(
     required_tags: &[String],
     theme: &Theme,
 ) -> u16 {
-    let block = titled_block(theme, "Config", true, theme.title).padding(Padding::horizontal(2));
+    let block =
+        titled_block(&theme.chrome(), "Config", true, theme.title).padding(Padding::horizontal(2));
 
     let updated = env
         .updated

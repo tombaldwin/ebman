@@ -166,9 +166,10 @@ pub(crate) fn draw_apps_table(f: &mut Frame, area: Rect, app: &mut App) {
             // pill contrast better than a flat bg override.
             Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD),
         )
-        .highlight_symbol(cursor_marker(&theme))
+        .highlight_symbol(cursor_marker(theme.icons))
         .block(
-            titled_block(&theme, &title, !popup_open, theme.title).padding(Padding::horizontal(1)),
+            titled_block(&theme.chrome(), &title, !popup_open, theme.title)
+                .padding(Padding::horizontal(1)),
         );
     f.render_stateful_widget(table, area, &mut app.app_table_state);
 }
@@ -613,7 +614,7 @@ pub(crate) fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
     // rather than a guarantee. The inter-column spacing is handled
     // inside `drop_columns_to_fit` / `column_widths`, since it depends
     // on how many columns survive.
-    let gutter = cursor_marker(&theme).chars().count() as u16;
+    let gutter = cursor_marker(theme.icons).chars().count() as u16;
     // ...AND the block's horizontal padding, which is applied where the
     // `Block` is built below and is 2 cells normally, 4 in Spacious.
     // Leaving it out made the budget larger than the area, so
@@ -894,7 +895,7 @@ pub(crate) fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
         app.mode,
         Mode::Help | Mode::Picker | Mode::Command | Mode::Action | Mode::Filter
     );
-    let block = titled_block(&theme, &title, !popup_open, theme.title)
+    let block = titled_block(&theme.chrome(), &title, !popup_open, theme.title)
         .padding(Padding::horizontal(block_padding));
     let table = Table::new(rows, widths)
         .header(header)
@@ -907,7 +908,7 @@ pub(crate) fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
             // on the dark row_selected_bg (low contrast).
             Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD),
         )
-        .highlight_symbol(cursor_marker(&theme))
+        .highlight_symbol(cursor_marker(theme.icons))
         .block(block);
 
     // Build the hover preview (if any) before the stateful render, because

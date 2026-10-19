@@ -41,8 +41,8 @@ use ratatui::{
     symbols::Marker,
     text::{Line, Span},
     widgets::{
-        Axis, Block, BorderType, Borders, Cell, Chart, Clear, Dataset, GraphType, List, ListItem,
-        Padding, Paragraph, Row, Table, Wrap,
+        Axis, Cell, Chart, Clear, Dataset, GraphType, List, ListItem, Padding, Paragraph, Row,
+        Table, Wrap,
     },
     Frame,
 };
