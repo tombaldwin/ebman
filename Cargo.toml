@@ -34,14 +34,20 @@ crossterm = { version = "0.29", features = ["event-stream"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "signal", "io-util", "io-std"] }
 futures = "0.3"
 aws-config = { version = "1", features = ["behavior-version-latest"] }
-aws-sdk-elasticbeanstalk = "1"
-aws-sdk-sts = "1"
-aws-sdk-sqs = "1"
-aws-sdk-cloudwatch = "1"
-aws-sdk-cloudwatchlogs = "1"
-aws-sdk-s3 = "1"
-aws-sdk-ec2 = "1"
-aws-sdk-acm = "1"
+# Every SDK crate is `default-features = false`: the defaults include
+# `rustls`, the deprecated legacy client (hyper 0.14 + rustls 0.21),
+# which carries RUSTSEC-2026-0346 / -0349 with no fix on that line. The
+# features listed are the rest of the defaults. The dev-dependency
+# entries below repeat `default-features = false`, or the test build
+# would turn the legacy client back on.
+aws-sdk-elasticbeanstalk = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-sts = { version = "1", default-features = false, features = ["sigv4a", "default-https-client", "rt-tokio"] }
+aws-sdk-sqs = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-cloudwatch = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-cloudwatchlogs = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-s3 = { version = "1", default-features = false, features = ["sigv4a", "http-1x", "default-https-client", "rt-tokio"] }
+aws-sdk-ec2 = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-acm = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
 chrono = "0.4"
 color-eyre = "0.6"
 tracing = "0.1"
@@ -52,15 +58,15 @@ regex = "1"
 portable-pty = "0.9"
 vt100 = "0.15"
 aws-credential-types = { version = "1.2.13", features = ["hardcoded-credentials"] }
-aws-sdk-organizations = "1.110.0"
-aws-sdk-costexplorer = "1"
-aws-sdk-iam = "1"
-aws-sdk-wafv2 = "1"
+aws-sdk-organizations = { version = "1.110.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-costexplorer = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-iam = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-wafv2 = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
 tokio-util = { version = "0.7", features = ["codec"] }
 # pid-liveness probe for the cross-process freeze marker (freeze.rs).
 libc = "0.2"
-aws-sdk-secretsmanager = "1"
-aws-sdk-ssm = "1"
+aws-sdk-secretsmanager = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-ssm = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
 serde = { version = "1", features = ["derive"] }
 # MCP server (`ebman mcp serve`): incoming JSON-RPC must be *parsed*,
 # which the hand-rolled `util::json_string` emit path can't do.
@@ -133,18 +139,18 @@ aws-smithy-types = "1"
 # The `test-util` feature enables `with_test_defaults` on the SDK config
 # builders, which `aws-smithy-mocks::mock_client!` relies on. Only needed
 # for the test build — production paths use the regular config.
-aws-sdk-elasticbeanstalk = { version = "1", features = ["test-util"] }
-aws-sdk-sqs = { version = "1", features = ["test-util"] }
-aws-sdk-cloudwatch = { version = "1", features = ["test-util"] }
-aws-sdk-cloudwatchlogs = { version = "1", features = ["test-util"] }
-aws-sdk-s3 = { version = "1", features = ["test-util"] }
-aws-sdk-ec2 = { version = "1", features = ["test-util"] }
-aws-sdk-acm = { version = "1", features = ["test-util"] }
-aws-sdk-organizations = { version = "1.110.0", features = ["test-util"] }
-aws-sdk-costexplorer = { version = "1", features = ["test-util"] }
-aws-sdk-secretsmanager = { version = "1", features = ["test-util"] }
-aws-sdk-ssm = { version = "1", features = ["test-util"] }
-aws-sdk-iam = { version = "1", features = ["test-util"] }
+aws-sdk-elasticbeanstalk = { version = "1", default-features = false, features = ["test-util"] }
+aws-sdk-sqs = { version = "1", default-features = false, features = ["test-util"] }
+aws-sdk-cloudwatch = { version = "1", default-features = false, features = ["test-util"] }
+aws-sdk-cloudwatchlogs = { version = "1", default-features = false, features = ["test-util"] }
+aws-sdk-s3 = { version = "1", default-features = false, features = ["test-util"] }
+aws-sdk-ec2 = { version = "1", default-features = false, features = ["test-util"] }
+aws-sdk-acm = { version = "1", default-features = false, features = ["test-util"] }
+aws-sdk-organizations = { version = "1.110.0", default-features = false, features = ["test-util"] }
+aws-sdk-costexplorer = { version = "1", default-features = false, features = ["test-util"] }
+aws-sdk-secretsmanager = { version = "1", default-features = false, features = ["test-util"] }
+aws-sdk-ssm = { version = "1", default-features = false, features = ["test-util"] }
+aws-sdk-iam = { version = "1", default-features = false, features = ["test-util"] }
 # `test-util` enables `#[tokio::test(start_paused = true)]` + the
 # `tokio::time::pause/advance/sleep` mocked-clock surface that
 # `run_shell_command`'s polling-loop tests rely on.
