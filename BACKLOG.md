@@ -543,13 +543,10 @@ Proposed during the Powerline-aesthetic pass but skipped because the cost / payo
 
 - [ ] **TIER / STATUS pill caps in env table (option A)** — every row's pills get a Powerline trailing wedge so they read as ribbon-style tags. ~~Blocker: TIER column is `Constraint::Length(7)`~~ — STALE: TIER is `Length(11)` now and `pill_chain` already renders wedge-capped pills in the header, so the machinery exists and the width objection is gone. What remains is the design call about applying it per-row. Old note: and the existing `" Worker "` pill is already 8 cells; STATUS column is 10 and `" Terminating "` is 13. Caps would overflow more rows. Revisit if/when the table column widths get widened — or render the cap *only* when the cell has room.
 
-- [ ] **cargo-deny fails on main: three advisories with no lockfile fix**
-  (found 2026-10-19). rustls 0.23 is fixed (b9c7228). What remains:
-  - RUSTSEC-2026-0346 and -0349 on **rustls 0.21.12**, which
-    `aws-smithy-http-client` 1.4 still pulls in. The advisory lists no
-    fix on 0.21. Updating the client to 1.5.0 does not drop it. Find
-    which smithy/aws-config feature selects the legacy rustls and turn it
-    off, or wait for an SDK release without it.
+- [ ] **cargo-deny fails on main: RUSTSEC-2026-0333 has no lockfile fix**
+  (found 2026-10-19). The rustls advisories are fixed: rustls 0.23.46
+  (b9c7228), and the SDK crates' legacy rustls 0.21 client is off
+  (default features dropped). What remains:
   - RUSTSEC-2026-0333 on **noyalib 0.0.5**, via `serde_yml` 0.0.13. That
     crate is now a deprecated shim pinned to noyalib 0.0.5, and the fix
     is 0.0.53. Replacing the YAML crate is a choice of successor
