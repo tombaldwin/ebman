@@ -554,7 +554,8 @@ Proposed during the Powerline-aesthetic pass but skipped because the cost / payo
     crate is now a deprecated shim pinned to noyalib 0.0.5, and the fix
     is 0.0.53. Replacing the YAML crate is a choice of successor
     (noyalib directly, `serde_yaml_ng`, `serde_norway`), so it needs a
-    decision first. The saved-config parser is the only user.
+    decision first. 5 non-test modules use it (saved configs,
+    `.ebextensions` lint, EB CLI config, terraform), so it is not small.
   Not an `ignore` in `deny.toml`: that is a stop condition.
 
 - [ ] **`icons = "ascii"` still draws non-ascii text.** Found while
