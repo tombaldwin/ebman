@@ -1955,6 +1955,29 @@ async fn fetch_app_metrics_follows_pages_and_reports_a_short_answer() {
 }
 
 #[tokio::test]
+async fn fetch_app_metrics_refuses_more_queries_than_one_call_takes() {
+    let rule = mock!(aws_sdk_cloudwatch::Client::get_metric_data).then_output(|| {
+        aws_sdk_cloudwatch::operation::get_metric_data::GetMetricDataOutput::builder().build()
+    });
+    let client = client_with_cw(mock_client!(aws_sdk_cloudwatch, [&rule]));
+    let mut cfg = String::from("app.e.namespace = \"N\"\napp.e.instance_dimension = \"I\"\n");
+    for i in 0..167 {
+        cfg.push_str(&format!("app.e.metric.m{i} = \"X|Sum\"\n"));
+    }
+    let spec = crate::config::parse(&cfg)
+        .app_tabs
+        .envs
+        .remove("e")
+        .unwrap();
+    let err = client
+        .fetch_app_metrics("e", 900, &spec)
+        .await
+        .expect_err("501 queries");
+    assert!(err.to_string().contains("501 queries"), "{err}");
+    assert_eq!(rule.num_calls(), 0, "not sent to be refused");
+}
+
+#[tokio::test]
 async fn fetch_app_metrics_makes_no_call_without_a_namespace() {
     let rule = mock!(aws_sdk_cloudwatch::Client::get_metric_data).then_output(|| {
         aws_sdk_cloudwatch::operation::get_metric_data::GetMetricDataOutput::builder().build()

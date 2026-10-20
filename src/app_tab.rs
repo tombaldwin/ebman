@@ -209,6 +209,14 @@ impl AppTabs {
                     "app.{env} defines metrics but no app.{env}.namespace to read them from"
                 )));
             }
+            let queries = metric_queries(env, spec, 60).len();
+            if queries > MAX_QUERIES {
+                self.errors.push(error(format!(
+                    "app.{env} needs {queries} CloudWatch queries and one call takes \
+                     {MAX_QUERIES}: name fewer metrics or resources, or drop \
+                     instance_dimension (it adds two per metric)"
+                )));
+            }
             for label in spec.thresholds.keys() {
                 if !spec.metrics.iter().any(|m| &m.label == label) {
                     self.errors.push(error(format!(
@@ -421,6 +429,10 @@ const AGGREGATE: char = 'a';
 const PER_INSTANCE: char = 'i';
 const COMBINED: char = 'x';
 const RESOURCE: char = 'r';
+
+/// `GetMetricData`'s limit on queries in one call. Past it the whole
+/// call is refused, so every row would fail together.
+pub(crate) const MAX_QUERIES: usize = 500;
 
 /// A linked resource's kind: which namespace and dimension name it, and
 /// the fixed metrics read for it.
@@ -1118,6 +1130,26 @@ mod tests {
     fn a_metric_with_no_namespace_is_reported() {
         let e = one_error(&[("e.metric.x", "X")]);
         assert!(e.contains("no app.e.namespace"), "{e}");
+    }
+
+    #[test]
+    fn more_queries_than_one_call_takes_is_a_config_error() {
+        // 167 metrics with an instance dimension is 501 queries.
+        let mut lines = vec![
+            ("e.namespace".to_string(), "N".to_string()),
+            ("e.instance_dimension".to_string(), "InstanceId".to_string()),
+        ];
+        for i in 0..167 {
+            lines.push((format!("e.metric.m{i}"), "X|Sum".to_string()));
+        }
+        let refs: Vec<(&str, &str)> = lines
+            .iter()
+            .map(|(a, b)| (a.as_str(), b.as_str()))
+            .collect();
+        let e = one_error(&refs);
+        assert!(e.contains("needs 501 CloudWatch queries"), "{e}");
+        let fits: Vec<(&str, &str)> = refs[..refs.len() - 1].to_vec();
+        assert!(parse(&fits).errors.is_empty(), "498 fits");
     }
 
     #[test]

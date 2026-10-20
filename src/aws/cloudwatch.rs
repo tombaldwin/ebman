@@ -471,6 +471,15 @@ impl AwsClient {
                 Vec::new(),
             ));
         }
+        // Reported at config parse too; refused here rather than sent,
+        // since CloudWatch would refuse the whole call.
+        if queries.len() > crate::app_tab::MAX_QUERIES {
+            return Err(eyre!(
+                "{} queries, and GetMetricData takes {} per call",
+                queries.len(),
+                crate::app_tab::MAX_QUERIES
+            ));
+        }
         let sdk: Vec<MetricDataQuery> = queries
             .into_iter()
             .map(|q| match q {
