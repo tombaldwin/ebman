@@ -462,10 +462,32 @@ pub(crate) fn parse_alarm_dimensions(value: &str) -> Vec<String> {
 /// `trim_matches('"')` removed every leading and trailing quote, so a
 /// value ending in a quote (a regex matching `msg="…"`, an ARN naming
 /// `"hi"`) lost it, and could not survive a `:settings` round trip.
+///
+/// Each end is stripped on its own, so an unclosed `"dark` still reads
+/// as `dark`, as it always has.
 fn unquote(raw: &str) -> &str {
-    raw.strip_prefix('"')
-        .and_then(|r| r.strip_suffix('"'))
-        .unwrap_or(raw)
+    let s = raw.strip_prefix('"').unwrap_or(raw);
+    s.strip_suffix('"').unwrap_or(s)
+}
+
+/// What is wrong with an `app.` line's raw value, if anything this
+/// parser would otherwise read silently and wrongly. It has no inline
+/// comments, so a `#` after a quoted value would become part of the
+/// value and match no data.
+fn app_value_problem(raw: &str) -> Option<&'static str> {
+    let inner = raw.strip_prefix('"')?;
+    if !inner.ends_with('"') {
+        return Some(if inner.contains('"') {
+            "has text after its closing quote (inline # comments are not \
+             supported: put the comment on its own line)"
+        } else {
+            "has an opening quote and no closing one"
+        });
+    }
+    // `"Shop" # the "prod" one` ends in a quote too.
+    inner
+        .contains("\" #")
+        .then_some("looks like it carries an inline # comment, which is not supported: put the comment on its own line")
 }
 
 pub(crate) fn parse(text: &str) -> Config {
@@ -557,19 +579,9 @@ pub(crate) fn parse(text: &str) -> Config {
             }
             other if other.starts_with("app.") => {
                 let rest = other.trim_start_matches("app.");
-                if raw.starts_with('"') && unquote(raw) == raw {
-                    // `"Shop" # prod`: the comment would be part of the
-                    // value and silently match no data. This parser has
-                    // no inline comments; say so rather than guess.
-                    cfg.app_tabs.reject(
-                        rest,
-                        line,
-                        format!(
-                            "app.{rest} has text after its closing quote \
-                             (inline # comments are not supported: put the \
-                             comment on its own line)"
-                        ),
-                    );
+                if let Some(problem) = app_value_problem(raw) {
+                    cfg.app_tabs
+                        .reject(rest, line, format!("app.{rest} {problem}"));
                 } else {
                     cfg.app_tabs.apply(rest, &value, line);
                 }
@@ -1306,16 +1318,41 @@ accounts.staging.external_id = "abc-xyz"
         assert_eq!(unquote("15"), "15");
         assert_eq!(
             unquote(r#""open"#),
-            r#""open"#,
-            "an unclosed quote is kept, not half-stripped"
+            "open",
+            "unclosed reads as it always did"
         );
-        assert_eq!(unquote(r#"""#), r#"""#, "a lone quote is not a pair");
+        assert_eq!(unquote(r#"close""#), "close");
+        assert_eq!(unquote(r#"""#), "", "a lone quote");
+        assert_eq!(
+            parse("theme = \"dark\n").theme,
+            "dark",
+            "an unclosed theme still applies"
+        );
         let cfg = parse("app.e.error_fingerprint = \"msg=\"(?<fp>[^\"]+)\"\"\n");
         assert_eq!(
             cfg.app_tabs.envs["e"].error_fingerprint.as_deref(),
             Some(r#"msg="(?<fp>[^"]+)""#),
             "a trailing quote inside the value survives"
         );
+    }
+
+    #[test]
+    fn each_malformed_app_value_names_its_own_problem() {
+        for (raw, want) in [
+            (r#""Shop" # prod"#, Some("text after its closing quote")),
+            // Ends in a quote, so only the comment check catches it.
+            (r#""Shop" # the "prod""#, Some("looks like it carries")),
+            (r#""Shop"#, Some("no closing one")),
+            (r#""Shop""#, None),
+            (r#""msg="(?<fp>[^"]+)"""#, None),
+            ("Shop", None),
+        ] {
+            let got = app_value_problem(raw);
+            match want {
+                None => assert_eq!(got, None, "{raw}"),
+                Some(w) => assert!(got.is_some_and(|g| g.contains(w)), "{raw}: {got:?}"),
+            }
+        }
     }
 
     #[test]
