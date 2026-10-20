@@ -354,7 +354,12 @@ pub(crate) fn with_rejected_lines<'a>(
     mut lines: Vec<String>,
     rejected: impl Iterator<Item = &'a str>,
 ) -> Vec<String> {
-    let key = |l: &str| l.split_once('=').map(|(k, _)| k.trim().to_string());
+    // Each dot-separated part trimmed, as the parser reads a key, so
+    // `app.e.metric. heap` is the same key as `app.e.metric.heap`.
+    let key = |l: &str| {
+        l.split_once('=')
+            .map(|(k, _)| k.split('.').map(str::trim).collect::<Vec<_>>().join("."))
+    };
     let written: Vec<Option<String>> = lines.iter().map(|l| key(l)).collect();
     for r in rejected {
         if !written.contains(&key(r)) {
@@ -813,6 +818,7 @@ mod tests {
              app.e.threshold.heap = \"1800,1500\"\n\
              app.e.future_field = \"x\"\n\
              app.e.alarm_prefix = \"\"\n\
+             app.e.threshold. lag = \"2,1\"\n\
              app.other.future_field = \"y\"\n",
         )
         .app_tabs;
@@ -821,6 +827,8 @@ mod tests {
                 "app.e.namespace = \"N\"".to_string(),
                 // The form now writes alarm_prefix: the empty, rejected one goes.
                 "app.e.alarm_prefix = \"e-\"".to_string(),
+                // And this threshold, whose rejected line had a stray space.
+                "app.e.threshold.lag = \"1,2\"".to_string(),
             ],
             tabs.rejected_lines("e"),
         );
@@ -829,6 +837,7 @@ mod tests {
             [
                 "app.e.namespace = \"N\"",
                 "app.e.alarm_prefix = \"e-\"",
+                "app.e.threshold.lag = \"1,2\"",
                 "app.e.threshold.heap = \"1800,1500\"",
                 "app.e.future_field = \"x\"",
             ],
