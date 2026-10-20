@@ -799,19 +799,24 @@ pub(crate) fn replace_app_lines(text: &str, env: &str, lines: &[String]) -> Stri
     if !placed {
         out.extend(lines.iter().cloned());
     }
-    let mut body = out.join("\n");
-    body.push('\n');
+    // In the file's own line ending: a CRLF file stays CRLF.
+    let eol = if text.contains("\r\n") { "\r\n" } else { "\n" };
+    let mut body = out.join(eol);
+    body.push_str(eol);
     body
 }
 
 /// Write `env`'s App tab lines into `config.toml`, touching nothing
 /// else; refused, like [`save`], when the file exists and cannot be read.
-pub(crate) fn save_app_lines(env: &str, lines: &[String]) -> std::io::Result<()> {
+/// Returns what was written, so the caller applies exactly that rather
+/// than reading the file back (a failed read-back emptied the tab).
+pub(crate) fn save_app_lines(env: &str, lines: &[String]) -> std::io::Result<String> {
     let path = config_path();
     let existing = std::fs::read_to_string(&path);
     refuse_to_clobber_unreadable(existing.as_ref().map(|_| ()).map_err(clone_io_error), &path)?;
     let body = replace_app_lines(existing.as_deref().unwrap_or(""), env, lines);
-    crate::util::write_atomic(&path, &body)
+    crate::util::write_atomic(&path, &body)?;
+    Ok(body)
 }
 
 /// What a save writes: `cfg`, except that the `app.` lines are the ones
@@ -1368,6 +1373,15 @@ accounts.staging.external_id = "abc-xyz"
         assert_eq!(
             added, "theme = \"dark\"\napp.a.rds = \"db\"\n",
             "appended when absent"
+        );
+        let crlf = replace_app_lines(
+            "theme = \"dark\"\r\napp.a.rds = \"x\"\r\n",
+            "a",
+            &["app.a.rds = \"y\"".to_string()],
+        );
+        assert_eq!(
+            crlf, "theme = \"dark\"\r\napp.a.rds = \"y\"\r\n",
+            "a CRLF file stays CRLF"
         );
         let cleared = replace_app_lines(text, "a", &[]);
         assert!(!cleared.contains("app.a."), "{cleared}");

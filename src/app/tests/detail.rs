@@ -2565,6 +2565,10 @@ fn saving_the_app_tab_writes_then_applies() {
     let apply = body.find("self.cfg.app_tabs =").expect("applies them");
     assert!(write < apply, "applied only after the write succeeded");
     assert!(
+        !body.contains("read_to_string"),
+        "applies what it wrote, not a read-back that can fail"
+    );
+    assert!(
         body.contains("self.config_seen ="),
         "and the reload knows it has them"
     );

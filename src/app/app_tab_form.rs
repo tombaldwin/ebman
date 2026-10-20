@@ -460,13 +460,15 @@ impl App {
                 return;
             }
         };
-        if let Err(e) = crate::config::save_app_lines(&env, &lines) {
-            form.banner = format!("not saved: {e}");
-            return;
-        }
+        let written = match crate::config::save_app_lines(&env, &lines) {
+            Ok(written) => written,
+            Err(e) => {
+                form.banner = format!("not saved: {e}");
+                return;
+            }
+        };
         let mtime = crate::config::config_mtime();
-        let text = std::fs::read_to_string(crate::config::config_path()).unwrap_or_default();
-        self.cfg.app_tabs = crate::config::parse(&text).app_tabs;
+        self.cfg.app_tabs = crate::config::parse(&written).app_tabs;
         self.config_seen = Some(mtime);
         self.form = None;
         self.mode = Mode::Detail;
