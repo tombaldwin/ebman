@@ -137,7 +137,9 @@ safety.accounts.prod.read_only = true
 #                             are not read.
 # app.ENV.alarm_prefix        alarms whose name starts with this belong to
 #                             the env, as well as those matched by
-#                             alarm_dimensions
+#                             alarm_dimensions; except those named for a
+#                             longer env the prefix also covers (the
+#                             worker Shop-prod-wk under Shop-prod-)
 # app.ENV.log_group           turns on top errors: a Logs Insights count of
 #                             ERROR lines over the last 15 minutes, run
 #                             on ^R and when the tab opens (reopening it

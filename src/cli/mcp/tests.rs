@@ -1269,9 +1269,30 @@ mod orchestration {
                             )
                             .build(),
                     )
+                    .metric_alarms(
+                        MetricAlarm::builder()
+                            .alarm_name("poly-prod-wk-blue-cpu")
+                            .state_value(StateValue::Alarm)
+                            .build(),
+                    )
                     .build()
             });
-        let listing = env_listing();
+        // The env, and a second whose name the prefix also covers.
+        let listing = aws_smithy_mocks::mock!(EbClient::describe_environments).then_output(|| {
+            use aws_sdk_elasticbeanstalk::operation::describe_environments::DescribeEnvironmentsOutput;
+            use aws_sdk_elasticbeanstalk::types::{EnvironmentDescription, EnvironmentTier};
+            let env = |name: &str| {
+                EnvironmentDescription::builder()
+                    .environment_name(name)
+                    .application_name("poly")
+                    .tier(EnvironmentTier::builder().name("Worker").build())
+                    .build()
+            };
+            DescribeEnvironmentsOutput::builder()
+                .environments(env("poly-prod-wk"))
+                .environments(env("poly-prod-wk-blue"))
+                .build()
+        });
         // The other sections only need an answer; they are not what
         // this test is about.
         let events = aws_smithy_mocks::mock!(EbClient::describe_events).then_output(|| {

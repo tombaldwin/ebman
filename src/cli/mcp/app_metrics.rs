@@ -71,7 +71,27 @@ impl Server {
         }
 
         let client = self.client(args).await?;
-        let matching = aws::AlarmMatch::for_env(&self.safety_cfg.alarm_dimensions, tabs, &env);
+        // A prefix needs the fleet, so another env's alarms that share it
+        // stay out (`AlarmMatch::shadowed_by`). Without a prefix the
+        // listing is not needed, and not made.
+        let fleet: Result<Vec<String>, String> =
+            if spec.as_ref().is_some_and(|s| s.alarm_prefix.is_some()) {
+                self.fetch_envs(args)
+                    .await
+                    .map(|envs| envs.into_iter().map(|e| e.name).collect())
+            } else {
+                Ok(Vec::new())
+            };
+        let matching = aws::AlarmMatch::for_env(
+            &self.safety_cfg.alarm_dimensions,
+            tabs,
+            &env,
+            fleet
+                .as_deref()
+                .unwrap_or_default()
+                .iter()
+                .map(String::as_str),
+        );
         let has_log_group = spec.as_ref().is_some_and(|s| s.log_group.is_some());
         let log_group = spec
             .as_ref()
@@ -122,7 +142,18 @@ impl Server {
         );
         let metrics = keep(&mut errors, "metrics", metrics);
         let instances = keep(&mut errors, "instances", instances.map(Some));
-        let alarms = keep(&mut errors, "alarms", alarms.map(Some));
+        let alarms = match fleet {
+            // Without the fleet a prefix could claim another env's alarms.
+            Err(e) => keep::<Vec<aws::CwAlarm>>(
+                &mut errors,
+                "alarms",
+                Err(color_eyre::eyre::eyre!(
+                    "could not list environments to keep other envs' alarms out of \
+                     the alarm_prefix match: {e}"
+                )),
+            ),
+            Ok(_) => keep(&mut errors, "alarms", alarms.map(Some)),
+        };
         let top_errors = keep(&mut errors, "top_errors", top_errors);
         Ok(render(&Bundle {
             env: &env,
@@ -419,6 +450,20 @@ mod tests {
                         )
                         .build(),
                 )
+                .metric_alarms(
+                    MetricAlarm::builder()
+                        .alarm_name("api-prod-wk-health")
+                        .state_value(StateValue::Alarm)
+                        .build(),
+                )
+                .build()
+        });
+        // The fleet, for the prefix: the worker's alarms are its own.
+        let listing = mock!(aws_sdk_elasticbeanstalk::Client::describe_environments).then_output(|| {
+            use aws_sdk_elasticbeanstalk::types::EnvironmentDescription;
+            aws_sdk_elasticbeanstalk::operation::describe_environments::DescribeEnvironmentsOutput::builder()
+                .environments(EnvironmentDescription::builder().environment_name("api-prod").build())
+                .environments(EnvironmentDescription::builder().environment_name("api-prod-wk").build())
                 .build()
         });
         let health = mock!(aws_sdk_elasticbeanstalk::Client::describe_instances_health).then_output(|| {
@@ -444,7 +489,11 @@ mod tests {
                 .behavior_version(aws_config::BehaviorVersion::latest())
                 .build();
             let client = crate::aws::AwsClient::for_tests(
-                mock_client!(aws_sdk_elasticbeanstalk, RuleMode::MatchAny, [&health]),
+                mock_client!(
+                    aws_sdk_elasticbeanstalk,
+                    RuleMode::MatchAny,
+                    [&health, &listing]
+                ),
                 aws_sdk_sqs::Client::new(&sdk),
                 mock_client!(aws_sdk_cloudwatch, RuleMode::MatchAny, [&metric, &alarms]),
                 mock_client!(
@@ -516,6 +565,59 @@ mod tests {
         assert_eq!(
             v["top_errors"]["rows"],
             json!([{"fingerprint": "Boom", "count": 3}])
+        );
+    }
+
+    /// With a prefix, the fleet must be known to keep other envs' alarms
+    /// out; if it cannot be listed, the alarms section fails rather than
+    /// risk claiming another env's alarms.
+    #[tokio::test]
+    async fn alarms_fail_rather_than_guess_when_the_fleet_cannot_be_listed() {
+        let listing = mock!(aws_sdk_elasticbeanstalk::Client::describe_environments).then_error(|| {
+            aws_sdk_elasticbeanstalk::operation::describe_environments::DescribeEnvironmentsError::unhandled(
+                "AccessDenied",
+            )
+        });
+        let health = mock!(aws_sdk_elasticbeanstalk::Client::describe_instances_health).then_output(|| {
+            aws_sdk_elasticbeanstalk::operation::describe_instances_health::DescribeInstancesHealthOutput::builder().build()
+        });
+        let alarms = mock!(aws_sdk_cloudwatch::Client::describe_alarms).then_output(|| {
+            aws_sdk_cloudwatch::operation::describe_alarms::DescribeAlarmsOutput::builder().build()
+        });
+        let sdk = aws_config::SdkConfig::builder()
+            .region(aws_config::Region::new("us-west-1"))
+            .behavior_version(aws_config::BehaviorVersion::latest())
+            .build();
+        let client = crate::aws::AwsClient::for_tests(
+            mock_client!(
+                aws_sdk_elasticbeanstalk,
+                RuleMode::MatchAny,
+                [&listing, &health]
+            ),
+            aws_sdk_sqs::Client::new(&sdk),
+            mock_client!(aws_sdk_cloudwatch, RuleMode::MatchAny, [&alarms]),
+            aws_sdk_cloudwatchlogs::Client::new(&sdk),
+            aws_sdk_s3::Client::new(&sdk),
+            aws_sdk_ec2::Client::new(&sdk),
+        );
+        let cfg = crate::config::parse("app.e.alarm_prefix = \"e-\"\n");
+        let out = Server::with_injected_client(WriteScope::None, cfg, client)
+            .call_tool("app_metrics", &json!({"env": "e"}))
+            .await
+            .expect("the bundle still answers");
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["alarms"], Value::Null);
+        assert_eq!(v["errors"][0]["section"], "alarms");
+        assert!(
+            v["errors"][0]["error"]
+                .as_str()
+                .unwrap_or("")
+                .contains("could not list environments"),
+            "{v}"
+        );
+        assert!(
+            v["instances"].is_array(),
+            "the other sections still came back"
         );
     }
 

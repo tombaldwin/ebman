@@ -1541,6 +1541,7 @@ impl Server {
                         &self.safety_cfg.alarm_dimensions,
                         &self.safety_cfg.app_tabs,
                         &env_name,
+                        envs.iter().map(|e| e.name.as_str()),
                     ),
                 )
                 .await

@@ -1859,6 +1859,13 @@ async fn every_tui_alarm_fetch_takes_the_envs_alarm_prefix() {
                             )
                             .build(),
                     )
+                    // The worker's, which the prefix also covers.
+                    .metric_alarms(
+                        MetricAlarm::builder()
+                            .alarm_name("api-prod-wk-health")
+                            .state_value(StateValue::Alarm)
+                            .build(),
+                    )
                     .build()
             });
         let cw = aws_smithy_mocks::mock_client!(
@@ -1880,7 +1887,10 @@ async fn every_tui_alarm_fetch_takes_the_envs_alarm_prefix() {
         );
         let cfg = crate::config::parse("app.api-prod.alarm_prefix = \"api-prod-\"\n");
         let mut app = App::for_tests(client, cfg);
-        app.environments = vec![mk_env("api-prod", "shop", "WebServer", "Green")];
+        app.environments = vec![
+            mk_env("api-prod", "shop", "WebServer", "Green"),
+            mk_env("api-prod-wk", "shop", "Worker", "Green"),
+        ];
         app.rebuild_view();
         app.table_state.select(Some(0));
         app

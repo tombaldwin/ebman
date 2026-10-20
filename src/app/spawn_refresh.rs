@@ -108,7 +108,12 @@ impl App {
     /// env's `app.ENV.alarm_prefix`. Every alarm fetch goes through
     /// this, so a prefix applies on every surface or none.
     pub(crate) fn alarm_match_for(&self, env: &str) -> crate::aws::AlarmMatch {
-        crate::aws::AlarmMatch::for_env(&self.cfg.alarm_dimensions, &self.cfg.app_tabs, env)
+        crate::aws::AlarmMatch::for_env(
+            &self.cfg.alarm_dimensions,
+            &self.cfg.app_tabs,
+            env,
+            self.environments.iter().map(|e| e.name.as_str()),
+        )
     }
 
     pub(crate) fn spawn_alarms_fetch(&mut self, env_name: String) {
