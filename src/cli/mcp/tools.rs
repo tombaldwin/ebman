@@ -326,6 +326,7 @@ fn read_tool_table() -> Value {
                 "required": ["env"]
             }
         },
+        super::app_metrics::schema(),
         {
             "name": "fleet_cost",
             "description": "Cached Cost Explorer summary per environment ($/month). Reads ebman's local cost cache only (populated by `:cost on` in the TUI) — never calls Cost Explorer itself. `stale: true` means the cache is older than 24h; an empty result means cost tracking hasn't been enabled.",
@@ -826,6 +827,7 @@ impl Server {
             "worker_queues" => self.tool_worker_queues(args).await,
             "recent_logs" => self.tool_recent_logs(args).await,
             "why" => self.tool_why(args).await,
+            "app_metrics" => self.tool_app_metrics(args).await,
             "lint" => self.tool_lint(args).await,
             "get_option_settings" => self.tool_option_settings(args).await,
             "drift" => self.tool_drift(args).await,

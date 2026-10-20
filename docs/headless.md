@@ -225,6 +225,7 @@ Whether the write tools appear depends on your client: one that can put a questi
 | `audit_log` | local audit entries | this machine's log only; default 100, cap 500 |
 | `recent_events` | EB events, newest first | default 50, cap 200 |
 | `list_versions` | app versions for an env's app | default 50 |
+| `app_metrics` | the TUI's App tab for one env: your own metrics and the RDS / ElastiCache resources named under `app.ENV.*` (latest, `latest_at`, min, max, per instance), enhanced health per instance, the env's alarms ALARM first, and with `top_errors: true` the Logs Insights top errors | reads only what config names, so `configured: false` (and empty `metrics`) means no config, not a clean bill. A metric is only as fresh as the app publishes it: read `latest_at`. `top_errors` is billed per GB scanned and runs only when asked AND `app.ENV.log_group` is set, bounded at 20s inside the 30s call. A failed section is `null` with its reason in `errors`; `notes` carries a short CloudWatch answer; `config_errors` the env's config lines that did not apply |
 | `fleet_cost` | cached $/month per env | cache-only; never calls Cost Explorer |
 
 **Exit codes.** `serve` exits 0 when stdin closes, and 2 on any usage

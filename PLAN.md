@@ -183,7 +183,9 @@ now head the list.*
    metrics, thresholds and the env's config errors on screen) and step
    3 (linked RDS / ElastiCache rows) and step 4 (per-instance enhanced
    health rows), step 5 (alarm prefix, ALARM first, alarm line) and
-   step 6 (top errors). Next: `app_metrics` on MCP.
+   step 6 (top errors) and step 7 (`app_metrics` on MCP). Left: step 8,
+   the two-env compare layout, by ruling; and a live check against a
+   real account (nothing here has met real CloudWatch yet).
 
 ### Next
 

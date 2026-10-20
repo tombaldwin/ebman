@@ -34,6 +34,7 @@ use crate::{audit as audit_log, aws, cost_cache, demo_fixture, lint, terraform, 
 /// different revision get this one back (echo-negotiate); the golden
 /// frame test pins it so a bump is a conscious act.
 mod annotations;
+mod app_metrics;
 mod setup;
 mod tools;
 mod writes;

@@ -171,7 +171,10 @@ from layers into vertical slices: a pure builder with no caller fails
    tab open and `^R` only (an explicit tick trigger, with the tick's
    Detail refresh pulled out of the run loop so a test drives it); not
    stacked, not in `tab_loading` (a query must not hold up metrics).
-7. `app_metrics` on MCP, and `docs/headless.md`.
+7. Done: `app_metrics` on MCP (`src/cli/mcp/app_metrics.rs`), the same
+   fetches as the tab; series summarised (latest, `latest_at`, min,
+   max, count) rather than shipped whole; top errors opt-in per call and
+   bounded at 20s inside the 30s tool bound.
 8. Later, by ruling: a two-env compare layout.
 
 Fixed on the way because they are the same code: the Metrics tab's

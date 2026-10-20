@@ -421,6 +421,7 @@ async fn golden_tools_list_frame() {
             "audit_log",
             "recent_events",
             "list_versions",
+            "app_metrics",
             "fleet_cost",
         ],
         "tool registry changed — update docs/headless.md's table"
@@ -2917,9 +2918,10 @@ fn every_result_that_can_be_partial_says_so() {
     // needed protecting from itself.
     let prod = crate::app::tests::scan::production_source;
     let src = format!(
-        "{}{}",
+        "{}{}{}",
         prod("src/cli/mcp/tools.rs"),
-        prod("src/cli/mcp/mod.rs")
+        prod("src/cli/mcp/mod.rs"),
+        prod("src/cli/mcp/app_metrics.rs")
     );
     // Canary: the slices must be finding real code.
     assert!(
@@ -2933,6 +2935,8 @@ fn every_result_that_can_be_partial_says_so() {
         ("peeked", "whether a dead-letter queue was actually read"),
         ("complete", "whether a log window was fully consumed"),
         ("errors", "which sections of a `why` bundle failed"),
+        ("notes", "a short CloudWatch answer behind `app_metrics`"),
+        ("config_errors", "App tab config lines that did not apply"),
     ] {
         assert!(
             src.contains(field),
