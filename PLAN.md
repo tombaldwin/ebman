@@ -190,16 +190,31 @@ now head the list.*
    `e` on the tab opens an editor pre-filled by discovery from the env's
    own evidence (maintainer ruling: discovery yes; RDS offered, never
    assumed), and an alarm prefix gives way to a longer env name it
-   covers (found on the live fleet).
+   covers (found on the live fleet). Then (2026-10-21) the tab runs
+   discovery unprompted for an unconfigured env, previews what an env
+   variable names, and its key strip says `e set up`.
+
+   **Reviewed 2026-10-21** by two fresh agents (architecture, bugs); all
+   findings fixed in separate commits with mutation-checked tests: MCP
+   top errors flagged unredacted and its fleet listing moved inside the
+   alarms section; MCP re-reads the `app.` lines per call; discovery
+   keyed by (region, env); request tickets on `Fetch` so a config edit
+   or a range change drops a stale answer; one reading of an `app.`
+   line's key; inline-comment checks both ways; G/T value steps and a
+   fully ASCII ascii mode; a round trip over every parser field; the
+   reload and save paths driven rather than pinned by source; and the
+   layering (discovery's AWS code in `aws/`, `AlarmMatch` in `app_tab`,
+   `app_tab_source`, `refresh_app_tab` / `top_errors_due`, the state
+   grouped into `AppTabState` / `AppTabSession`).
 
    **Left, both needing the maintainer:**
-   - **A live check against a real account.** Nothing here has met real
-     CloudWatch or Logs Insights: the SEARCH expression and its dynamic
+   - **A live check against a real account.** Discovery has run on a
+     real fleet (the maintainer, 2026-10-21). The rest has not been
+     confirmed against AWS: the SEARCH expression and its dynamic
      instance label, metric math over it, the Insights `parse`/`stats`
-     query, and `CacheClusterId` naming for Redis nodes are all
-     unverified against AWS. One configured env, opened in the TUI and
-     called through MCP, settles it.
-   - **Step 8, the two-env compare layout**, by ruling.
+     query, and `CacheClusterId` naming for Redis nodes. One configured
+     env, opened in the TUI and called through MCP, settles it.
+   - **Step 11, the two-env compare layout**, by ruling.
 
    Known and accepted: `[` `]` now refetch both tabs that share the
    range, so a configured env pays for the App tab's GetMetricData on

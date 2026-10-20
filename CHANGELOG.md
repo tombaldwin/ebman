@@ -27,7 +27,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   last 15 minutes, run on `^R` and when the tab opens (reopening it
   keeps an answer under five minutes old), never on the auto-refresh
   tick. The MCP
-  `app_metrics` tool returns the same data for agents. An env with no
+  `app_metrics` tool returns the same data for agents, reading the
+  `app.` lines on each call so an edit needs no server restart; its top
+  errors are raw log text and are not redacted. An env with no
   config needs no setup to start: its App tab lists what discovery
   found and previews the resources an env variable names, unsaved.
   `e` on the tab
