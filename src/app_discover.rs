@@ -149,14 +149,18 @@ fn cache_target_of(host: &str) -> Option<&str> {
 }
 
 /// Whether cache node `node` is `target` itself or one of group
-/// `target`'s nodes, which ElastiCache names `<group>-<digits>`. A bare
+/// `target`'s nodes, which ElastiCache names `<group>-<digits>`, or
+/// `<group>-<shard>-<node>` (`-0001-001`) with cluster mode on. A bare
 /// prefix would take `shop-sessions-001` as a node of group `prod`.
 fn is_node_of(node: &str, target: &str) -> bool {
     node == target
         || node
             .strip_prefix(target)
             .and_then(|rest| rest.strip_prefix('-'))
-            .is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
+            .is_some_and(|rest| {
+                rest.split('-')
+                    .all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit()))
+            })
 }
 
 pub(crate) fn discover(env: &str, inputs: &Inputs) -> Discovery {
@@ -375,7 +379,7 @@ mod tests {
             rds_ids: s(&["shop-db", "other-db", "shop-db"]),
             cache_ids: s(&[
                 "sessions-001",
-                "sessions-002",
+                "sessions-0002-001",
                 "sessionsx-001",
                 "sessions-eu-001",
                 "other-001",
@@ -407,7 +411,7 @@ mod tests {
             d.cache_found,
             [
                 ("sessions-001".to_string(), "REDIS".to_string()),
-                ("sessions-002".to_string(), "REDIS".to_string()),
+                ("sessions-0002-001".to_string(), "REDIS".to_string()),
             ],
             "the group's nodes, not sessionsx-001 or another group's sessions-eu-001"
         );
