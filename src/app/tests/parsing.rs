@@ -386,18 +386,18 @@ fn json_surfaces_are_parsed_by_a_json_parser() {
             .map(super::scan::strip_line_comment)
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(
-            !code.contains("serde_yml"),
-            "{name} parses JSON with the YAML parser again"
-        );
+        for yaml in ["noyalib", "serde_yml"] {
+            assert!(
+                !code.contains(yaml),
+                "{name} parses JSON with the YAML parser ({yaml}) again"
+            );
+        }
     }
     // `saved_config.rs` and `eb_cli.rs` are exempt and stay exempt:
     // EB saved configurations and `.elasticbeanstalk/config.yml`
-    // really are YAML. They are also the ONLY two remaining
-    // `serde_yml` consumers, which is what makes the RUSTSEC waiver
-    // on it a two-file problem rather than a nine-file one.
+    // really are YAML, and the only two YAML parser consumers.
     assert!(
-        include_str!("../../saved_config.rs").contains("serde_yml"),
+        include_str!("../../saved_config.rs").contains("noyalib::"),
         "saved configs are genuinely YAML — if this flipped, check why"
     );
 }

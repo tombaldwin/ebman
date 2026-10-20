@@ -1683,6 +1683,7 @@ dependencies = [
  "crossterm",
  "futures",
  "libc",
+ "noyalib",
  "portable-pty",
  "proc-macro2",
  "proptest",
@@ -1691,7 +1692,6 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
- "serde_yml",
  "sha2 0.11.0",
  "syn 3.0.3",
  "tb-tui-common",
@@ -2776,14 +2776,19 @@ dependencies = [
 
 [[package]]
 name = "noyalib"
-version = "0.0.5"
+version = "0.0.58"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e493c05128df7a83b9676b709d590e0ebc285c7ed3152bc679668e8c1e506af5"
+checksum = "3fad8f1a552070f6ba5f60f25e880f7b6daeda8fe138f589345141d31a21a3bb"
 dependencies = [
+ "hashbrown 0.17.1",
  "indexmap",
+ "itoa",
+ "libm",
  "memchr",
  "rustc-hash",
- "serde",
+ "ryu",
+ "serde_core",
+ "serde_ignored",
  "smallvec",
 ]
 
@@ -3887,6 +3892,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde_ignored"
+version = "0.1.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "115dffd5f3853e06e746965a20dcbae6ee747ae30b543d91b0e089668bb07798"
+dependencies = [
+ "serde",
+ "serde_core",
+]
+
+[[package]]
 name = "serde_json"
 version = "1.0.151"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3918,16 +3933,6 @@ dependencies = [
  "form_urlencoded",
  "itoa",
  "ryu",
- "serde",
-]
-
-[[package]]
-name = "serde_yml"
-version = "0.0.13"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "909764a65f86829ccdb5eea9ab355843aa02c019a7bfd47465092953565caa05"
-dependencies = [
- "noyalib",
  "serde",
 ]
 
@@ -4240,7 +4245,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
