@@ -250,6 +250,50 @@ impl App {
         });
     }
 
+    /// The App tab's series. An env with no `app.ENV.*` config, or demo
+    /// mode, settles at once with nothing to draw rather than calling
+    /// AWS: the tab explains what to configure.
+    pub(super) fn spawn_detail_app(&mut self, env_name: String) {
+        let range = self
+            .detail
+            .as_ref()
+            .map(|d| d.metrics_range_secs)
+            .unwrap_or(3600);
+        if let Some(d) = self.detail.as_mut() {
+            d.app_metrics.begin();
+        }
+        let spec = self.cfg.app_tabs.envs.get(&env_name).cloned();
+        // In demo mode: the configured rows, empty, so the tab still
+        // shows what is configured and says why there are no values.
+        let demo_rows = spec.as_ref().filter(|_| self.demo_mode).map(|spec| {
+            crate::app_tab::series_from_results(
+                spec,
+                Vec::new(),
+                vec!["demo mode makes no CloudWatch calls".to_string()],
+            )
+        });
+        let Some(spec) = spec.filter(|_| demo_rows.is_none()) else {
+            let gen = self.generation;
+            let _ = self.msg_tx.send(AppMsg::DetailAppMetrics {
+                gen,
+                env_name,
+                result: Ok(demo_rows.unwrap_or_default()),
+            });
+            return;
+        };
+        let env_for_msg = env_name.clone();
+        self.spawn_aws_in(
+            self.detail_client(),
+            "fetch_app_metrics",
+            move |aws| async move { aws.fetch_app_metrics(&env_name, range, &spec).await },
+            move |gen, result| AppMsg::DetailAppMetrics {
+                gen,
+                env_name: env_for_msg,
+                result,
+            },
+        );
+    }
+
     pub(super) fn spawn_detail_queues(&mut self, application_name: String, env_name: String) {
         if let Some(d) = self.detail.as_mut() {
             d.loading_queues = true;

@@ -218,7 +218,12 @@ impl App {
         let next = crate::util::wrap_index(cur as usize, delta as isize, RANGES.len());
         d.metrics_range_secs = RANGES[next];
         let env_name = d.env_name.clone();
-        self.spawn_detail_metrics(env_name);
+        // The range is shared; refetch the tab it was changed on.
+        if d.tab() == DetailTab::App {
+            self.spawn_detail_app(env_name);
+        } else {
+            self.spawn_detail_metrics(env_name);
+        }
     }
 
     /// Open the worker-queue viewer for the env in Detail mode, defaulting

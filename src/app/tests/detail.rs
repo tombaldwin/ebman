@@ -543,6 +543,7 @@ async fn every_detail_tab_reports_its_own_loading_state() {
     d.loading_metrics = false;
     d.cw_alarms = Default::default();
     d.recent_versions = Default::default();
+    d.app_metrics = Default::default();
     d.log_tail.stage = crate::app::LogTailStage::Idle;
 
     // Every flag off: no tab claims to be loading.
@@ -580,6 +581,7 @@ async fn every_detail_tab_reports_its_own_loading_state() {
             &[DetailTab::Metrics],
         ),
         ("alarms", |d| d.cw_alarms.begin(), &[DetailTab::Health]),
+        ("app metrics", |d| d.app_metrics.begin(), &[DetailTab::App]),
         (
             "recent versions",
             |d| d.recent_versions.begin(),
@@ -599,6 +601,7 @@ async fn every_detail_tab_reports_its_own_loading_state() {
         d.loading_metrics = false;
         d.cw_alarms = Default::default();
         d.recent_versions = Default::default();
+        d.app_metrics = Default::default();
         d.log_tail.stage = crate::app::LogTailStage::Idle;
         set(d);
         for idx in 0..d.tabs.len() {
@@ -1201,6 +1204,32 @@ async fn detail_results_for_another_env_are_dropped() {
         "another env's version list settled this env's panel"
     );
 
+    // App tab metrics: dropped for another env, applied for this one.
+    let app_metrics = || crate::app_tab::AppMetrics {
+        series: Vec::new(),
+        notes: vec!["marker".into()],
+    };
+    let mut app = armed();
+    app.handle_msg(AppMsg::DetailAppMetrics {
+        gen: app.generation,
+        env_name: "worker-prod".into(),
+        result: Ok(app_metrics()),
+    });
+    assert!(
+        app.detail.as_ref().unwrap().app_metrics.ready().is_none(),
+        "another env's App metrics settled this env's App tab"
+    );
+    app.handle_msg(AppMsg::DetailAppMetrics {
+        gen: app.generation,
+        env_name: "api-prod".into(),
+        result: Ok(app_metrics()),
+    });
+    assert_eq!(
+        app.detail.as_ref().unwrap().app_metrics.ready(),
+        Some(&app_metrics()),
+        "the matching env's App metrics must apply"
+    );
+
     // And the matching env DOES apply — without this half, a handler
     // that dropped everything would pass all of the above.
     let mut app = armed();
@@ -1650,4 +1679,68 @@ fn the_detail_fetch_scan_can_see_its_inputs() {
             .is_some_and(|s| s.split('}').next().is_some_and(|v| v.contains("EnvVars"))),
         "the variant shape this guard scans for has changed"
     );
+}
+
+/// `[` `]` on the App tab move the range shared with the Metrics tab,
+/// and refetch the App tab rather than the Metrics tab.
+#[tokio::test]
+async fn the_range_keys_refetch_the_tab_they_were_pressed_on() {
+    let mut app = test_app();
+    app.environments = vec![mk_env("api-prod", "shop", "WebServer", "Green")];
+    app.rebuild_view();
+    app.table_state.select(Some(0));
+    app.open_detail();
+    let d = app.detail.as_mut().unwrap();
+    d.tab_idx = d.tabs.iter().position(|t| *t == DetailTab::App).unwrap();
+    d.app_metrics.settle(Ok(Default::default()));
+    d.loading_metrics = false;
+    assert_eq!(d.metrics_range_secs, 3600);
+
+    press(&mut app, KeyCode::Char(']'), KeyModifiers::NONE);
+    let d = app.detail.as_ref().unwrap();
+    assert_eq!(d.metrics_range_secs, 21_600, "] widens the range");
+    assert!(d.app_metrics.in_flight(), "the App tab refetches");
+    assert!(
+        !d.loading_metrics,
+        "the Metrics tab is not the one on screen"
+    );
+
+    press(&mut app, KeyCode::Char('['), KeyModifiers::NONE);
+    assert_eq!(app.detail.as_ref().unwrap().metrics_range_secs, 3600);
+}
+
+/// The App tab never calls AWS without config or in demo mode, and in
+/// demo mode it still draws the configured rows, with a note saying
+/// why they are empty.
+#[tokio::test]
+async fn the_app_tab_settles_at_once_without_config_or_in_demo_mode() {
+    let fetch = |demo: bool, config: &str| {
+        let mut app = App::for_tests(crate::aws::AwsClient::stub(), crate::config::parse(config));
+        app.demo_mode = demo;
+        app.environments = vec![mk_env("api-prod", "shop", "WebServer", "Green")];
+        app.rebuild_view();
+        app.table_state.select(Some(0));
+        app.open_detail();
+        while app.msg_rx.try_recv().is_ok() {}
+        app.spawn_detail_app("api-prod".into());
+        let msg = app.msg_rx.try_recv().expect("settled without a round trip");
+        app.handle_msg(msg);
+        app.detail
+            .as_ref()
+            .unwrap()
+            .app_metrics
+            .ready()
+            .cloned()
+            .expect("settled ok")
+    };
+    let none = fetch(false, "");
+    assert!(none.series.is_empty() && none.notes.is_empty());
+
+    let demo = fetch(
+        true,
+        "app.api-prod.namespace = \"N\"\napp.api-prod.metric.users = \"U\"\n",
+    );
+    assert_eq!(demo.series.len(), 1, "the configured row is still drawn");
+    assert!(demo.series[0].points.is_empty());
+    assert_eq!(demo.notes, ["demo mode makes no CloudWatch calls"]);
 }

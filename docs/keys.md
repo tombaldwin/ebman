@@ -52,6 +52,7 @@ Tabs cycle with `Tab` / `Shift-Tab` (or `l` / `h`). `^R` re-fetches the active t
 | Tab | Per-tab keys |
 |---|---|
 | Health (default) | `j`/`k` walk items, `Enter` drill into source tab (Events / Instances / Queue) |
+| App | `[` / `]` cycle range (shared with Metrics); your own metrics from `app.ENV.*` in config.toml |
 | Events | `/` filter, `n`/`N` next/prev match |
 | Instances | `Enter` / `i` info overlay, `b` EC2 console, `s` embedded SSM shell, `y` yank id, `x` terminate (Y/N) |
 | Metrics | `[` / `]` cycle range (15m → 24h), mouse hover for value-at-cursor |

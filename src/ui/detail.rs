@@ -129,6 +129,7 @@ pub(super) fn draw_detail(f: &mut Frame, area: Rect, app: &mut App) {
     let mut config_scroll: Option<u16> = None;
     match active_tab {
         DetailTab::Health => draw_detail_health(f, body_area, detail, app),
+        DetailTab::App => draw_detail_app(f, body_area, detail, app),
         DetailTab::Events => {
             events_max_scroll = Some(draw_detail_events(
                 f,
@@ -254,6 +255,7 @@ pub(super) fn detail_tab_keys(tab: DetailTab) -> &'static [(&'static str, &'stat
             ("T", "time"),
             ("^R", "refresh"),
         ],
+        DetailTab::App => &[("[ ]", "range"), ("R", "auto-refresh"), ("^R", "refresh")],
         DetailTab::Metrics => &[
             ("[ ]", "range"),
             ("hover", "values"),

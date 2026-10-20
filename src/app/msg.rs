@@ -64,6 +64,7 @@ impl AppMsg {
             | EventTailEvents { gen, .. }
             | DetailLogGroups { gen, .. }
             | DetailAlarms { gen, .. }
+            | DetailAppMetrics { gen, .. }
             | EnvVarsForEdit { gen, .. }
             | CostsFetched { gen, .. }
             | DetailRecentVersions { gen, .. }
@@ -126,6 +127,9 @@ impl App {
             AppMsg::DetailMetrics {
                 env_name, result, ..
             } => self.handle_detail_metrics(env_name, result),
+            AppMsg::DetailAppMetrics {
+                env_name, result, ..
+            } => self.apply_detail_msg(&env_name, result, |d, r| d.app_metrics.settle(r)),
             AppMsg::DetailLogsProgress {
                 env_name,
                 stage,

@@ -390,4 +390,125 @@ impl AwsClient {
             .filter_map(|i| by_id.remove(&format!("m{i}")))
             .collect())
     }
+
+    /// The App tab's metrics for one env: one `GetMetricData` call for
+    /// every query `app_tab::metric_queries` builds, followed through
+    /// every page. Anything short of a complete answer becomes a note
+    /// rather than a silently shorter chart.
+    pub(crate) async fn fetch_app_metrics(
+        &self,
+        env_name: &str,
+        range_secs: i64,
+        spec: &crate::app_tab::AppTabSpec,
+    ) -> Result<crate::app_tab::AppMetrics> {
+        use crate::app_tab::{MetricQuery, RawSeries};
+        use aws_sdk_cloudwatch::types::{
+            Dimension, Metric, MetricDataQuery, MetricStat, StatusCode,
+        };
+        const PERIOD: i32 = 60;
+        let queries = crate::app_tab::metric_queries(env_name, spec, PERIOD);
+        if queries.is_empty() {
+            return Ok(crate::app_tab::series_from_results(
+                spec,
+                Vec::new(),
+                Vec::new(),
+            ));
+        }
+        let sdk: Vec<MetricDataQuery> = queries
+            .into_iter()
+            .map(|q| match q {
+                MetricQuery::Stat {
+                    id,
+                    namespace,
+                    metric,
+                    stat,
+                    dimensions,
+                } => {
+                    let mut m = Metric::builder().namespace(namespace).metric_name(metric);
+                    for (k, v) in dimensions {
+                        m = m.dimensions(Dimension::builder().name(k).value(v).build());
+                    }
+                    let ms = MetricStat::builder()
+                        .metric(m.build())
+                        .period(PERIOD)
+                        .stat(stat)
+                        .build();
+                    MetricDataQuery::builder().id(id).metric_stat(ms).build()
+                }
+                MetricQuery::Expression {
+                    id,
+                    expression,
+                    label,
+                } => MetricDataQuery::builder()
+                    .id(id)
+                    .expression(expression)
+                    .set_label(label)
+                    .build(),
+            })
+            .collect();
+
+        let end = Utc::now();
+        let start = end - chrono::Duration::seconds(range_secs);
+        // Pages split a series' points across responses, so they are
+        // gathered by (id, label) before assembly.
+        let mut gathered: Vec<RawSeries> = Vec::new();
+        let mut notes: Vec<String> = Vec::new();
+        let mut token: Option<String> = None;
+        for _ in 0..SCAN_PAGES {
+            let resp = self
+                .cw
+                .get_metric_data()
+                .start_time(to_smithy(start))
+                .end_time(to_smithy(end))
+                .set_metric_data_queries(Some(sdk.clone()))
+                .set_next_token(token.take())
+                .send()
+                .await
+                .aws_ctx("GetMetricData failed")?;
+            for m in resp.messages.unwrap_or_default() {
+                let note = [m.code, m.value]
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>()
+                    .join(": ");
+                if !note.is_empty() && !notes.contains(&note) {
+                    notes.push(note);
+                }
+            }
+            for r in resp.metric_data_results.unwrap_or_default() {
+                let id = r.id.unwrap_or_default();
+                let label = r.label.unwrap_or_default();
+                if let Some(code) = r.status_code.filter(|c| *c != StatusCode::Complete) {
+                    let note = format!("{id}: {}", code.as_str());
+                    if !notes.contains(&note) {
+                        notes.push(note);
+                    }
+                }
+                let points = r
+                    .timestamps
+                    .unwrap_or_default()
+                    .iter()
+                    .zip(r.values.unwrap_or_default())
+                    .filter_map(|(ts, v)| {
+                        DateTime::<Utc>::from_timestamp(ts.secs(), ts.subsec_nanos())
+                            .map(|t| (t, v))
+                    })
+                    .collect::<Vec<_>>();
+                match gathered.iter_mut().find(|g| g.id == id && g.label == label) {
+                    Some(g) => g.points.extend(points),
+                    None => gathered.push(RawSeries { id, label, points }),
+                }
+            }
+            token = resp.next_token;
+            if token.is_none() {
+                break;
+            }
+        }
+        if token.is_some() {
+            notes.push(format!(
+                "stopped after {SCAN_PAGES} pages; the oldest points are missing"
+            ));
+        }
+        Ok(crate::app_tab::series_from_results(spec, gathered, notes))
+    }
 }

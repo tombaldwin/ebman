@@ -34,6 +34,7 @@ fn stale_glyph_falls_back_in_ascii() {
 fn detail_keystrip_has_no_duplicate_keys() {
     for tab in [
         DetailTab::Health,
+        DetailTab::App,
         DetailTab::Events,
         DetailTab::Instances,
         DetailTab::Metrics,
@@ -892,6 +893,7 @@ fn tab_icon_is_distinct_per_tab() {
     for icons in [IconStyle::Unicode, IconStyle::Ascii, IconStyle::Powerline] {
         use std::collections::HashSet;
         let tabs = [
+            DetailTab::App,
             DetailTab::Events,
             DetailTab::Instances,
             DetailTab::Metrics,

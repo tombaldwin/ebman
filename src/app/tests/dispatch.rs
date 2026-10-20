@@ -1198,12 +1198,15 @@ fn every_render_surface_is_accounted_for() {
         found.len()
     );
 
-    const KNOWN: usize = 41;
+    // 42: `draw_detail_app` (2026-10-20), covered by
+    // `the_app_tab_draws_series_thresholds_and_config_errors`, which
+    // fails with the surface stubbed to an early return.
+    const KNOWN: usize = 42;
     assert_eq!(
         found.len(),
         KNOWN,
         "the set of `draw_*` surfaces changed ({} now, {KNOWN} when the \
-         coverage sweep last ran and reached 41 of 41). If you added one, \
+         coverage sweep last ran and reached 42 of 42). If you added one, \
          cover it — stub it with an early return and check a test fails — \
          then bump KNOWN. If you removed one, just bump KNOWN.\nfound: {found:?}",
         found.len()
@@ -1849,7 +1852,7 @@ mod docs_drift {
                 .is_some_and(|s| s.metrics.len() >= 2),
             "the example was not found or lost its metrics:\n{example}"
         );
-        assert_eq!(cfg.app_tabs.errors, Vec::<String>::new());
+        assert_eq!(cfg.app_tabs.errors, []);
     }
 
     /// `[Unreleased]` has one section per kind, in Keep a Changelog

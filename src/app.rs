@@ -671,6 +671,12 @@ pub(crate) enum AppMsg {
         env_name: String,
         result: Result<Vec<MetricSeries>, String>,
     },
+    /// The App tab's series for one env.
+    DetailAppMetrics {
+        gen: u64,
+        env_name: String,
+        result: Result<crate::app_tab::AppMetrics, String>,
+    },
     DetailTags {
         gen: u64,
         env_name: String,

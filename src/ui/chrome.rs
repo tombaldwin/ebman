@@ -160,6 +160,7 @@ pub(crate) fn health_dot(health: &str, theme: &Theme) -> Span<'static> {
 pub(crate) fn tab_icon(t: DetailTab, icons: IconStyle) -> &'static str {
     match (icons, t) {
         (IconStyle::Unicode, DetailTab::Health) => "♥",
+        (IconStyle::Unicode, DetailTab::App) => "◉",
         (IconStyle::Unicode, DetailTab::Events) => "⚡",
         (IconStyle::Unicode, DetailTab::Instances) => "▣",
         (IconStyle::Unicode, DetailTab::Metrics) => "▆",
@@ -170,6 +171,7 @@ pub(crate) fn tab_icon(t: DetailTab, icons: IconStyle) -> &'static str {
         // the tab strip remains readable even when icons collapse onto a
         // single line in the boot splash / detail header.
         (IconStyle::Powerline, DetailTab::Health) => "\u{f02d1}", // heart-pulse
+        (IconStyle::Powerline, DetailTab::App) => "\u{f003b}",    // apps
         (IconStyle::Powerline, DetailTab::Events) => "\u{f0e7}",  // flash
         (IconStyle::Powerline, DetailTab::Instances) => "\u{f048b}", // server
         (IconStyle::Powerline, DetailTab::Metrics) => "\u{f0680}", // chart-line
@@ -178,6 +180,7 @@ pub(crate) fn tab_icon(t: DetailTab, icons: IconStyle) -> &'static str {
         (IconStyle::Powerline, DetailTab::Config) => "\u{f0493}", // cog
         // ASCII fallbacks: one letter per tab so each is distinguishable.
         (IconStyle::Ascii, DetailTab::Health) => "H",
+        (IconStyle::Ascii, DetailTab::App) => "A",
         (IconStyle::Ascii, DetailTab::Events) => "E",
         (IconStyle::Ascii, DetailTab::Instances) => "I",
         (IconStyle::Ascii, DetailTab::Metrics) => "M",

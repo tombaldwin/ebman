@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- **An App tab in the Detail view: your own metrics, per environment.**
+  Name a CloudWatch namespace and metrics under `app.ENV.*` in
+  `config.toml` and the tab shows each as a row: latest value, unit, a
+  sparkline over the Metrics tab's range, and the value per instance
+  when `app.ENV.instance_dimension` is set. `app.ENV.threshold.LABEL`
+  colours a value past its warn or critical level. A config line that
+  cannot be applied is shown on the tab, not skipped, and kept on
+  `:settings` save. See `docs/configuration.md`.
+
 ### Changed
 
 - **`icons = "ascii"` panel chrome is ascii.** Panel borders, the

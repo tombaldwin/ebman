@@ -102,8 +102,9 @@ in its section rather than blanking the tab or vanishing.
   The regex is checked for a `fp` group and for an unescaped `/` before
   it is sent.
 
-**Cadence.** Period 60s, so metrics refetch on tab open, on `r`, and
-every 60s while the tab is open, not on the 15s ticker. Logs Insights
+**Cadence.** Period 60s. Like every Detail tab, the App tab fetches
+when opened and on `^R`, and on the tick only when `R` turns
+auto-refresh on. Logs Insights
 bills per GB scanned, so top errors runs on tab open and `r` only, and
 the section shows how old it is.
 
@@ -144,15 +145,19 @@ same sections as JSON, each with `complete` and `errors`, in step with
 
 ## Order of work
 
-Each step lands green and separately:
+Each step lands green and separately. Re-scoped 2026-10-20 after step 1
+from layers into vertical slices: a pure builder with no caller fails
+`-D warnings` as dead code, so each slice goes from AWS call to screen.
 
-1. `app.ENV.*` parsing, `docs/configuration.md`, and the extended docs
-   guard (with its own `CAUGHT`).
-2. Pure builders: metric queries, SEARCH expressions, Insights query,
-   threshold classification.
-3. Surface the instance `ApplicationMetrics` / `System` already fetched.
-4. Alarm prefix, and ALARM-first in `:alarms`.
-5. The App tab: fetches, `DetailFetch` variants, rendering.
+1. Done: `app.ENV.*` parsing, `docs/configuration.md`, the family docs
+   guard.
+2. Done: the App tab with app metrics. Builders, SEARCH expressions, the
+   paginated fetch, a `Fetch<AppMetrics>` (not a `DetailFetch` variant:
+   the newer pattern carries its own error), rendering with
+   thresholds, and the env's config errors on screen.
+3. Linked resources (`rds`, `elasticache`) through the same queries.
+4. Surface the instance `ApplicationMetrics` / `System` already fetched.
+5. Alarm prefix, ALARM-first alarms on the tab and in `:alarms`.
 6. Top errors.
 7. `app_metrics` on MCP, and `docs/headless.md`.
 8. Later, by ruling: a two-env compare layout.

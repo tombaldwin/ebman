@@ -13,6 +13,7 @@ impl App {
         };
         let mut tabs = vec![
             DetailTab::Health,
+            DetailTab::App,
             DetailTab::Events,
             DetailTab::Instances,
             DetailTab::Metrics,
@@ -34,6 +35,7 @@ impl App {
             queues: WorkerQueues::default(),
             metrics: Vec::new(),
             metrics_range_secs: 3600, // 1h default
+            app_metrics: Default::default(),
             auto_refresh: false,
             search_input: TextInput::new(),
             search_active: false,
@@ -239,8 +241,9 @@ impl App {
                 detail.config_cursor = crate::util::clamp_index(cur as usize, delta as isize, n);
             }
             // Metrics tab has no scrollable cursor — the chart body
-            // handles its own keyboard interactions.
-            DetailTab::Metrics => {}
+            // handles its own keyboard interactions. Nor does App: one
+            // row per series fits the screen.
+            DetailTab::Metrics | DetailTab::App => {}
         }
     }
 
@@ -294,6 +297,7 @@ impl App {
             DetailTab::Instances => self.spawn_detail_instances(env_name),
             DetailTab::Queue => self.spawn_detail_queues(app_name, env_name),
             DetailTab::Metrics => self.spawn_detail_metrics(env_name),
+            DetailTab::App => self.spawn_detail_app(env_name),
             DetailTab::Logs => self.spawn_detail_logs(env_name),
             DetailTab::Config => {}
         }

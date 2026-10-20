@@ -486,7 +486,7 @@ impl App {
             KeyCode::Char(']')
                 if matches!(
                     self.detail.as_ref().map(|d| d.tab()),
-                    Some(DetailTab::Metrics)
+                    Some(DetailTab::Metrics | DetailTab::App)
                 ) =>
             {
                 self.cycle_metrics_range(1);
@@ -494,7 +494,7 @@ impl App {
             KeyCode::Char('[')
                 if matches!(
                     self.detail.as_ref().map(|d| d.tab()),
-                    Some(DetailTab::Metrics)
+                    Some(DetailTab::Metrics | DetailTab::App)
                 ) =>
             {
                 self.cycle_metrics_range(-1);

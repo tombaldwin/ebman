@@ -57,6 +57,7 @@ use crate::app::{
 };
 
 mod action;
+mod app_tab;
 mod chrome;
 mod detail;
 mod dlq;
@@ -77,6 +78,7 @@ pub(crate) use header::*;
 pub(crate) use shell::*;
 pub(crate) use table::*;
 
+use app_tab::*;
 use detail::*;
 use help::*;
 use overlays::*;

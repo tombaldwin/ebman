@@ -1867,6 +1867,101 @@ async fn fetch_env_metrics_batches_and_reorders_by_canonical_id() {
 }
 
 #[tokio::test]
+async fn fetch_app_metrics_follows_pages_and_reports_a_short_answer() {
+    // One series split across two pages must come back whole, and a
+    // PartialData result or a CloudWatch message must surface as a note
+    // rather than as a quietly shorter chart.
+    use aws_sdk_cloudwatch::operation::get_metric_data::GetMetricDataOutput;
+    use aws_sdk_cloudwatch::types::{MessageData, MetricDataResult, StatusCode};
+    use aws_smithy_types::DateTime as SdkDateTime;
+
+    let result = |id: &str, label: &str, secs: i64, v: f64, code: StatusCode| {
+        MetricDataResult::builder()
+            .id(id)
+            .label(label)
+            .timestamps(SdkDateTime::from_secs(secs))
+            .values(v)
+            .status_code(code)
+            .build()
+    };
+    let first = mock!(aws_sdk_cloudwatch::Client::get_metric_data)
+        .match_requests(|req| {
+            let ids: Vec<&str> = req
+                .metric_data_queries()
+                .iter()
+                .filter_map(|q| q.id())
+                .collect();
+            req.next_token().is_none() && ids == ["a0", "i0", "x0"]
+        })
+        .then_output(move || {
+            GetMetricDataOutput::builder()
+                .metric_data_results(result("a0", "users", 2, 9.0, StatusCode::Complete))
+                .metric_data_results(result("i0", "i-a", 2, 4.0, StatusCode::PartialData))
+                .messages(
+                    MessageData::builder()
+                        .code("MaxQueryResults")
+                        .value("500 limit")
+                        .build(),
+                )
+                .next_token("page2")
+                .build()
+        });
+    let second = mock!(aws_sdk_cloudwatch::Client::get_metric_data)
+        .match_requests(|req| req.next_token() == Some("page2"))
+        .then_output(move || {
+            GetMetricDataOutput::builder()
+                .metric_data_results(result("a0", "users", 1, 8.0, StatusCode::Complete))
+                .metric_data_results(result("i0", "i-a", 1, 3.0, StatusCode::Complete))
+                .build()
+        });
+    let cw = mock_client!(
+        aws_sdk_cloudwatch,
+        aws_smithy_mocks::RuleMode::MatchAny,
+        [&first, &second]
+    );
+    let client = client_with_cw(cw);
+
+    let spec = crate::config::parse(
+        "app.e.namespace = \"N\"\n\
+         app.e.instance_dimension = \"InstanceId\"\n\
+         app.e.metric.users = \"users|Sum\"\n",
+    )
+    .app_tabs
+    .envs
+    .remove("e")
+    .unwrap();
+    let m = client
+        .fetch_app_metrics("e", 900, &spec)
+        .await
+        .expect("fetch");
+
+    assert_eq!((first.num_calls(), second.num_calls()), (1, 1));
+    let values: Vec<f64> = m.series[0].points.iter().map(|(_, v)| *v).collect();
+    assert_eq!(values, [8.0, 9.0], "both pages, oldest first");
+    assert_eq!(
+        m.series[0].instances.len(),
+        1,
+        "one instance across two pages"
+    );
+    assert_eq!(m.series[0].instances[0].1.len(), 2);
+    assert_eq!(m.notes, ["MaxQueryResults: 500 limit", "i0: PartialData"]);
+}
+
+#[tokio::test]
+async fn fetch_app_metrics_makes_no_call_without_a_namespace() {
+    let rule = mock!(aws_sdk_cloudwatch::Client::get_metric_data).then_output(|| {
+        aws_sdk_cloudwatch::operation::get_metric_data::GetMetricDataOutput::builder().build()
+    });
+    let client = client_with_cw(mock_client!(aws_sdk_cloudwatch, [&rule]));
+    let m = client
+        .fetch_app_metrics("e", 900, &crate::app_tab::AppTabSpec::default())
+        .await
+        .expect("fetch");
+    assert_eq!(rule.num_calls(), 0);
+    assert!(m.series.is_empty());
+}
+
+#[tokio::test]
 async fn deploy_from_path_chain_dispatches_each_stage() {
     // End-to-end pinning of the multi-stage `:deploy --from PATH` flow:
     //   1. CreateStorageLocation (EB) → returns the managed bucket name

@@ -18,9 +18,18 @@ pub(crate) struct AppTabs {
     pub envs: BTreeMap<String, AppTabSpec>,
     /// Every `app.` line, verbatim and in order, for `serialize`.
     pub lines: Vec<String>,
-    /// One message per line (or per env, from [`AppTabs::finish`]) that
-    /// could not be applied.
-    pub errors: Vec<String>,
+    /// One per line (or per env, from [`AppTabs::finish`]) that could
+    /// not be applied.
+    pub errors: Vec<AppTabError>,
+}
+
+/// A line that could not be applied, with the env it belongs to so that
+/// env's tab can show it. `None` when the line names no env at all
+/// (`app..namespace`).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct AppTabError {
+    pub env: Option<String>,
+    pub message: String,
 }
 
 /// One environment's App tab.
@@ -64,14 +73,54 @@ pub(crate) struct Threshold {
     pub lower_is_worse: bool,
 }
 
+/// How a value sits against its [`Threshold`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Level {
+    Ok,
+    Warn,
+    Critical,
+}
+
+impl Threshold {
+    pub(crate) fn classify(&self, value: f64) -> Level {
+        let past = |level: f64| {
+            if self.lower_is_worse {
+                value <= level
+            } else {
+                value >= level
+            }
+        };
+        if past(self.critical) {
+            Level::Critical
+        } else if past(self.warn) {
+            Level::Warn
+        } else {
+            Level::Ok
+        }
+    }
+}
+
 impl AppTabs {
     /// Apply one line. `rest` is the key after `app.`; `line` is the
     /// whole line, kept for `serialize` whether or not it applied.
     pub(crate) fn apply(&mut self, rest: &str, value: &str, line: &str) {
         self.lines.push(line.to_string());
-        if let Err(problem) = self.apply_field(rest, value) {
-            self.errors.push(problem);
+        if let Err(message) = self.apply_field(rest, value) {
+            let env = rest.split_once('.').map_or(rest, |(env, _)| env).trim();
+            self.errors.push(AppTabError {
+                env: Some(env.to_string()).filter(|e| !e.is_empty()),
+                message,
+            });
         }
+    }
+
+    /// The errors to show on `env`'s tab: its own, and any that name no
+    /// env (those belong to no tab, so every tab shows them).
+    pub(crate) fn errors_for<'a>(&'a self, env: &'a str) -> impl Iterator<Item = &'a str> {
+        self.errors
+            .iter()
+            .filter(move |e| e.env.as_deref().is_none_or(|e| e == env))
+            .map(|e| e.message.as_str())
     }
 
     fn apply_field(&mut self, rest: &str, value: &str) -> Result<(), String> {
@@ -138,16 +187,20 @@ impl AppTabs {
     /// it from, and a threshold for a label nothing defines.
     pub(crate) fn finish(&mut self) {
         for (env, spec) in &self.envs {
+            let error = |message: String| AppTabError {
+                env: Some(env.clone()),
+                message,
+            };
             if spec.namespace.is_none() && !spec.metrics.is_empty() {
-                self.errors.push(format!(
+                self.errors.push(error(format!(
                     "app.{env} defines metrics but no app.{env}.namespace to read them from"
-                ));
+                )));
             }
             for label in spec.thresholds.keys() {
                 if !spec.metrics.iter().any(|m| &m.label == label) {
-                    self.errors.push(format!(
+                    self.errors.push(error(format!(
                         "app.{env}.threshold.{label} has no app.{env}.metric.{label}"
-                    ));
+                    )));
                 }
             }
         }
@@ -322,6 +375,224 @@ fn check_fingerprint(key: &str, value: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// One `GetMetricData` query, before it becomes an SDK type: pure, so
+/// the ids, dimensions and SEARCH text are testable without a client.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum MetricQuery {
+    Stat {
+        id: String,
+        namespace: String,
+        metric: String,
+        stat: String,
+        dimensions: Vec<(String, String)>,
+    },
+    Expression {
+        id: String,
+        expression: String,
+        /// A dynamic label, so each SEARCH result names its instance.
+        label: Option<String>,
+    },
+}
+
+/// The ids `GetMetricData` results come back under, one family per
+/// query kind; the number is the metric's index in the spec.
+const AGGREGATE: char = 'a';
+const PER_INSTANCE: char = 'i';
+const COMBINED: char = 'x';
+
+/// The queries for an env's App metrics, in one `GetMetricData` call.
+///
+/// Per metric:
+/// - `a{n}`: the env aggregate, on the configured dimensions.
+/// - with `instance_dimension`, `i{n}`: a SEARCH returning one series
+///   per instance, and `x{n}`: those combined (SUM, AVG, MAX, MIN by
+///   stat), shown when the app publishes per-instance series only and
+///   `a{n}` comes back empty. A percentile cannot be combined, so it
+///   has no `x{n}`.
+pub(crate) fn metric_queries(env: &str, spec: &AppTabSpec, period: i32) -> Vec<MetricQuery> {
+    let Some(namespace) = &spec.namespace else {
+        return Vec::new();
+    };
+    let dimensions = env_dimensions(env, spec);
+    let mut out = Vec::new();
+    for (n, m) in spec.metrics.iter().enumerate() {
+        out.push(MetricQuery::Stat {
+            id: format!("{AGGREGATE}{n}"),
+            namespace: namespace.clone(),
+            metric: m.name.clone(),
+            stat: m.stat.clone(),
+            dimensions: dimensions.clone(),
+        });
+        let Some(instance) = &spec.instance_dimension else {
+            continue;
+        };
+        let Some(search) =
+            search_expression(namespace, &dimensions, instance, &m.name, &m.stat, period)
+        else {
+            continue;
+        };
+        out.push(MetricQuery::Expression {
+            id: format!("{PER_INSTANCE}{n}"),
+            expression: search,
+            label: Some(format!("${{PROP('Dim.{instance}')}}")),
+        });
+        if let Some(combine) = combiner(&m.stat) {
+            out.push(MetricQuery::Expression {
+                id: format!("{COMBINED}{n}"),
+                expression: format!("{combine}({PER_INSTANCE}{n})"),
+                label: None,
+            });
+        }
+    }
+    out
+}
+
+/// The dimensions selecting `env`'s series: configured, or
+/// `EnvironmentName=<env>`.
+pub(crate) fn env_dimensions(env: &str, spec: &AppTabSpec) -> Vec<(String, String)> {
+    if spec.dimensions.is_empty() {
+        vec![(crate::aws::ENV_DIMENSION.to_string(), env.to_string())]
+    } else {
+        spec.dimensions.clone()
+    }
+}
+
+fn combiner(stat: &str) -> Option<&'static str> {
+    match stat {
+        "Sum" | "SampleCount" => Some("SUM"),
+        "Average" => Some("AVG"),
+        "Maximum" => Some("MAX"),
+        "Minimum" => Some("MIN"),
+        _ => None,
+    }
+}
+
+/// `SEARCH('{NS,Dim,…,Instance} Dim="v" MetricName="m"', 'stat', P)`.
+///
+/// The schema in braces lists EVERY dimension name, which is what keeps
+/// the env aggregate (no instance dimension) out of the per-instance
+/// results. Each term is double-quoted with `\` and `"` escaped, which
+/// is CloudWatch's exact match. `None` when a part contains `'`: the
+/// search string sits inside single quotes, and a per-instance view is
+/// not worth guessing an escape for.
+pub(crate) fn search_expression(
+    namespace: &str,
+    dimensions: &[(String, String)],
+    instance_dimension: &str,
+    metric: &str,
+    stat: &str,
+    period: i32,
+) -> Option<String> {
+    let parts = std::iter::once(namespace)
+        .chain(
+            dimensions
+                .iter()
+                .flat_map(|(k, v)| [k.as_str(), v.as_str()]),
+        )
+        .chain([instance_dimension, metric, stat]);
+    if parts.into_iter().any(|p| p.contains('\'')) {
+        return None;
+    }
+    let q = |s: &str| format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""));
+    let schema: Vec<String> = std::iter::once(namespace)
+        .chain(dimensions.iter().map(|(k, _)| k.as_str()))
+        .chain([instance_dimension])
+        .map(q)
+        .collect();
+    let mut terms: Vec<String> = dimensions
+        .iter()
+        .map(|(k, v)| format!("{}={}", q(k), q(v)))
+        .collect();
+    terms.push(format!("MetricName={}", q(metric)));
+    Some(format!(
+        "SEARCH('{{{}}} {}', '{stat}', {period})",
+        schema.join(","),
+        terms.join(" ")
+    ))
+}
+
+/// A timestamped value, as CloudWatch returns them.
+pub(crate) type Point = (chrono::DateTime<chrono::Utc>, f64);
+
+/// One `GetMetricData` result, before it is matched to a metric.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct RawSeries {
+    pub id: String,
+    pub label: String,
+    pub points: Vec<Point>,
+}
+
+/// An env's App metrics, ready to draw.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct AppMetrics {
+    /// One per configured metric, in config order.
+    pub series: Vec<AppSeries>,
+    /// What CloudWatch said about the answer (partial data, a SEARCH
+    /// that hit its limit). Shown, so a short answer does not read as a
+    /// complete one.
+    pub notes: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct AppSeries {
+    pub label: String,
+    pub unit: Option<String>,
+    pub threshold: Option<Threshold>,
+    /// The env aggregate, oldest first; the per-instance combination
+    /// when the app publishes no aggregate.
+    pub points: Vec<Point>,
+    /// One per instance, by instance id, each oldest first.
+    pub instances: Vec<(String, Vec<Point>)>,
+}
+
+/// Match results back to the spec's metrics by id.
+pub(crate) fn series_from_results(
+    spec: &AppTabSpec,
+    results: Vec<RawSeries>,
+    notes: Vec<String>,
+) -> AppMetrics {
+    let mut series: Vec<AppSeries> = spec
+        .metrics
+        .iter()
+        .map(|m| AppSeries {
+            label: m.label.clone(),
+            unit: m.unit.clone(),
+            threshold: spec.thresholds.get(&m.label).copied(),
+            points: Vec::new(),
+            instances: Vec::new(),
+        })
+        .collect();
+    let mut combined: Vec<Vec<Point>> = vec![Vec::new(); series.len()];
+    for mut r in results {
+        let mut chars = r.id.chars();
+        let kind = chars.next();
+        let Some(n) = chars
+            .as_str()
+            .parse::<usize>()
+            .ok()
+            .filter(|n| *n < series.len())
+        else {
+            continue;
+        };
+        r.points.sort_by_key(|(t, _)| *t);
+        match kind {
+            Some(AGGREGATE) => series[n].points = r.points,
+            Some(PER_INSTANCE) if !r.points.is_empty() => {
+                series[n].instances.push((r.label, r.points))
+            }
+            Some(COMBINED) => combined[n] = r.points,
+            _ => {}
+        }
+    }
+    for (s, c) in series.iter_mut().zip(combined) {
+        if s.points.is_empty() {
+            s.points = c;
+        }
+        s.instances.sort_by(|a, b| a.0.cmp(&b.0));
+    }
+    AppMetrics { series, notes }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -338,7 +609,7 @@ mod tests {
     fn one_error(lines: &[(&str, &str)]) -> String {
         let tabs = parse(lines);
         assert_eq!(tabs.errors.len(), 1, "{:?}", tabs.errors);
-        tabs.errors[0].clone()
+        tabs.errors[0].message.clone()
     }
 
     #[test]
@@ -479,7 +750,7 @@ mod tests {
                 tabs.errors
             );
             assert!(
-                tabs.errors[0].contains(expect),
+                tabs.errors[0].message.contains(expect),
                 "app.{rest} = {value:?}: {:?} should say {expect:?}",
                 tabs.errors[0]
             );
@@ -489,6 +760,28 @@ mod tests {
                 "app.{rest}: a rejected line configures nothing"
             );
         }
+    }
+
+    #[test]
+    fn each_tab_shows_its_own_errors_and_the_unattributable_ones() {
+        let tabs = parse(&[
+            ("a.namspace", "N"),
+            ("b.metric.x", "X"),
+            (".namespace", "N"),
+            ("c", "N"),
+        ]);
+        let for_a: Vec<_> = tabs.errors_for("a").collect();
+        assert_eq!(for_a.len(), 2, "{for_a:?}");
+        assert!(for_a[0].contains("app.a.namspace"), "{for_a:?}");
+        assert!(for_a[1].contains("empty environment name"), "{for_a:?}");
+        // `b`'s error is from `finish`; `c` named an env with no field.
+        assert!(tabs
+            .errors_for("b")
+            .any(|e| e.contains("no app.b.namespace")));
+        assert!(tabs.errors_for("c").any(|e| e.contains("missing a field")));
+        assert!(!tabs
+            .errors_for("a")
+            .any(|e| e.contains("app.b") || e.contains("app.c")));
     }
 
     #[test]
@@ -511,6 +804,228 @@ mod tests {
             ("e.threshold.y", "1,2"),
         ]);
         assert!(e.contains("threshold.y has no app.e.metric.y"), "{e}");
+    }
+
+    #[test]
+    fn thresholds_classify_in_both_directions() {
+        let up = Threshold {
+            warn: 10.0,
+            critical: 20.0,
+            lower_is_worse: false,
+        };
+        assert_eq!(up.classify(9.9), Level::Ok);
+        assert_eq!(up.classify(10.0), Level::Warn);
+        assert_eq!(up.classify(19.9), Level::Warn);
+        assert_eq!(up.classify(20.0), Level::Critical);
+        let down = Threshold {
+            warn: 20.0,
+            critical: 10.0,
+            lower_is_worse: true,
+        };
+        assert_eq!(down.classify(20.1), Level::Ok);
+        assert_eq!(down.classify(20.0), Level::Warn);
+        assert_eq!(down.classify(10.0), Level::Critical);
+        assert_eq!(down.classify(3.0), Level::Critical);
+    }
+
+    fn spec(lines: &[(&str, &str)]) -> AppTabSpec {
+        let tabs = parse(lines);
+        assert!(tabs.errors.is_empty(), "{:?}", tabs.errors);
+        tabs.envs.into_values().next().expect("one env")
+    }
+
+    #[test]
+    fn without_an_instance_dimension_each_metric_is_one_aggregate_query() {
+        let s = spec(&[
+            ("e.namespace", "Shop"),
+            ("e.metric.u", "users|Maximum"),
+            ("e.metric.h", "heap"),
+        ]);
+        assert_eq!(
+            metric_queries("Shop-prod", &s, 60),
+            [
+                MetricQuery::Stat {
+                    id: "a0".into(),
+                    namespace: "Shop".into(),
+                    metric: "users".into(),
+                    stat: "Maximum".into(),
+                    dimensions: vec![("EnvironmentName".into(), "Shop-prod".into())],
+                },
+                MetricQuery::Stat {
+                    id: "a1".into(),
+                    namespace: "Shop".into(),
+                    metric: "heap".into(),
+                    stat: "Average".into(),
+                    dimensions: vec![("EnvironmentName".into(), "Shop-prod".into())],
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn no_namespace_means_no_queries() {
+        let mut s = AppTabSpec::default();
+        s.metrics.push(AppMetric {
+            label: "x".into(),
+            name: "X".into(),
+            stat: "Sum".into(),
+            unit: None,
+        });
+        assert_eq!(metric_queries("e", &s, 60), []);
+    }
+
+    #[test]
+    fn an_instance_dimension_adds_a_search_and_its_combination() {
+        let s = spec(&[
+            ("e.namespace", "Shop"),
+            ("e.dimensions", "Environment=prod"),
+            ("e.instance_dimension", "InstanceId"),
+            ("e.metric.u", "users|Sum"),
+            ("e.metric.l", "latency|p99"),
+        ]);
+        let q = metric_queries("e", &s, 300);
+        let ids: Vec<&str> = q
+            .iter()
+            .map(|q| match q {
+                MetricQuery::Stat { id, .. } | MetricQuery::Expression { id, .. } => id.as_str(),
+            })
+            .collect();
+        assert_eq!(
+            ids,
+            ["a0", "i0", "x0", "a1", "i1"],
+            "a percentile has no combination"
+        );
+        assert_eq!(
+            q[1],
+            MetricQuery::Expression {
+                id: "i0".into(),
+                expression: r#"SEARCH('{"Shop","Environment","InstanceId"} "Environment"="prod" MetricName="users"', 'Sum', 300)"#.into(),
+                label: Some("${PROP('Dim.InstanceId')}".into()),
+            }
+        );
+        assert_eq!(
+            q[2],
+            MetricQuery::Expression {
+                id: "x0".into(),
+                expression: "SUM(i0)".into(),
+                label: None,
+            }
+        );
+    }
+
+    #[test]
+    fn each_statistic_combines_its_own_way() {
+        assert_eq!(combiner("Sum"), Some("SUM"));
+        assert_eq!(combiner("SampleCount"), Some("SUM"));
+        assert_eq!(combiner("Average"), Some("AVG"));
+        assert_eq!(combiner("Maximum"), Some("MAX"));
+        assert_eq!(combiner("Minimum"), Some("MIN"));
+        assert_eq!(combiner("p99"), None);
+    }
+
+    #[test]
+    fn search_terms_are_quoted_and_escaped() {
+        let e = search_expression(
+            "My App",
+            &[("Env".into(), r#"a"b\c"#.into())],
+            "Host",
+            "m",
+            "Sum",
+            60,
+        )
+        .unwrap();
+        assert_eq!(
+            e,
+            r#"SEARCH('{"My App","Env","Host"} "Env"="a\"b\\c" MetricName="m"', 'Sum', 60)"#
+        );
+    }
+
+    #[test]
+    fn a_single_quote_anywhere_drops_the_per_instance_search() {
+        let dims = [("Env".to_string(), "prod".to_string())];
+        for (ns, dim, inst, metric) in [
+            ("N's", "prod", "Host", "m"),
+            ("N", "pr'od", "Host", "m"),
+            ("N", "prod", "Ho'st", "m"),
+            ("N", "prod", "Host", "m'"),
+        ] {
+            let dims = [("Env".to_string(), dim.to_string())];
+            assert_eq!(
+                search_expression(ns, &dims, inst, metric, "Sum", 60),
+                None,
+                "{ns} {dim} {inst} {metric}"
+            );
+        }
+        assert!(search_expression("N", &dims, "Host", "m", "Sum", 60).is_some());
+    }
+
+    fn at(secs: i64, v: f64) -> Point {
+        (chrono::DateTime::from_timestamp(secs, 0).unwrap(), v)
+    }
+
+    fn raw(id: &str, label: &str, points: &[(i64, f64)]) -> RawSeries {
+        RawSeries {
+            id: id.into(),
+            label: label.into(),
+            points: points.iter().map(|(t, v)| at(*t, *v)).collect(),
+        }
+    }
+
+    #[test]
+    fn results_are_matched_to_their_metric_by_id() {
+        let s = spec(&[
+            ("e.namespace", "N"),
+            ("e.instance_dimension", "InstanceId"),
+            ("e.metric.u", "users|Sum|count"),
+            ("e.metric.h", "heap|Average|MB"),
+            ("e.threshold.h", "1,2"),
+        ]);
+        let m = series_from_results(
+            &s,
+            vec![
+                raw("i1", "i-b", &[(2, 5.0), (1, 4.0)]),
+                raw("a1", "", &[(2, 9.0), (1, 8.0)]),
+                raw("i1", "i-a", &[(1, 3.0)]),
+                raw("i1", "i-empty", &[]),
+                raw("x0", "", &[(1, 7.0)]),
+                raw("a7", "", &[(1, 1.0)]),
+                raw("zz", "", &[(1, 1.0)]),
+            ],
+            vec!["note".into()],
+        );
+        assert_eq!(m.notes, ["note"]);
+        let [u, h] = &m.series[..] else {
+            panic!("{m:?}")
+        };
+        assert_eq!(
+            (u.label.as_str(), u.unit.as_deref(), u.threshold),
+            ("u", Some("count"), None)
+        );
+        assert_eq!(
+            u.points,
+            [at(1, 7.0)],
+            "no aggregate: the combination stands in"
+        );
+        assert_eq!(h.points, [at(1, 8.0), at(2, 9.0)], "oldest first");
+        assert_eq!(h.threshold.map(|t| t.critical), Some(2.0));
+        let instances: Vec<&str> = h.instances.iter().map(|(i, _)| i.as_str()).collect();
+        assert_eq!(
+            instances,
+            ["i-a", "i-b"],
+            "sorted, and an empty series is dropped"
+        );
+        assert_eq!(h.instances[1].1, [at(1, 4.0), at(2, 5.0)]);
+    }
+
+    #[test]
+    fn an_aggregate_wins_over_the_combination() {
+        let s = spec(&[("e.namespace", "N"), ("e.metric.u", "users|Sum")]);
+        let m = series_from_results(
+            &s,
+            vec![raw("x0", "", &[(1, 7.0)]), raw("a0", "", &[(1, 2.0)])],
+            vec![],
+        );
+        assert_eq!(m.series[0].points, [at(1, 2.0)]);
     }
 
     #[test]

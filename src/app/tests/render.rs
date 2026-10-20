@@ -1875,3 +1875,98 @@ async fn chrome_follows_the_theme_icon_style_on_every_screen() {
         "powerline main: the cursor is not the powerline marker:\n{main}"
     );
 }
+
+/// The App tab draws each configured series as a row — latest value,
+/// unit, per-instance values — colours a value past its critical
+/// threshold, and shows the env's config errors. An env with no config
+/// is told what to add instead of drawing an empty panel.
+#[tokio::test]
+async fn the_app_tab_draws_series_thresholds_and_config_errors() {
+    use crate::app_tab::{AppMetrics, AppSeries, Threshold};
+    let at = |v: f64| {
+        (
+            chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap(),
+            v,
+        )
+    };
+    let cfg = crate::config::parse(
+        "app.api-prod.namespace = \"Shop\"\n\
+         app.api-prod.metric.users = \"usersActive|Maximum|count\"\n\
+         app.api-prod.metric.heap = \"heapUsedMb|Average|MB\"\n\
+         app.api-prod.threshold.heap = \"1500,1800\"\n\
+         app.api-prod.namspace = \"typo\"\n",
+    );
+    let mut app = App::for_tests(crate::aws::AwsClient::stub(), cfg);
+    app.environments = vec![
+        mk_env("api-prod", "poly", "Web", "Green"),
+        mk_env("api-staging", "poly", "Web", "Green"),
+    ];
+    app.view.invalidate();
+    app.rebuild_view();
+    press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+    let d = app.detail.as_mut().expect("detail open");
+    assert_eq!(d.tab(), DetailTab::App, "the App tab is second");
+    assert!(d.app_metrics.in_flight(), "opening the tab fetches");
+    d.app_metrics.settle(Ok(AppMetrics {
+        series: vec![
+            AppSeries {
+                label: "users".into(),
+                unit: Some("count".into()),
+                threshold: None,
+                points: vec![at(42.0)],
+                instances: vec![
+                    ("i-a".into(), vec![at(20.0)]),
+                    ("i-b".into(), vec![at(22.0)]),
+                ],
+            },
+            AppSeries {
+                label: "heap".into(),
+                unit: Some("MB".into()),
+                threshold: Some(Threshold {
+                    warn: 1500.0,
+                    critical: 1800.0,
+                    lower_is_worse: false,
+                }),
+                points: vec![at(1900.0)],
+                instances: vec![],
+            },
+        ],
+        notes: vec!["i0: PartialData".into()],
+    }));
+
+    let buf = render_buf(&mut app, 160, 30);
+    let text = render(&mut app, 160, 30);
+    assert!(text.contains("config: app.api-prod.namspace"), "{text}");
+    assert!(text.contains("CloudWatch: i0: PartialData"), "{text}");
+    let users = text
+        .lines()
+        .find(|l| l.contains("users"))
+        .expect("users row");
+    for want in ["42", "count", "i-a 20", "i-b 22"] {
+        assert!(users.contains(want), "users row lacks {want:?}: {users}");
+    }
+    let theme = app.theme.clone();
+    let heap = find_row(&buf, "heap ").expect("heap row");
+    assert!(
+        row_has_fg(&buf, heap, theme.health_red),
+        "1900 is past critical 1800"
+    );
+    let users_y = find_row(&buf, "users").expect("users row");
+    assert!(
+        !row_has_fg(&buf, users_y, theme.health_red),
+        "no threshold, no colour"
+    );
+
+    // The other env has no config: a hint, not an empty panel.
+    press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+    press(&mut app, KeyCode::Down, KeyModifiers::NONE);
+    press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+    let text = render(&mut app, 160, 30);
+    assert!(text.contains("No App tab for api-staging"), "{text}");
+    assert!(
+        !text.contains("config: app.api-prod"),
+        "another env's errors are not shown:\n{text}"
+    );
+}

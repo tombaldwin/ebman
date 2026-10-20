@@ -39,6 +39,8 @@ pub(crate) enum DetailTab {
     /// Default tab when entering Detail so the operator sees triage info
     /// before drilling into the per-source tabs.
     Health,
+    /// The operator's own metrics for the env, from `app.ENV.*` config.
+    App,
     Events,
     Instances,
     Metrics,
@@ -51,6 +53,7 @@ impl DetailTab {
     pub(crate) fn title(self) -> &'static str {
         match self {
             Self::Health => "Health",
+            Self::App => "App",
             Self::Events => "Events",
             Self::Instances => "Instances",
             Self::Metrics => "Metrics",
@@ -415,7 +418,10 @@ pub(crate) struct DetailState {
     pub instances: Vec<Instance>,
     pub queues: WorkerQueues,
     pub metrics: Vec<MetricSeries>,
+    /// Shared by the Metrics and App tabs, so `[` `]` moves both.
     pub metrics_range_secs: i64,
+    /// The App tab's series (`app.ENV.*` config).
+    pub app_metrics: crate::app::Fetch<crate::app_tab::AppMetrics>,
     pub auto_refresh: bool,
     pub search_input: TextInput,
     pub search_active: bool, // true while user is typing a pattern
@@ -549,6 +555,7 @@ impl DetailState {
             DetailTab::Instances => self.loading_instances,
             DetailTab::Queue => self.loading_queues,
             DetailTab::Metrics => self.loading_metrics,
+            DetailTab::App => self.app_metrics.in_flight(),
             DetailTab::Logs => matches!(
                 self.log_tail.stage,
                 LogTailStage::Requesting | LogTailStage::Polling | LogTailStage::Fetching
@@ -726,6 +733,7 @@ mod tests {
             instances: vec![],
             queues: WorkerQueues::default(),
             metrics: vec![],
+            app_metrics: Default::default(),
             metrics_range_secs: 3600,
             auto_refresh: false,
             search_input: TextInput::new(),
