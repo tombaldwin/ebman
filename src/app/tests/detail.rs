@@ -593,6 +593,15 @@ async fn every_detail_tab_reports_its_own_loading_state() {
             &[DetailTab::Logs],
         ),
     ];
+    // A tab no case owns is a tab whose flag nobody checked. Config
+    // fires no refresh fetch, so it owns none.
+    let d = app.detail.as_ref().unwrap();
+    for tab in d.tabs.iter().filter(|t| **t != DetailTab::Config) {
+        assert!(
+            cases.iter().any(|(_, _, owners)| owners.contains(tab)),
+            "no case covers the {tab:?} tab's loading state"
+        );
+    }
     for (label, set, owners) in cases {
         let d = app.detail.as_mut().unwrap();
         d.loading_events = false;
