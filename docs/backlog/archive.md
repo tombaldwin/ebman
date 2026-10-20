@@ -4828,3 +4828,14 @@ review.
   characters on every combination, pinned whole under the cut; the
   reasons moved to `WriteScope::agent_rules`' doc comment; `doctor`
   stays the uncut reference for the host-denial remedy.
+
+## Advisories, cleared 2026-10-20
+
+- [x] **cargo-deny failed on main** (found 2026-10-19). RUSTSEC-2026-0346
+  to 0349 on rustls: 0.23.46 (b9c7228), and the AWS SDK crates' legacy
+  rustls 0.21 client switched off by dropping their default features
+  (82ced61). RUSTSEC-2026-0333 on noyalib 0.0.5 via `serde_yml`: replaced
+  with noyalib 0.0.58 directly (daf8a2a). The open item said five
+  modules used `serde_yml`; only two did (saved configs, EB CLI config),
+  the other three were comments. The RUSTSEC-2025-0068 waiver went with
+  it, and three rustls-webpki waivers nothing matched any more.
