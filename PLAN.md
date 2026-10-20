@@ -183,9 +183,21 @@ now head the list.*
    metrics, thresholds and the env's config errors on screen) and step
    3 (linked RDS / ElastiCache rows) and step 4 (per-instance enhanced
    health rows), step 5 (alarm prefix, ALARM first, alarm line) and
-   step 6 (top errors) and step 7 (`app_metrics` on MCP). Left: step 8,
-   the two-env compare layout, by ruling; and a live check against a
-   real account (nothing here has met real CloudWatch yet).
+   step 6 (top errors) and step 7 (`app_metrics` on MCP), then three
+   review rounds (13 findings, then 7, then 3, all fixed with tests).
+
+   **Left, both needing the maintainer:**
+   - **A live check against a real account.** Nothing here has met real
+     CloudWatch or Logs Insights: the SEARCH expression and its dynamic
+     instance label, metric math over it, the Insights `parse`/`stats`
+     query, and `CacheClusterId` naming for Redis nodes are all
+     unverified against AWS. One configured env, opened in the TUI and
+     called through MCP, settles it.
+   - **Step 8, the two-env compare layout**, by ruling.
+
+   Known and accepted: `[` `]` now refetch both tabs that share the
+   range, so a configured env pays for the App tab's GetMetricData on
+   the Metrics tab too. Correctness over a cheap call.
 
 ### Next
 
