@@ -13,7 +13,7 @@ use crate::app_tab::{AppMetrics, AppTabSpec, Point, TopErrors};
 /// the query is stopped on the server.
 const TOP_ERRORS_BOUND_SECS: u64 = 20;
 
-pub(super) const DESCRIPTION: &str = "The App tab for one environment: the operator's own CloudWatch metrics and the RDS / ElastiCache resources named under `app.ENV.*` in config.toml, enhanced health's figures per instance, and the env's alarms (matched by dimension or by `app.ENV.alarm_prefix`, ALARM first). CAVEATS: only what config names is read, so a clean result says nothing about metrics or resources it was not told about; `configured: false` means the env has no App tab config and `metrics` / `resources` are empty for that reason, not because nothing is wrong. A metric is only as fresh as the application publishes it: read `latest_at`, not just `latest`. Instance figures are enhanced health's last window (about 10s), null without enhanced health. `top_errors` is null unless you pass `top_errors: true` AND the env has `app.ENV.log_group`: it runs a Logs Insights query, which is billed per GB scanned, over the last 15 minutes, and counts only lines containing ERROR. `notes` carries anything short of a complete CloudWatch answer, `config_errors` the env's config lines that did not apply, and `errors` each section that failed (that section is null).";
+pub(super) const DESCRIPTION: &str = "The App tab for one environment: the operator's own CloudWatch metrics and the RDS / ElastiCache resources named under `app.ENV.*` in config.toml, enhanced health's figures per instance, and the env's alarms (matched by dimension or by `app.ENV.alarm_prefix`, ALARM first). CAVEATS: only what config names is read, so a clean result says nothing about metrics or resources it was not told about; `configured: false` means the env has no App tab config and `metrics` / `resources` are empty for that reason, not because nothing is wrong. A metric is only as fresh as the application publishes it: read `latest_at`, not just `latest`. Reads go to the `region` argument (or the profile's default), not the env's own region: for an env elsewhere, pass `region`, since a wrong one answers with empty series (`latest: null`), not an error. Instance figures are enhanced health's last window (about 10s), null without enhanced health. `top_errors` is null unless you pass `top_errors: true` AND the env has `app.ENV.log_group` (asked for without one, `notes` says so): it runs a Logs Insights query, which is billed per GB scanned, over the last 15 minutes, and counts only lines containing ERROR. `notes` carries anything short of a complete CloudWatch answer, `config_errors` the env's config lines that did not apply, and `errors` each section that failed (that section is null).";
 
 pub(super) fn schema() -> Value {
     json!({
@@ -63,6 +63,8 @@ impl Server {
                 alarms: Some(&crate::demo_fixture::alarms_for_env(&env)),
                 top_errors: None,
                 config_errors: &config_errors,
+                top_errors_note: want_top
+                    .then_some("top_errors: demo mode makes no Logs Insights call"),
                 errors: &errors,
             })
             .to_string());
@@ -70,6 +72,7 @@ impl Server {
 
         let client = self.client(args).await?;
         let matching = aws::AlarmMatch::for_env(&self.safety_cfg.alarm_dimensions, tabs, &env);
+        let has_log_group = spec.as_ref().is_some_and(|s| s.log_group.is_some());
         let log_group = spec
             .as_ref()
             .and_then(|s| s.log_group.as_deref())
@@ -130,6 +133,9 @@ impl Server {
             alarms: alarms.as_deref(),
             top_errors: top_errors.as_ref(),
             config_errors: &config_errors,
+            top_errors_note: (want_top && !has_log_group).then_some(
+                "top_errors: this env has no app.ENV.log_group, so there is no query to run",
+            ),
             errors: &errors,
         })
         .to_string())
@@ -159,6 +165,10 @@ pub(super) struct Bundle<'a> {
     pub alarms: Option<&'a [aws::CwAlarm]>,
     pub top_errors: Option<&'a TopErrors>,
     pub config_errors: &'a [String],
+    /// Why `top_errors` is null although it was asked for, when no
+    /// section failed: said in `notes` so the null is not mistaken for
+    /// "no errors".
+    pub top_errors_note: Option<&'a str>,
     pub errors: &'a [(String, String)],
 }
 
@@ -279,7 +289,13 @@ pub(super) fn render(b: &Bundle) -> Value {
         "instances": instances,
         "alarms": alarms,
         "top_errors": top_errors,
-        "notes": b.metrics.map(|m| m.notes.clone()).unwrap_or_default(),
+        "notes": b
+            .metrics
+            .map(|m| m.notes.clone())
+            .unwrap_or_default()
+            .into_iter()
+            .chain(b.top_errors_note.map(str::to_string))
+            .collect::<Vec<_>>(),
         "config_errors": b.config_errors,
         "errors": b.errors.iter().map(|(section, error)| json!({"section": section, "error": error})).collect::<Vec<_>>(),
     })
@@ -308,6 +324,7 @@ mod tests {
             alarms: None,
             top_errors: None,
             config_errors: &[],
+            top_errors_note: None,
             errors,
         })
     }
@@ -464,6 +481,25 @@ mod tests {
         assert_eq!(v["top_errors"], Value::Null);
         assert_eq!(start.num_calls(), 0, "no Insights query unless asked");
 
+        // Asked for, but this env has no log_group: null, and said why.
+        let out = server(crate::config::parse("app.api-prod.namespace = \"N\"\n"))
+            .call_tool(
+                "app_metrics",
+                &json!({"env": "api-prod", "top_errors": true}),
+            )
+            .await
+            .expect("answers");
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["top_errors"], Value::Null);
+        let notes = v["notes"].as_array().cloned().unwrap_or_default();
+        assert!(
+            notes.iter().any(|n| n
+                .as_str()
+                .is_some_and(|n| n.contains("no app.ENV.log_group"))),
+            "{v}"
+        );
+        assert_eq!(start.num_calls(), 0);
+
         let out = server(cfg())
             .call_tool(
                 "app_metrics",
@@ -551,11 +587,20 @@ mod tests {
     #[tokio::test]
     async fn demo_mode_answers_without_aws() {
         let out = Server::with_scope(true, false, WriteScope::None)
-            .call_tool("app_metrics", &json!({"env": "poly-prod-api"}))
+            .call_tool(
+                "app_metrics",
+                &json!({"env": "poly-prod-api", "top_errors": true}),
+            )
             .await
             .expect("answers");
         let v: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["configured"], false);
         assert!(v["instances"].is_array() && v["alarms"].is_array(), "{v}");
+        assert_eq!(v["top_errors"], Value::Null);
+        assert_eq!(
+            v["notes"],
+            json!(["top_errors: demo mode makes no Logs Insights call"]),
+            "a null asked for is explained"
+        );
     }
 }
