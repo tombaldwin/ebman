@@ -218,12 +218,14 @@ impl App {
         let next = crate::util::wrap_index(cur as usize, delta as isize, RANGES.len());
         d.metrics_range_secs = RANGES[next];
         let env_name = d.env_name.clone();
-        // The range is shared; refetch the tab it was changed on.
-        if d.tab() == DetailTab::App {
-            self.spawn_detail_app(env_name);
-        } else {
-            self.spawn_detail_metrics(env_name);
-        }
+        // The range is shared, so both tabs refetch: a result for the
+        // old range is dropped on arrival (`is_current_metrics_range`),
+        // and only a fetch for the new one outstanding on EACH tab
+        // guarantees its loading state clears. Refetching just the tab
+        // on screen left the other's in flight until the 120s stuck
+        // timeout, refusing every refresh meanwhile.
+        self.spawn_detail_metrics(env_name.clone());
+        self.spawn_detail_app(env_name);
     }
 
     /// Open the worker-queue viewer for the env in Detail mode, defaulting

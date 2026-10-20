@@ -1723,9 +1723,11 @@ fn the_detail_fetch_scan_can_see_its_inputs() {
 }
 
 /// `[` `]` on the App tab move the range shared with the Metrics tab,
-/// and refetch the App tab rather than the Metrics tab.
+/// and refetch both: each tab drops a result for the old range, so each
+/// needs a fetch for the new one or it stays "loading" and refuses
+/// refreshes until the stuck timeout.
 #[tokio::test]
-async fn the_range_keys_refetch_the_tab_they_were_pressed_on() {
+async fn the_range_keys_refetch_both_tabs_that_share_the_range() {
     let mut app = test_app();
     app.environments = vec![mk_env("api-prod", "shop", "WebServer", "Green")];
     app.rebuild_view();
@@ -1742,8 +1744,9 @@ async fn the_range_keys_refetch_the_tab_they_were_pressed_on() {
     assert_eq!(d.metrics_range_secs, 21_600, "] widens the range");
     assert!(d.app_metrics.in_flight(), "the App tab refetches");
     assert!(
-        !d.loading_metrics,
-        "the Metrics tab is not the one on screen"
+        d.loading_metrics,
+        "and so does the Metrics tab: the range is shared, and its old-range \
+         result will be dropped, so only a new fetch clears its loading state"
     );
 
     press(&mut app, KeyCode::Char('['), KeyModifiers::NONE);
