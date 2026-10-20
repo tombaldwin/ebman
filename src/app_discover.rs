@@ -151,7 +151,7 @@ fn cache_target_of(host: &str) -> Option<&str> {
 /// Whether cache node `node` is `target` itself or one of group
 /// `target`'s nodes, which ElastiCache names `<group>-<digits>`, or
 /// `<group>-<shard>-<node>` (`-0001-001`) with cluster mode on. A bare
-/// prefix would take `shop-sessions-001` as a node of group `prod`.
+/// prefix would take `prod-cache-001` as a node of group `prod`.
 fn is_node_of(node: &str, target: &str) -> bool {
     let digits = |s: &str, n: usize| s.len() == n && s.chars().all(|c| c.is_ascii_digit());
     if node == target {
