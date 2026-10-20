@@ -3002,3 +3002,46 @@ fn app_config_is_replaced_only_through_set_app_tabs() {
         "{borrowed:?}"
     );
 }
+
+/// Config wins; without it, what discovery has evidence for is a
+/// preview; without that, not set up. And nothing outside
+/// `app_tab_source` asks the question its own way.
+#[tokio::test]
+async fn an_envs_app_tab_comes_from_config_then_a_preview_then_nothing() {
+    use crate::app::AppTabSource;
+    let mut app = detail_on("api-prod");
+    assert_eq!(app.app_tab_source("api-prod"), AppTabSource::NotSetUp);
+
+    let key = app.discovery_key("api-prod");
+    let mut found = crate::app_discover::Discovered::default();
+    found.discovery.app_log = Some("var/log/app.log".into());
+    app.app_discovered.insert(key.clone(), found.clone());
+    assert_eq!(
+        app.app_tab_source("api-prod"),
+        AppTabSource::NotSetUp,
+        "found, but nothing an env variable names"
+    );
+    found.discovery.rds_found = vec![("db-a".into(), "DB_HOST".into())];
+    app.app_discovered.insert(key, found);
+    let preview = app.app_tab_source("api-prod");
+    assert!(!preview.is_configured());
+    assert_eq!(
+        preview.spec().map(|s| s.rds),
+        Some(vec!["db-a".to_string()])
+    );
+
+    app.set_app_tabs(crate::config::parse("app.api-prod.alarm_prefix = \"x-\"\n").app_tabs);
+    let configured = app.app_tab_source("api-prod");
+    assert!(configured.is_configured(), "config wins, even with no rows");
+    assert_eq!(configured.spec().map(|s| s.rds), Some(vec![]));
+
+    let asked = super::scan::find_in_production("app_tabs.envs.contains_key");
+    assert!(asked.is_empty(), "{asked:?}: ask app_tab_source");
+    // The one place a preview is made from what discovery found.
+    let previewed = super::scan::find_in_production("app_discover::preview_spec");
+    assert_eq!(previewed.len(), 1, "{previewed:?}: ask app_tab_source");
+    assert!(
+        previewed[0].starts_with("src/app/app_tab_form.rs:"),
+        "{previewed:?}"
+    );
+}

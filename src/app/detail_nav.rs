@@ -474,7 +474,7 @@ impl App {
                 // No config yet: find what the env uses, kept for the
                 // session, so the tab can say so rather than point at a
                 // file.
-                if !self.cfg.app_tabs.envs.contains_key(&env_name) {
+                if !self.app_tab_source(&env_name).is_configured() {
                     // `^R` looks again: resources come and go, and a
                     // result cached for the session would never see them.
                     if trigger == RefreshTrigger::Asked {

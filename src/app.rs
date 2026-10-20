@@ -116,6 +116,7 @@ mod cmd_write; // bulk writes: batch-action, batch-deploy
 // Interactive surfaces.
 mod action_flow; // action menu -> confirm -> undo window -> dispatch
 mod app_tab_form; // the App tab's editor + discovery
+pub(crate) use app_tab_form::AppTabSource;
 mod apps_menu; // the Applications scope's menu + info overlay
 mod config_edit; // Detail's Config tab editor + template CRUD
 mod detail_nav; // the per-environment Detail view

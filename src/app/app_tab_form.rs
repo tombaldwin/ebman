@@ -459,6 +459,23 @@ impl App {
             .is_some_and(|t| t.elapsed() < DISCOVERY_STALE)
     }
 
+    /// Where `env`'s App tab comes from: its config, else what discovery
+    /// found evidence for (drawn as a suggestion), else nothing. Every
+    /// place that asks "is this env set up?" asks this, so the tab, its
+    /// key strip, its fetch and its discovery cannot disagree.
+    pub(crate) fn app_tab_source(&self, env: &str) -> AppTabSource<'_> {
+        match self.cfg.app_tabs.envs.get(env) {
+            Some(spec) => AppTabSource::Configured(spec),
+            None => match self
+                .discovered_for(env)
+                .and_then(crate::app_discover::preview_spec)
+            {
+                Some(spec) => AppTabSource::Preview(Box::new(spec)),
+                None => AppTabSource::NotSetUp,
+            },
+        }
+    }
+
     /// What discovery found for `env` this session, if anything.
     pub(crate) fn discovered_for(&self, env: &str) -> Option<&Discovered> {
         self.app_discovered.get(&self.discovery_key(env))
@@ -508,7 +525,7 @@ impl App {
             .detail
             .as_ref()
             .is_some_and(|d| d.env_name == env_name && d.tab() == DetailTab::App);
-        if on_tab && !self.cfg.app_tabs.envs.contains_key(&env_name) && self.form.is_none() {
+        if on_tab && !self.app_tab_source(&env_name).is_configured() && self.form.is_none() {
             self.spawn_detail_app(env_name);
         }
     }
@@ -569,6 +586,32 @@ impl App {
         // save changed the env's spec: set_app_tabs reset it. When it
         // did not, that fetch is for this same config.
         self.detail_refresh_active_tab();
+    }
+}
+
+/// See [`App::app_tab_source`].
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum AppTabSource<'a> {
+    /// The env's `app.ENV.*` lines.
+    Configured(&'a AppTabSpec),
+    /// No config; the resources discovery has evidence for, unsaved.
+    Preview(Box<AppTabSpec>),
+    /// No config, and nothing to suggest (yet).
+    NotSetUp,
+}
+
+impl AppTabSource<'_> {
+    pub(crate) fn is_configured(&self) -> bool {
+        matches!(self, AppTabSource::Configured(_))
+    }
+
+    /// The spec to fetch for: the config's, or the preview's.
+    pub(crate) fn spec(&self) -> Option<AppTabSpec> {
+        match self {
+            AppTabSource::Configured(s) => Some((*s).clone()),
+            AppTabSource::Preview(s) => Some((**s).clone()),
+            AppTabSource::NotSetUp => None,
+        }
     }
 }
 

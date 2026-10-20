@@ -284,10 +284,7 @@ impl App {
             .map(|d| d.app_metrics.begin())
             .unwrap_or_default();
         // No config: preview what discovery found evidence for, if any.
-        let spec = self.cfg.app_tabs.envs.get(&env_name).cloned().or_else(|| {
-            self.discovered_for(&env_name)
-                .and_then(crate::app_discover::preview_spec)
-        });
+        let spec = self.app_tab_source(&env_name).spec();
         // In demo mode: the configured rows, empty, so the tab still
         // shows what is configured and says why there are no values.
         let demo_rows = spec

@@ -24,9 +24,14 @@ pub(super) fn draw_detail_app(
         lines.push(Line::from(Span::styled(format!("config: {e}"), red)));
     }
     alarm_line(&mut lines, &detail.cw_alarms, theme);
-    match tabs.envs.get(env) {
-        None => not_set_up(&mut lines, env, detail, app, area.width),
-        Some(spec) if spec.is_empty() => {
+    match app.app_tab_source(env) {
+        crate::app::AppTabSource::NotSetUp => {
+            not_set_up(&mut lines, env, detail, app, area.width, false)
+        }
+        crate::app::AppTabSource::Preview(_) => {
+            not_set_up(&mut lines, env, detail, app, area.width, true)
+        }
+        crate::app::AppTabSource::Configured(spec) if spec.is_empty() => {
             lines.push(Line::from(Span::styled(
                 format!(
                     "Nothing to show: add app.{env}.metric.LABEL, app.{env}.rds or \
@@ -35,7 +40,9 @@ pub(super) fn draw_detail_app(
                 muted,
             )));
         }
-        Some(_) => metric_rows(&mut lines, detail, area.width, theme),
+        crate::app::AppTabSource::Configured(_) => {
+            metric_rows(&mut lines, detail, area.width, theme)
+        }
     }
     instance_rows(&mut lines, &detail.instances, area.width, theme);
     top_error_rows(&mut lines, &detail.top_errors, theme);
@@ -196,13 +203,15 @@ fn stale_group(
 
 /// An env with no App tab config: what discovery found, as an
 /// invitation to `e`, with the resources it has evidence for drawn as
-/// suggestions. Without discovery (demo mode), the config keys to add.
+/// suggestions (`preview`). Without discovery (demo mode), the config
+/// keys to add.
 fn not_set_up(
     lines: &mut Vec<Line<'static>>,
     env: &str,
     detail: &crate::app::DetailState,
     app: &App,
     width: u16,
+    preview: bool,
 ) {
     let theme = &app.theme;
     let muted = Style::default().fg(theme.muted);
@@ -253,7 +262,7 @@ fn not_set_up(
         Span::styled(" to review and save.", muted),
     ]));
     // The resources an env variable names, drawn now; nothing is saved.
-    if crate::app_discover::preview_spec(found).is_some() {
+    if preview {
         lines.push(Line::default());
         lines.push(Line::from(Span::styled("Suggested, not saved:", muted)));
         metric_rows(lines, detail, width, theme);
