@@ -2521,7 +2521,8 @@ async fn the_app_tab_editor_opens_fills_and_refuses_bad_entries() {
     app.handle_msg(AppMsg::AppTabDiscovered {
         gen: app.generation,
         env_name: "other".into(),
-        found: found.clone(),
+        started: std::time::Instant::now(),
+        found: Box::new(found.clone()),
     });
     assert_eq!(
         app.form.as_ref().unwrap().state,
@@ -2530,7 +2531,8 @@ async fn the_app_tab_editor_opens_fills_and_refuses_bad_entries() {
     app.handle_msg(AppMsg::AppTabDiscovered {
         gen: app.generation,
         env_name: "api-prod".into(),
-        found,
+        started: std::time::Instant::now(),
+        found: Box::new(found),
     });
     let form = app.form.as_ref().unwrap();
     assert_eq!(form.state, crate::form::FormState::Ready);
@@ -2689,9 +2691,11 @@ async fn a_preview_result_landing_after_a_save_is_dropped() {
         preview: true,
         result: Ok(marked("preview")),
     });
+    let m = &app.detail.as_ref().unwrap().app_metrics;
+    assert!(m.ready().is_none(), "dropped");
     assert!(
-        app.detail.as_ref().unwrap().app_metrics.ready().is_none(),
-        "dropped"
+        !m.in_flight(),
+        "and no longer loading, or refreshes are refused"
     );
     app.handle_msg(AppMsg::DetailAppMetrics {
         gen: app.generation,
@@ -2722,4 +2726,32 @@ async fn demo_mode_does_not_pass_off_an_empty_discovery() {
     app.handle_msg(msg);
     assert!(app.app_discovered.is_empty());
     assert!(!app.discovery_running("api-prod"));
+}
+
+/// An older discovery that answers after a newer one started does not
+/// mark the newer one finished.
+#[tokio::test]
+async fn only_the_latest_discoverys_answer_clears_its_marker() {
+    let mut app = test_app();
+    let newer = std::time::Instant::now();
+    let older = newer - std::time::Duration::from_secs(90);
+    app.app_discovering.insert("api-prod".into(), newer);
+    app.handle_msg(AppMsg::AppTabDiscovered {
+        gen: app.generation,
+        env_name: "api-prod".into(),
+        started: older,
+        found: Box::default(),
+    });
+    assert_eq!(
+        app.app_discovering.get("api-prod"),
+        Some(&newer),
+        "still running"
+    );
+    app.handle_msg(AppMsg::AppTabDiscovered {
+        gen: app.generation,
+        env_name: "api-prod".into(),
+        started: newer,
+        found: Box::default(),
+    });
+    assert!(!app.app_discovering.contains_key("api-prod"));
 }

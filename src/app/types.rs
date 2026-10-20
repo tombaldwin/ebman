@@ -1111,6 +1111,14 @@ impl<T> Fetch<T> {
         self.in_flight = false;
     }
 
+    /// The request was answered with something not to show (a result for
+    /// state that has since changed): no longer in flight, the previous
+    /// value kept. Without this a dropped answer left the tab "loading",
+    /// refusing refreshes until the stuck timeout.
+    pub(crate) fn abandon(&mut self) {
+        self.in_flight = false;
+    }
+
     /// Is a request outstanding? True during a refresh even when a
     /// previous result is still displayed — `tab_loading` needs that.
     pub(crate) fn in_flight(&self) -> bool {

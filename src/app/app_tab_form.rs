@@ -418,15 +418,16 @@ impl App {
             let _ = self.msg_tx.send(AppMsg::AppTabDiscovered {
                 gen: self.generation,
                 env_name: env,
-                found: Discovered::default(),
+                started: std::time::Instant::now(),
+                found: Box::default(),
             });
             return;
         }
         if self.discovery_running(&env) {
             return;
         }
-        self.app_discovering
-            .insert(env.clone(), std::time::Instant::now());
+        let started = std::time::Instant::now();
+        self.app_discovering.insert(env.clone(), started);
         // The Detail view's own env: by name alone, a same-named env in
         // another region of a fan-out could name another application.
         let app_name = self
@@ -458,7 +459,8 @@ impl App {
             let _ = tx.send(AppMsg::AppTabDiscovered {
                 gen,
                 env_name: env,
-                found,
+                started,
+                found: Box::new(found),
             });
         });
     }
@@ -471,8 +473,15 @@ impl App {
             .is_some_and(|t| t.elapsed() < DISCOVERY_STALE)
     }
 
-    pub(super) fn handle_app_tab_discovered(&mut self, env_name: String, found: Discovered) {
-        self.app_discovering.remove(&env_name);
+    pub(super) fn handle_app_tab_discovered(
+        &mut self,
+        env_name: String,
+        started: std::time::Instant,
+        found: Discovered,
+    ) {
+        if self.app_discovering.get(&env_name) == Some(&started) {
+            self.app_discovering.remove(&env_name);
+        }
         if !self.demo_mode {
             self.app_discovered.insert(env_name.clone(), found.clone());
         }

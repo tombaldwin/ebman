@@ -693,7 +693,11 @@ pub(crate) enum AppMsg {
     AppTabDiscovered {
         gen: u64,
         env_name: String,
-        found: app_tab_form::Discovered,
+        /// When the run started: only the latest run's answer clears the
+        /// in-flight marker (an older one may answer after the stale
+        /// timeout let a newer one start).
+        started: std::time::Instant,
+        found: Box<app_tab_form::Discovered>,
     },
     /// The App tab's top errors for one env.
     DetailTopErrors {

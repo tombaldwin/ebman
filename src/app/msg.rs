@@ -144,13 +144,23 @@ impl App {
                 ..
             } => {
                 let still = preview != self.cfg.app_tabs.envs.contains_key(&env_name);
-                if self.is_current_metrics_range(range_secs) && still {
+                if !self.is_current_metrics_range(range_secs) {
+                    // A fetch for the current range is always outstanding
+                    // (a range change refetches both tabs): leave it.
+                } else if still {
                     self.apply_detail_msg(&env_name, result, |d, r| d.app_metrics.settle(r))
+                } else {
+                    // Config changed under it, and nothing else may be
+                    // coming: not shown, but no longer loading either.
+                    self.apply_detail_msg(&env_name, result, |d, _| d.app_metrics.abandon())
                 }
             }
             AppMsg::AppTabDiscovered {
-                env_name, found, ..
-            } => self.handle_app_tab_discovered(env_name, found),
+                env_name,
+                started,
+                found,
+                ..
+            } => self.handle_app_tab_discovered(env_name, started, *found),
             AppMsg::DetailTopErrors {
                 env_name,
                 started,

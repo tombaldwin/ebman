@@ -2227,10 +2227,12 @@ async fn an_unconfigured_app_tab_shows_what_discovery_found() {
         },
         failed: vec![],
     };
+    let started = *app.app_discovering.get("api-prod").expect("running");
     app.handle_msg(AppMsg::AppTabDiscovered {
         gen: app.generation,
         env_name: "api-prod".into(),
-        found,
+        started,
+        found: Box::new(found),
     });
     assert!(!app.app_discovering.contains_key("api-prod"));
     // The preview is a real fetch (the stub fails it); with nothing to
