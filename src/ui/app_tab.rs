@@ -66,9 +66,19 @@ pub(super) fn draw_detail_app(
 ///
 /// One cell for one cell: this runs after rows were fitted to the
 /// width, so `…` becomes `.`, not `...`, or a fitted row would grow
-/// two cells and wrap.
+/// two cells and wrap. Anything else outside ASCII (in log text, a log
+/// group's name, a CloudWatch note) becomes `?`: ascii mode is for
+/// terminals that cannot draw it.
 fn asciify(s: &str) -> String {
-    s.replace('—', "-").replace('…', ".").replace('·', "|")
+    s.chars()
+        .map(|c| match c {
+            '—' => '-',
+            '…' => '.',
+            '·' => '|',
+            c if c.is_ascii() => c,
+            _ => '?',
+        })
+        .collect()
 }
 
 /// `label  value unit  sparkline  instance value  instance value …`.
@@ -588,7 +598,13 @@ pub(crate) fn format_value(v: f64) -> String {
         return "—".to_string();
     }
     let a = v.abs();
-    let s = if a >= 1e6 {
+    // Each suffix step starts where the one below would round to 1000:
+    // 999,960 is `1.0M`, not `1000.0k`.
+    let s = if a >= 999.95e9 {
+        format!("{:.1}T", v / 1e12)
+    } else if a >= 999.95e6 {
+        format!("{:.1}G", v / 1e9)
+    } else if a >= 999.95e3 {
         format!("{:.1}M", v / 1e6)
     } else if a >= 1e4 {
         format!("{:.1}k", v / 1e3)
@@ -601,7 +617,7 @@ pub(crate) fn format_value(v: f64) -> String {
     };
     // `3.00` reads as `3`, `41.50` as `41.5`; the suffixed forms keep
     // their one decimal so `1.0k` does not jump to `1k` and back.
-    if s.contains('.') && !s.ends_with(['k', 'M']) {
+    if s.contains('.') && !s.ends_with(['k', 'M', 'G', 'T']) {
         s.trim_end_matches('0').trim_end_matches('.').to_string()
     } else {
         s
@@ -668,6 +684,10 @@ mod tests {
             (12_345.0, "12.3k"),
             (10_000.0, "10.0k"),
             (4_100_000.0, "4.1M"),
+            (999_960.0, "1.0M"),
+            (2.5e9, "2.5G"),
+            (999_990_000.0, "1.0G"),
+            (3.0e13, "30.0T"),
             (-2.5, "-2.5"),
             (f64::NAN, "—"),
             (f64::INFINITY, "—"),
@@ -762,7 +782,7 @@ mod tests {
 
     #[test]
     fn asciify_keeps_every_cell_count() {
-        let s = "loading… — a · b";
+        let s = "loading… — a · b é→";
         let a = asciify(s);
         assert!(a.is_ascii(), "{a}");
         assert_eq!(
