@@ -457,6 +457,17 @@ pub(crate) fn parse_alarm_dimensions(value: &str) -> Vec<String> {
     names
 }
 
+/// A value with ONE surrounding pair of quotes removed, if it has one.
+///
+/// `trim_matches('"')` removed every leading and trailing quote, so a
+/// value ending in a quote (a regex matching `msg="…"`, an ARN naming
+/// `"hi"`) lost it, and could not survive a `:settings` round trip.
+fn unquote(raw: &str) -> &str {
+    raw.strip_prefix('"')
+        .and_then(|r| r.strip_suffix('"'))
+        .unwrap_or(raw)
+}
+
 pub(crate) fn parse(text: &str) -> Config {
     let mut cfg = Config::default();
     for line in text.lines() {
@@ -468,7 +479,8 @@ pub(crate) fn parse(text: &str) -> Config {
             continue;
         };
         let key = key.trim();
-        let value = raw_val.trim().trim_matches('"').to_string();
+        let raw = raw_val.trim();
+        let value = unquote(raw).to_string();
         match key {
             "refresh_interval_secs" => {
                 if let Ok(n) = value.parse::<u64>() {
@@ -544,8 +556,23 @@ pub(crate) fn parse(text: &str) -> Config {
                 }
             }
             other if other.starts_with("app.") => {
-                cfg.app_tabs
-                    .apply(other.trim_start_matches("app."), &value, line);
+                let rest = other.trim_start_matches("app.");
+                if raw.starts_with('"') && unquote(raw) == raw {
+                    // `"Shop" # prod`: the comment would be part of the
+                    // value and silently match no data. This parser has
+                    // no inline comments; say so rather than guess.
+                    cfg.app_tabs.reject(
+                        rest,
+                        line,
+                        format!(
+                            "app.{rest} has text after its closing quote \
+                             (inline # comments are not supported: put the \
+                             comment on its own line)"
+                        ),
+                    );
+                } else {
+                    cfg.app_tabs.apply(rest, &value, line);
+                }
             }
             other if other.starts_with("accounts.") => {
                 // `accounts.NAME.field = "value"`. Split on the LAST
@@ -1238,6 +1265,43 @@ accounts.staging.external_id = "abc-xyz"
     }
 
     #[test]
+    fn one_pair_of_quotes_is_removed_and_no_more() {
+        assert_eq!(unquote(r#""a""#), "a");
+        assert_eq!(unquote(r#""msg="(?<fp>[^"]+)"""#), r#"msg="(?<fp>[^"]+)""#);
+        assert_eq!(unquote(r#""""#), "");
+        assert_eq!(unquote("15"), "15");
+        assert_eq!(
+            unquote(r#""open"#),
+            r#""open"#,
+            "an unclosed quote is kept, not half-stripped"
+        );
+        assert_eq!(unquote(r#"""#), r#"""#, "a lone quote is not a pair");
+        let cfg = parse("app.e.error_fingerprint = \"msg=\"(?<fp>[^\"]+)\"\"\n");
+        assert_eq!(
+            cfg.app_tabs.envs["e"].error_fingerprint.as_deref(),
+            Some(r#"msg="(?<fp>[^"]+)""#),
+            "a trailing quote inside the value survives"
+        );
+    }
+
+    #[test]
+    fn an_app_line_with_an_inline_comment_is_an_error_not_a_namespace() {
+        let cfg = parse("app.e.namespace = \"Shop\" # prod\n");
+        assert!(cfg.app_tabs.envs.is_empty(), "nothing applied");
+        assert_eq!(cfg.app_tabs.lines.len(), 1, "the line is kept for save");
+        assert!(
+            cfg.app_tabs.errors[0]
+                .message
+                .contains("text after its closing quote"),
+            "{:?}",
+            cfg.app_tabs.errors
+        );
+        assert_eq!(cfg.app_tabs.errors[0].env.as_deref(), Some("e"));
+        // Unquoted values are untouched by the rule.
+        assert!(parse("app.e.namespace = Shop\n").app_tabs.errors.is_empty());
+    }
+
+    #[test]
     fn an_app_line_survives_a_save_even_when_it_did_not_apply() {
         // Rebuilding `app.` lines from the parsed form would drop the
         // one that failed, along with the operator's only clue to it.
@@ -1524,10 +1588,9 @@ explain.max_tokens = 512
     }
 
     #[test]
-    #[ignore = "config values containing a quote can't round-trip: `parse` uses \
-                trim_matches('\"') with no escape handling. Pinning the limit \
-                rather than inventing an escape the parser can't decode."]
-    fn account_values_containing_quotes_do_not_round_trip() {
+    fn account_values_containing_quotes_round_trip() {
+        // Was #[ignore]d as a pinned limit while `parse` stripped every
+        // surrounding quote; one pair now, so the quotes inside survive.
         // `:settings` rewrites the WHOLE file, so a value that breaks
         // TOML quoting doesn't just corrupt its own line.
         let mut cfg = Config::default();

@@ -106,12 +106,25 @@ impl AppTabs {
     pub(crate) fn apply(&mut self, rest: &str, value: &str, line: &str) {
         self.lines.push(line.to_string());
         if let Err(message) = self.apply_field(rest, value) {
-            let env = rest.split_once('.').map_or(rest, |(env, _)| env).trim();
-            self.errors.push(AppTabError {
-                env: Some(env.to_string()).filter(|e| !e.is_empty()),
-                message,
-            });
+            self.record_error(rest, message);
         }
+    }
+
+    /// Attribute `message` to the env named in `rest`, if it names one.
+    fn record_error(&mut self, rest: &str, message: String) {
+        let env = rest.split_once('.').map_or(rest, |(env, _)| env).trim();
+        self.errors.push(AppTabError {
+            env: Some(env.to_string()).filter(|e| !e.is_empty()),
+            message,
+        });
+    }
+
+    /// Keep `line` for `serialize` but record `message` instead of
+    /// applying it: for a line `config::parse` could already tell was
+    /// malformed.
+    pub(crate) fn reject(&mut self, rest: &str, line: &str, message: String) {
+        self.lines.push(line.to_string());
+        self.record_error(rest, message);
     }
 
     /// The errors to show on `env`'s tab: its own, and any that name no
