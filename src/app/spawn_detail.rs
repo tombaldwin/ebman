@@ -192,7 +192,8 @@ impl App {
             .unwrap_or(3600);
         if let Some(d) = self.detail.as_mut() {
             d.loading_metrics = true;
-            d.error = None;
+            // Only its own: a sibling's failure stays on screen.
+            d.clear_error(crate::mode_detail::DetailFetch::Metrics);
         }
         // Snapshot the custom-metrics spec list at spawn time so concurrent
         // `:metric add`s don't race with the in-flight fetch.
@@ -373,7 +374,8 @@ impl App {
     pub(super) fn spawn_detail_queues(&mut self, application_name: String, env_name: String) {
         if let Some(d) = self.detail.as_mut() {
             d.loading_queues = true;
-            d.error = None;
+            // Only its own: a sibling's failure stays on screen.
+            d.clear_error(crate::mode_detail::DetailFetch::Queues);
         }
         if self.demo_mode {
             let result = Ok(crate::demo_fixture::worker_queues_for_env(&env_name));
@@ -404,7 +406,8 @@ impl App {
     pub(super) fn spawn_detail_events(&mut self, env_name: String) {
         if let Some(d) = self.detail.as_mut() {
             d.loading_events = true;
-            d.error = None;
+            // Only its own: a sibling's failure stays on screen.
+            d.clear_error(crate::mode_detail::DetailFetch::Events);
         }
         // Demo-mode short-circuit: filter the fixture's fleet-wide
         // events down to this env, mirror what list_events_for_env
@@ -437,7 +440,8 @@ impl App {
     pub(super) fn spawn_detail_instances(&mut self, env_name: String) {
         if let Some(d) = self.detail.as_mut() {
             d.loading_instances = true;
-            d.error = None;
+            // Only its own: a sibling's failure stays on screen.
+            d.clear_error(crate::mode_detail::DetailFetch::Instances);
         }
         // Demo-mode short-circuit: synthesise the fixture's per-env
         // instance list and send the result message directly. Avoids

@@ -2285,3 +2285,61 @@ async fn a_metrics_result_for_a_range_left_behind_is_dropped() {
         Some("new")
     );
 }
+
+/// Starting a fetch clears only that fetch's own error. Each of these
+/// used to clear every error, so pressing `]` (which refetches metrics
+/// from the App tab too) erased a failed instance fetch and the tab
+/// read as "no instances" rather than "could not look". One case per
+/// fetch.
+#[tokio::test]
+async fn starting_a_fetch_does_not_erase_a_siblings_error() {
+    use crate::mode_detail::DetailFetch;
+    let mut app = test_app();
+    app.environments = vec![mk_env("wk-prod", "poly", "Worker", "Green")];
+    app.rebuild_view();
+    app.table_state.select(Some(0));
+    app.open_detail();
+    type Spawn = fn(&mut App);
+    let spawns: [(DetailFetch, Spawn); 4] = [
+        (DetailFetch::Metrics, |a| {
+            a.spawn_detail_metrics("wk-prod".into())
+        }),
+        (DetailFetch::Queues, |a| {
+            a.spawn_detail_queues("poly".into(), "wk-prod".into())
+        }),
+        (DetailFetch::Events, |a| {
+            a.spawn_detail_events("wk-prod".into())
+        }),
+        (DetailFetch::Instances, |a| {
+            a.spawn_detail_instances("wk-prod".into())
+        }),
+    ];
+    for (own, spawn) in spawns {
+        let sibling = DetailFetch::Tags;
+        app.detail
+            .as_mut()
+            .unwrap()
+            .set_error(sibling, "denied".into());
+        spawn(&mut app);
+        assert_eq!(
+            app.detail
+                .as_ref()
+                .unwrap()
+                .error
+                .as_ref()
+                .map(|e| e.source),
+            Some(sibling),
+            "starting {own:?} erased {sibling:?}'s error"
+        );
+        app.detail
+            .as_mut()
+            .unwrap()
+            .set_error(own, "its own".into());
+        spawn(&mut app);
+        assert_eq!(
+            app.detail.as_ref().unwrap().error,
+            None,
+            "{own:?} clears its own"
+        );
+    }
+}
