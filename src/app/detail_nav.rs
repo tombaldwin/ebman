@@ -389,8 +389,9 @@ impl App {
     /// against the real file. Called wherever app. config is about to be
     /// used: any Detail refresh, the App tab's editor, `:alarms`, `:why`.
     fn reload_app_tabs_from_disk(&mut self) {
-        self.reload_app_tabs_if_changed(crate::config::config_stamp(), || {
-            std::fs::read_to_string(crate::config::config_path())
+        let path = self.config_file.clone();
+        self.reload_app_tabs_if_changed(crate::config::stamp_of(&path), || {
+            std::fs::read_to_string(&path)
         });
     }
 

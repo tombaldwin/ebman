@@ -2478,42 +2478,58 @@ async fn app_lines_are_re_read_when_the_file_changed() {
     assert!(app.detail.as_ref().unwrap().app_metrics.ready().is_none());
 }
 
-/// The App tab's refresh is where hand edits are picked up. Pinned by
-/// source because driving it would read the shared test config dir.
-#[test]
-fn the_app_tab_refresh_re_reads_its_config() {
-    let src = std::fs::read_to_string("src/app/detail_nav.rs").expect("read");
-    let body = src
-        .split("fn detail_refresh(")
-        .nth(1)
-        .and_then(|b| b.split("\n    }\n").next())
-        .expect("detail_refresh");
-    assert!(
-        body.contains("spawn_detail_app("),
-        "canary: this is the refresh"
+/// This test's own `config.toml`, under the per-process test temp dir
+/// and named for the test, so the real reload and save paths run
+/// without the shared test config dir. Returns its path; the App has
+/// seen no file yet, so the first use reads it.
+fn own_config_file(app: &mut App, test: &str, text: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("ebman-test-{}-{test}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let path = dir.join("config.toml");
+    std::fs::write(&path, text).expect("write");
+    app.config_file = path.clone();
+    app.config_seen = Some(None);
+    path
+}
+
+/// Hand edits reach the App tab on its refresh, but not under a fetch
+/// still in flight (its result would land beside config it was not
+/// fetched for); and `:alarms` and `:why`, which use `alarm_prefix`,
+/// read them too.
+#[tokio::test]
+async fn the_app_tab_refresh_re_reads_its_config() {
+    let mut app = detail_on("api-prod");
+    let path = own_config_file(
+        &mut app,
+        "refresh-re-reads",
+        "app.api-prod.namespace = \"Hand\"\n",
     );
-    let reload = body
-        .find("reload_app_tabs_from_disk(")
-        .expect("re-reads app. lines");
-    let first_use = body.find("match tab").expect("then refreshes the tab");
-    assert!(reload < first_use, "before any tab reads them");
-    let guard = body.find("tab_loading()").expect("the in-flight guard");
-    assert!(guard < reload, "and not under a fetch still in flight");
-    for (file, entry) in [
-        (
-            "src/app/spawn_refresh.rs",
-            "pub(crate) fn spawn_alarms_fetch(",
-        ),
-        ("src/app/open_overlay.rs", "pub(crate) fn open_why_red("),
-    ] {
-        let src = std::fs::read_to_string(file).expect("read");
-        let body = src.split(entry).nth(1).expect(entry);
-        let body = body.split("\n    }\n").next().unwrap();
-        assert!(
-            body.contains("reload_app_tabs_and_refetch("),
-            "{entry} uses alarm_prefix"
-        );
-    }
+    let namespace = |app: &App| {
+        app.cfg
+            .app_tabs
+            .envs
+            .get("api-prod")
+            .and_then(|s| s.namespace.clone())
+    };
+    app.detail.as_mut().unwrap().tab_idx = 1;
+    assert_eq!(app.detail.as_ref().unwrap().tab(), DetailTab::App);
+    app.detail.as_mut().unwrap().app_metrics.begin();
+    app.detail_fetch_started = Some(std::time::Instant::now());
+    app.detail_refresh_active_tab();
+    assert_eq!(namespace(&app), None, "not under a fetch in flight");
+
+    app.detail_fetch_started = None;
+    app.detail.as_mut().unwrap().app_metrics.reset();
+    app.detail_refresh_active_tab();
+    assert_eq!(namespace(&app).as_deref(), Some("Hand"));
+
+    std::fs::write(&path, "app.api-prod.namespace = \"Alarms\"\n").unwrap();
+    app.spawn_alarms_fetch("api-prod".into());
+    assert_eq!(namespace(&app).as_deref(), Some("Alarms"), ":alarms");
+
+    std::fs::write(&path, "app.api-prod.namespace = \"Why\"\n").unwrap();
+    app.open_why_red("api-prod".into(), "poly".into());
+    assert_eq!(namespace(&app).as_deref(), Some("Why"), ":why");
 }
 
 /// `e` opens the App tab's editor on the App tab and nowhere else; Esc
@@ -2603,51 +2619,107 @@ async fn the_app_tab_editor_opens_fills_and_refuses_bad_entries() {
     );
 }
 
-/// A save writes this env's lines and applies them to the running tab.
-/// Pinned by source: running it would write the shared test config dir.
-#[test]
-fn saving_the_app_tab_writes_then_applies() {
-    let src = std::fs::read_to_string("src/app/app_tab_form.rs").expect("read");
-    let body = src
-        .split("pub(super) fn submit_app_tab_form(")
-        .nth(1)
-        .and_then(|b| b.split("\n    }\n").next())
-        .expect("submit_app_tab_form");
-    let write = body
-        .find("save_app_lines(")
-        .expect("writes the env's lines");
-    // Through set_app_tabs, which drops what was fetched under the old.
-    let apply = body.find("self.set_app_tabs(").expect("applies them");
-    assert!(write < apply, "applied only after the write succeeded");
+/// The editor opens on the file as it is now (a hand edit since the
+/// last refresh is in the form, or the save would delete it); a save
+/// writes this env's lines, keeps every other line and the env's lines
+/// that did not apply, applies them, and records the file as seen; its
+/// refresh is not skipped for a fetch in flight under the old config;
+/// and a failed write applies nothing.
+#[tokio::test]
+async fn saving_the_app_tab_writes_then_applies() {
+    let mut app = detail_on("api-prod");
+    app.demo_mode = true;
+    let path = own_config_file(
+        &mut app,
+        "saving-writes",
+        "# mine\napp.other.namespace = \"Other\"\napp.api-prod.namespace = \"Old\"\n",
+    );
+    app.detail.as_mut().unwrap().tab_idx = 1;
+    app.detail_refresh_active_tab();
+    assert_eq!(
+        app.cfg.app_tabs.envs["api-prod"].namespace.as_deref(),
+        Some("Old")
+    );
+    // A hand edit since, with a line the parser rejects.
+    std::fs::write(
+        &path,
+        "# mine\napp.other.namespace = \"Other\"\napp.api-prod.namespace = \"Hand\"\n\
+         app.api-prod.bogus = \"x\"\n",
+    )
+    .unwrap();
+    press(&mut app, KeyCode::Char('e'), KeyModifiers::NONE);
+    while let Ok(msg) = app.msg_rx.try_recv() {
+        app.handle_msg(msg);
+    }
+    let form = app.form.as_mut().expect("the editor");
+    assert_eq!(form.state, crate::form::FormState::Ready);
+    let ns = form
+        .fields
+        .iter_mut()
+        .find(|f| f.key == "namespace")
+        .expect("namespace");
+    assert_eq!(ns.value, "Hand", "opened on the file as it is now");
+    // Longer than what it replaces: the stamp is (mtime, size), and
+    // an edit within the same tick is told apart by its size.
+    ns.value = "Saved-and-longer".into();
+
+    // A fetch in flight under the old config, which the guard honours.
+    app.detail.as_mut().unwrap().app_metrics.begin();
+    app.detail_fetch_started = Some(std::time::Instant::now());
+    app.submit_app_tab_form();
+
+    assert!(app.form.is_none(), "saved and closed");
+    let text = std::fs::read_to_string(&path).unwrap();
     assert!(
-        body.contains("self.detail_fetch_started = None;"),
-        "the save's refresh is not skipped for a query in flight"
+        text.contains("app.api-prod.namespace = \"Saved-and-longer\""),
+        "{text}"
+    );
+    assert!(!text.contains("\"Hand\""), "{text}");
+    assert!(
+        text.contains("# mine") && text.contains("app.other.namespace = \"Other\""),
+        "{text}"
     );
     assert!(
-        !body.contains("read_to_string"),
-        "applies what it wrote, not a read-back that can fail"
+        text.contains("app.api-prod.bogus = \"x\""),
+        "rejected line kept: {text}"
     );
-    assert!(
-        body.contains("self.config_seen ="),
-        "and the reload knows it has them"
+    assert_eq!(
+        app.cfg.app_tabs.envs["api-prod"].namespace.as_deref(),
+        Some("Saved-and-longer"),
+        "applied"
     );
-    assert!(
-        body.contains("with_rejected_lines("),
-        "a save keeps the env's lines that did not apply"
+    assert_eq!(
+        app.config_seen,
+        Some(crate::config::stamp_of(&path)),
+        "the file as written is the one seen"
     );
-    // Opening re-reads first, or a hand edit since the last refresh is
-    // missing from the form and the save deletes it.
-    let open = src
-        .split("pub(crate) fn open_app_tab_form(")
-        .nth(1)
-        .expect("open_app_tab_form");
-    let reload = open
-        .find("reload_app_tabs_and_refetch(")
-        .expect("re-reads on open");
-    let build = open
-        .find("fields(self.cfg.app_tabs")
-        .expect("builds the fields");
-    assert!(reload < build, "re-read before the form is built");
+    let mut refetched = false;
+    while let Ok(msg) = app.msg_rx.try_recv() {
+        refetched |= matches!(msg, AppMsg::DetailAppMetrics { .. });
+    }
+    assert!(refetched, "the save's refresh ran, past the old fetch");
+
+    // A write that fails applies nothing: under a regular file, no
+    // directory can be made and nothing written.
+    app.config_file = path.join("config.toml");
+    press(&mut app, KeyCode::Char('e'), KeyModifiers::NONE);
+    while let Ok(msg) = app.msg_rx.try_recv() {
+        app.handle_msg(msg);
+    }
+    let form = app.form.as_mut().expect("the editor");
+    form.fields
+        .iter_mut()
+        .find(|f| f.key == "namespace")
+        .unwrap()
+        .value = "Unwritten".into();
+    app.submit_app_tab_form();
+    let form = app.form.as_ref().expect("still open");
+    assert!(form.banner.starts_with("not saved:"), "{}", form.banner);
+    assert_eq!(
+        app.cfg.app_tabs.envs["api-prod"].namespace.as_deref(),
+        Some("Saved-and-longer"),
+        "nothing applied"
+    );
 }
 
 /// An unconfigured env's discovery is kept for the session: opening the

@@ -368,7 +368,7 @@ impl App {
             env_name: env.clone(),
             banner: format!(
                 "app.{env}.* in {}; finding what this env uses…",
-                crate::config::config_path().display()
+                self.config_file.display()
             ),
             scroll: 0,
         };
@@ -552,23 +552,22 @@ impl App {
                 return;
             }
         };
-        let written = match crate::config::save_app_lines(&env, &lines) {
+        let written = match crate::config::save_app_lines(&self.config_file, &env, &lines) {
             Ok(written) => written,
             Err(e) => {
                 form.banner = format!("not saved: {e}");
                 return;
             }
         };
-        let stamp = crate::config::config_stamp();
+        // Applied from what was written, not a read-back that can fail.
+        // The refresh below re-reads the file and records it as seen.
         self.set_app_tabs(crate::config::parse(&written).app_tabs);
-        self.config_seen = Some(stamp);
         self.form = None;
         self.mode = Mode::Detail;
         self.pin_status(format!("App tab saved for {env}"));
-        // Past the in-flight guard: a top-errors query still in flight
-        // (its config unchanged, so not reset) would make the refresh
-        // skip, leaving the saved config undrawn until the stuck timeout.
-        self.detail_fetch_started = None;
+        // A metrics fetch in flight does not make this skip when the
+        // save changed the env's spec: set_app_tabs reset it. When it
+        // did not, that fetch is for this same config.
         self.detail_refresh_active_tab();
     }
 }

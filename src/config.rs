@@ -767,7 +767,8 @@ pub(crate) fn config_stamp() -> Option<ConfigStamp> {
     stamp_of(&config_path())
 }
 
-fn stamp_of(path: &std::path::Path) -> Option<ConfigStamp> {
+/// `path`'s [`ConfigStamp`], or `None` when it is absent or unreadable.
+pub(crate) fn stamp_of(path: &std::path::Path) -> Option<ConfigStamp> {
     let m = std::fs::metadata(path).ok()?;
     Some((m.modified().ok()?, m.len()))
 }
@@ -828,12 +829,15 @@ pub(crate) fn replace_app_lines(text: &str, env: &str, lines: &[String]) -> Stri
 /// else; refused, like [`save`], when the file exists and cannot be read.
 /// Returns what was written, so the caller applies exactly that rather
 /// than reading the file back (a failed read-back emptied the tab).
-pub(crate) fn save_app_lines(env: &str, lines: &[String]) -> std::io::Result<String> {
-    let path = config_path();
-    let existing = std::fs::read_to_string(&path);
-    refuse_to_clobber_unreadable(existing.as_ref().map(|_| ()).map_err(clone_io_error), &path)?;
+pub(crate) fn save_app_lines(
+    path: &std::path::Path,
+    env: &str,
+    lines: &[String],
+) -> std::io::Result<String> {
+    let existing = std::fs::read_to_string(path);
+    refuse_to_clobber_unreadable(existing.as_ref().map(|_| ()).map_err(clone_io_error), path)?;
     let body = replace_app_lines(existing.as_deref().unwrap_or(""), env, lines);
-    crate::util::write_atomic(&path, &body)?;
+    crate::util::write_atomic(path, &body)?;
     Ok(body)
 }
 

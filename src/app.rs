@@ -546,6 +546,10 @@ pub struct App {
     /// `None` when this App's config did not come from the file (tests),
     /// which is never re-read; `Some(None)` when there was no file.
     pub(crate) config_seen: Option<Option<crate::config::ConfigStamp>>,
+    /// The file the `app.` lines are read from and the App tab's editor
+    /// saves to: `config.toml`, or a test's own file so the real reload
+    /// and save paths can be driven without the shared test config dir.
+    pub(crate) config_file: std::path::PathBuf,
     /// What discovery found per env, kept for the session: the App tab
     /// of an env with no config shows it, and the editor opens with it.
     /// Keyed by [`App::discovery_key`], (region, env): under a fan-out a
@@ -1458,6 +1462,7 @@ impl App {
             last_rendered_buffer: None,
             notify_bell: config.notify_bell,
             config_seen: Some(crate::config::config_stamp()),
+            config_file: crate::config::config_path(),
             app_discovered: Default::default(),
             app_discovering: Default::default(),
             cfg: ResolvedConfig {
@@ -1765,6 +1770,7 @@ impl App {
             last_rendered_buffer: None,
             notify_bell: config.notify_bell,
             config_seen: None,
+            config_file: crate::config::config_path(),
             app_discovered: Default::default(),
             app_discovering: Default::default(),
             cfg: ResolvedConfig {
