@@ -4187,6 +4187,21 @@ async fn a_walk_that_outruns_the_deadline_reports_itself_truncated() {
 }
 
 #[tokio::test]
+async fn a_last_page_that_lands_after_the_deadline_is_still_complete() {
+    // Nothing was left to fetch, so nothing is missing: `.complete()`
+    // must not turn a slow but whole answer into an error.
+    let result = super::paginate_until(
+        "slow_last_page",
+        10,
+        std::time::Duration::ZERO,
+        |_token| async move { Ok((vec![1u8], None)) },
+    )
+    .await
+    .expect("ok");
+    assert!(!result.truncated, "the last page was the last");
+}
+
+#[tokio::test]
 async fn a_walk_inside_the_deadline_is_not_marked_truncated() {
     // The deadline must not cry wolf on a healthy account — a false
     // `truncated` turns a complete `.complete()` listing into an error.

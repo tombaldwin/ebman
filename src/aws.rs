@@ -632,6 +632,14 @@ where
     for _ in 0..max_pages {
         let (batch, next) = page(token.take()).await?;
         items.extend(batch);
+        // The last page first: one that arrived after the deadline is
+        // still the last, and the walk is complete, not truncated.
+        let Some(next) = next.filter(|t| !t.is_empty()) else {
+            return Ok(Paged {
+                items,
+                truncated: false,
+            });
+        };
         // A page budget bounds the number of round trips, not the time
         // they take. `SCAN_PAGES` is worst-case 500 SEQUENTIAL round
         // trips, and three of these walks sit on interactive triage
@@ -653,15 +661,7 @@ where
                 truncated: true,
             });
         }
-        match next {
-            Some(t) if !t.is_empty() => token = Some(t),
-            _ => {
-                return Ok(Paged {
-                    items,
-                    truncated: false,
-                })
-            }
-        }
+        token = Some(next);
     }
     tracing::warn!(
         target: "ebman::aws",
