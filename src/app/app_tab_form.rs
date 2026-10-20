@@ -38,24 +38,14 @@ pub(crate) fn fields(spec: Option<&AppTabSpec>) -> Vec<FormField> {
     let metrics: Vec<String> = spec
         .metrics
         .iter()
-        .map(|m| match &m.unit {
-            Some(u) => format!("{}={}|{}|{u}", m.label, m.name, m.stat),
-            None => format!("{}={}|{}", m.label, m.name, m.stat),
-        })
+        .map(|m| format!("{}={}", m.label, m.to_value()))
         .collect();
     let thresholds: Vec<String> = spec
         .thresholds
         .iter()
-        .map(|(label, t)| {
-            let lower = if t.lower_is_worse { "<" } else { "" };
-            format!("{label}={lower}{},{}", t.warn, t.critical)
-        })
+        .map(|(label, t)| format!("{label}={}", t.to_value()))
         .collect();
-    let dims: Vec<String> = spec
-        .dimensions
-        .iter()
-        .map(|(k, v)| format!("{k}={v}"))
-        .collect();
+    let dims = crate::app_tab::dimensions_value(&spec.dimensions);
     let sep = format!("{ENTRY_SEP} ");
     let mut log_group = FormField::select(
         "log_group",
@@ -79,7 +69,7 @@ pub(crate) fn fields(spec: Option<&AppTabSpec>) -> Vec<FormField> {
         text(
             "dimensions",
             "Dimensions",
-            dims.join(","),
+            dims,
             "Name=Value,… selecting this env (default EnvironmentName=<env>)",
         ),
         text(
@@ -935,6 +925,56 @@ mod tests {
         assert!(
             !format!("{found:?}").contains("hunter2"),
             "no other env var value is kept"
+        );
+    }
+
+    /// Every field the parser accepts survives the editor. A field
+    /// added to the parser (and so to `FIELDS`) but not to the form is
+    /// erased from disk the first time the form is saved, because a save
+    /// replaces all of the env's lines: so this test needs a sample for
+    /// every `FIELDS` entry, and fails on one it does not have.
+    #[test]
+    fn every_field_the_parser_accepts_survives_the_editor() {
+        let sample = |field: &str| -> Option<Vec<&str>> {
+            Some(match field {
+                "namespace" => vec!["app.e.namespace = \"Shop\""],
+                "dimensions" => vec!["app.e.dimensions = \"Environment=prod,Tier=web\""],
+                "instance_dimension" => vec!["app.e.instance_dimension = \"InstanceId\""],
+                "metric.LABEL" => vec![
+                    "app.e.metric.users = \"usersActive|Maximum|count\"",
+                    "app.e.metric.heap = \"heapUsedMb|p99\"",
+                ],
+                "threshold.LABEL" => vec![
+                    "app.e.threshold.heap = \"1500,1800.5\"",
+                    "app.e.threshold.users = \"<5,1\"",
+                ],
+                "rds" => vec!["app.e.rds = \"db-a,db-b\""],
+                "elasticache" => vec!["app.e.elasticache = \"c-001\""],
+                "alarm_prefix" => vec!["app.e.alarm_prefix = \"e-\""],
+                "log_group" => vec!["app.e.log_group = \"var/log/app.log\""],
+                "error_fingerprint" => vec![r#"app.e.error_fingerprint = "msg="(?<fp>[^"]+)"""#],
+                _ => return None,
+            })
+        };
+        let mut text = String::new();
+        for field in crate::app_tab::FIELDS {
+            let lines = sample(field).unwrap_or_else(|| {
+                panic!("no sample for {field}: add one, and the field to the form")
+            });
+            for l in lines {
+                text.push_str(l);
+                text.push('\n');
+            }
+        }
+        let tabs = crate::config::parse(&text).app_tabs;
+        assert!(tabs.errors.is_empty(), "{:?}", tabs.errors);
+        let spec = &tabs.envs["e"];
+        let lines = lines_from_fields("e", &fields(Some(spec))).expect("valid");
+        let back: String = lines.iter().map(|l| format!("{l}\n")).collect();
+        assert_eq!(
+            &crate::config::parse(&back).app_tabs.envs["e"],
+            spec,
+            "{back}"
         );
     }
 

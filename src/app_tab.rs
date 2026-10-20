@@ -86,7 +86,31 @@ pub(crate) enum Level {
     Critical,
 }
 
+impl AppMetric {
+    /// The `app.ENV.metric.LABEL` value that parses back to this metric.
+    pub(crate) fn to_value(&self) -> String {
+        match &self.unit {
+            Some(u) => format!("{}|{}|{u}", self.name, self.stat),
+            None => format!("{}|{}", self.name, self.stat),
+        }
+    }
+}
+
+/// The `app.ENV.dimensions` value that parses back to `dims`.
+pub(crate) fn dimensions_value(dims: &[(String, String)]) -> String {
+    dims.iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 impl Threshold {
+    /// The `app.ENV.threshold.LABEL` value that parses back to this.
+    pub(crate) fn to_value(self) -> String {
+        let lower = if self.lower_is_worse { "<" } else { "" };
+        format!("{lower}{},{}", self.warn, self.critical)
+    }
+
     pub(crate) fn classify(&self, value: f64) -> Level {
         let past = |level: f64| {
             if self.lower_is_worse {
