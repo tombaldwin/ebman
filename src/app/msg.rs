@@ -139,10 +139,12 @@ impl App {
             AppMsg::DetailAppMetrics {
                 env_name,
                 range_secs,
+                preview,
                 result,
                 ..
             } => {
-                if self.is_current_metrics_range(range_secs) {
+                let still = preview != self.cfg.app_tabs.envs.contains_key(&env_name);
+                if self.is_current_metrics_range(range_secs) && still {
                     self.apply_detail_msg(&env_name, result, |d, r| d.app_metrics.settle(r))
                 }
             }

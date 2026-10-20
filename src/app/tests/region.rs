@@ -908,3 +908,24 @@ async fn a_rollout_confirm_can_be_declined_by_every_documented_key() {
         "`y` starts the dispatch rather than closing the flow"
     );
 }
+
+#[tokio::test]
+async fn what_discovery_found_does_not_survive_a_context_switch() {
+    let _cache_guard = crate::aws::CACHE_TEST_LOCK.lock().await;
+    // Another account's `api-prod` has its own alarms, cache and logs:
+    // showing the first account's findings on it would be wrong.
+    let mut app = test_app();
+    app.app_discovered
+        .insert("api-prod".into(), Default::default());
+    app.app_discovering
+        .insert("api-prod".into(), std::time::Instant::now());
+    app.handle_msg(AppMsg::Rebuild {
+        epoch: app.rebuild_epoch,
+        result: Ok(Box::new(crate::aws::AwsClient::stub())),
+    });
+    assert!(app.app_discovered.is_empty());
+    assert!(
+        app.app_discovering.is_empty(),
+        "nor the in-flight marker, or it never reruns"
+    );
+}

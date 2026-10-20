@@ -412,10 +412,9 @@ impl App {
     /// Start discovery for `env` unless it is already running. Demo mode
     /// answers at once with nothing, without calling AWS.
     pub(crate) fn spawn_app_discovery(&mut self, env: String) {
-        if !self.app_discovering.insert(env.clone()) {
-            return;
-        }
         if self.demo_mode {
+            // Not cached: demo mode found nothing because it looked at
+            // nothing, and the tab should keep saying what to configure.
             let _ = self.msg_tx.send(AppMsg::AppTabDiscovered {
                 gen: self.generation,
                 env_name: env,
@@ -423,11 +422,24 @@ impl App {
             });
             return;
         }
+        if self.discovery_running(&env) {
+            return;
+        }
+        self.app_discovering
+            .insert(env.clone(), std::time::Instant::now());
+        // The Detail view's own env: by name alone, a same-named env in
+        // another region of a fan-out could name another application.
         let app_name = self
-            .environments
-            .iter()
-            .find(|e| e.name == env)
-            .map(|e| e.application.clone())
+            .detail
+            .as_ref()
+            .filter(|d| d.env_name == env)
+            .map(|d| d.env_snapshot.application.clone())
+            .or_else(|| {
+                self.environments
+                    .iter()
+                    .find(|e| e.name == env)
+                    .map(|e| e.application.clone())
+            })
             .unwrap_or_default();
         let fleet: Vec<String> = self.environments.iter().map(|e| e.name.clone()).collect();
         let dimension_names =
@@ -451,9 +463,19 @@ impl App {
         });
     }
 
+    /// Whether `env`'s discovery is running, and not so long that its
+    /// result must have been lost.
+    pub(crate) fn discovery_running(&self, env: &str) -> bool {
+        self.app_discovering
+            .get(env)
+            .is_some_and(|t| t.elapsed() < DISCOVERY_STALE)
+    }
+
     pub(super) fn handle_app_tab_discovered(&mut self, env_name: String, found: Discovered) {
         self.app_discovering.remove(&env_name);
-        self.app_discovered.insert(env_name.clone(), found.clone());
+        if !self.demo_mode {
+            self.app_discovered.insert(env_name.clone(), found.clone());
+        }
         self.fill_app_tab_form(&env_name, &found);
         // An unconfigured env's App tab on screen: preview what was found.
         let on_tab = self
@@ -517,6 +539,10 @@ impl App {
         self.form = None;
         self.mode = Mode::Detail;
         self.pin_status(format!("App tab saved for {env}"));
+        // Past the in-flight guard: a preview still in flight would make
+        // the refresh skip, leaving the saved config undrawn until the
+        // stuck timeout. Its result is dropped as a preview on arrival.
+        self.detail_fetch_started = None;
         self.detail_refresh_active_tab();
     }
 }
@@ -572,6 +598,10 @@ pub(crate) fn summary_lines(found: &Discovered) -> Vec<String> {
     }
     out
 }
+
+/// Past this, a discovery with no answer is treated as lost: well beyond
+/// [`LOOKUP_BOUND`], which bounds every lookup it makes.
+pub(crate) const DISCOVERY_STALE: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// The longest the editor waits on any one discovery lookup.
 const LOOKUP_BOUND: std::time::Duration = std::time::Duration::from_secs(15);

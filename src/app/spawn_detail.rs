@@ -282,6 +282,7 @@ impl App {
             d.app_metrics.begin();
         }
         // No config: preview what discovery found evidence for, if any.
+        let preview = !self.cfg.app_tabs.envs.contains_key(&env_name);
         let spec = self.cfg.app_tabs.envs.get(&env_name).cloned().or_else(|| {
             self.app_discovered
                 .get(&env_name)
@@ -302,6 +303,7 @@ impl App {
                 gen,
                 env_name,
                 range_secs: range,
+                preview,
                 result: Ok(demo_rows.unwrap_or_default()),
             });
             return;
@@ -315,6 +317,7 @@ impl App {
                 gen,
                 env_name: env_for_msg,
                 range_secs: range,
+                preview,
                 result,
             },
         );

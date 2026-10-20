@@ -161,7 +161,7 @@ fn not_set_up(
     let strong = Style::default()
         .fg(theme.title)
         .add_modifier(Modifier::BOLD);
-    if app.app_discovering.contains(env) {
+    if app.discovery_running(env) {
         lines.push(Line::from(Span::styled(
             format!("Not set up yet. Looking for what {env} uses…"),
             muted,

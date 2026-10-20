@@ -1223,6 +1223,7 @@ async fn detail_results_for_another_env_are_dropped() {
     let mut app = armed();
     app.handle_msg(AppMsg::DetailAppMetrics {
         gen: app.generation,
+        preview: true,
         env_name: "worker-prod".into(),
         range_secs: 3600,
         result: Ok(app_metrics()),
@@ -1233,6 +1234,7 @@ async fn detail_results_for_another_env_are_dropped() {
     );
     app.handle_msg(AppMsg::DetailAppMetrics {
         gen: app.generation,
+        preview: true,
         env_name: "api-prod".into(),
         range_secs: 3600,
         result: Ok(app_metrics()),
@@ -2261,6 +2263,7 @@ async fn a_metrics_result_for_a_range_left_behind_is_dropped() {
     });
     app.handle_msg(AppMsg::DetailAppMetrics {
         gen: app.generation,
+        preview: true,
         env_name: "api-prod".into(),
         range_secs: 900,
         result: Ok(app_metrics("old")),
@@ -2284,6 +2287,7 @@ async fn a_metrics_result_for_a_range_left_behind_is_dropped() {
     });
     app.handle_msg(AppMsg::DetailAppMetrics {
         gen: app.generation,
+        preview: true,
         env_name: "api-prod".into(),
         range_secs: 86_400,
         result: Ok(app_metrics("new")),
@@ -2584,6 +2588,10 @@ fn saving_the_app_tab_writes_then_applies() {
     let apply = body.find("self.cfg.app_tabs =").expect("applies them");
     assert!(write < apply, "applied only after the write succeeded");
     assert!(
+        body.contains("self.detail_fetch_started = None;"),
+        "the save's refresh is not skipped for a preview in flight"
+    );
+    assert!(
         !body.contains("read_to_string"),
         "applies what it wrote, not a read-back that can fail"
     );
@@ -2610,10 +2618,11 @@ fn saving_the_app_tab_writes_then_applies() {
     assert!(reload < build, "re-read before the form is built");
 }
 
-/// An unconfigured env's discovery runs once a session; `^R` runs it
-/// again only when a lookup failed.
+/// An unconfigured env's discovery is kept for the session: opening the
+/// tab again reuses it, `^R` looks again (resources come and go), and a
+/// discovery whose answer was lost does not block the env for good.
 #[tokio::test]
-async fn discovery_runs_once_and_again_on_ctrl_r_only_after_a_failure() {
+async fn discovery_is_reused_on_open_rerun_on_ctrl_r_and_never_wedged() {
     use crate::app::app_tab_form::Discovered;
     let mut app = test_app();
     app.environments = vec![mk_env("api-prod", "shop", "WebServer", "Green")];
@@ -2623,10 +2632,7 @@ async fn discovery_runs_once_and_again_on_ctrl_r_only_after_a_failure() {
     let d = app.detail.as_mut().unwrap();
     d.tab_idx = d.tabs.iter().position(|t| *t == DetailTab::App).unwrap();
     app.detail_refresh_on_open();
-    assert!(app.app_discovering.contains("api-prod"));
-    app.app_discovering.clear();
-    app.app_discovered
-        .insert("api-prod".into(), Discovered::default());
+    assert!(app.discovery_running("api-prod"));
     let settle = |app: &mut App| {
         app.detail
             .as_mut()
@@ -2635,23 +2641,85 @@ async fn discovery_runs_once_and_again_on_ctrl_r_only_after_a_failure() {
             .settle(Ok(Default::default()));
         app.detail_fetch_started = None;
     };
-    settle(&mut app);
-    app.detail_refresh_active_tab();
-    assert!(
-        !app.app_discovering.contains("api-prod"),
-        "found already: not again"
-    );
-    app.app_discovered.get_mut("api-prod").unwrap().failed = vec![("alarms".into(), "x".into())];
+
+    app.app_discovering.clear();
+    app.app_discovered
+        .insert("api-prod".into(), Discovered::default());
     settle(&mut app);
     app.detail_refresh_on_open();
     assert!(
-        !app.app_discovering.contains("api-prod"),
-        "opening does not retry"
+        !app.discovery_running("api-prod"),
+        "opening reuses what was found"
     );
     settle(&mut app);
     app.detail_refresh_active_tab();
+    assert!(app.discovery_running("api-prod"), "^R looks again");
+
+    // A run whose answer never came (dropped by a context switch, a task
+    // that died) stops counting as running, so it is started again.
+    let long_ago = std::time::Instant::now()
+        .checked_sub(std::time::Duration::from_secs(120))
+        .expect("clock past two minutes");
+    app.app_discovering.insert("api-prod".into(), long_ago);
+    assert!(!app.discovery_running("api-prod"), "lost, not running");
+    settle(&mut app);
+    app.detail_refresh_active_tab();
+    assert!(app.discovery_running("api-prod"), "and started again");
+}
+
+/// A preview result that lands after the env got config is not drawn as
+/// that config's: it is dropped, and the config's own fetch is drawn.
+#[tokio::test]
+async fn a_preview_result_landing_after_a_save_is_dropped() {
+    let mut app = test_app();
+    app.environments = vec![mk_env("api-prod", "shop", "WebServer", "Green")];
+    app.rebuild_view();
+    app.table_state.select(Some(0));
+    app.open_detail();
+    app.cfg.app_tabs = crate::config::parse("app.api-prod.rds = \"db\"\n").app_tabs;
+    let marked = |note: &str| crate::app_tab::AppMetrics {
+        notes: vec![note.into()],
+        ..Default::default()
+    };
+    app.detail.as_mut().unwrap().app_metrics.begin();
+    app.handle_msg(AppMsg::DetailAppMetrics {
+        gen: app.generation,
+        env_name: "api-prod".into(),
+        range_secs: 3600,
+        preview: true,
+        result: Ok(marked("preview")),
+    });
     assert!(
-        app.app_discovering.contains("api-prod"),
-        "^R retries a failed lookup"
+        app.detail.as_ref().unwrap().app_metrics.ready().is_none(),
+        "dropped"
     );
+    app.handle_msg(AppMsg::DetailAppMetrics {
+        gen: app.generation,
+        env_name: "api-prod".into(),
+        range_secs: 3600,
+        preview: false,
+        result: Ok(marked("config")),
+    });
+    assert_eq!(
+        app.detail
+            .as_ref()
+            .unwrap()
+            .app_metrics
+            .ready()
+            .map(|m| m.notes[0].as_str()),
+        Some("config")
+    );
+}
+
+/// Demo mode looked at nothing, so it caches nothing: the tab keeps
+/// saying what to configure rather than "nothing found".
+#[tokio::test]
+async fn demo_mode_does_not_pass_off_an_empty_discovery() {
+    let mut app = test_app();
+    app.demo_mode = true;
+    app.spawn_app_discovery("api-prod".into());
+    let msg = app.msg_rx.try_recv().expect("answered at once");
+    app.handle_msg(msg);
+    assert!(app.app_discovered.is_empty());
+    assert!(!app.discovery_running("api-prod"));
 }

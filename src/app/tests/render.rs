@@ -2207,7 +2207,7 @@ async fn an_unconfigured_app_tab_shows_what_discovery_found() {
     press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
     press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
     assert!(
-        app.app_discovering.contains("api-prod"),
+        app.app_discovering.contains_key("api-prod"),
         "opening the tab looks"
     );
     let text = render(&mut app, 160, 34);
@@ -2232,21 +2232,24 @@ async fn an_unconfigured_app_tab_shows_what_discovery_found() {
         env_name: "api-prod".into(),
         found,
     });
-    assert!(!app.app_discovering.contains("api-prod"));
+    assert!(!app.app_discovering.contains_key("api-prod"));
     // The preview is a real fetch (the stub fails it); with nothing to
     // preview the tab would settle empty without calling AWS.
-    let result = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+    let msg = tokio::time::timeout(std::time::Duration::from_secs(10), async {
         loop {
-            if let AppMsg::DetailAppMetrics { result, .. } = app.msg_rx.recv().await.expect("msg") {
-                if result.is_err() {
-                    break result;
-                }
+            let m = app.msg_rx.recv().await.expect("msg");
+            if matches!(&m, AppMsg::DetailAppMetrics { result: Err(_), .. }) {
+                break m;
             }
         }
     })
     .await
     .expect("the preview was fetched");
-    assert!(result.is_err());
+    app.handle_msg(msg);
+    assert!(
+        app.detail.as_ref().unwrap().app_metrics.error().is_some(),
+        "and its result is the tab's, as a preview"
+    );
     let text = render(&mut app, 160, 34);
     for want in [
         "Not set up yet. Found for api-prod:",
@@ -2265,7 +2268,7 @@ async fn an_unconfigured_app_tab_shows_what_discovery_found() {
     let form = app.form.as_ref().expect("editor open");
     assert_eq!(form.state, crate::form::FormState::Ready, "no waiting");
     assert!(
-        !app.app_discovering.contains("api-prod"),
+        !app.app_discovering.contains_key("api-prod"),
         "not looked up again"
     );
     let cache = form.fields.iter().find(|f| f.key == "elasticache").unwrap();

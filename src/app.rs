@@ -551,7 +551,10 @@ pub struct App {
     /// of an env with no config shows it, and the editor opens with it.
     pub(crate) app_discovered: std::collections::HashMap<String, app_tab_form::Discovered>,
     /// Envs whose discovery is running, so it is not started twice.
-    pub(crate) app_discovering: std::collections::HashSet<String>,
+    /// When each running one started: past [`app_tab_form::DISCOVERY_STALE`]
+    /// it is treated as lost (a result dropped by a context switch, a
+    /// task that died) rather than blocking the env's discovery for good.
+    pub(crate) app_discovering: std::collections::HashMap<String, std::time::Instant>,
     pub(crate) newly_red: HashSet<String>,
     /// Env names that appeared for the first time on the most recent
     /// refresh (weren't in `prev_health` last cycle). Used by the env
@@ -707,6 +710,9 @@ pub(crate) enum AppMsg {
         env_name: String,
         /// As `DetailMetrics::range_secs`.
         range_secs: i64,
+        /// Fetched for discovery's preview rather than for config: dropped
+        /// once the env has config, or it would be drawn as the config's.
+        preview: bool,
         result: Result<crate::app_tab::AppMetrics, String>,
     },
     DetailTags {
