@@ -87,15 +87,10 @@ fn coerce_value_at(v: &noyalib::Value, depth: usize) -> String {
                 .collect();
             format!("{{{}}}", inner.join(", "))
         }
-        // `!Tag value` — YAML's enum syntax. The tag itself is not
-        // reachable: `TaggedValue`'s field is private in 0.0.13 and it
-        // exposes no accessor, so this renders the value alone. That is
-        // a real (if small) loss of fidelity — two differently-tagged
-        // values would diff as identical — and it is accepted because
-        // EB writes plain scalars into `OptionSettings`, so a tagged
-        // value cannot occur in a file we actually read. Revisit if the
-        // YAML crate is ever replaced.
-        Value::Tagged(_) => format!("{v:?}"),
+        // `!Tag value`. EB writes plain scalars into `OptionSettings`,
+        // so this only reaches a hand-edited file; the tag is kept so
+        // two differently-tagged values do not diff as identical.
+        Value::Tagged(t) => format!("{} {}", t.tag(), coerce_value_at(t.value(), depth + 1)),
     }
 }
 
@@ -445,6 +440,18 @@ mod coerce_tests {
         // diff an emptied list as unchanged.
         assert_eq!(value_for("OptionSettings:\n  NS:\n    K: []\n"), "[]");
         assert_eq!(value_for("OptionSettings:\n  NS:\n    K: null\n"), "");
+    }
+
+    #[test]
+    fn a_tagged_value_keeps_its_tag() {
+        // The old YAML crate kept the tag private, so this arm printed
+        // a Debug dump and two differently-tagged values could diff as
+        // identical.
+        assert_eq!(value_for("OptionSettings:\n  NS:\n    K: !a 1\n"), "!a 1");
+        assert_ne!(
+            value_for("OptionSettings:\n  NS:\n    K: !a 1\n"),
+            value_for("OptionSettings:\n  NS:\n    K: !b 1\n"),
+        );
     }
 
     #[test]
