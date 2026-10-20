@@ -460,6 +460,23 @@ impl App {
     }
 }
 
+/// The longest the editor waits on any one discovery lookup.
+const LOOKUP_BOUND: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// A lookup within [`LOOKUP_BOUND`]: past it, an error saying so.
+async fn bounded<T>(
+    f: impl std::future::Future<Output = color_eyre::eyre::Result<T>>,
+) -> color_eyre::eyre::Result<T> {
+    tokio::time::timeout(LOOKUP_BOUND, f)
+        .await
+        .unwrap_or_else(|_| {
+            Err(color_eyre::eyre::eyre!(
+                "no answer within {}s",
+                LOOKUP_BOUND.as_secs()
+            ))
+        })
+}
+
 /// A lookup's result, or nothing with its failure recorded.
 fn take<T>(
     failed: &mut Vec<(String, String)>,
@@ -480,13 +497,15 @@ async fn discover(
     fleet: Vec<String>,
 ) -> Discovered {
     let prefix = format!("{env}-");
+    // Each lookup pages within its own deadline; `bounded` also caps a
+    // single request that hangs, so the form never waits past it.
     let (groups, vars, rds, cache, alarms, custom) = tokio::join!(
-        aws.discover_env_log_groups(env),
-        aws.fetch_env_vars(app_name, env),
-        aws.list_dimension_values("AWS/RDS", "CPUUtilization", "DBInstanceIdentifier"),
-        aws.list_dimension_values("AWS/ElastiCache", "CPUUtilization", "CacheClusterId"),
-        aws.list_alarm_names_with_prefix(&prefix),
-        aws.list_custom_metrics(),
+        bounded(aws.discover_env_log_groups(env)),
+        bounded(aws.fetch_env_vars(app_name, env)),
+        bounded(aws.list_dimension_values("AWS/RDS", "CPUUtilization", "DBInstanceIdentifier")),
+        bounded(aws.list_dimension_values("AWS/ElastiCache", "CPUUtilization", "CacheClusterId")),
+        bounded(aws.list_alarm_names_with_prefix(&prefix)),
+        bounded(aws.list_custom_metrics()),
     );
     let mut failed = Vec::new();
     let inputs = crate::app_discover::Inputs {
@@ -743,6 +762,20 @@ mod tests {
             ],
             "another env's lines are not this save's"
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_lookup_that_never_answers_gives_up_at_the_bound() {
+        let started = tokio::time::Instant::now();
+        let r: color_eyre::eyre::Result<()> = bounded(std::future::pending()).await;
+        assert_eq!(
+            started.elapsed(),
+            LOOKUP_BOUND,
+            "gave up at the bound, not later"
+        );
+        let e = r.expect_err("gave up");
+        assert!(e.to_string().contains("no answer within 15s"), "{e}");
+        assert!(bounded(async { Ok(1) }).await.is_ok());
     }
 
     #[test]

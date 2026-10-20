@@ -5687,3 +5687,22 @@ async fn a_bounded_insights_query_is_stopped_on_the_server_when_it_runs_over() {
     assert_eq!(stop.num_calls(), 1, "the query is stopped on the server");
     assert!(running.num_calls() >= 2, "it polled until the bound");
 }
+
+#[tokio::test]
+async fn a_discovery_scan_that_runs_out_of_pages_is_refused_not_shortened() {
+    // A cut-off scan used to come back as if complete, so a namespace
+    // past the cut read as "no metrics found".
+    let endless = mock!(aws_sdk_cloudwatch::Client::list_metrics).then_output(|| {
+        aws_sdk_cloudwatch::operation::list_metrics::ListMetricsOutput::builder()
+            .next_token("more")
+            .build()
+    });
+    let client = client_with_cw(mock_client!(
+        aws_sdk_cloudwatch,
+        aws_smithy_mocks::RuleMode::MatchAny,
+        [&endless]
+    ));
+    let err = client.list_custom_metrics().await.expect_err("truncated");
+    assert!(err.to_string().contains("page budget"), "{err}");
+    assert_eq!(endless.num_calls(), super::DISCOVERY_PAGES);
+}

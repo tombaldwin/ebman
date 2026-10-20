@@ -74,6 +74,14 @@ impl AlarmMatch {
     }
 }
 
+/// Page budget for the App tab editor's discovery lookups: 40 pages of
+/// `ListMetrics` is 20,000 metrics, far past an account's custom ones.
+pub(crate) const DISCOVERY_PAGES: usize = 40;
+
+/// How long one discovery lookup may page for. The editor waits on
+/// them, so past this the lookup is reported as incomplete instead.
+pub(crate) const DISCOVERY_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// ALARM first, then INSUFFICIENT_DATA, then the rest, each by name, so
 /// every surface that lists alarms leads with the ones firing.
 pub(crate) fn sort_alarms(alarms: &mut [CwAlarm]) {
@@ -479,6 +487,10 @@ impl AwsClient {
     /// active in the last three hours: the RDS instances or cache nodes
     /// the App tab's editor offers. Recent only, so a deleted resource
     /// is not offered for the two weeks CloudWatch keeps listing it.
+    ///
+    /// Discovery's lookups are bounded ([`DISCOVERY_PAGES`],
+    /// [`DISCOVERY_DEADLINE`]) and refuse a partial answer: the editor
+    /// waits on them, and a short list would read as all there is.
     pub(crate) async fn list_dimension_values(
         &self,
         namespace: &str,
@@ -486,107 +498,110 @@ impl AwsClient {
         dimension: &str,
     ) -> Result<Vec<String>> {
         use aws_sdk_cloudwatch::types::{DimensionFilter, RecentlyActive};
-        let mut out: Vec<String> = Vec::new();
-        let mut token: Option<String> = None;
-        for _ in 0..SCAN_PAGES {
-            let resp = self
-                .cw
-                .list_metrics()
-                .namespace(namespace)
-                .metric_name(metric)
-                .dimensions(DimensionFilter::builder().name(dimension).build())
-                .recently_active(RecentlyActive::Pt3H)
-                .set_next_token(token.take())
-                .send()
-                .await
-                .aws_ctx("ListMetrics failed")?;
-            for m in resp.metrics.unwrap_or_default() {
-                for d in m.dimensions.unwrap_or_default() {
-                    if d.name.as_deref() == Some(dimension) {
-                        if let Some(v) = d.value {
-                            if !out.contains(&v) {
-                                out.push(v);
-                            }
-                        }
-                    }
-                }
-            }
-            token = resp.next_token;
-            if token.is_none() {
-                break;
-            }
-        }
+        let this = self;
+        let metrics = super::paginate_until(
+            "ListMetrics",
+            DISCOVERY_PAGES,
+            DISCOVERY_DEADLINE,
+            move |token| async move {
+                let resp = this
+                    .cw
+                    .list_metrics()
+                    .namespace(namespace)
+                    .metric_name(metric)
+                    .dimensions(DimensionFilter::builder().name(dimension).build())
+                    .recently_active(RecentlyActive::Pt3H)
+                    .set_next_token(token)
+                    .send()
+                    .await
+                    .aws_ctx("ListMetrics failed")?;
+                Ok((resp.metrics.unwrap_or_default(), resp.next_token))
+            },
+        )
+        .await?
+        .complete("ListMetrics")?;
+        let mut out: Vec<String> = metrics
+            .into_iter()
+            .flat_map(|m| m.dimensions.unwrap_or_default())
+            .filter(|d| d.name.as_deref() == Some(dimension))
+            .filter_map(|d| d.value)
+            .collect();
         out.sort();
+        out.dedup();
         Ok(out)
     }
 
     /// Names of the alarms starting with `prefix`, server-side filtered.
     pub(crate) async fn list_alarm_names_with_prefix(&self, prefix: &str) -> Result<Vec<String>> {
-        let mut out: Vec<String> = Vec::new();
-        let mut token: Option<String> = None;
-        for _ in 0..SCAN_PAGES {
-            let resp = self
-                .cw
-                .describe_alarms()
-                .alarm_name_prefix(prefix)
-                .max_records(100)
-                .set_next_token(token.take())
-                .send()
-                .await
-                .aws_ctx("DescribeAlarms failed")?;
-            out.extend(
-                resp.metric_alarms
-                    .unwrap_or_default()
-                    .into_iter()
-                    .filter_map(|a| a.alarm_name),
-            );
-            token = resp.next_token;
-            if token.is_none() {
-                break;
-            }
-        }
-        Ok(out)
+        let this = self;
+        let alarms = super::paginate_until(
+            "DescribeAlarms",
+            DISCOVERY_PAGES,
+            DISCOVERY_DEADLINE,
+            move |token| async move {
+                let resp = this
+                    .cw
+                    .describe_alarms()
+                    .alarm_name_prefix(prefix)
+                    .max_records(100)
+                    .set_next_token(token)
+                    .send()
+                    .await
+                    .aws_ctx("DescribeAlarms failed")?;
+                Ok((resp.metric_alarms.unwrap_or_default(), resp.next_token))
+            },
+        )
+        .await?
+        .complete("DescribeAlarms")?;
+        Ok(alarms.into_iter().filter_map(|a| a.alarm_name).collect())
     }
 
     /// Metrics active in the last three hours outside the `AWS/`
-    /// namespaces: where the operator's own metrics would be.
+    /// namespaces: where the operator's own metrics would be. CloudWatch
+    /// cannot filter by "not AWS/", so this pages through every recent
+    /// metric, within the discovery bounds.
     pub(crate) async fn list_custom_metrics(
         &self,
     ) -> Result<Vec<crate::app_discover::CustomMetric>> {
         use aws_sdk_cloudwatch::types::RecentlyActive;
-        let mut out = Vec::new();
-        let mut token: Option<String> = None;
-        for _ in 0..SCAN_PAGES {
-            let resp = self
-                .cw
-                .list_metrics()
-                .recently_active(RecentlyActive::Pt3H)
-                .set_next_token(token.take())
-                .send()
-                .await
-                .aws_ctx("ListMetrics failed")?;
-            for m in resp.metrics.unwrap_or_default() {
-                let namespace = m.namespace.unwrap_or_default();
-                if namespace.starts_with("AWS/") {
-                    continue;
-                }
-                out.push(crate::app_discover::CustomMetric {
-                    namespace,
-                    name: m.metric_name.unwrap_or_default(),
-                    dimensions: m
-                        .dimensions
-                        .unwrap_or_default()
-                        .into_iter()
-                        .map(|d| (d.name.unwrap_or_default(), d.value.unwrap_or_default()))
-                        .collect(),
-                });
-            }
-            token = resp.next_token;
-            if token.is_none() {
-                break;
-            }
-        }
-        Ok(out)
+        let this = self;
+        let metrics = super::paginate_until(
+            "ListMetrics",
+            DISCOVERY_PAGES,
+            DISCOVERY_DEADLINE,
+            move |token| async move {
+                let resp = this
+                    .cw
+                    .list_metrics()
+                    .recently_active(RecentlyActive::Pt3H)
+                    .set_next_token(token)
+                    .send()
+                    .await
+                    .aws_ctx("ListMetrics failed")?;
+                Ok((resp.metrics.unwrap_or_default(), resp.next_token))
+            },
+        )
+        .await?
+        .complete("ListMetrics")?;
+        Ok(metrics
+            .into_iter()
+            .filter(|m| {
+                !m.namespace
+                    .as_deref()
+                    .unwrap_or_default()
+                    .starts_with("AWS/")
+            })
+            .map(|m| crate::app_discover::CustomMetric {
+                namespace: m.namespace.unwrap_or_default(),
+                name: m.metric_name.unwrap_or_default(),
+                dimensions: m
+                    .dimensions
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|d| (d.name.unwrap_or_default(), d.value.unwrap_or_default()))
+                    .collect(),
+            })
+            .collect())
     }
 
     /// The App tab's metrics for one env: one `GetMetricData` call for
