@@ -82,7 +82,7 @@ pub(super) fn draw_detail_app(
     top_error_rows(&mut lines, &detail.top_errors, theme);
     let block = titled_block(
         &theme.chrome(),
-        &format!("App · {}", range_label(detail.metrics_range_secs)),
+        &format!("App · {}", humanize_range(detail.metrics_range_secs)),
         true,
         theme.title,
     )
@@ -457,13 +457,6 @@ pub(crate) fn format_bytes(v: f64) -> String {
     format!("{v:.0}B")
 }
 
-fn range_label(secs: i64) -> String {
-    match secs {
-        s if s % 3600 == 0 => format!("{}h", s / 3600),
-        s => format!("{}m", s / 60),
-    }
-}
-
 /// A metric value in at most about six cells: `1620`, `41.5`, `0.42`,
 /// `12.3k`, `4.1M`.
 pub(crate) fn format_value(v: f64) -> String {
@@ -667,12 +660,5 @@ mod tests {
                 ok: 2,
             }
         );
-    }
-
-    #[test]
-    fn range_labels_name_the_window() {
-        assert_eq!(range_label(900), "15m");
-        assert_eq!(range_label(3600), "1h");
-        assert_eq!(range_label(86_400), "24h");
     }
 }
