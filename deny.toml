@@ -6,21 +6,14 @@
 [advisories]
 # Fail on any known advisory. Every exception below is dated and
 # justified — an accepted risk belongs here in the open, not as a
-# loosened threshold. Review these when the AWS SDK moves to rustls
-# 0.23; most should disappear on their own.
+# loosened threshold.
 yanked = "deny"
 ignore = [
-    # rustls 0.21 / rustls-webpki, reached only through
-    # `aws-smithy-http-client`. ebman does not parse certificates or
-    # CRLs itself and cannot choose the TLS stack the AWS SDK links.
-    # Fixed upstream in rustls 0.23; nothing to do here until the SDK
-    # bumps. Reviewed 2026-08-22.
-    "RUSTSEC-2026-0098",  # name constraints accepted for URI names
-    "RUSTSEC-2026-0099",  # name constraints accepted for wildcard certs
-    "RUSTSEC-2026-0104",  # reachable panic parsing a CRL
-    # h2, via hyper inside the same SDK client stack. Unbounded empty
-    # DATA frames is a server-side DoS; ebman is a client that talks
-    # only to AWS endpoints. Reviewed 2026-08-22.
+    # h2 0.3, reached only by TEST builds since the SDK's legacy rustls
+    # 0.21 client was switched off: `aws-smithy-mocks` (a
+    # dev-dependency) still turns on the hyper 0.14 stack that links it.
+    # Unbounded empty DATA frames is a server-side DoS, and the shipped
+    # binary does not contain this h2. Reviewed 2026-10-20.
     "RUSTSEC-2026-0258",
 ]
 
@@ -37,7 +30,6 @@ allow = [
     "Unicode-3.0",
     "Zlib",
     "CC0-1.0",
-    "MPL-2.0",
     # All permissive and compatible with redistributing under
     # MIT OR Apache-2.0. Each earned its place by an actual dependency
     # rather than being pre-loaded: BSL-1.0 (clipboard-win, error-code),
