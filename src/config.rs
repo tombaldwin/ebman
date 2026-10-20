@@ -484,9 +484,9 @@ fn app_value_problem(raw: &str) -> Option<&'static str> {
             "has an opening quote and no closing one"
         });
     }
-    // `"Shop" # the "prod" one` ends in a quote too.
-    inner
-        .contains("\" #")
+    // `"Shop" # the "prod"` ends in a quote too; with or without the
+    // space before `#`.
+    (inner.contains("\" #") || inner.contains("\"#"))
         .then_some("looks like it carries an inline # comment, which is not supported: put the comment on its own line")
 }
 
@@ -1342,6 +1342,7 @@ accounts.staging.external_id = "abc-xyz"
             (r#""Shop" # prod"#, Some("text after its closing quote")),
             // Ends in a quote, so only the comment check catches it.
             (r#""Shop" # the "prod""#, Some("looks like it carries")),
+            (r##""Shop"# the "prod""##, Some("looks like it carries")),
             (r#""Shop"#, Some("no closing one")),
             (r#""Shop""#, None),
             (r#""msg="(?<fp>[^"]+)"""#, None),
