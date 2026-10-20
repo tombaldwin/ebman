@@ -13,7 +13,7 @@ use crate::app_tab::{AppMetrics, AppTabSpec, Point, TopErrors};
 /// the query is stopped on the server.
 const TOP_ERRORS_BOUND_SECS: u64 = 20;
 
-pub(super) const DESCRIPTION: &str = "The App tab for one environment: the operator's own CloudWatch metrics and the RDS / ElastiCache resources named under `app.ENV.*` in config.toml, enhanced health's figures per instance, and the env's alarms (matched by dimension or by `app.ENV.alarm_prefix`, ALARM first). CAVEATS: only what config names is read, so a clean result says nothing about metrics or resources it was not told about; `configured: false` means the env has no App tab config and `metrics` / `resources` are empty for that reason, not because nothing is wrong. A metric is only as fresh as the application publishes it: read `latest_at`, not just `latest`. Reads go to the `region` argument (or the profile's default), not the env's own region: for an env elsewhere, pass `region`, since a wrong one answers with empty series (`latest: null`), not an error. Instance figures are enhanced health's last window (about 10s), null without enhanced health. `top_errors` is null unless you pass `top_errors: true` AND the env has `app.ENV.log_group` (asked for without one, `notes` says so): it runs a Logs Insights query, which is billed per GB scanned, over the last 15 minutes, and counts only lines containing ERROR. `notes` carries anything short of a complete CloudWatch answer, `config_errors` the env's config lines that did not apply, and `errors` each section that failed (that section is null).";
+pub(super) const DESCRIPTION: &str = "The App tab for one environment: the operator's own CloudWatch metrics and the RDS / ElastiCache resources named under `app.ENV.*` in config.toml, enhanced health's figures per instance, and the env's alarms (matched by dimension or by `app.ENV.alarm_prefix`, ALARM first). CAVEATS: only what config names is read, so a clean result says nothing about metrics or resources it was not told about; `configured: false` means the env has no App tab config and `metrics` / `resources` are empty for that reason, not because nothing is wrong. A metric is only as fresh as the application publishes it: read `latest_at`, not just `latest`. Reads go to the `region` argument (or the profile's default), not the env's own region: for an env elsewhere, pass `region`, since a wrong one answers with empty series (`latest: null`), not an error. Instance figures are enhanced health's last window (about 10s), null without enhanced health. `top_errors` is NOT REDACTED: each fingerprint is the raw text of the application's ERROR lines (by default the first 100 characters of each), so anything the application logged there (tokens, connection strings, customer data) reaches the client verbatim. It is null unless you pass `top_errors: true` AND the env has `app.ENV.log_group` (asked for without one, `notes` says so): it runs a Logs Insights query, which is billed per GB scanned, over the last 15 minutes, and counts only lines containing ERROR. `notes` carries anything short of a complete CloudWatch answer, `config_errors` the env's config lines that did not apply, and `errors` each section that failed (that section is null).";
 
 pub(super) fn schema() -> Value {
     json!({
@@ -71,27 +71,6 @@ impl Server {
         }
 
         let client = self.client(args).await?;
-        // A prefix needs the fleet, so another env's alarms that share it
-        // stay out (`AlarmMatch::shadowed_by`). Without a prefix the
-        // listing is not needed, and not made.
-        let fleet: Result<Vec<String>, String> =
-            if spec.as_ref().is_some_and(|s| s.alarm_prefix.is_some()) {
-                self.fetch_envs(args)
-                    .await
-                    .map(|envs| envs.into_iter().map(|e| e.name).collect())
-            } else {
-                Ok(Vec::new())
-            };
-        let matching = aws::AlarmMatch::for_env(
-            &self.safety_cfg.alarm_dimensions,
-            tabs,
-            &env,
-            fleet
-                .as_deref()
-                .unwrap_or_default()
-                .iter()
-                .map(String::as_str),
-        );
         let has_log_group = spec.as_ref().is_some_and(|s| s.log_group.is_some());
         let log_group = spec
             .as_ref()
@@ -111,7 +90,36 @@ impl Server {
                 }
             },
             client.list_instances(&env),
-            client.list_alarms_for_env(&env, &matching),
+            async {
+                // A prefix needs the fleet, so another env's alarms that
+                // share it stay out (`AlarmMatch::shadowed_by`). Listed
+                // inside this section, so its time counts against the
+                // section rather than delaying all of them; and only when
+                // a prefix is set.
+                let fleet: Vec<String> = if spec.as_ref().is_some_and(|s| s.alarm_prefix.is_some())
+                {
+                    match self.fetch_envs(args).await {
+                        Ok(envs) => envs.into_iter().map(|e| e.name).collect(),
+                        // Without the fleet a prefix could claim another
+                        // env's alarms: fail the section, don't guess.
+                        Err(e) => {
+                            return Err(color_eyre::eyre::eyre!(
+                                "could not list environments to keep other envs' alarms \
+                                 out of the alarm_prefix match: {e}"
+                            ))
+                        }
+                    }
+                } else {
+                    Vec::new()
+                };
+                let matching = aws::AlarmMatch::for_env(
+                    &self.safety_cfg.alarm_dimensions,
+                    tabs,
+                    &env,
+                    fleet.iter().map(String::as_str),
+                );
+                client.list_alarms_for_env(&env, &matching).await
+            },
             async {
                 let Some(group) = log_group else {
                     return Ok(None);
@@ -142,18 +150,7 @@ impl Server {
         );
         let metrics = keep(&mut errors, "metrics", metrics);
         let instances = keep(&mut errors, "instances", instances.map(Some));
-        let alarms = match fleet {
-            // Without the fleet a prefix could claim another env's alarms.
-            Err(e) => keep::<Vec<aws::CwAlarm>>(
-                &mut errors,
-                "alarms",
-                Err(color_eyre::eyre::eyre!(
-                    "could not list environments to keep other envs' alarms out of \
-                     the alarm_prefix match: {e}"
-                )),
-            ),
-            Ok(_) => keep(&mut errors, "alarms", alarms.map(Some)),
-        };
+        let alarms = keep(&mut errors, "alarms", alarms.map(Some));
         let top_errors = keep(&mut errors, "top_errors", top_errors);
         Ok(render(&Bundle {
             env: &env,
@@ -358,6 +355,13 @@ mod tests {
             top_errors_note: None,
             errors,
         })
+    }
+
+    #[test]
+    fn the_description_says_top_errors_is_raw_log_text() {
+        // As recent_logs does: an agent must be told a field carries what
+        // the application logged, verbatim.
+        assert!(DESCRIPTION.contains("`top_errors` is NOT REDACTED"));
     }
 
     #[test]
