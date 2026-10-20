@@ -2103,3 +2103,86 @@ async fn the_app_tab_draws_series_thresholds_and_config_errors() {
         "another env's errors are not shown:\n{text}"
     );
 }
+
+/// `icons = "ascii"`: nothing inside the App panel draws outside ASCII,
+/// whatever state it is in. The panel's border is ratatui's, outside
+/// this tab's control, so only the cells inside it are checked.
+#[tokio::test]
+async fn the_app_tab_is_ascii_in_ascii_mode() {
+    use crate::app_tab::{AppMetrics, AppSeries};
+    let mut cfg = crate::config::parse(
+        "app.api-prod.namespace = \"Shop\"\n\
+         app.api-prod.metric.users = \"usersActive|Maximum|count\"\n\
+         app.api-prod.metric.gone = \"gone\"\n\
+         app.api-prod.log_group = \"g\"\n",
+    );
+    cfg.icons = "ascii".into();
+    let mut app = App::for_tests(crate::aws::AwsClient::stub(), cfg);
+    app.environments = vec![mk_env("api-prod", "poly", "Web", "Green")];
+    app.view.invalidate();
+    app.rebuild_view();
+    press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+    let at = |v: f64| (chrono::Utc::now(), v);
+    let alarm = |name: &str, state: &str| crate::aws::CwAlarm {
+        name: name.into(),
+        state: state.into(),
+        state_reason: String::new(),
+        metric_name: String::new(),
+        namespace: String::new(),
+    };
+    let check = |app: &mut App, what: &str| {
+        let text = render(app, 160, 40);
+        let rows: Vec<&str> = text
+            .lines()
+            .skip_while(|l| !l.contains("App | "))
+            .skip(1)
+            .take_while(|l| l.chars().nth(1).is_some_and(|c| c != '─' && c != '-'))
+            .collect();
+        assert!(
+            !rows.is_empty(),
+            "{what}: the App panel was not found:\n{text}"
+        );
+        for row in rows {
+            let chars: Vec<char> = row.chars().collect();
+            let inner: String = chars[1..chars.len().saturating_sub(1)].iter().collect();
+            assert!(inner.is_ascii(), "{what}: non-ascii in {inner:?}");
+        }
+    };
+
+    // First load: the loading lines.
+    let d = app.detail.as_mut().unwrap();
+    d.app_metrics.begin();
+    d.cw_alarms.begin();
+    d.top_errors.begin();
+    check(&mut app, "first load");
+
+    // Settled: a missing value, alarms of every state, a sparkline.
+    let d = app.detail.as_mut().unwrap();
+    d.cw_alarms.settle(Ok(vec![
+        alarm("a", "ALARM"),
+        alarm("b", "INSUFFICIENT_DATA"),
+        alarm("c", "OK"),
+    ]));
+    d.app_metrics.settle(Ok(AppMetrics {
+        series: vec![
+            AppSeries {
+                label: "users".into(),
+                unit: Some("count".into()),
+                threshold: None,
+                points: vec![at(1.0), at(3.0), at(2.0)],
+                instances: vec![("i-a".into(), vec![])],
+            },
+            AppSeries {
+                label: "gone".into(),
+                unit: None,
+                threshold: None,
+                points: vec![],
+                instances: vec![],
+            },
+        ],
+        resources: vec![],
+        notes: vec![],
+    }));
+    check(&mut app, "settled");
+}

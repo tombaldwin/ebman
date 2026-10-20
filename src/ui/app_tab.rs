@@ -80,19 +80,32 @@ pub(super) fn draw_detail_app(
     }
     instance_rows(&mut lines, &detail.instances, area.width, theme);
     top_error_rows(&mut lines, &detail.top_errors, theme);
-    let block = titled_block(
-        &theme.chrome(),
-        &format!("App · {}", humanize_range(detail.metrics_range_secs)),
-        true,
-        theme.title,
-    )
-    .padding(Padding::horizontal(1));
+    let mut title = format!("App · {}", humanize_range(detail.metrics_range_secs));
+    if theme.icons == IconStyle::Ascii {
+        title = asciify(&title);
+        for line in &mut lines {
+            for span in &mut line.spans {
+                if !span.content.is_ascii() {
+                    span.content = asciify(&span.content).into();
+                }
+            }
+        }
+    }
+    let block =
+        titled_block(&theme.chrome(), &title, true, theme.title).padding(Padding::horizontal(1));
     f.render_widget(
         Paragraph::new(lines)
             .block(block)
             .wrap(Wrap { trim: false }),
         area,
     );
+}
+
+/// The tab's own non-ASCII punctuation, for `icons = "ascii"`: one
+/// choke point over every line, so a string added later cannot slip
+/// past it. Sparklines are already drawn in ASCII in that mode.
+fn asciify(s: &str) -> String {
+    s.replace('—', "-").replace('…', "...").replace('·', "|")
 }
 
 /// `label  value unit  sparkline  instance value  instance value …`.
