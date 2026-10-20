@@ -222,6 +222,21 @@ fn top_error_rows(
             Span::styled(fp.clone(), Style::default().fg(theme.text)),
         ]));
     }
+    if t.more.0 > 0 {
+        lines.push(Line::from(Span::styled(
+            format!(
+                "{:>6}  in {} more fingerprints{}",
+                t.more.1,
+                t.more.0,
+                if t.truncated {
+                    " (and possibly more: the query hit its row limit)"
+                } else {
+                    ""
+                }
+            ),
+            muted,
+        )));
+    }
     if t.unmatched > 0 {
         lines.push(Line::from(Span::styled(
             format!(

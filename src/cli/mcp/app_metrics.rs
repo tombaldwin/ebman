@@ -263,6 +263,9 @@ pub(super) fn render(b: &Bundle) -> Value {
             "log_group": t.log_group,
             "window_minutes": crate::app_tab::TOP_ERRORS_WINDOW_MINS,
             "rows": t.rows.iter().map(|(fp, n)| json!({"fingerprint": fp, "count": n})).collect::<Vec<_>>(),
+            "more_fingerprints": t.more.0,
+            "more_lines": t.more.1,
+            "truncated": t.truncated,
             "unmatched": t.unmatched,
             "records_scanned": t.records_scanned,
         })

@@ -1247,6 +1247,8 @@ async fn detail_results_for_another_env_are_dropped() {
     let top = || crate::app_tab::TopErrors {
         log_group: "g".into(),
         rows: vec![],
+        more: (0, 0),
+        truncated: false,
         unmatched: 0,
         records_scanned: 0,
         fetched_at: chrono::DateTime::from_timestamp(0, 0).unwrap(),
@@ -1986,6 +1988,8 @@ async fn top_errors_runs_when_a_person_asks_and_only_then() {
     let answer = |mins_ago: i64| crate::app_tab::TopErrors {
         log_group: "g".into(),
         rows: vec![],
+        more: (0, 0),
+        truncated: false,
         unmatched: 0,
         records_scanned: 0,
         fetched_at: chrono::Utc::now() - chrono::Duration::minutes(mins_ago),

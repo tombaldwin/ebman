@@ -811,6 +811,15 @@ pub(crate) const TOP_ERRORS_WINDOW_MINS: i64 = 15;
 /// leaving `^R` blocked.
 pub(crate) const TOP_ERRORS_BOUND: std::time::Duration = std::time::Duration::from_secs(120);
 
+/// Fingerprint groups the query returns. Far more than are shown, so
+/// the unmatched group (an empty `fp`) is not cut off by `limit` when
+/// there are many distinct fingerprints: rows cost nothing to scan, and
+/// the top few are picked here.
+const TOP_ERRORS_FETCHED: usize = 1000;
+
+/// Fingerprints shown, most frequent first.
+pub(crate) const TOP_ERRORS_SHOWN: usize = 10;
+
 /// Used when `app.ENV.error_fingerprint` is unset: the first hundred
 /// characters from `ERROR`, which groups identical messages and keeps
 /// distinct ones apart without knowing the app's log format.
@@ -827,7 +836,7 @@ pub(crate) fn top_errors_query(fingerprint: Option<&str>) -> String {
          | parse @message /{fp}/\n\
          | stats count(*) as n by fp\n\
          | sort n desc\n\
-         | limit 10"
+         | limit {TOP_ERRORS_FETCHED}"
     )
 }
 
@@ -849,8 +858,14 @@ pub(crate) fn top_errors_log_group(env: &str, configured: &str) -> String {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct TopErrors {
     pub log_group: String,
-    /// `(fingerprint, count)`, most frequent first.
+    /// `(fingerprint, count)`, most frequent first, at most
+    /// [`TOP_ERRORS_SHOWN`].
     pub rows: Vec<(String, u64)>,
+    /// Distinct fingerprints past those in `rows`, and the lines they
+    /// account for.
+    pub more: (usize, u64),
+    /// The query hit its own row limit: there may be still more.
+    pub truncated: bool,
     /// ERROR lines the fingerprint did not match: counted, not hidden.
     pub unmatched: u64,
     pub records_scanned: i64,
@@ -868,6 +883,8 @@ pub(crate) fn top_errors_from(
     let mut out = TopErrors {
         log_group,
         rows: Vec::new(),
+        more: (0, 0),
+        truncated: rows.len() >= TOP_ERRORS_FETCHED,
         unmatched: 0,
         records_scanned,
         fetched_at,
@@ -888,6 +905,10 @@ pub(crate) fn top_errors_from(
     }
     out.rows
         .sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    if out.rows.len() > TOP_ERRORS_SHOWN {
+        let rest = out.rows.split_off(TOP_ERRORS_SHOWN);
+        out.more = (rest.len(), rest.iter().map(|(_, n)| n).sum());
+    }
     out
 }
 
@@ -1428,7 +1449,7 @@ mod tests {
              | parse @message /ERROR (?<fp>\\w+Exception)/\n\
              | stats count(*) as n by fp\n\
              | sort n desc\n\
-             | limit 10"
+             | limit 1000"
         );
         assert!(top_errors_query(None).contains("parse @message /(?<fp>ERROR.{0,100})/"));
     }
@@ -1475,6 +1496,42 @@ mod tests {
         );
         assert_eq!(t.unmatched, 5);
         assert_eq!((t.records_scanned, t.fetched_at), (900, at));
+        assert_eq!((t.more, t.truncated), ((0, 0), false));
+    }
+
+    #[test]
+    fn many_fingerprints_keep_the_unmatched_count_and_say_how_many_more() {
+        // The unmatched group comes back from a query that is not cut to
+        // the ten shown, so it is counted however many fingerprints there
+        // are; the ones past ten are summarised, not dropped silently.
+        let at = chrono::DateTime::from_timestamp(0, 0).unwrap();
+        let mut rows: Vec<Vec<(String, String)>> = (1..=14)
+            .map(|i| {
+                vec![
+                    ("fp".to_string(), format!("E{i:02}")),
+                    ("n".to_string(), i.to_string()),
+                ]
+            })
+            .collect();
+        rows.push(vec![("n".to_string(), "100".to_string())]);
+        let t = top_errors_from("g".into(), &rows, 0, at);
+        assert_eq!(t.rows.len(), TOP_ERRORS_SHOWN);
+        assert_eq!(t.rows[0], ("E14".to_string(), 14));
+        assert_eq!(t.more, (4, 1 + 2 + 3 + 4), "E01..E04 past the ten");
+        assert_eq!(t.unmatched, 100);
+        assert!(!t.truncated);
+        let full: Vec<Vec<(String, String)>> = (0..TOP_ERRORS_FETCHED)
+            .map(|i| {
+                vec![
+                    ("fp".to_string(), format!("F{i}")),
+                    ("n".to_string(), "1".into()),
+                ]
+            })
+            .collect();
+        assert!(
+            top_errors_from("g".into(), &full, 0, at).truncated,
+            "the query's own limit was hit"
+        );
     }
 
     #[test]

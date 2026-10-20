@@ -1919,6 +1919,8 @@ async fn the_app_tab_draws_series_thresholds_and_config_errors() {
     d.top_errors.settle(Ok(crate::app_tab::TopErrors {
         log_group: "/aws/elasticbeanstalk/api-prod/var/log/app.log".into(),
         rows: vec![("PoolTimeoutException".into(), 12), ("NPE".into(), 4)],
+        more: (6, 9),
+        truncated: false,
         unmatched: 3,
         records_scanned: 900,
         fetched_at: chrono::Utc::now(),
@@ -2026,6 +2028,7 @@ async fn the_app_tab_draws_series_thresholds_and_config_errors() {
         "    12  PoolTimeoutException",
         "     4  NPE",
         "     3  ERROR lines the fingerprint did not match",
+        "     9  in 6 more fingerprints",
     ] {
         assert!(text.contains(want), "top errors lack {want:?}:\n{text}");
     }
