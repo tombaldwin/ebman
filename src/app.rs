@@ -669,6 +669,9 @@ pub(crate) enum AppMsg {
     DetailMetrics {
         gen: u64,
         env_name: String,
+        /// The range it was fetched for: `[` `]` pressed twice fires two
+        /// fetches, and the one for the old range must not land last.
+        range_secs: i64,
         result: Result<Vec<MetricSeries>, String>,
     },
     /// The App tab's top errors for one env.
@@ -681,6 +684,8 @@ pub(crate) enum AppMsg {
     DetailAppMetrics {
         gen: u64,
         env_name: String,
+        /// As `DetailMetrics::range_secs`.
+        range_secs: i64,
         result: Result<crate::app_tab::AppMetrics, String>,
     },
     DetailTags {

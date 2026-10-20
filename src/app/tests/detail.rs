@@ -1224,6 +1224,7 @@ async fn detail_results_for_another_env_are_dropped() {
     app.handle_msg(AppMsg::DetailAppMetrics {
         gen: app.generation,
         env_name: "worker-prod".into(),
+        range_secs: 3600,
         result: Ok(app_metrics()),
     });
     assert!(
@@ -1233,6 +1234,7 @@ async fn detail_results_for_another_env_are_dropped() {
     app.handle_msg(AppMsg::DetailAppMetrics {
         gen: app.generation,
         env_name: "api-prod".into(),
+        range_secs: 3600,
         result: Ok(app_metrics()),
     });
     assert_eq!(
@@ -2193,4 +2195,71 @@ async fn the_tabs_top_errors_query_is_stopped_past_its_bound() {
     let err = result.expect_err("the query never completed");
     assert!(err.contains("ran past 120s and was stopped"), "{err}");
     assert_eq!(stop.num_calls(), 1);
+}
+
+/// `[` then `]` fires two fetches; whichever lands last, only the one
+/// for the range on screen is shown. One case per tab.
+#[tokio::test]
+async fn a_metrics_result_for_a_range_left_behind_is_dropped() {
+    let mut app = test_app();
+    app.environments = vec![mk_env("api-prod", "shop", "WebServer", "Green")];
+    app.rebuild_view();
+    app.table_state.select(Some(0));
+    app.open_detail();
+    let d = app.detail.as_mut().unwrap();
+    d.metrics_range_secs = 86_400;
+    d.loading_metrics = true;
+    d.app_metrics.begin();
+    let series = |label: &str| crate::aws::MetricSeries {
+        id: label.into(),
+        label: label.into(),
+        points: vec![],
+    };
+    let app_metrics = |note: &str| crate::app_tab::AppMetrics {
+        notes: vec![note.into()],
+        ..Default::default()
+    };
+
+    // The old range's answers land: dropped, still loading.
+    app.handle_msg(AppMsg::DetailMetrics {
+        gen: app.generation,
+        env_name: "api-prod".into(),
+        range_secs: 900,
+        result: Ok(vec![series("old")]),
+    });
+    app.handle_msg(AppMsg::DetailAppMetrics {
+        gen: app.generation,
+        env_name: "api-prod".into(),
+        range_secs: 900,
+        result: Ok(app_metrics("old")),
+    });
+    let d = app.detail.as_ref().unwrap();
+    assert!(
+        d.metrics.is_empty() && d.loading_metrics,
+        "Metrics tab kept waiting"
+    );
+    assert!(
+        d.app_metrics.ready().is_none() && d.app_metrics.in_flight(),
+        "App tab kept waiting"
+    );
+
+    // The current range's answers apply.
+    app.handle_msg(AppMsg::DetailMetrics {
+        gen: app.generation,
+        env_name: "api-prod".into(),
+        range_secs: 86_400,
+        result: Ok(vec![series("new")]),
+    });
+    app.handle_msg(AppMsg::DetailAppMetrics {
+        gen: app.generation,
+        env_name: "api-prod".into(),
+        range_secs: 86_400,
+        result: Ok(app_metrics("new")),
+    });
+    let d = app.detail.as_ref().unwrap();
+    assert_eq!(d.metrics[0].label, "new");
+    assert_eq!(
+        d.app_metrics.ready().map(|m| m.notes[0].as_str()),
+        Some("new")
+    );
 }

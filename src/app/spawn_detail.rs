@@ -220,6 +220,7 @@ impl App {
                     let _ = tx.send(AppMsg::DetailMetrics {
                         gen,
                         env_name,
+                        range_secs: range,
                         result: Err(flatten_err("cached_client", e)),
                     });
                     return;
@@ -245,6 +246,7 @@ impl App {
             let _ = tx.send(AppMsg::DetailMetrics {
                 gen,
                 env_name,
+                range_secs: range,
                 result,
             });
         });
@@ -277,6 +279,7 @@ impl App {
             let _ = self.msg_tx.send(AppMsg::DetailAppMetrics {
                 gen,
                 env_name,
+                range_secs: range,
                 result: Ok(demo_rows.unwrap_or_default()),
             });
             return;
@@ -289,6 +292,7 @@ impl App {
             move |gen, result| AppMsg::DetailAppMetrics {
                 gen,
                 env_name: env_for_msg,
+                range_secs: range,
                 result,
             },
         );
