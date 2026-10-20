@@ -145,11 +145,13 @@ pub(crate) fn apply_discovery(fields: &mut [FormField], found: &Discovered) {
         if !options.contains(&f.value) {
             options.push(f.value.clone());
         }
+        // Offered, not chosen: a log group turns on a Logs Insights
+        // query billed per GB scanned, which is the operator's call.
         if f.value == NO_LOG_GROUP {
             if let Some(app_log) = &d.app_log {
-                f.value = app_log.clone();
                 f.help = Some(format!(
-                    "found: {app_log} is the env's only non-platform log"
+                    "found: {app_log} is the env's only non-platform log; choose it \
+                     to turn on top errors (Logs Insights, billed per GB scanned)"
                 ));
             }
         }
@@ -197,10 +199,23 @@ pub(crate) fn apply_discovery(fields: &mut [FormField], found: &Discovered) {
         if let Some(inst) = &app.instance_dimension {
             set("instance_dimension", inst.clone(), why.clone());
         }
+        let mut labels: Vec<String> = Vec::new();
         let entries: Vec<String> = app
             .names
             .iter()
-            .map(|n| format!("{}={n}|Average", label_for(n)))
+            .map(|n| {
+                // `heap.used` and `heap_used` share a label; a second
+                // would replace the first, so it is numbered instead.
+                let base = label_for(n);
+                let mut label = base.clone();
+                let mut k = 2;
+                while labels.contains(&label) {
+                    label = format!("{base}_{k}");
+                    k += 1;
+                }
+                labels.push(label.clone());
+                format!("{label}={n}|Average")
+            })
             .collect();
         set("metrics", entries.join(&format!("{ENTRY_SEP} ")), why);
     }
@@ -551,7 +566,7 @@ mod tests {
                     namespace: "Shop".into(),
                     dimension: ("Environment".into(), "Shop-prod".into()),
                     instance_dimension: Some("InstanceId".into()),
-                    names: vec!["usersActive".into(), "heap.used".into()],
+                    names: vec!["usersActive".into(), "heap.used".into(), "heap_used".into()],
                 }),
             },
             failed: vec![],
@@ -562,7 +577,20 @@ mod tests {
     fn discovery_fills_empty_fields_and_assumes_no_database() {
         let mut f = fields(None);
         apply_discovery(&mut f, &found());
-        assert_eq!(value(&f, "log_group"), "var/log/app.log");
+        assert_eq!(
+            value(&f, "log_group"),
+            NO_LOG_GROUP,
+            "offered, not chosen: it is billed"
+        );
+        let lg = f.iter().find(|x| x.key == "log_group").unwrap();
+        assert!(lg
+            .help
+            .as_deref()
+            .unwrap_or("")
+            .contains("var/log/app.log is the env's only"));
+        assert!(
+            matches!(&lg.kind, FieldKind::Select { options } if options.contains(&"var/log/app.log".to_string()))
+        );
         assert_eq!(value(&f, "alarm_prefix"), "Shop-prod-");
         assert_eq!(value(&f, "rds"), "", "offered, none chosen");
         let rds = f.iter().find(|x| x.key == "rds").unwrap();
@@ -587,7 +615,8 @@ mod tests {
         assert_eq!(value(&f, "instance_dimension"), "InstanceId");
         assert_eq!(
             value(&f, "metrics"),
-            "usersActive=usersActive|Average; heap_used=heap.used|Average"
+            "usersActive=usersActive|Average; heap_used=heap.used|Average; heap_used_2=heap_used|Average",
+            "colliding labels are numbered, not lost"
         );
     }
 

@@ -148,6 +148,17 @@ fn cache_target_of(host: &str) -> Option<&str> {
     }
 }
 
+/// Whether cache node `node` is `target` itself or one of group
+/// `target`'s nodes, which ElastiCache names `<group>-<digits>`. A bare
+/// prefix would take `shop-sessions-001` as a node of group `prod`.
+fn is_node_of(node: &str, target: &str) -> bool {
+    node == target
+        || node
+            .strip_prefix(target)
+            .and_then(|rest| rest.strip_prefix('-'))
+            .is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
+}
+
 pub(crate) fn discover(env: &str, inputs: &Inputs) -> Discovery {
     let base = format!("/aws/elasticbeanstalk/{env}/");
     let log_groups: Vec<String> = inputs
@@ -188,12 +199,7 @@ pub(crate) fn discover(env: &str, inputs: &Inputs) -> Discovery {
             }
         }
         if let Some(target) = cache_target_of(host) {
-            let group_prefix = format!("{target}-");
-            for node in inputs
-                .cache_ids
-                .iter()
-                .filter(|n| *n == target || n.starts_with(&group_prefix))
-            {
+            for node in inputs.cache_ids.iter().filter(|n| is_node_of(n, target)) {
                 if !cache_found.iter().any(|(n, _)| n == node) {
                     cache_found.push((node.clone(), var.clone()));
                 }
@@ -363,7 +369,13 @@ mod tests {
                 ("DB".into(), "shop-db.x.us-west-1.rds.amazonaws.com".into()),
             ],
             rds_ids: s(&["shop-db", "other-db", "shop-db"]),
-            cache_ids: s(&["sessions-001", "sessions-002", "sessionsx-001", "other-001"]),
+            cache_ids: s(&[
+                "sessions-001",
+                "sessions-002",
+                "sessionsx-001",
+                "sessions-eu-001",
+                "other-001",
+            ]),
             prefixed_alarms: s(&["Shop-prod-5xx", "Shop-prod-cpu", "Shop-prod-wk-health"]),
             fleet: s(&["Shop-prod", "Shop-prod-wk"]),
             custom_metrics: vec![],
@@ -386,14 +398,14 @@ mod tests {
             "every instance offered, deduplicated"
         );
         assert_eq!(d.rds_found, [("shop-db".to_string(), "DB".to_string())]);
-        assert_eq!(d.cache_options.len(), 4);
+        assert_eq!(d.cache_options.len(), 5);
         assert_eq!(
             d.cache_found,
             [
                 ("sessions-001".to_string(), "REDIS".to_string()),
                 ("sessions-002".to_string(), "REDIS".to_string()),
             ],
-            "the group's nodes, not sessionsx-001"
+            "the group's nodes, not sessionsx-001 or another group's sessions-eu-001"
         );
     }
 

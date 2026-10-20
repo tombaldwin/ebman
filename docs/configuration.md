@@ -123,11 +123,13 @@ safety.accounts.prod.read_only = true
 #
 # Or press `e` on the App tab to edit them in a form. It is pre-filled
 # with what the env's own evidence suggests, each saying where it came
-# from: the one log group that is not Elastic Beanstalk's, alarms named
-# for the env, cache nodes an environment variable's endpoint leads to,
-# and metrics dimensioned by the env's name. RDS instances are offered,
-# never assumed: one is pre-chosen only when an env variable names its
-# endpoint. Saving writes only that env's lines and applies them.
+# from: alarms named for the env, cache nodes an environment variable's
+# endpoint leads to, and metrics dimensioned by the env's name. RDS
+# instances and log groups are offered, never assumed (a log group turns
+# on a billed query): an RDS instance is pre-chosen only when an env
+# variable names its endpoint, and the env's one non-platform log is
+# pointed out but left for you to choose. Saving writes only that env's
+# lines, keeps any that did not apply, and applies them.
 #
 # app.ENV.namespace           CloudWatch namespace your app publishes to
 # app.ENV.dimensions          "Name=Value,…" selecting this env's series
