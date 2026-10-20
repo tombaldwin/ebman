@@ -1246,6 +1246,90 @@ mod orchestration {
         })
     }
 
+    /// The MCP `why` tool's alarm section applies the env's
+    /// `app.ENV.alarm_prefix`, as every TUI alarm fetch does: the agent
+    /// and the operator must see the same alarms for an env.
+    #[tokio::test]
+    async fn the_why_tool_takes_the_envs_alarm_prefix() {
+        use aws_sdk_cloudwatch::operation::describe_alarms::DescribeAlarmsOutput;
+        use aws_sdk_cloudwatch::types::{Dimension, MetricAlarm, StateValue};
+        let alarms = aws_smithy_mocks::mock!(aws_sdk_cloudwatch::Client::describe_alarms)
+            .then_output(|| {
+                DescribeAlarmsOutput::builder()
+                    .metric_alarms(
+                        MetricAlarm::builder()
+                            .alarm_name("poly-prod-wk-db-cpu")
+                            .state_value(StateValue::Alarm)
+                            .dimensions(
+                                Dimension::builder()
+                                    .name("DBInstanceIdentifier")
+                                    .value("db")
+                                    .build(),
+                            )
+                            .build(),
+                    )
+                    .build()
+            });
+        let listing = env_listing();
+        // The other sections only need an answer; they are not what
+        // this test is about.
+        let events = aws_smithy_mocks::mock!(EbClient::describe_events).then_output(|| {
+            aws_sdk_elasticbeanstalk::operation::describe_events::DescribeEventsOutput::builder()
+                .build()
+        });
+        let health = aws_smithy_mocks::mock!(EbClient::describe_instances_health).then_output(|| {
+            aws_sdk_elasticbeanstalk::operation::describe_instances_health::DescribeInstancesHealthOutput::builder()
+                .build()
+        });
+        let versions = aws_smithy_mocks::mock!(EbClient::describe_application_versions).then_output(|| {
+            aws_sdk_elasticbeanstalk::operation::describe_application_versions::DescribeApplicationVersionsOutput::builder()
+                .build()
+        });
+        let settings = aws_smithy_mocks::mock!(EbClient::describe_configuration_settings).then_output(|| {
+            aws_sdk_elasticbeanstalk::operation::describe_configuration_settings::DescribeConfigurationSettingsOutput::builder()
+                .build()
+        });
+        let resources = aws_smithy_mocks::mock!(EbClient::describe_environment_resources).then_output(|| {
+            aws_sdk_elasticbeanstalk::operation::describe_environment_resources::DescribeEnvironmentResourcesOutput::builder()
+                .build()
+        });
+        let eb = aws_smithy_mocks::mock_client!(
+            aws_sdk_elasticbeanstalk,
+            aws_smithy_mocks::RuleMode::MatchAny,
+            [&listing, &events, &health, &versions, &settings, &resources]
+        );
+        let cw = aws_smithy_mocks::mock_client!(
+            aws_sdk_cloudwatch,
+            aws_smithy_mocks::RuleMode::MatchAny,
+            [&alarms]
+        );
+        let sdk = aws_config::SdkConfig::builder()
+            .region(aws_config::Region::new("us-west-1"))
+            .behavior_version(aws_config::BehaviorVersion::latest())
+            .build();
+        let client = crate::aws::AwsClient::for_tests(
+            eb,
+            aws_sdk_sqs::Client::new(&sdk),
+            cw,
+            aws_sdk_cloudwatchlogs::Client::new(&sdk),
+            aws_sdk_s3::Client::new(&sdk),
+            aws_sdk_ec2::Client::new(&sdk),
+        );
+        let cfg = crate::config::parse("app.poly-prod-wk.alarm_prefix = \"poly-prod-wk-\"\n");
+        let out = Server::with_injected_client(WriteScope::None, cfg, client)
+            .call_tool("why", &json!({"env": "poly-prod-wk"}))
+            .await
+            .expect("why answers");
+        let v: Value = serde_json::from_str(&out).expect("valid JSON");
+        let names: Vec<&str> = v["alarms"]
+            .as_array()
+            .unwrap_or_else(|| panic!("no alarms section: {v}"))
+            .iter()
+            .filter_map(|a| a["name"].as_str())
+            .collect();
+        assert_eq!(names, ["poly-prod-wk-db-cpu"]);
+    }
+
     /// Which lint input the mock fleet refuses.
     #[derive(Default, Clone, Copy)]
     struct LintFaults {

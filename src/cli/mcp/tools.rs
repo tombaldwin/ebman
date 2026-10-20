@@ -1533,7 +1533,14 @@ impl Server {
         let alarms = section(
             "alarms",
             client
-                .list_alarms_for_env(&env_name, &self.safety_cfg.alarm_dimensions)
+                .list_alarms_for_env(
+                    &env_name,
+                    &crate::aws::AlarmMatch::for_env(
+                        &self.safety_cfg.alarm_dimensions,
+                        &self.safety_cfg.app_tabs,
+                        &env_name,
+                    ),
+                )
                 .await
                 .map(|a| render_alarms_json(&a))
                 .map_err(|e| e.to_string()),

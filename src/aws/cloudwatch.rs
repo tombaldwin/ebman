@@ -12,6 +12,56 @@ pub(crate) struct CwAlarm {
     pub namespace: String,
 }
 
+/// Which alarms belong to an environment: a dimension naming it, or a
+/// name starting with the env's `app.ENV.alarm_prefix`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct AlarmMatch {
+    /// Dimension names that identify an env (`alarm_dimensions`).
+    pub dimension_names: Vec<String>,
+    pub name_prefix: Option<String>,
+}
+
+impl AlarmMatch {
+    /// The match for `env`: the configured dimension names, and that
+    /// env's App tab alarm prefix if it has one.
+    pub(crate) fn for_env(
+        dimension_names: &[String],
+        app_tabs: &crate::app_tab::AppTabs,
+        env: &str,
+    ) -> Self {
+        Self {
+            dimension_names: dimension_names.to_vec(),
+            name_prefix: app_tabs.envs.get(env).and_then(|s| s.alarm_prefix.clone()),
+        }
+    }
+
+    fn matches(&self, env: &str, name: &str, dimensions: &[(Option<&str>, Option<&str>)]) -> bool {
+        let by_name = self
+            .name_prefix
+            .as_deref()
+            .is_some_and(|p| !p.is_empty() && name.starts_with(p));
+        let by_dimension = dimensions.iter().any(|(n, v)| {
+            *v == Some(env) && n.is_some_and(|n| self.dimension_names.iter().any(|w| w == n))
+        });
+        by_name || by_dimension
+    }
+}
+
+/// ALARM first, then INSUFFICIENT_DATA, then the rest, each by name, so
+/// every surface that lists alarms leads with the ones firing.
+pub(crate) fn sort_alarms(alarms: &mut [CwAlarm]) {
+    let rank = |s: &str| match s {
+        "ALARM" => 0,
+        "INSUFFICIENT_DATA" => 1,
+        _ => 2,
+    };
+    alarms.sort_by(|a, b| {
+        rank(&a.state)
+            .cmp(&rank(&b.state))
+            .then_with(|| a.name.cmp(&b.name))
+    });
+}
+
 /// One row in a CloudWatch alarm's recent history, surfaced by
 /// `:alarm-history`. `kind` is the API's HistoryItemType string —
 /// `StateUpdate` (the transitions an operator usually wants),
@@ -70,10 +120,14 @@ impl AwsClient {
     /// environment — normally just `EnvironmentName`, widened via the
     /// `alarm_dimensions` config key for operators whose own alarms
     /// spell it differently.
+    ///
+    /// `matching` also takes alarms by name prefix (`app.ENV.alarm_prefix`),
+    /// for alarms dimensioned by something other than the env. Results
+    /// come back ALARM first ([`sort_alarms`]).
     pub(crate) async fn list_alarms_for_env(
         &self,
         env_name: &str,
-        dimension_names: &[String],
+        matching: &AlarmMatch,
     ) -> Result<Vec<CwAlarm>> {
         let this = self;
         let raw = super::paginate_capped(
@@ -92,15 +146,17 @@ impl AwsClient {
         )
         .await?
         .complete("DescribeAlarms")?;
-        let out: Vec<CwAlarm> = raw
+        let mut out: Vec<CwAlarm> = raw
             .into_iter()
             .filter(|a| {
-                a.dimensions.as_deref().unwrap_or_default().iter().any(|d| {
-                    d.value.as_deref() == Some(env_name)
-                        && d.name
-                            .as_deref()
-                            .is_some_and(|n| dimension_names.iter().any(|w| w == n))
-                })
+                let dims: Vec<(Option<&str>, Option<&str>)> = a
+                    .dimensions
+                    .as_deref()
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|d| (d.name.as_deref(), d.value.as_deref()))
+                    .collect();
+                matching.matches(env_name, a.alarm_name.as_deref().unwrap_or_default(), &dims)
             })
             .map(|a| CwAlarm {
                 name: a.alarm_name.unwrap_or_default(),
@@ -113,6 +169,7 @@ impl AwsClient {
                 namespace: a.namespace.unwrap_or_default(),
             })
             .collect();
+        sort_alarms(&mut out);
         Ok(out)
     }
 

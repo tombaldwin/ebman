@@ -162,7 +162,11 @@ from layers into vertical slices: a pure builder with no caller fails
    as instance rows on every env's App tab (no config needed). The tab's
    loading state stays its own: tying it to `loading_instances` let the
    eager fetch on open block the tab's first metrics fetch.
-5. Alarm prefix, ALARM-first alarms on the tab and in `:alarms`.
+5. Done: `alarm_prefix` OR'd with the dimension match, through one
+   `AlarmMatch` every caller builds the same way (Health, `:why`,
+   `:alarms`, MCP `why`), each pinned by its own test; results sorted
+   ALARM first at the source, so `:alarms` is too; an alarm line on the
+   App tab. Composite alarms are not read, as before.
 6. Top errors.
 7. `app_metrics` on MCP, and `docs/headless.md`.
 8. Later, by ruling: a two-env compare layout.

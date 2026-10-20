@@ -18,12 +18,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   row each (CPU, connections, memory, replica lag or evictions), from
   the same CloudWatch call. Every env's tab, configured or not, lists
   its instances with enhanced health's last window: requests per
-  second, p99 latency, 4xx/5xx share and CPU. A config line that
+  second, p99 latency, 4xx/5xx share and CPU, and an alarm line naming
+  any alarm in ALARM. `app.ENV.alarm_prefix` makes alarms whose name
+  starts with it the env's as well, on every surface (Health, `:why`,
+  `:alarms`, MCP `why`). A config line that
   cannot be applied is shown on the tab, not skipped, and kept on
   `:settings` save. See `docs/configuration.md`.
 
 ### Changed
 
+- **Alarms are listed ALARM first, then INSUFFICIENT_DATA, then OK, by
+  name, everywhere.** `:alarms` and the MCP `why` tool listed them in
+  API order.
 - **`icons = "ascii"` panel chrome is ascii.** Panel borders, the
   cursor marker and field separators now come from tb-tui-common 0.2.2:
   square corners, `>` and `|`. Unicode and Powerline render as before.

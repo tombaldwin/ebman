@@ -182,7 +182,8 @@ now head the list.*
    parsing, docs, family docs guard), step 2 (the App tab with app
    metrics, thresholds and the env's config errors on screen) and step
    3 (linked RDS / ElastiCache rows) and step 4 (per-instance enhanced
-   health rows). Next: alarms on the tab.
+   health rows) and step 5 (alarm prefix, ALARM first, alarm line).
+   Next: top errors.
 
 ### Next
 

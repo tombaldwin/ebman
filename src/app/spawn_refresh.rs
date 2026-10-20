@@ -104,6 +104,13 @@ impl App {
         );
     }
 
+    /// Which alarms belong to `env`: the shared dimension names plus the
+    /// env's `app.ENV.alarm_prefix`. Every alarm fetch goes through
+    /// this, so a prefix applies on every surface or none.
+    pub(crate) fn alarm_match_for(&self, env: &str) -> crate::aws::AlarmMatch {
+        crate::aws::AlarmMatch::for_env(&self.cfg.alarm_dimensions, &self.cfg.app_tabs, env)
+    }
+
     pub(crate) fn spawn_alarms_fetch(&mut self, env_name: String) {
         // The fetch's env name lives on the Overlay::Alarms variant so a late
         // result for a different env can be dropped at the handler. The body
@@ -113,11 +120,11 @@ impl App {
             body: format!("fetching alarms for {env_name}…"),
         });
         let name_for_msg = env_name.clone();
-        let dims = self.cfg.alarm_dimensions.clone();
+        let matching = self.alarm_match_for(&env_name);
         self.spawn_aws_in(
             self.client_for_env(&name_for_msg),
             "list_alarms_for_env",
-            move |aws| async move { aws.list_alarms_for_env(&env_name, &dims).await },
+            move |aws| async move { aws.list_alarms_for_env(&env_name, &matching).await },
             move |gen, result| AppMsg::Alarms {
                 gen,
                 env_name: name_for_msg,

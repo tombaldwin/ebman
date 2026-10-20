@@ -303,6 +303,14 @@ impl App {
                 if !self.detail.as_ref().is_some_and(|d| d.loading_instances) {
                     self.spawn_detail_instances(env_name.clone());
                 }
+                // And its alarm line from the Health tab's alarm list.
+                if !self
+                    .detail
+                    .as_ref()
+                    .is_some_and(|d| d.cw_alarms.in_flight())
+                {
+                    self.spawn_detail_alarms(env_name.clone());
+                }
                 self.spawn_detail_app(env_name);
             }
             DetailTab::Logs => self.spawn_detail_logs(env_name),

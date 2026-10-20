@@ -44,11 +44,11 @@ impl App {
             return;
         }
         let env_for_msg = env_name.clone();
-        let dims = self.cfg.alarm_dimensions.clone();
+        let matching = self.alarm_match_for(&env_name);
         self.spawn_aws_in(
             self.detail_client(),
             "list_alarms_for_env",
-            move |aws| async move { aws.list_alarms_for_env(&env_name, &dims).await },
+            move |aws| async move { aws.list_alarms_for_env(&env_name, &matching).await },
             move |gen, result| AppMsg::DetailAlarms {
                 gen,
                 env_name: env_for_msg,

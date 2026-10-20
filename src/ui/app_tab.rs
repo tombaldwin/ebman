@@ -23,6 +23,7 @@ pub(super) fn draw_detail_app(
     for e in tabs.errors_for(env) {
         lines.push(Line::from(Span::styled(format!("config: {e}"), red)));
     }
+    alarm_line(&mut lines, &detail.cw_alarms, theme);
     match tabs.envs.get(env) {
         None => {
             lines.push(Line::from(Span::styled(
@@ -143,6 +144,82 @@ fn series_row(s: &AppSeries, label_w: usize, width: u16, theme: &Theme) -> Line<
     let room = (width as usize).saturating_sub(used + 4);
     spans.extend(join_fields_to_fit(groups, &theme.chrome(), room as u16));
     Line::from(spans)
+}
+
+/// `alarms  2 in ALARM: a, b · 1 insufficient data · 6 OK`, firing
+/// names in red. The alarms are the env's, matched by dimension or by
+/// `app.ENV.alarm_prefix`, and arrive ALARM first.
+fn alarm_line(
+    lines: &mut Vec<Line<'static>>,
+    alarms: &crate::app::Fetch<Vec<crate::aws::CwAlarm>>,
+    theme: &Theme,
+) {
+    let muted = Style::default().fg(theme.muted);
+    let label = Span::styled("alarms  ", muted);
+    if let Some(e) = alarms.error() {
+        lines.push(Line::from(vec![
+            label,
+            Span::styled(e.to_string(), Style::default().fg(theme.health_red)),
+        ]));
+        return;
+    }
+    let Some(list) = alarms.ready() else {
+        if alarms.is_first_load() {
+            lines.push(Line::from(vec![label, Span::styled("loading…", muted)]));
+        }
+        return;
+    };
+    let s = AlarmSummary::of(list);
+    let mut spans = vec![label];
+    if list.is_empty() {
+        spans.push(Span::styled("none for this env", muted));
+    }
+    if !s.firing.is_empty() {
+        spans.push(Span::styled(
+            format!("{} in ALARM: {}", s.firing.len(), s.firing.join(", ")),
+            Style::default()
+                .fg(theme.health_red)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+    for (n, what) in [(s.insufficient, "insufficient data"), (s.ok, "OK")] {
+        if n > 0 {
+            if spans.len() > 1 {
+                spans.push(Span::styled(" · ", muted));
+            }
+            spans.push(Span::styled(
+                format!("{n} {what}"),
+                Style::default().fg(theme.text),
+            ));
+        }
+    }
+    lines.push(Line::from(spans));
+}
+
+/// Alarms by state: the firing ones by name, the others counted.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct AlarmSummary {
+    pub firing: Vec<String>,
+    pub insufficient: usize,
+    pub ok: usize,
+}
+
+impl AlarmSummary {
+    pub(crate) fn of(alarms: &[crate::aws::CwAlarm]) -> Self {
+        let mut s = Self {
+            firing: Vec::new(),
+            insufficient: 0,
+            ok: 0,
+        };
+        for a in alarms {
+            match a.state.as_str() {
+                "ALARM" => s.firing.push(a.name.clone()),
+                "INSUFFICIENT_DATA" => s.insufficient += 1,
+                _ => s.ok += 1,
+            }
+        }
+        s
+    }
 }
 
 /// Enhanced health's last window per instance: requests, p99, error
@@ -500,6 +577,32 @@ mod tests {
         assert_eq!(format_latency(1.0), "1s");
         assert_eq!(format_latency(2.14), "2.14s");
         assert_eq!(format_latency(f64::NAN), "—");
+    }
+
+    #[test]
+    fn alarms_summarise_by_state_with_firing_names() {
+        let alarm = |name: &str, state: &str| crate::aws::CwAlarm {
+            name: name.into(),
+            state: state.into(),
+            state_reason: String::new(),
+            metric_name: String::new(),
+            namespace: String::new(),
+        };
+        let s = AlarmSummary::of(&[
+            alarm("a", "ALARM"),
+            alarm("b", "OK"),
+            alarm("c", "INSUFFICIENT_DATA"),
+            alarm("d", "ALARM"),
+            alarm("e", "OK"),
+        ]);
+        assert_eq!(
+            s,
+            AlarmSummary {
+                firing: vec!["a".into(), "d".into()],
+                insufficient: 1,
+                ok: 2,
+            }
+        );
     }
 
     #[test]

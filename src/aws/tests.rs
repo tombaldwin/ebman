@@ -3054,13 +3054,14 @@ async fn list_alarms_for_env_ignores_a_same_named_resource_in_another_service() 
     let client = client_with_cw(cw);
 
     let alarms = client
-        .list_alarms_for_env("payments", &[super::ENV_DIMENSION.to_string()])
+        .list_alarms_for_env("payments", &by_dimensions(&[super::ENV_DIMENSION]))
         .await
         .unwrap();
     let names: Vec<&str> = alarms.iter().map(|a| a.name.as_str()).collect();
     assert_eq!(
         names,
-        vec!["eb-health", "custom-slo"],
+        // Same state, so by name.
+        vec!["custom-slo", "eb-health"],
         "only EnvironmentName-dimensioned alarms belong to an EB env"
     );
 }
@@ -3097,7 +3098,7 @@ async fn list_alarms_for_env_matches_when_env_is_not_the_first_dimension() {
     let client = client_with_cw(cw);
 
     let alarms = client
-        .list_alarms_for_env("payments", &[super::ENV_DIMENSION.to_string()])
+        .list_alarms_for_env("payments", &by_dimensions(&[super::ENV_DIMENSION]))
         .await
         .unwrap();
     assert_eq!(alarms.len(), 1, "dimension order must not matter");
@@ -3506,7 +3507,7 @@ async fn a_truncated_scan_errors_rather_than_reporting_no_match() {
     let client = client_with_cw(cw);
 
     let err = client
-        .list_alarms_for_env("payments", &[super::ENV_DIMENSION.to_string()])
+        .list_alarms_for_env("payments", &by_dimensions(&[super::ENV_DIMENSION]))
         .await
         .expect_err("a truncated scan must not be reported as 'no alarms'");
     let msg = format!("{err}");
@@ -3698,7 +3699,7 @@ async fn alarm_dimension_names_are_configurable() {
     let rule = make();
     let client = client_with_cw(mock_client!(aws_sdk_cloudwatch, [&rule]));
     let names: Vec<String> = client
-        .list_alarms_for_env("payments", &[super::ENV_DIMENSION.to_string()])
+        .list_alarms_for_env("payments", &by_dimensions(&[super::ENV_DIMENSION]))
         .await
         .unwrap()
         .into_iter()
@@ -3713,7 +3714,7 @@ async fn alarm_dimension_names_are_configurable() {
     let names: Vec<String> = client
         .list_alarms_for_env(
             "payments",
-            &["EnvironmentName".to_string(), "Environment".to_string()],
+            &by_dimensions(&["EnvironmentName", "Environment"]),
         )
         .await
         .unwrap()
@@ -3721,6 +3722,114 @@ async fn alarm_dimension_names_are_configurable() {
         .map(|a| a.name)
         .collect();
     assert_eq!(names, vec!["canonical", "operator-spelling"]);
+}
+
+fn by_dimensions(names: &[&str]) -> super::AlarmMatch {
+    super::AlarmMatch {
+        dimension_names: names.iter().map(|n| n.to_string()).collect(),
+        name_prefix: None,
+    }
+}
+
+#[tokio::test]
+async fn an_alarm_prefix_adds_alarms_by_name_and_all_come_back_firing_first() {
+    // Alarms dimensioned by something other than the env (an RDS or ALB
+    // alarm named for it) belong to it by name. The prefix ADDS to the
+    // dimension match, and an empty one matches nothing.
+    use aws_sdk_cloudwatch::operation::describe_alarms::DescribeAlarmsOutput;
+    use aws_sdk_cloudwatch::types::{Dimension, MetricAlarm, StateValue};
+    let alarm = |name: &str, dim: &str, value: &str, state: StateValue| {
+        MetricAlarm::builder()
+            .alarm_name(name)
+            .state_value(state)
+            .dimensions(Dimension::builder().name(dim).value(value).build())
+            .build()
+    };
+    let make = move || {
+        mock!(aws_sdk_cloudwatch::Client::describe_alarms).then_output(move || {
+            DescribeAlarmsOutput::builder()
+                .metric_alarms(alarm(
+                    "payments-db-cpu",
+                    "DBInstanceIdentifier",
+                    "pay-db",
+                    StateValue::Ok,
+                ))
+                .metric_alarms(alarm(
+                    "by-dimension",
+                    "EnvironmentName",
+                    "payments",
+                    StateValue::Ok,
+                ))
+                .metric_alarms(alarm(
+                    "payments-5xx",
+                    "LoadBalancer",
+                    "app/x",
+                    StateValue::Alarm,
+                ))
+                .metric_alarms(alarm(
+                    "other-env-cpu",
+                    "DBInstanceIdentifier",
+                    "x",
+                    StateValue::Alarm,
+                ))
+                .metric_alarms(alarm(
+                    "payments-lag",
+                    "DBInstanceIdentifier",
+                    "r",
+                    StateValue::InsufficientData,
+                ))
+                .build()
+        })
+    };
+    let names = |matching: super::AlarmMatch| {
+        let rule = make();
+        let client = client_with_cw(mock_client!(aws_sdk_cloudwatch, [&rule]));
+        async move {
+            client
+                .list_alarms_for_env("payments", &matching)
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|a| a.name)
+                .collect::<Vec<String>>()
+        }
+    };
+    let mut with_prefix = by_dimensions(&["EnvironmentName"]);
+    with_prefix.name_prefix = Some("payments-".into());
+    assert_eq!(
+        names(with_prefix).await,
+        [
+            "payments-5xx",
+            "payments-lag",
+            "by-dimension",
+            "payments-db-cpu"
+        ],
+        "ALARM, then INSUFFICIENT_DATA, then OK by name; another env's alarm stays out"
+    );
+    let mut empty = by_dimensions(&["EnvironmentName"]);
+    empty.name_prefix = Some(String::new());
+    assert_eq!(
+        names(empty).await,
+        ["by-dimension"],
+        "an empty prefix matches nothing"
+    );
+}
+
+#[test]
+fn the_alarm_match_takes_each_envs_own_prefix() {
+    let cfg = crate::config::parse("app.a.alarm_prefix = \"A-\"\napp.b.namespace = \"N\"\n");
+    let dims = ["EnvironmentName".to_string()];
+    let a = super::AlarmMatch::for_env(&dims, &cfg.app_tabs, "a");
+    assert_eq!(a.name_prefix.as_deref(), Some("A-"));
+    assert_eq!(a.dimension_names, dims);
+    assert_eq!(
+        super::AlarmMatch::for_env(&dims, &cfg.app_tabs, "b").name_prefix,
+        None
+    );
+    assert_eq!(
+        super::AlarmMatch::for_env(&dims, &cfg.app_tabs, "c").name_prefix,
+        None
+    );
 }
 
 #[test]

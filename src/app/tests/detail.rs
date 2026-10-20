@@ -1779,9 +1779,97 @@ async fn the_app_tab_refresh_brings_the_instance_list_along() {
     let d = app.detail.as_mut().unwrap();
     d.loading_instances = false;
     d.app_metrics.settle(Ok(Default::default()));
+    d.cw_alarms.settle(Ok(Vec::new()));
     app.detail_fetch_started = None;
     app.detail_refresh_active_tab();
     let d = app.detail.as_ref().unwrap();
     assert!(d.loading_instances, "the App refresh refetches instances");
+    assert!(d.cw_alarms.in_flight(), "and alarms, for its alarm line");
     assert!(d.app_metrics.in_flight());
+}
+
+/// Every TUI alarm fetch applies the env's `app.ENV.alarm_prefix`: the
+/// Health tab (and so the App tab), `:why`, and `:alarms`. One case per
+/// caller — a prefix that applied on one surface and not another would
+/// make them disagree about which alarms are the env's.
+#[tokio::test]
+async fn every_tui_alarm_fetch_takes_the_envs_alarm_prefix() {
+    use aws_sdk_cloudwatch::operation::describe_alarms::DescribeAlarmsOutput;
+    use aws_sdk_cloudwatch::types::{Dimension, MetricAlarm, StateValue};
+    fn app_with_alarms() -> App {
+        let rule = aws_smithy_mocks::mock!(aws_sdk_cloudwatch::Client::describe_alarms)
+            .then_output(|| {
+                DescribeAlarmsOutput::builder()
+                    .metric_alarms(
+                        MetricAlarm::builder()
+                            .alarm_name("api-prod-db-cpu")
+                            .state_value(StateValue::Alarm)
+                            .dimensions(
+                                Dimension::builder()
+                                    .name("DBInstanceIdentifier")
+                                    .value("db")
+                                    .build(),
+                            )
+                            .build(),
+                    )
+                    .build()
+            });
+        let cw = aws_smithy_mocks::mock_client!(
+            aws_sdk_cloudwatch,
+            aws_smithy_mocks::RuleMode::MatchAny,
+            [&rule]
+        );
+        let sdk = aws_config::SdkConfig::builder()
+            .region(aws_config::Region::new("us-east-1"))
+            .behavior_version(aws_config::BehaviorVersion::latest())
+            .build();
+        let client = crate::aws::AwsClient::for_tests(
+            aws_sdk_elasticbeanstalk::Client::new(&sdk),
+            aws_sdk_sqs::Client::new(&sdk),
+            cw,
+            aws_sdk_cloudwatchlogs::Client::new(&sdk),
+            aws_sdk_s3::Client::new(&sdk),
+            aws_sdk_ec2::Client::new(&sdk),
+        );
+        let cfg = crate::config::parse("app.api-prod.alarm_prefix = \"api-prod-\"\n");
+        let mut app = App::for_tests(client, cfg);
+        app.environments = vec![mk_env("api-prod", "shop", "WebServer", "Green")];
+        app.rebuild_view();
+        app.table_state.select(Some(0));
+        app
+    }
+    async fn alarm_names(app: &mut App) -> Vec<String> {
+        loop {
+            let msg = app.msg_rx.recv().await.expect("a result");
+            let result = match msg {
+                AppMsg::DetailAlarms { result, .. }
+                | AppMsg::WhyRedAlarms { result, .. }
+                | AppMsg::Alarms { result, .. } => result,
+                _ => continue,
+            };
+            return result
+                .expect("fetch ok")
+                .into_iter()
+                .map(|a| a.name)
+                .collect();
+        }
+    }
+
+    let mut app = app_with_alarms();
+    app.open_detail();
+    while app.msg_rx.try_recv().is_ok() {}
+    app.spawn_detail_alarms("api-prod".into());
+    assert_eq!(
+        alarm_names(&mut app).await,
+        ["api-prod-db-cpu"],
+        "Health / App tab"
+    );
+
+    let mut app = app_with_alarms();
+    app.spawn_why_red_alarms("api-prod".into(), 1);
+    assert_eq!(alarm_names(&mut app).await, ["api-prod-db-cpu"], ":why");
+
+    let mut app = app_with_alarms();
+    app.spawn_alarms_fetch("api-prod".into());
+    assert_eq!(alarm_names(&mut app).await, ["api-prod-db-cpu"], ":alarms");
 }

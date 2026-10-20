@@ -1908,6 +1908,18 @@ async fn the_app_tab_draws_series_thresholds_and_config_errors() {
     let d = app.detail.as_mut().expect("detail open");
     assert_eq!(d.tab(), DetailTab::App, "the App tab is second");
     assert!(d.app_metrics.in_flight(), "opening the tab fetches");
+    let alarm = |name: &str, state: &str| crate::aws::CwAlarm {
+        name: name.into(),
+        state: state.into(),
+        state_reason: String::new(),
+        metric_name: String::new(),
+        namespace: String::new(),
+    };
+    d.cw_alarms.settle(Ok(vec![
+        alarm("api-prod-5xx", "ALARM"),
+        alarm("api-prod-cpu", "OK"),
+        alarm("api-prod-lag", "OK"),
+    ]));
     d.instances = vec![crate::aws::Instance {
         id: "i-0bad".into(),
         health: "Severe".into(),
@@ -1992,6 +2004,19 @@ async fn the_app_tab_draws_series_thresholds_and_config_errors() {
         "a metric with no data is left out: {rds}"
     );
     let theme = app.theme.clone();
+    let alarms = text
+        .lines()
+        .find(|l| l.contains("alarms "))
+        .expect("alarm line");
+    assert!(
+        alarms.contains("1 in ALARM: api-prod-5xx · 2 OK"),
+        "alarm line: {alarms}"
+    );
+    let alarms_y = find_row(&buf, "1 in ALARM").expect("alarm row");
+    assert!(
+        row_has_fg(&buf, alarms_y, theme.health_red),
+        "firing alarms are red"
+    );
     // Instances: enhanced health per instance, 5xx in red when non-zero.
     let i_row = text
         .lines()
