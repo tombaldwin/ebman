@@ -1,6 +1,7 @@
 # The App tab: is it healthy, and who is using it?
 
-Status: design, 2026-10-20. PLAN.md item 3.
+Status: built, 2026-10-21 (unreleased). PLAN.md item 3. Written as the
+design on 2026-10-20; the sections below describe what shipped.
 
 One Detail tab per environment that answers both questions on one
 screen, from data the operator already publishes. Generic: ebman knows
@@ -8,8 +9,14 @@ CloudWatch, Logs Insights and Elastic Beanstalk, never the application.
 
 Scope ruling (2026-10-20): RDS and ElastiCache appear only as resources
 **named** in that env's config, and only as CloudWatch metrics through
-the same panel. No tag discovery and no new SDK clients. BACKLOG's
-"multi-service dashboard" line stays out of scope.
+the same panel. No new SDK clients. BACKLOG's "multi-service dashboard"
+line stays out of scope.
+
+Ruling (2026-10-21) on editing and discovery: config is editable in the
+UI without a restart, and discovery may *offer* what it finds, but must
+not *assume*: a database is suggested only when the env itself names it
+(an env variable holding its endpoint), never because it exists in the
+account. Nothing discovery finds is saved until the operator saves it.
 
 ## What exists, and what it lacks
 
@@ -104,9 +111,15 @@ in its section rather than blanking the tab or vanishing.
 
 **Cadence.** Period 60s. Like every Detail tab, the App tab fetches
 when opened and on `^R`, and on the tick only when `R` turns
-auto-refresh on. Logs Insights
-bills per GB scanned, so top errors runs on tab open and `r` only, and
-the section shows how old it is.
+auto-refresh on. Logs Insights bills per GB scanned, so top errors runs
+on `^R`, on opening only when its last answer is older than five
+minutes (`top_errors_due`), never on the tick, and the section shows how
+old it is.
+
+**Superseded answers.** Each fetch carries the `Ticket` its `Fetch`
+issued; only the latest request's answer settles. A range change, a
+stuck query retried, or a config edit (below) starts a newer request,
+and the older answer is dropped when it lands.
 
 ## The tab
 
@@ -128,20 +141,69 @@ draws charts, and a dozen of them do not fit one screen. Values coloured
 from `threshold.LABEL` with `health_yellow` / `health_red`. The range is
 the Metrics tab's `metrics_range_secs`, so `[` `]` moves both.
 
-An env with no `app.ENV.*` config shows instances, alarms and the
-`AWS/ElasticBeanstalk` series, and one line naming the config keys that
-would fill the rest.
+An env with no `app.ENV.*` config shows instances and alarms, runs
+discovery (below), and says what it found and that `e` sets it up.
+Whether an env is configured, previewed or not set up is answered in one
+place, `App::app_tab_source`.
+
+## Editing, without a restart
+
+`e` on the App tab opens a form over the env's `app.ENV.*` lines. It
+opens on the file as it is now, checks every entry with the config
+parser's own words, and saves only that env's lines: every other line,
+comment and env is kept, and the env's lines the parser rejected are
+written back rather than lost. A form field exists for every field the
+parser accepts (`every_field_the_parser_accepts_survives_the_editor`).
+
+Hand edits are picked up too: the `app.` lines are re-read when the
+file's (mtime, size) changed, at every point that is about to use them
+(a Detail refresh, the editor, `:alarms`, `:why`), and never under a
+fetch still in flight. `App::set_app_tabs`, the only way the running
+config is replaced, drops what the Detail view fetched under the old
+config: the env's rows when its spec changed, top errors only when what
+it queries changed.
+
+## Discovery
+
+For an unconfigured env, on opening its App tab or `e`, every lookup at
+once, each bounded at 15s and paged within a deadline; a failed lookup
+is named, not hidden (`aws::discover_app`, read by the pure
+`app_discover::discover`):
+
+- its log groups, with the app's own log offered for top errors;
+- alarms named `ENV-…`, offered as `alarm_prefix` with a count that
+  leaves out the alarms another env's name claims (`ENV-blue-…` for an
+  env `ENV-blue`), as the match itself does (`AlarmMatch::shadowed_by`);
+- RDS instances and cache nodes in the region, offered as options, and
+  preselected only when an env variable holds that resource's endpoint
+  (only endpoint hostnames are kept from the env variables);
+- custom metrics dimensioned by the env, by the dimension names ebman
+  already matches envs by, the config's, and the usual spellings.
+
+Results are kept for the session per (region, env), so a same-named env
+in another region of a fan-out is its own; `^R` looks again; a context
+switch forgets them.
+
+**Preview.** What an env variable names is evidence, so those resources
+are fetched and drawn under "Suggested, not saved" before anything is
+saved. A log group (billed) and an alarm prefix (it would change which
+alarms other screens call the env's) are offered in the editor only.
 
 ## MCP: `app_metrics`
 
-A read tool taking `env`, `minutes`, `region`, `profile`. It returns the
-same sections as JSON, each with `complete` and `errors`, in step with
-`every_result_that_can_be_partial_says_so`. CAVEATS in its description:
+A read tool taking `env`, `minutes`, `top_errors`, `region`, `profile`.
+It returns the same sections as JSON, a failed one `null` with its
+reason in `errors`. The sections run concurrently, the fleet listing an
+`alarm_prefix` needs inside the alarms section. The `app.` lines are read
+from the file on each call, so an edit made while the server runs is
+answered for; `why`'s alarm match reads them the same way. CAVEATS in
+its description:
 
 - a metric is only as fresh as its publish interval;
 - only metrics named in config are read; a clean result says nothing
   about anything else;
-- top errors counts lines matching `ERROR` in the configured group only.
+- top errors counts lines matching `ERROR` in the configured group only,
+  and is **not redacted**: each fingerprint is raw log text.
 
 ## Order of work
 
@@ -175,7 +237,14 @@ from layers into vertical slices: a pure builder with no caller fails
    fetches as the tab; series summarised (latest, `latest_at`, min,
    max, count) rather than shipped whole; top errors opt-in per call and
    bounded at 20s inside the 30s tool bound.
-8. Later, by ruling: a two-env compare layout.
+8. Done: the `e` editor and live reload of the `app.` lines.
+9. Done: discovery, its session cache, and the preview of what an env
+   variable names; the tab runs it unprompted for an unconfigured env,
+   and the key strip says `e set up`.
+10. Done: the review's fixes (2026-10-21), among them per-region
+    discovery, request tickets on `Fetch`, the config re-read in MCP,
+    and the layering of discovery and `AlarmMatch`.
+11. Later, by ruling: a two-env compare layout.
 
 Fixed on the way because they are the same code: the Metrics tab's
 silently-dropped custom-metric failure.
