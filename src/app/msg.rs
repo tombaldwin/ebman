@@ -146,8 +146,15 @@ impl App {
                 }
             }
             AppMsg::DetailTopErrors {
-                env_name, result, ..
-            } => self.apply_detail_msg(&env_name, result, |d, r| d.top_errors.settle(r)),
+                env_name,
+                started,
+                result,
+                ..
+            } => self.apply_detail_msg(&env_name, result, |d, r| {
+                if d.top_errors_started == Some(started) {
+                    d.top_errors.settle(r);
+                }
+            }),
             AppMsg::DetailLogsProgress {
                 env_name,
                 stage,

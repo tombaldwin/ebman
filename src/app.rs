@@ -678,6 +678,9 @@ pub(crate) enum AppMsg {
     DetailTopErrors {
         gen: u64,
         env_name: String,
+        /// Which query this answers: after the stuck escape a second can
+        /// run beside the first, and only the latest may settle the tab.
+        started: std::time::Instant,
         result: Result<crate::app_tab::TopErrors, String>,
     },
     /// The App tab's series for one env.

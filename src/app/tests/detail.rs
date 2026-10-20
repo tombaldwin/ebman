@@ -1254,15 +1254,30 @@ async fn detail_results_for_another_env_are_dropped() {
         fetched_at: chrono::DateTime::from_timestamp(0, 0).unwrap(),
     };
     let mut app = armed();
+    let started = std::time::Instant::now();
+    app.detail.as_mut().unwrap().top_errors_started = Some(started);
     app.handle_msg(AppMsg::DetailTopErrors {
         gen: app.generation,
         env_name: "worker-prod".into(),
+        started,
         result: Ok(top()),
     });
     assert!(app.detail.as_ref().unwrap().top_errors.ready().is_none());
+    // An answer to an earlier query, superseded after the stuck escape.
     app.handle_msg(AppMsg::DetailTopErrors {
         gen: app.generation,
         env_name: "api-prod".into(),
+        started: started - std::time::Duration::from_secs(200),
+        result: Ok(top()),
+    });
+    assert!(
+        app.detail.as_ref().unwrap().top_errors.ready().is_none(),
+        "only the latest query's answer settles the tab"
+    );
+    app.handle_msg(AppMsg::DetailTopErrors {
+        gen: app.generation,
+        env_name: "api-prod".into(),
+        started,
         result: Ok(top()),
     });
     assert_eq!(

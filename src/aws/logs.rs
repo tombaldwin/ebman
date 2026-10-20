@@ -495,9 +495,9 @@ impl AwsClient {
             .query_id
             .ok_or_else(|| eyre!("StartQuery returned no query_id"))?;
 
-        // Poll every 2s. Insights queries are server-side timed (max 15
-        // min by default) so we don't need our own watchdog; the API
-        // surfaces Timeout when the server gives up.
+        // Poll every 2s. Without `within`, the server's own timeout is
+        // the only bound and the API surfaces Timeout when it gives up;
+        // with it, the query is stopped at the deadline below.
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
             if let Some(limit) = within.filter(|l| started.elapsed() >= *l) {

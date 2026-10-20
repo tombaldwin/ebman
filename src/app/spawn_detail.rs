@@ -327,7 +327,8 @@ impl App {
             return;
         }
         d.top_errors.begin();
-        d.top_errors_started = Some(std::time::Instant::now());
+        let started = std::time::Instant::now();
+        d.top_errors_started = Some(started);
         let query = crate::app_tab::top_errors_query(
             self.cfg
                 .app_tabs
@@ -363,6 +364,7 @@ impl App {
             move |gen, result| AppMsg::DetailTopErrors {
                 gen,
                 env_name: env_for_msg,
+                started,
                 result,
             },
         );
