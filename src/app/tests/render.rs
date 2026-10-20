@@ -2000,6 +2000,13 @@ async fn the_app_tab_draws_series_thresholds_and_config_errors() {
     for want in ["42", "count", "i-a 20", "i-b 22"] {
         assert!(users.contains(want), "users row lacks {want:?}: {users}");
     }
+    // The fixture's points are from 2023: marked, not shown as current.
+    assert!(users.contains("stale "), "an old value is marked: {users}");
+    let rds_row = text
+        .lines()
+        .find(|l| l.contains("rds shop-db"))
+        .expect("rds row");
+    assert!(rds_row.contains("stale "), "so is a resource's: {rds_row}");
     let rds = text
         .lines()
         .find(|l| l.contains("rds shop-db"))

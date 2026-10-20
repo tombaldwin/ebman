@@ -13,7 +13,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   `config.toml` and the tab shows each as a row: latest value, unit, a
   sparkline over the Metrics tab's range, and the value per instance
   when `app.ENV.instance_dimension` is set. `app.ENV.threshold.LABEL`
-  colours a value past its warn or critical level. RDS instances and
+  colours a value past its warn or critical level, and a value more
+  than five minutes old is marked `stale` with its age. RDS instances and
   ElastiCache nodes named in `app.ENV.rds` / `app.ENV.elasticache` get a
   row each (CPU, connections, memory, replica lag or evictions), from
   the same CloudWatch call. Every env's tab, configured or not, lists

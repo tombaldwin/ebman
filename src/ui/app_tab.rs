@@ -128,10 +128,10 @@ fn series_row(s: &AppSeries, label_w: usize, width: u16, theme: &Theme) -> Line<
         ),
     ];
     let used: usize = spans.iter().map(Span::width).sum();
-    let groups: Vec<Vec<Span<'static>>> = s
-        .instances
-        .iter()
-        .map(|(id, points)| {
+    let stale = stale_group(&s.points, chrono::Utc::now(), theme);
+    let groups: Vec<Vec<Span<'static>>> = stale
+        .into_iter()
+        .chain(s.instances.iter().map(|(id, points)| {
             let v = points
                 .last()
                 .map_or_else(|| "—".to_string(), |(_, v)| format_value(*v));
@@ -139,12 +139,35 @@ fn series_row(s: &AppSeries, label_w: usize, width: u16, theme: &Theme) -> Line<
                 Span::styled(format!("{id} "), Style::default().fg(theme.muted)),
                 Span::styled(v, Style::default().fg(theme.text)),
             ]
-        })
+        }))
         .collect();
     // Border and padding, two cells each side.
     let room = (width as usize).saturating_sub(used + 4);
     spans.extend(join_fields_to_fit(groups, &theme.chrome(), room as u16));
     Line::from(spans)
+}
+
+/// Past this, a series' latest value is marked with its age: a metric
+/// the app stopped publishing would otherwise read as current, since
+/// the sparkline spaces points by count, not by time.
+const STALE_AFTER: chrono::TimeDelta = chrono::TimeDelta::minutes(5);
+
+/// `stale 12m`, in the warning colour, when the latest point is older
+/// than [`STALE_AFTER`]; drawn first in the row's trailing fields so it
+/// is the last thing a narrow terminal drops.
+fn stale_group(
+    points: &[crate::app_tab::Point],
+    now: chrono::DateTime<chrono::Utc>,
+    theme: &Theme,
+) -> Option<Vec<Span<'static>>> {
+    let (t, _) = points.last()?;
+    let age = now - *t;
+    (age > STALE_AFTER).then(|| {
+        vec![Span::styled(
+            format!("stale {}", humanize_age(age)),
+            Style::default().fg(theme.health_yellow),
+        )]
+    })
 }
 
 /// The env's most frequent ERROR fingerprints, one per line, with how
@@ -408,15 +431,16 @@ fn resource_row(r: &ResourceRow, label_w: usize, width: u16, theme: &Theme) -> L
         ),
     ];
     let used: usize = spans.iter().map(Span::width).sum();
-    let groups: Vec<Vec<Span<'static>>> = rest
-        .iter()
-        .filter_map(|(m, points)| {
+    let stale = headline.and_then(|(_, points)| stale_group(points, chrono::Utc::now(), theme));
+    let groups: Vec<Vec<Span<'static>>> = stale
+        .into_iter()
+        .chain(rest.iter().filter_map(|(m, points)| {
             let v = latest(points)?;
             Some(vec![
                 Span::styled(format!("{} ", m.label), muted),
                 Span::styled(format_linked(v, m.unit), Style::default().fg(theme.text)),
             ])
-        })
+        }))
         .collect();
     let room = (width as usize).saturating_sub(used + 4);
     spans.extend(join_fields_to_fit(groups, &theme.chrome(), room as u16));
@@ -634,6 +658,31 @@ mod tests {
         assert_eq!(format_latency(1.0), "1s");
         assert_eq!(format_latency(2.14), "2.14s");
         assert_eq!(format_latency(f64::NAN), "—");
+    }
+
+    #[test]
+    fn a_value_older_than_five_minutes_is_marked_with_its_age() {
+        let theme = Theme::dark();
+        let now = chrono::DateTime::from_timestamp(10_000, 0).unwrap();
+        let at = |secs_ago: i64| vec![(now - chrono::Duration::seconds(secs_ago), 1.0)];
+        assert_eq!(
+            stale_group(&at(60), now, &theme),
+            None,
+            "a minute old is current"
+        );
+        assert_eq!(
+            stale_group(&at(300), now, &theme),
+            None,
+            "five minutes is the edge"
+        );
+        let marked = stale_group(&at(12 * 60), now, &theme).expect("marked");
+        assert_eq!(marked[0].content, "stale 12m");
+        assert_eq!(marked[0].style.fg, Some(theme.health_yellow));
+        assert_eq!(
+            stale_group(&[], now, &theme),
+            None,
+            "no points, nothing to age"
+        );
     }
 
     #[test]
