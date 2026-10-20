@@ -385,6 +385,14 @@ fn check_fingerprint(key: &str, value: &str) -> Result<(), String> {
             _ => escaped = false,
         }
     }
+    if escaped {
+        // `…\` + the closing `/` reads as an escaped slash, and the
+        // regex never ends.
+        return Err(format!(
+            "{key} ends in a lone backslash, which would escape the end of \
+             the Logs Insights regex"
+        ));
+    }
     Ok(())
 }
 
@@ -1027,6 +1035,7 @@ mod tests {
             ("e.error_fingerprint", "a/(?<fp>b)", "unescaped /"),
             // An escaped backslash does not escape the slash after it.
             ("e.error_fingerprint", r"a\\/(?<fp>b)", "unescaped /"),
+            ("e.error_fingerprint", r"(?<fp>x)\", "lone backslash"),
             ("e.namspace", "N", "not a setting this version understands"),
         ];
         for (rest, value, expect) in cases {
@@ -1076,7 +1085,11 @@ mod tests {
 
     #[test]
     fn an_escaped_slash_in_a_fingerprint_is_fine() {
-        let tabs = parse(&[("e.error_fingerprint", r"at (?<fp>[\w\/.]+)")]);
+        // And an escaped backslash at the end is two, not a lone one.
+        let tabs = parse(&[
+            ("e.error_fingerprint", r"at (?<fp>[\w\/.]+)"),
+            ("f.error_fingerprint", r"(?<fp>x)\\"),
+        ]);
         assert!(tabs.errors.is_empty(), "{:?}", tabs.errors);
     }
 
