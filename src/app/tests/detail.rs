@@ -2247,7 +2247,7 @@ async fn a_metrics_result_for_a_range_left_behind_is_dropped() {
         gen: app.generation,
         env_name: "api-prod".into(),
         range_secs: 900,
-        result: Ok(vec![series("old")]),
+        result: Ok((vec![series("old")], None)),
     });
     app.handle_msg(AppMsg::DetailAppMetrics {
         gen: app.generation,
@@ -2270,7 +2270,7 @@ async fn a_metrics_result_for_a_range_left_behind_is_dropped() {
         gen: app.generation,
         env_name: "api-prod".into(),
         range_secs: 86_400,
-        result: Ok(vec![series("new")]),
+        result: Ok((vec![series("new")], None)),
     });
     app.handle_msg(AppMsg::DetailAppMetrics {
         gen: app.generation,
@@ -2342,4 +2342,53 @@ async fn starting_a_fetch_does_not_erase_a_siblings_error() {
             "{own:?} clears its own"
         );
     }
+}
+
+/// A failed custom-metric fetch is shown, beside the built-in series it
+/// no longer takes down with it.
+#[test]
+fn a_failed_custom_metric_fetch_is_shown_not_dropped() {
+    let series = |label: &str| crate::aws::MetricSeries {
+        id: label.into(),
+        label: label.into(),
+        points: vec![],
+    };
+    let merge = super::super::spawn_detail::merge_metrics;
+    assert_eq!(
+        merge(Ok(vec![series("health")]), Err("AccessDenied".into())).map(|(s, p)| (s.len(), p)),
+        Ok((1, Some("custom metrics: AccessDenied".to_string())))
+    );
+    assert_eq!(
+        merge(Ok(vec![series("health")]), Ok(vec![series("mine")])).map(|(s, p)| (s.len(), p)),
+        Ok((2, None))
+    );
+    assert_eq!(
+        merge(Err("down".into()), Ok(vec![series("mine")])).map(|(s, p)| (s.len(), p)),
+        Err("down".to_string())
+    );
+}
+
+#[tokio::test]
+async fn a_partial_metrics_result_draws_and_reports_its_failure() {
+    let mut app = test_app();
+    app.environments = vec![mk_env("api-prod", "shop", "WebServer", "Green")];
+    app.rebuild_view();
+    app.table_state.select(Some(0));
+    app.open_detail();
+    let series = crate::aws::MetricSeries {
+        id: "health".into(),
+        label: "health".into(),
+        points: vec![],
+    };
+    app.handle_msg(AppMsg::DetailMetrics {
+        gen: app.generation,
+        env_name: "api-prod".into(),
+        range_secs: 3600,
+        result: Ok((vec![series], Some("custom metrics: AccessDenied".into()))),
+    });
+    let d = app.detail.as_ref().unwrap();
+    assert_eq!(d.metrics.len(), 1, "the built-ins still draw");
+    let e = d.error.as_ref().expect("and the failure is on screen");
+    assert_eq!(e.source, crate::mode_detail::DetailFetch::Metrics);
+    assert_eq!(e.message, "custom metrics: AccessDenied");
 }

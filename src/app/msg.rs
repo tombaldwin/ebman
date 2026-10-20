@@ -553,14 +553,17 @@ impl App {
     fn handle_detail_metrics(
         &mut self,
         env_name: String,
-        result: Result<Vec<MetricSeries>, String>,
+        result: super::spawn_detail::MetricsResult,
     ) {
         self.apply_detail_msg(&env_name, result, |d, r| {
             d.loading_metrics = false;
             match r {
-                Ok(metrics) => {
+                Ok((metrics, partial)) => {
                     d.metrics = metrics;
-                    d.clear_error(crate::mode_detail::DetailFetch::Metrics);
+                    match partial {
+                        Some(msg) => d.set_error(crate::mode_detail::DetailFetch::Metrics, msg),
+                        None => d.clear_error(crate::mode_detail::DetailFetch::Metrics),
+                    }
                 }
                 Err(msg) => d.set_error(crate::mode_detail::DetailFetch::Metrics, msg),
             }

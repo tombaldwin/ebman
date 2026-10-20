@@ -18,6 +18,27 @@
 
 use super::{collect_tail_logs, flatten_err, App, AppMsg, LogTailStage};
 
+/// The Metrics tab's two fetches as one result: the series, and what
+/// the custom-metric fetch said if it failed. Its failure used to be
+/// dropped (`if let Ok`), so `:metric add`ed series vanished with
+/// nothing on screen saying the fetch had failed; now the built-ins
+/// still draw and the failure is shown beside them.
+pub(crate) type MetricsResult = Result<(Vec<crate::aws::MetricSeries>, Option<String>), String>;
+
+pub(crate) fn merge_metrics(
+    builtin: Result<Vec<crate::aws::MetricSeries>, String>,
+    custom: Result<Vec<crate::aws::MetricSeries>, String>,
+) -> MetricsResult {
+    let mut series = builtin?;
+    match custom {
+        Ok(extra) => {
+            series.extend(extra);
+            Ok((series, None))
+        }
+        Err(e) => Ok((series, Some(format!("custom metrics: {e}")))),
+    }
+}
+
 impl App {
     /// Detail-Health-tab alarms fetch. Mirrors `spawn_why_red_alarms`
     /// but lands on `AppMsg::DetailAlarms` so the result populates the
@@ -235,15 +256,10 @@ impl App {
                 aws.fetch_env_metrics(&name, range),
                 aws.fetch_custom_env_metrics(&name, range, &custom),
             );
-            let result = match builtin {
-                Ok(mut series) => {
-                    if let Ok(extra) = user {
-                        series.extend(extra);
-                    }
-                    Ok(series)
-                }
-                Err(e) => Err(flatten_err("fetch_env_metrics", e)),
-            };
+            let result = merge_metrics(
+                builtin.map_err(|e| flatten_err("fetch_env_metrics", e)),
+                user.map_err(|e| flatten_err("fetch_custom_env_metrics", e)),
+            );
             let _ = tx.send(AppMsg::DetailMetrics {
                 gen,
                 env_name,

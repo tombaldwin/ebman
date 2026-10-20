@@ -62,7 +62,7 @@ use tui_common::TextInput;
 use crate::{
     aws::{
         AppVersion, Application, AwsClient, AwsContext, CwAlarm, Environment, Event as EbEvent,
-        Identity, Instance, MetricSeries, QueueMessage, WorkerQueues,
+        Identity, Instance, QueueMessage, WorkerQueues,
     },
     config::Config,
     profiles,
@@ -672,7 +672,7 @@ pub(crate) enum AppMsg {
         /// The range it was fetched for: `[` `]` pressed twice fires two
         /// fetches, and the one for the old range must not land last.
         range_secs: i64,
-        result: Result<Vec<MetricSeries>, String>,
+        result: crate::app::spawn_detail::MetricsResult,
     },
     /// The App tab's top errors for one env.
     DetailTopErrors {
