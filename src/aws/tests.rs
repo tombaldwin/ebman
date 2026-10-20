@@ -1915,6 +1915,9 @@ async fn fetch_app_metrics_follows_pages_and_reports_a_short_answer() {
                 .metric_data_results(result("a0", "users", 1, 8.0, StatusCode::Complete))
                 .metric_data_results(result("i0", "i-a", 1, 3.0, StatusCode::Complete))
                 .metric_data_results(result("x0", "", 1, 3.0, StatusCode::Forbidden))
+                // A sibling SEARCH series still short on the last page:
+                // i-a's Complete must not hide it.
+                .metric_data_results(result("i0", "i-b", 1, 5.0, StatusCode::PartialData))
                 .build()
         });
     let cw = mock_client!(
@@ -1943,14 +1946,18 @@ async fn fetch_app_metrics_follows_pages_and_reports_a_short_answer() {
     assert_eq!(values, [8.0, 9.0], "both pages, oldest first");
     assert_eq!(
         m.series[0].instances.len(),
-        1,
-        "one instance across two pages"
+        2,
+        "i-a across two pages, and i-b"
     );
     assert_eq!(m.series[0].instances[0].1.len(), 2);
     assert_eq!(
         m.notes,
-        ["MaxQueryResults: 500 limit", "x0: Forbidden"],
-        "i0 was PartialData only on a page with a next one"
+        [
+            "MaxQueryResults: 500 limit",
+            "x0: Forbidden",
+            "i0 i-b: PartialData"
+        ],
+        "i0 i-a was PartialData only on a page with a next one; i-b on the last"
     );
 }
 

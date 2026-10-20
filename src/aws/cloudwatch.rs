@@ -522,7 +522,9 @@ impl AwsClient {
         // Each series' status as of the latest page it appeared on.
         // CloudWatch says PartialData on every page that has a next one,
         // so a status is only a finding once paging is over.
-        let mut statuses: Vec<(String, StatusCode)> = Vec::new();
+        // By (id, label): a SEARCH id answers with a series per
+        // instance, each with its own status.
+        let mut statuses: Vec<((String, String), StatusCode)> = Vec::new();
         let mut token: Option<String> = None;
         for _ in 0..SCAN_PAGES {
             let resp = self
@@ -549,9 +551,10 @@ impl AwsClient {
                 let id = r.id.unwrap_or_default();
                 let label = r.label.unwrap_or_default();
                 if let Some(code) = r.status_code {
-                    match statuses.iter_mut().find(|(i, _)| *i == id) {
+                    let key = (id.clone(), label.clone());
+                    match statuses.iter_mut().find(|(k, _)| *k == key) {
                         Some(s) => s.1 = code,
-                        None => statuses.push((id.clone(), code)),
+                        None => statuses.push((key, code)),
                     }
                 }
                 let points = r
@@ -579,8 +582,13 @@ impl AwsClient {
                 "stopped after {SCAN_PAGES} pages; the oldest points are missing"
             ));
         } else {
-            for (id, code) in statuses.iter().filter(|(_, c)| *c != StatusCode::Complete) {
-                notes.push(format!("{id}: {}", code.as_str()));
+            for ((id, label), code) in statuses.iter().filter(|(_, c)| *c != StatusCode::Complete) {
+                let series = if label.is_empty() {
+                    id.clone()
+                } else {
+                    format!("{id} {label}")
+                };
+                notes.push(format!("{series}: {}", code.as_str()));
             }
         }
         Ok(crate::app_tab::series_from_results(spec, gathered, notes))
