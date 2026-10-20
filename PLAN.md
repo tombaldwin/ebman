@@ -153,6 +153,30 @@ now head the list.*
    separately; two mutations CAUGHT. That is three defects this
    function has now shipped in its output wiring.
 
+3. **An "App" view per environment: is it healthy, and who is using it?** *(architecture — design note first)*
+
+   Requested 2026-10-20 by an operator running a production fleet, and
+   prioritised by the maintainer right after the serde_yml advisory.
+   One screen per env, generic (no app-specific parsing):
+
+   - **App metrics** from a namespace and metric list in `config.toml`
+     (label, unit), with latest value, sparkline and a per-instance
+     breakdown. Custom env metrics exist today but live in
+     `state.toml`, which is not shareable config.
+   - **Linked resources, narrow by ruling (2026-10-20):** RDS and
+     ElastiCache only as resources NAMED in that env's config, shown
+     as metrics through the same panel. No tag discovery, no new SDK
+     clients. The "multi-service dashboard" out-of-scope line stands.
+   - **Instance metrics:** EB enhanced-health series (requests, p99,
+     4xx/5xx) where enhanced health is on.
+   - **Alarms:** ALARM first; optional name-prefix matching beside the
+     dimension match.
+   - **Top errors:** a Logs Insights query over the env's app log
+     group, counting ERROR lines by a configurable fingerprint regex.
+   - **MCP:** one read tool (`app_metrics`) over the same fetch, with
+     caveats (a metric is only as fresh as its publish interval).
+   - Later: config thresholds that colour values; a two-env compare.
+
 ### Next
 
 4. **Assume-role elevation for MCP writes** (`runtime-grants.md`
