@@ -20,6 +20,21 @@ enum RefreshTrigger {
 /// opened again.
 const TOP_ERRORS_FRESH: chrono::TimeDelta = chrono::TimeDelta::minutes(5);
 
+/// Whether a refresh runs the top-errors query, which is billed per GB
+/// scanned: always when asked, on opening only past [`TOP_ERRORS_FRESH`]
+/// (or with no answer yet), and never on the auto-refresh tick.
+fn top_errors_due(
+    trigger: RefreshTrigger,
+    fetched_at: Option<chrono::DateTime<chrono::Utc>>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> bool {
+    match trigger {
+        RefreshTrigger::Asked => true,
+        RefreshTrigger::Opened => fetched_at.is_none_or(|t| now - t >= TOP_ERRORS_FRESH),
+        RefreshTrigger::Tick => false,
+    }
+}
+
 impl App {
     pub(crate) fn open_detail(&mut self) {
         let Some(env) = self.selected_env().cloned() else {
@@ -395,6 +410,48 @@ impl App {
         });
     }
 
+    /// The App tab's part of a refresh: its instance rows and alarm line
+    /// (each unless already coming), top errors when due, discovery for
+    /// an env with no config, and its series.
+    fn refresh_app_tab(&mut self, env_name: String, trigger: RefreshTrigger) {
+        // Its instance rows come from the instance list; one
+        // already in flight (the eager fetch on open) will do.
+        if !self.detail.as_ref().is_some_and(|d| d.loading_instances) {
+            self.spawn_detail_instances(env_name.clone());
+        }
+        // And its alarm line from the Health tab's alarm list.
+        if !self
+            .detail
+            .as_ref()
+            .is_some_and(|d| d.cw_alarms.in_flight())
+        {
+            self.spawn_detail_alarms(env_name.clone());
+        }
+        let fetched_at = self
+            .detail
+            .as_ref()
+            .and_then(|d| d.top_errors.ready())
+            .map(|t| t.fetched_at);
+        if top_errors_due(trigger, fetched_at, chrono::Utc::now()) {
+            self.spawn_detail_top_errors(env_name.clone());
+        }
+        // No config yet: find what the env uses, kept for the
+        // session, so the tab can say so rather than point at a
+        // file.
+        if !self.app_tab_source(&env_name).is_configured() {
+            // `^R` looks again: resources come and go, and a
+            // result cached for the session would never see them.
+            if trigger == RefreshTrigger::Asked {
+                let key = self.discovery_key(&env_name);
+                self.app_discovered.remove(&key);
+            }
+            if self.discovered_for(&env_name).is_none() {
+                self.spawn_app_discovery(env_name.clone());
+            }
+        }
+        self.spawn_detail_app(env_name);
+    }
+
     fn detail_refresh(&mut self, trigger: RefreshTrigger) {
         let Some(detail) = self.detail.as_ref() else {
             return;
@@ -444,49 +501,7 @@ impl App {
             DetailTab::Instances => self.spawn_detail_instances(env_name),
             DetailTab::Queue => self.spawn_detail_queues(app_name, env_name),
             DetailTab::Metrics => self.spawn_detail_metrics(env_name),
-            DetailTab::App => {
-                // Its instance rows come from the instance list; one
-                // already in flight (the eager fetch on open) will do.
-                if !self.detail.as_ref().is_some_and(|d| d.loading_instances) {
-                    self.spawn_detail_instances(env_name.clone());
-                }
-                // And its alarm line from the Health tab's alarm list.
-                if !self
-                    .detail
-                    .as_ref()
-                    .is_some_and(|d| d.cw_alarms.in_flight())
-                {
-                    self.spawn_detail_alarms(env_name.clone());
-                }
-                let fresh = self
-                    .detail
-                    .as_ref()
-                    .and_then(|d| d.top_errors.ready())
-                    .is_some_and(|t| chrono::Utc::now() - t.fetched_at < TOP_ERRORS_FRESH);
-                let run = match trigger {
-                    RefreshTrigger::Asked => true,
-                    RefreshTrigger::Opened => !fresh,
-                    RefreshTrigger::Tick => false,
-                };
-                if run {
-                    self.spawn_detail_top_errors(env_name.clone());
-                }
-                // No config yet: find what the env uses, kept for the
-                // session, so the tab can say so rather than point at a
-                // file.
-                if !self.app_tab_source(&env_name).is_configured() {
-                    // `^R` looks again: resources come and go, and a
-                    // result cached for the session would never see them.
-                    if trigger == RefreshTrigger::Asked {
-                        let key = self.discovery_key(&env_name);
-                        self.app_discovered.remove(&key);
-                    }
-                    if self.discovered_for(&env_name).is_none() {
-                        self.spawn_app_discovery(env_name.clone());
-                    }
-                }
-                self.spawn_detail_app(env_name);
-            }
+            DetailTab::App => self.refresh_app_tab(env_name, trigger),
             DetailTab::Logs => self.spawn_detail_logs(env_name),
             DetailTab::Config => {}
         }
@@ -602,5 +617,26 @@ impl App {
                 return;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn top_errors_runs_when_asked_on_opening_once_stale_and_never_on_the_tick() {
+        let now = chrono::DateTime::from_timestamp(10_000, 0).unwrap();
+        let just_now = Some(now - chrono::TimeDelta::seconds(10));
+        let at_fresh = Some(now - TOP_ERRORS_FRESH);
+        let due = |t, at| top_errors_due(t, at, now);
+        assert!(due(RefreshTrigger::Asked, just_now), "^R always");
+        assert!(due(RefreshTrigger::Opened, None), "opened with nothing yet");
+        assert!(
+            !due(RefreshTrigger::Opened, just_now),
+            "opened, still fresh"
+        );
+        assert!(due(RefreshTrigger::Opened, at_fresh), "opened, at the edge");
+        assert!(!due(RefreshTrigger::Tick, None), "the tick never");
     }
 }
