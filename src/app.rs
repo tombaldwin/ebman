@@ -540,6 +540,11 @@ pub struct App {
     pub(crate) notify_bell: bool,
     /// Config-derived values resolved at startup — see ResolvedConfig.
     pub(crate) cfg: ResolvedConfig,
+    /// `config.toml`'s modification time when its `app.` lines were last
+    /// read, so the App tab can pick up hand edits without a restart.
+    /// `None` when this App's config did not come from the file (tests),
+    /// which is never re-read; `Some(None)` when there was no file.
+    pub(crate) config_seen: Option<Option<std::time::SystemTime>>,
     pub(crate) newly_red: HashSet<String>,
     /// Env names that appeared for the first time on the most recent
     /// refresh (weren't in `prev_health` last cycle). Used by the env
@@ -1425,6 +1430,7 @@ impl App {
             shell_return_mode: Mode::Normal,
             last_rendered_buffer: None,
             notify_bell: config.notify_bell,
+            config_seen: Some(crate::config::config_mtime()),
             cfg: ResolvedConfig {
                 notify_webhook: config.notify_webhook.clone(),
                 safety_read_only: config.safety_read_only,
@@ -1729,6 +1735,7 @@ impl App {
             shell_return_mode: Mode::Normal,
             last_rendered_buffer: None,
             notify_bell: config.notify_bell,
+            config_seen: None,
             cfg: ResolvedConfig {
                 notify_webhook: config.notify_webhook.clone(),
                 safety_read_only: config.safety_read_only,

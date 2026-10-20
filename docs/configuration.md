@@ -117,7 +117,9 @@ safety.accounts.prod.read_only = true
 # The App tab, per environment: `app.ENV.FIELD = "value"`. Every field
 # is optional. Values are taken literally (no escapes), so a regex
 # backslash is written once. A line that cannot be applied is reported
-# on the App tab rather than skipped, and is kept on save.
+# on the App tab rather than skipped, and is kept on save. Edits apply
+# without a restart: the App tab re-reads these lines when config.toml
+# has changed, on opening and on ^R.
 #
 # app.ENV.namespace           CloudWatch namespace your app publishes to
 # app.ENV.dimensions          "Name=Value,…" selecting this env's series

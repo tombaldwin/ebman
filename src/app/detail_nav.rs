@@ -301,6 +301,33 @@ impl App {
         }
     }
 
+    /// Re-read the `app.` lines when `config.toml` changed since they
+    /// were last read, so a hand edit shows on the next App tab refresh
+    /// rather than after a restart. `read` is the file read, taken as a
+    /// parameter so the decision is testable without the shared test
+    /// config dir. Returns whether anything was re-read.
+    pub(crate) fn reload_app_tabs_if_changed(
+        &mut self,
+        mtime: Option<std::time::SystemTime>,
+        read: impl FnOnce() -> std::io::Result<String>,
+    ) -> bool {
+        let Some(seen) = self.config_seen else {
+            return false;
+        };
+        if seen == mtime {
+            return false;
+        }
+        let tabs = match read() {
+            Ok(text) => crate::config::parse(&text).app_tabs,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Default::default(),
+            // Unreadable: keep what we have, and try again next time.
+            Err(_) => return false,
+        };
+        self.config_seen = Some(mtime);
+        self.cfg.app_tabs = tabs;
+        true
+    }
+
     fn detail_refresh(&mut self, trigger: RefreshTrigger) {
         let Some(detail) = self.detail.as_ref() else {
             return;
@@ -346,6 +373,9 @@ impl App {
             DetailTab::Queue => self.spawn_detail_queues(app_name, env_name),
             DetailTab::Metrics => self.spawn_detail_metrics(env_name),
             DetailTab::App => {
+                self.reload_app_tabs_if_changed(crate::config::config_mtime(), || {
+                    std::fs::read_to_string(crate::config::config_path())
+                });
                 // Its instance rows come from the instance list; one
                 // already in flight (the eager fetch on open) will do.
                 if !self.detail.as_ref().is_some_and(|d| d.loading_instances) {

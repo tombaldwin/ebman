@@ -745,6 +745,14 @@ pub(crate) fn parse(text: &str) -> Config {
     cfg
 }
 
+/// `config.toml`'s modification time, or `None` when there is no file
+/// (or its time cannot be read).
+pub(crate) fn config_mtime() -> Option<std::time::SystemTime> {
+    std::fs::metadata(config_path())
+        .and_then(|m| m.modified())
+        .ok()
+}
+
 pub(crate) fn config_path() -> PathBuf {
     config_file("config.toml")
 }

@@ -2402,3 +2402,66 @@ async fn a_partial_metrics_result_draws_and_reports_its_failure() {
     assert_eq!(e.source, crate::mode_detail::DetailFetch::Metrics);
     assert_eq!(e.message, "custom metrics: AccessDenied");
 }
+
+/// A hand edit to `config.toml` reaches the App tab on its next
+/// refresh, without a restart; an App whose config did not come from
+/// the file (tests) is never re-read.
+#[tokio::test]
+async fn app_lines_are_re_read_when_the_file_changed() {
+    use std::time::{Duration, SystemTime};
+    let t0 = SystemTime::UNIX_EPOCH + Duration::from_secs(1000);
+    let t1 = t0 + Duration::from_secs(5);
+    let mut app = test_app();
+    let edited = || Ok("app.e.namespace = \"New\"\n".to_string());
+
+    assert!(
+        !app.reload_app_tabs_if_changed(Some(t1), edited),
+        "not from a file"
+    );
+    assert!(app.cfg.app_tabs.envs.is_empty());
+
+    app.config_seen = Some(Some(t0));
+    assert!(
+        !app.reload_app_tabs_if_changed(Some(t0), edited),
+        "unchanged"
+    );
+    assert!(app.reload_app_tabs_if_changed(Some(t1), edited), "changed");
+    assert_eq!(app.cfg.app_tabs.envs["e"].namespace.as_deref(), Some("New"));
+    assert_eq!(app.config_seen, Some(Some(t1)));
+
+    // Unreadable: kept, and tried again next time.
+    let denied = || Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+    assert!(!app.reload_app_tabs_if_changed(Some(t0), denied));
+    assert_eq!(app.cfg.app_tabs.envs["e"].namespace.as_deref(), Some("New"));
+    assert_eq!(
+        app.config_seen,
+        Some(Some(t1)),
+        "a failed read records nothing"
+    );
+
+    // Deleted: nothing configured.
+    let gone = || Err(std::io::Error::from(std::io::ErrorKind::NotFound));
+    assert!(app.reload_app_tabs_if_changed(None, gone));
+    assert!(app.cfg.app_tabs.envs.is_empty());
+}
+
+/// The App tab's refresh is where hand edits are picked up. Pinned by
+/// source because driving it would read the shared test config dir.
+#[test]
+fn the_app_tab_refresh_re_reads_its_config() {
+    let src = std::fs::read_to_string("src/app/detail_nav.rs").expect("read");
+    let arm = src
+        .split("fn detail_refresh(")
+        .nth(1)
+        .and_then(|body| body.split("DetailTab::App => {").nth(1))
+        .and_then(|rest| rest.split("DetailTab::Logs").next())
+        .expect("the App arm of detail_refresh");
+    assert!(
+        arm.contains("spawn_detail_app("),
+        "canary: this is the refresh arm"
+    );
+    assert!(
+        arm.contains("reload_app_tabs_if_changed("),
+        "the App tab refresh must re-read app. lines"
+    );
+}
