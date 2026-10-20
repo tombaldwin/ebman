@@ -95,7 +95,7 @@ pub(crate) fn parse(text: &str) -> Option<EbCliConfig> {
     if text.trim().is_empty() {
         return Some(EbCliConfig::default());
     }
-    let raw: RawConfig = serde_yml::from_str(text).ok()?;
+    let raw: RawConfig = noyalib::from_str(text).ok()?;
     let global = raw.global.unwrap_or_default();
     Some(EbCliConfig {
         profile: global.profile.filter(|s| !s.is_empty()),

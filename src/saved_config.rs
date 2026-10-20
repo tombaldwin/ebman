@@ -32,7 +32,7 @@ use crate::aws::ConfigOption;
 #[derive(Debug, Deserialize)]
 struct SavedConfigFile {
     #[serde(rename = "OptionSettings", default)]
-    option_settings: BTreeMap<String, BTreeMap<String, serde_yml::Value>>,
+    option_settings: BTreeMap<String, BTreeMap<String, noyalib::Value>>,
 }
 
 /// Coerce a YAML scalar value into the string form EB stores option
@@ -42,7 +42,7 @@ struct SavedConfigFile {
 /// occur inside `OptionSettings`) are serialised back to their YAML
 /// form so the diff still shows *something* rather than silently
 /// dropping the row.
-fn coerce_value(v: &serde_yml::Value) -> String {
+fn coerce_value(v: &noyalib::Value) -> String {
     coerce_value_at(v, 0)
 }
 
@@ -56,19 +56,15 @@ const MAX_VALUE_DEPTH: usize = 4;
 
 /// Render a saved-config value as the single line a diff row shows.
 ///
-/// The non-scalar arms used to go through `serde_yml::to_string`, which
-/// is the emitter named by RUSTSEC-2025-0068: `serde_yml`'s serializer
-/// can segfault, the crate is archived, and `patched = []` means no
-/// version fixes it. That was the codebase's only serializer use — the
-/// other five call sites only parse, which the advisory does not
-/// implicate — so writing these two arms by hand removes the unsound
-/// path entirely rather than waiting on a replacement crate.
+/// The non-scalar arms used to go through `serde_yml::to_string`, the
+/// emitter named by RUSTSEC-2025-0068. They are hand-written so that
+/// ebman never serialises YAML at all, whichever crate parses it.
 ///
 /// It also renders better. `to_string` emitted real YAML, so a sequence
 /// became `- a\n- b` and got `trim`med into a row that still contained a
 /// newline; a compact `[a, b]` is what a single-line diff cell wants.
-fn coerce_value_at(v: &serde_yml::Value, depth: usize) -> String {
-    use serde_yml::Value;
+fn coerce_value_at(v: &noyalib::Value, depth: usize) -> String {
+    use noyalib::Value;
     match v {
         Value::Null => String::new(),
         Value::Bool(b) => b.to_string(),
@@ -87,9 +83,6 @@ fn coerce_value_at(v: &serde_yml::Value, depth: usize) -> String {
         Value::Mapping(map) => {
             let inner: Vec<String> = map
                 .iter()
-                // 0.0.13 hands out the key as a string rather than a
-                // `Value` — one of the two breaking changes it shipped
-                // inside a patch release.
                 .map(|(k, val)| format!("{k}: {}", coerce_value_at(val, depth + 1)))
                 .collect();
             format!("{{{}}}", inner.join(", "))
@@ -113,8 +106,7 @@ fn coerce_value_at(v: &serde_yml::Value, depth: usize) -> String {
 /// `diff_config_options` so the diff renderer doesn't need a parallel
 /// code path.
 pub(crate) fn parse_saved_config(yaml: &str) -> Result<Vec<ConfigOption>> {
-    let parsed: SavedConfigFile =
-        serde_yml::from_str(yaml).wrap_err("parsing saved-config YAML")?;
+    let parsed: SavedConfigFile = noyalib::from_str(yaml).wrap_err("parsing saved-config YAML")?;
     let mut out = Vec::new();
     for (namespace, options) in parsed.option_settings {
         for (name, value) in options {
@@ -456,23 +448,12 @@ mod coerce_tests {
     }
 
     #[test]
-    fn an_inline_empty_mapping_fails_to_parse_at_all() {
-        // Not our behaviour — `serde_yml` 0.0.13 rejects `K: {}` in this
-        // position with "expected identifier, found non-scalar", and the
-        // whole file fails rather than that one value. `K: []` in the
-        // same position is fine.
-        //
-        // Pinned because it is a real limitation of `:config-diff-local`
-        // (a saved config containing an inline empty mapping cannot be
-        // diffed at all), and because it is one more data point on the
-        // crate that RUSTSEC-2025-0068 covers: this is the version that
-        // shipped two breaking changes in a patch release. If the YAML
-        // dependency is ever replaced, this test should start failing —
-        // and that would be an improvement, not a regression.
-        assert!(
-            parse_saved_config("OptionSettings:\n  NS:\n    K: {}\n").is_err(),
-            "serde_yml learned to parse an inline empty mapping — good; \
-             update this test and the note in deny.toml"
-        );
+    fn an_inline_empty_mapping_parses_and_renders_as_one() {
+        // `serde_yml` 0.0.13 rejected `K: {}` in this position ("expected
+        // identifier, found non-scalar") and failed the whole file, so a
+        // saved config containing one could not be diffed at all. This
+        // test used to pin that limitation, and said it should start
+        // failing if the YAML crate were replaced. It did.
+        assert_eq!(value_for("OptionSettings:\n  NS:\n    K: {}\n"), "{}");
     }
 }
