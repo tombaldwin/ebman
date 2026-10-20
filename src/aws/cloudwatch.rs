@@ -578,10 +578,11 @@ impl AwsClient {
         value: &str,
     ) -> Result<Vec<crate::app_discover::CustomMetric>> {
         use aws_sdk_cloudwatch::types::{DimensionFilter, RecentlyActive};
-        let mut out: Vec<crate::app_discover::CustomMetric> = Vec::new();
-        for name in dimension_names {
+        // Concurrently: one after another, the names shared one bound,
+        // and a slow account failed the lookup on time for nothing.
+        let listings = dimension_names.iter().map(|name| {
             let this = self;
-            let metrics = super::paginate_until(
+            super::paginate_until(
                 "ListMetrics",
                 DISCOVERY_PAGES,
                 DISCOVERY_DEADLINE,
@@ -598,8 +599,17 @@ impl AwsClient {
                     Ok((resp.metrics.unwrap_or_default(), resp.next_token))
                 },
             )
-            .await?
-            .complete("ListMetrics")?;
+        });
+        let mut out: Vec<crate::app_discover::CustomMetric> = Vec::new();
+        let mut failed: Option<color_eyre::eyre::Report> = None;
+        for listing in futures::future::join_all(listings).await {
+            let metrics = match listing.and_then(|l| l.complete("ListMetrics")) {
+                Ok(m) => m,
+                Err(e) => {
+                    failed.get_or_insert(e);
+                    continue;
+                }
+            };
             for m in metrics {
                 let metric = crate::app_discover::CustomMetric {
                     namespace: m.namespace.unwrap_or_default(),
@@ -616,7 +626,12 @@ impl AwsClient {
                 }
             }
         }
-        Ok(out)
+        // What one name found is evidence whatever another did; "none
+        // found" is only an answer when every name was asked.
+        match failed {
+            Some(e) if out.is_empty() => Err(e),
+            _ => Ok(out),
+        }
     }
 
     /// The App tab's metrics for one env: one `GetMetricData` call for

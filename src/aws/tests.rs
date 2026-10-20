@@ -5776,3 +5776,42 @@ async fn an_envs_own_metrics_are_filtered_by_cloudwatch_not_after() {
     assert_eq!(names, [("Shop", "usersActive")]);
     assert_eq!(rule.num_calls(), 1);
 }
+
+#[tokio::test]
+async fn one_dimension_names_failure_does_not_discard_what_another_found() {
+    use aws_sdk_cloudwatch::types::{Dimension, Metric};
+    let found = mock!(aws_sdk_cloudwatch::Client::list_metrics)
+        .match_requests(|r| r.dimensions().first().and_then(|d| d.name()) == Some("Environment"))
+        .then_output(|| {
+            aws_sdk_cloudwatch::operation::list_metrics::ListMetricsOutput::builder()
+                .metrics(
+                    Metric::builder()
+                        .namespace("Shop")
+                        .metric_name("users")
+                        .dimensions(Dimension::builder().name("Environment").value("e").build())
+                        .build(),
+                )
+                .build()
+        });
+    let denied = mock!(aws_sdk_cloudwatch::Client::list_metrics)
+        .match_requests(|r| r.dimensions().first().and_then(|d| d.name()) == Some("Env"))
+        .then_error(|| {
+            aws_sdk_cloudwatch::operation::list_metrics::ListMetricsError::unhandled("Throttling")
+        });
+    let client = client_with_cw(mock_client!(
+        aws_sdk_cloudwatch,
+        aws_smithy_mocks::RuleMode::MatchAny,
+        [&found, &denied]
+    ));
+    let got = client
+        .list_metrics_dimensioned_by(&["Env".to_string(), "Environment".to_string()], "e")
+        .await
+        .expect("what Environment found stands");
+    assert_eq!(got.len(), 1);
+    // Nothing found and a name failed: not an answer.
+    let err = client
+        .list_metrics_dimensioned_by(&["Env".to_string()], "e")
+        .await
+        .expect_err("none found is not an answer when a name failed");
+    assert!(format!("{err:?}").contains("ListMetrics"), "{err:?}");
+}
