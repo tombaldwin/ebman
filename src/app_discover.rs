@@ -287,9 +287,122 @@ fn app_metrics(env: &str, metrics: &[CustomMetric]) -> Option<AppMetricsFound> {
     })
 }
 
+/// What discovery found, and which of its lookups failed.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct Discovered {
+    pub discovery: Discovery,
+    /// `(what, why)` for each lookup that failed: the form says so,
+    /// rather than offering fewer options as if that were all there was.
+    pub failed: Vec<(String, String)>,
+}
+
+/// The App tab to preview for an env with no config: the resources an
+/// env variable names, which is evidence, and nothing else. No log
+/// group (that is billed) and no alarm prefix (that would change which
+/// alarms other screens call the env's); `None` when there is nothing.
+pub(crate) fn preview_spec(found: &Discovered) -> Option<crate::app_tab::AppTabSpec> {
+    let d = &found.discovery;
+    let spec = crate::app_tab::AppTabSpec {
+        rds: d.rds_found.iter().map(|(id, _)| id.clone()).collect(),
+        elasticache: d.cache_found.iter().map(|(id, _)| id.clone()).collect(),
+        ..Default::default()
+    };
+    (!spec.is_empty()).then_some(spec)
+}
+
+/// Dimension names an env's own metrics might be valued by: what ebman
+/// already matches envs by (`alarm_dimensions`), what this env's config
+/// names, and the usual spellings. CloudWatch filters by a dimension's
+/// name and value, not by value alone, so the names have to be given.
+pub(crate) fn env_dimension_names(
+    alarm_dimensions: &[String],
+    spec: Option<&crate::app_tab::AppTabSpec>,
+) -> Vec<String> {
+    const USUAL: &[&str] = &[
+        "EnvironmentName",
+        "Environment",
+        "Env",
+        "environment",
+        "env",
+        "EnvName",
+    ];
+    let mut names: Vec<String> = Vec::new();
+    let configured = spec
+        .into_iter()
+        .flat_map(|s| s.dimensions.iter().map(|(k, _)| k.clone()));
+    for n in alarm_dimensions
+        .iter()
+        .cloned()
+        .chain(configured)
+        .chain(USUAL.iter().map(|s| s.to_string()))
+    {
+        if !names.contains(&n) {
+            names.push(n);
+        }
+    }
+    names
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn discovered() -> Discovered {
+        Discovered {
+            discovery: Discovery {
+                log_groups: vec!["var/log/eb-engine.log".into(), "var/log/app.log".into()],
+                app_log: Some("var/log/app.log".into()),
+                alarm_prefix: Some(("Shop-prod-".into(), 3)),
+                rds_options: vec!["other-db".into(), "shop-db".into()],
+                rds_found: vec![],
+                cache_options: vec!["sessions-001".into()],
+                cache_found: vec![("sessions-001".into(), "REDIS".into())],
+                app_metrics: Some(AppMetricsFound {
+                    namespace: "Shop".into(),
+                    dimension: ("Environment".into(), "Shop-prod".into()),
+                    instance_dimension: Some("InstanceId".into()),
+                    names: vec!["usersActive".into(), "heap.used".into(), "heap_used".into()],
+                }),
+            },
+            failed: vec![],
+        }
+    }
+
+    #[test]
+    fn the_dimension_names_tried_are_ebmans_the_configs_and_the_usual() {
+        let spec = crate::config::parse("app.e.dimensions = \"Stage=prod\"\n")
+            .app_tabs
+            .envs
+            .remove("e")
+            .unwrap();
+        let names =
+            super::env_dimension_names(&["EnvironmentName".into(), "Svc".into()], Some(&spec));
+        assert_eq!(&names[..3], ["EnvironmentName", "Svc", "Stage"]);
+        assert!(names.contains(&"Environment".to_string()));
+        assert_eq!(
+            names.iter().filter(|n| *n == "EnvironmentName").count(),
+            1,
+            "no name tried twice"
+        );
+    }
+
+    #[test]
+    fn the_preview_takes_only_what_an_env_variable_names() {
+        let mut d = discovered();
+        assert_eq!(
+            preview_spec(&d),
+            Some(crate::app_tab::AppTabSpec {
+                elasticache: vec!["sessions-001".into()],
+                ..Default::default()
+            }),
+            "no log group (billed), no alarm prefix, no RDS without evidence"
+        );
+        d.discovery.rds_found = vec![("shop-db".into(), "DB_HOST".into())];
+        assert_eq!(preview_spec(&d).unwrap().rds, ["shop-db"]);
+        d.discovery.rds_found.clear();
+        d.discovery.cache_found.clear();
+        assert_eq!(preview_spec(&d), None, "nothing named, nothing previewed");
+    }
 
     fn s(v: &[&str]) -> Vec<String> {
         v.iter().map(|x| x.to_string()).collect()

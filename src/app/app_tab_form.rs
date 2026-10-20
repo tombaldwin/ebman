@@ -8,7 +8,7 @@
 //! are offered, not chosen.
 
 use super::*;
-use crate::app_discover::Discovery;
+use crate::app_discover::Discovered;
 use crate::app_tab::AppTabSpec;
 use crate::form::{FieldKind, FormField};
 
@@ -17,15 +17,6 @@ const NO_LOG_GROUP: &str = "(none)";
 
 /// Separates the entries of the metrics and thresholds fields.
 const ENTRY_SEP: char = ';';
-
-/// What discovery found, and which of its lookups failed.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub(crate) struct Discovered {
-    pub discovery: Discovery,
-    /// `(what, why)` for each lookup that failed: the form says so,
-    /// rather than offering fewer options as if that were all there was.
-    pub failed: Vec<(String, String)>,
-}
 
 /// The form's fields, filled from `spec` (the env's config, if any).
 pub(crate) fn fields(spec: Option<&AppTabSpec>) -> Vec<FormField> {
@@ -430,14 +421,18 @@ impl App {
             })
             .unwrap_or_default();
         let fleet: Vec<String> = self.environments.iter().map(|e| e.name.clone()).collect();
-        let dimension_names =
-            env_dimension_names(&self.cfg.alarm_dimensions, self.cfg.app_tabs.envs.get(&env));
+        let dimension_names = crate::app_discover::env_dimension_names(
+            &self.cfg.alarm_dimensions,
+            self.cfg.app_tabs.envs.get(&env),
+        );
         let client = self.detail_client();
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         tokio::spawn(async move {
             let found = match client.resolve().await {
-                Ok(aws) => discover(&aws, &app_name, &env, fleet, dimension_names).await,
+                Ok(aws) => {
+                    crate::aws::discover_app(&aws, &app_name, &env, fleet, dimension_names).await
+                }
                 Err(e) => Discovered {
                     failed: vec![("AWS client".into(), flatten_err("cached_client", e))],
                     ..Default::default()
@@ -543,163 +538,9 @@ impl App {
     }
 }
 
-/// The App tab to preview for an env with no config: the resources an
-/// env variable names, which is evidence, and nothing else. No log
-/// group (that is billed) and no alarm prefix (that would change which
-/// alarms other screens call the env's); `None` when there is nothing.
-pub(crate) fn preview_spec(found: &Discovered) -> Option<AppTabSpec> {
-    let d = &found.discovery;
-    let spec = AppTabSpec {
-        rds: d.rds_found.iter().map(|(id, _)| id.clone()).collect(),
-        elasticache: d.cache_found.iter().map(|(id, _)| id.clone()).collect(),
-        ..Default::default()
-    };
-    (!spec.is_empty()).then_some(spec)
-}
-
-/// What discovery found, as the lines an unconfigured env's App tab
-/// shows, each saying what found it.
-pub(crate) fn summary_lines(found: &Discovered) -> Vec<String> {
-    let d = &found.discovery;
-    let mut out = Vec::new();
-    if let Some((prefix, n)) = &d.alarm_prefix {
-        out.push(format!("{n} alarms named {prefix}…"));
-    }
-    for (id, var) in &d.cache_found {
-        out.push(format!("cache node {id} (env var {var})"));
-    }
-    for (id, var) in &d.rds_found {
-        out.push(format!("RDS instance {id} (env var {var})"));
-    }
-    if !d.rds_options.is_empty() && d.rds_found.is_empty() {
-        out.push(format!(
-            "{} RDS instances to choose from",
-            d.rds_options.len()
-        ));
-    }
-    if let Some(log) = &d.app_log {
-        out.push(format!("app log {log} (choose it for top errors)"));
-    }
-    if let Some(app) = &d.app_metrics {
-        out.push(format!(
-            "{} metrics in {} dimensioned {}={}",
-            app.names.len(),
-            app.namespace,
-            app.dimension.0,
-            app.dimension.1
-        ));
-    }
-    for (what, why) in &found.failed {
-        out.push(format!("could not check {what}: {why}"));
-    }
-    out
-}
-
 /// Past this, a discovery with no answer is treated as lost: well beyond
-/// [`LOOKUP_BOUND`], which bounds every lookup it makes.
+/// the discovery lookups' own bound (`aws::discover`), which bounds every lookup it makes.
 pub(crate) const DISCOVERY_STALE: std::time::Duration = std::time::Duration::from_secs(60);
-
-/// The longest the editor waits on any one discovery lookup.
-const LOOKUP_BOUND: std::time::Duration = std::time::Duration::from_secs(15);
-
-/// A lookup within [`LOOKUP_BOUND`]: past it, an error saying so.
-async fn bounded<T>(
-    f: impl std::future::Future<Output = color_eyre::eyre::Result<T>>,
-) -> color_eyre::eyre::Result<T> {
-    tokio::time::timeout(LOOKUP_BOUND, f)
-        .await
-        .unwrap_or_else(|_| {
-            Err(color_eyre::eyre::eyre!(
-                "no answer within {}s",
-                LOOKUP_BOUND.as_secs()
-            ))
-        })
-}
-
-/// Dimension names an env's own metrics might be valued by: what ebman
-/// already matches envs by (`alarm_dimensions`), what this env's config
-/// names, and the usual spellings. CloudWatch filters by a dimension's
-/// name and value, not by value alone, so the names have to be given.
-pub(crate) fn env_dimension_names(
-    alarm_dimensions: &[String],
-    spec: Option<&AppTabSpec>,
-) -> Vec<String> {
-    const USUAL: &[&str] = &[
-        "EnvironmentName",
-        "Environment",
-        "Env",
-        "environment",
-        "env",
-        "EnvName",
-    ];
-    let mut names: Vec<String> = Vec::new();
-    let configured = spec
-        .into_iter()
-        .flat_map(|s| s.dimensions.iter().map(|(k, _)| k.clone()));
-    for n in alarm_dimensions
-        .iter()
-        .cloned()
-        .chain(configured)
-        .chain(USUAL.iter().map(|s| s.to_string()))
-    {
-        if !names.contains(&n) {
-            names.push(n);
-        }
-    }
-    names
-}
-
-/// A lookup's result, or nothing with its failure recorded.
-fn take<T>(
-    failed: &mut Vec<(String, String)>,
-    what: &str,
-    r: color_eyre::eyre::Result<Vec<T>>,
-) -> Vec<T> {
-    r.unwrap_or_else(|e| {
-        failed.push((what.to_string(), e.to_string()));
-        Vec::new()
-    })
-}
-
-/// Every lookup at once; each failure is recorded, not fatal.
-async fn discover(
-    aws: &crate::aws::AwsClient,
-    app_name: &str,
-    env: &str,
-    fleet: Vec<String>,
-    dimension_names: Vec<String>,
-) -> Discovered {
-    let prefix = format!("{env}-");
-    // Each lookup pages within its own deadline; `bounded` also caps a
-    // single request that hangs, so the form never waits past it.
-    let (groups, vars, rds, cache, alarms, custom) = tokio::join!(
-        bounded(aws.discover_env_log_groups(env)),
-        bounded(aws.fetch_env_vars(app_name, env)),
-        bounded(aws.list_dimension_values("AWS/RDS", "CPUUtilization", "DBInstanceIdentifier")),
-        bounded(aws.list_dimension_values("AWS/ElastiCache", "CPUUtilization", "CacheClusterId")),
-        bounded(aws.list_alarm_names_with_prefix(&prefix)),
-        bounded(aws.list_metrics_dimensioned_by(&dimension_names, env)),
-    );
-    let mut failed = Vec::new();
-    let inputs = crate::app_discover::Inputs {
-        log_groups: take(&mut failed, "log groups", groups),
-        // Only endpoint hostnames survive this line; no other value.
-        endpoint_hosts: crate::app_discover::endpoint_hosts(&take(
-            &mut failed,
-            "environment variables",
-            vars,
-        )),
-        rds_ids: take(&mut failed, "RDS instances", rds),
-        cache_ids: take(&mut failed, "cache nodes", cache),
-        prefixed_alarms: take(&mut failed, "alarms", alarms),
-        fleet,
-        custom_metrics: take(&mut failed, "custom metrics", custom),
-    };
-    Discovered {
-        discovery: crate::app_discover::discover(env, &inputs),
-        failed,
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -826,108 +667,6 @@ mod tests {
         assert_eq!(crate::config::parse(&text).app_tabs.envs["e"], spec);
     }
 
-    /// Discovery end to end against mocked AWS: each lookup's answer
-    /// reaches the suggestions, and a failed one is named, not hidden.
-    #[tokio::test]
-    async fn discovery_reads_each_lookup_and_names_the_one_that_failed() {
-        use aws_smithy_mocks::{mock, mock_client, RuleMode};
-        let groups = mock!(aws_sdk_cloudwatchlogs::Client::describe_log_groups).then_output(|| {
-            use aws_sdk_cloudwatchlogs::types::LogGroup;
-            aws_sdk_cloudwatchlogs::operation::describe_log_groups::DescribeLogGroupsOutput::builder()
-                .log_groups(LogGroup::builder().log_group_name("/aws/elasticbeanstalk/e/var/log/eb-engine.log").build())
-                .log_groups(LogGroup::builder().log_group_name("/aws/elasticbeanstalk/e/var/log/app.log").build())
-                .build()
-        });
-        let settings = mock!(aws_sdk_elasticbeanstalk::Client::describe_configuration_settings).then_output(|| {
-            use aws_sdk_elasticbeanstalk::types::{ConfigurationOptionSetting, ConfigurationSettingsDescription};
-            let var = |name: &str, value: &str| {
-                ConfigurationOptionSetting::builder()
-                    .namespace("aws:elasticbeanstalk:application:environment")
-                    .option_name(name)
-                    .value(value)
-                    .build()
-            };
-            aws_sdk_elasticbeanstalk::operation::describe_configuration_settings::DescribeConfigurationSettingsOutput::builder()
-                .configuration_settings(
-                    ConfigurationSettingsDescription::builder()
-                        .option_settings(var("REDIS", "master.sess.x.usw1.cache.amazonaws.com"))
-                        .option_settings(var("DB_PASSWORD", "hunter2"))
-                        .build(),
-                )
-                .build()
-        });
-        let metrics = |ns: &'static str, dim: &'static str, value: &'static str| {
-            mock!(aws_sdk_cloudwatch::Client::list_metrics)
-                .match_requests(move |r| r.namespace() == Some(ns))
-                .then_output(move || {
-                    use aws_sdk_cloudwatch::types::{Dimension, Metric};
-                    aws_sdk_cloudwatch::operation::list_metrics::ListMetricsOutput::builder()
-                        .metrics(
-                            Metric::builder()
-                                .dimensions(Dimension::builder().name(dim).value(value).build())
-                                .build(),
-                        )
-                        .build()
-                })
-        };
-        let rds = metrics("AWS/RDS", "DBInstanceIdentifier", "db-a");
-        let cache = metrics("AWS/ElastiCache", "CacheClusterId", "sess-001");
-        let custom = mock!(aws_sdk_cloudwatch::Client::list_metrics)
-            .match_requests(|r| r.namespace().is_none())
-            .then_error(|| {
-                aws_sdk_cloudwatch::operation::list_metrics::ListMetricsError::unhandled(
-                    "AccessDenied",
-                )
-            });
-        let alarms = mock!(aws_sdk_cloudwatch::Client::describe_alarms)
-            .match_requests(|r| r.alarm_name_prefix() == Some("e-"))
-            .then_output(|| {
-                use aws_sdk_cloudwatch::types::MetricAlarm;
-                aws_sdk_cloudwatch::operation::describe_alarms::DescribeAlarmsOutput::builder()
-                    .metric_alarms(MetricAlarm::builder().alarm_name("e-5xx").build())
-                    .build()
-            });
-        let sdk = aws_config::SdkConfig::builder()
-            .region(aws_config::Region::new("us-east-1"))
-            .behavior_version(aws_config::BehaviorVersion::latest())
-            .build();
-        let aws = crate::aws::AwsClient::for_tests(
-            mock_client!(aws_sdk_elasticbeanstalk, RuleMode::MatchAny, [&settings]),
-            aws_sdk_sqs::Client::new(&sdk),
-            mock_client!(
-                aws_sdk_cloudwatch,
-                RuleMode::MatchAny,
-                [&rds, &cache, &custom, &alarms]
-            ),
-            mock_client!(aws_sdk_cloudwatchlogs, RuleMode::MatchAny, [&groups]),
-            aws_sdk_s3::Client::new(&sdk),
-            aws_sdk_ec2::Client::new(&sdk),
-        );
-        let found = discover(
-            &aws,
-            "shop",
-            "e",
-            vec!["e".into()],
-            vec!["Environment".into()],
-        )
-        .await;
-        let d = &found.discovery;
-        assert_eq!(d.app_log.as_deref(), Some("var/log/app.log"));
-        assert_eq!(d.alarm_prefix, Some(("e-".to_string(), 1)));
-        assert_eq!(d.rds_options, ["db-a"]);
-        assert!(d.rds_found.is_empty(), "no env var names it: offered only");
-        assert_eq!(
-            d.cache_found,
-            [("sess-001".to_string(), "REDIS".to_string())]
-        );
-        assert_eq!(found.failed.len(), 1, "{:?}", found.failed);
-        assert_eq!(found.failed[0].0, "custom metrics");
-        assert!(
-            !format!("{found:?}").contains("hunter2"),
-            "no other env var value is kept"
-        );
-    }
-
     /// Every field the parser accepts survives the editor. A field
     /// added to the parser (and so to `FIELDS`) but not to the form is
     /// erased from disk the first time the form is saved, because a save
@@ -1010,89 +749,6 @@ mod tests {
             ],
             "another env's lines are not this save's"
         );
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn a_lookup_that_never_answers_gives_up_at_the_bound() {
-        let started = tokio::time::Instant::now();
-        let r: color_eyre::eyre::Result<()> = bounded(std::future::pending()).await;
-        assert_eq!(
-            started.elapsed(),
-            LOOKUP_BOUND,
-            "gave up at the bound, not later"
-        );
-        let e = r.expect_err("gave up");
-        assert!(e.to_string().contains("no answer within 15s"), "{e}");
-        assert!(bounded(async { Ok(1) }).await.is_ok());
-    }
-
-    #[test]
-    fn the_dimension_names_tried_are_ebmans_the_configs_and_the_usual() {
-        let spec = crate::config::parse("app.e.dimensions = \"Stage=prod\"\n")
-            .app_tabs
-            .envs
-            .remove("e")
-            .unwrap();
-        let names = env_dimension_names(&["EnvironmentName".into(), "Svc".into()], Some(&spec));
-        assert_eq!(&names[..3], ["EnvironmentName", "Svc", "Stage"]);
-        assert!(names.contains(&"Environment".to_string()));
-        assert_eq!(
-            names.iter().filter(|n| *n == "EnvironmentName").count(),
-            1,
-            "no name tried twice"
-        );
-    }
-
-    #[test]
-    fn the_preview_takes_only_what_an_env_variable_names() {
-        let mut d = found();
-        assert_eq!(
-            preview_spec(&d),
-            Some(AppTabSpec {
-                elasticache: vec!["sessions-001".into()],
-                ..Default::default()
-            }),
-            "no log group (billed), no alarm prefix, no RDS without evidence"
-        );
-        d.discovery.rds_found = vec![("shop-db".into(), "DB_HOST".into())];
-        assert_eq!(preview_spec(&d).unwrap().rds, ["shop-db"]);
-        d.discovery.rds_found.clear();
-        d.discovery.cache_found.clear();
-        assert_eq!(preview_spec(&d), None, "nothing named, nothing previewed");
-    }
-
-    #[test]
-    fn the_summary_says_what_found_each_line_and_what_could_not_be_checked() {
-        let mut d = found();
-        d.failed = vec![("custom metrics".into(), "AccessDenied".into())];
-        let lines = summary_lines(&d);
-        assert!(
-            lines.contains(&"3 alarms named Shop-prod-…".to_string()),
-            "{lines:?}"
-        );
-        assert!(
-            lines.contains(&"cache node sessions-001 (env var REDIS)".to_string()),
-            "{lines:?}"
-        );
-        assert!(
-            lines.contains(&"2 RDS instances to choose from".to_string()),
-            "{lines:?}"
-        );
-        assert!(
-            lines
-                .iter()
-                .any(|l| l.starts_with("app log var/log/app.log")),
-            "{lines:?}"
-        );
-        assert!(
-            lines.iter().any(|l| l.starts_with("3 metrics in Shop")),
-            "{lines:?}"
-        );
-        assert_eq!(
-            lines.last().unwrap(),
-            "could not check custom metrics: AccessDenied"
-        );
-        assert!(summary_lines(&Discovered::default()).is_empty());
     }
 
     #[test]

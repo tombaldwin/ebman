@@ -2216,7 +2216,7 @@ async fn an_unconfigured_app_tab_shows_what_discovery_found() {
         "the key strip says set up:\n{text}"
     );
 
-    let found = crate::app::app_tab_form::Discovered {
+    let found = crate::app_discover::Discovered {
         discovery: Discovery {
             alarm_prefix: Some(("api-prod-".into(), 9)),
             cache_found: vec![("sessions-001".into(), "REDIS_HOST".into())],

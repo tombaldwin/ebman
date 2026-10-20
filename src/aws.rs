@@ -67,14 +67,15 @@ use color_eyre::eyre::{eyre, Result, WrapErr};
 mod acm;
 mod cloudwatch;
 mod cost;
-// ---------------------------------------------------------------------------
-// Per-service sub-modules. Each contributes `impl AwsClient { ... }` for one
-// AWS service, so the boundary between "the Elastic Beanstalk domain" and
-// "generic AWS surface any operator TUI would want" is visible in the file
-// list rather than buried in a 6k-line module. They open with `use super::*`
-// and are glob-re-exported below, so every `crate::aws::foo` path resolves as
-// it did when this was one file.
-// ---------------------------------------------------------------------------
+mod discover; // the App tab editor's discovery lookups
+              // ---------------------------------------------------------------------------
+              // Per-service sub-modules. Each contributes `impl AwsClient { ... }` for one
+              // AWS service, so the boundary between "the Elastic Beanstalk domain" and
+              // "generic AWS surface any operator TUI would want" is visible in the file
+              // list rather than buried in a 6k-line module. They open with `use super::*`
+              // and are glob-re-exported below, so every `crate::aws::foo` path resolves as
+              // it did when this was one file.
+              // ---------------------------------------------------------------------------
 mod eb; // Elastic Beanstalk — the domain
 mod ec2;
 mod iam;
@@ -88,6 +89,7 @@ mod waf;
 
 pub(crate) use cloudwatch::*;
 pub(crate) use cost::*;
+pub(crate) use discover::discover_app;
 pub(crate) use eb::*;
 pub(crate) use iam::*;
 pub(crate) use logs::*;

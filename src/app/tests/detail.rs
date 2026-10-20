@@ -2494,7 +2494,7 @@ fn the_app_tab_refresh_re_reads_its_config() {
 /// lookups are named in the banner; a bad entry is not saved.
 #[tokio::test]
 async fn the_app_tab_editor_opens_fills_and_refuses_bad_entries() {
-    use crate::app::app_tab_form::Discovered;
+    use crate::app_discover::Discovered;
     let mut app = test_app();
     app.demo_mode = true;
     app.environments = vec![mk_env("api-prod", "shop", "WebServer", "Green")];
@@ -2625,7 +2625,7 @@ fn saving_the_app_tab_writes_then_applies() {
 /// discovery whose answer was lost does not block the env for good.
 #[tokio::test]
 async fn discovery_is_reused_on_open_rerun_on_ctrl_r_and_never_wedged() {
-    use crate::app::app_tab_form::Discovered;
+    use crate::app_discover::Discovered;
     let mut app = test_app();
     app.environments = vec![mk_env("api-prod", "shop", "WebServer", "Green")];
     app.rebuild_view();

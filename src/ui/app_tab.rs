@@ -81,6 +81,44 @@ fn asciify(s: &str) -> String {
         .collect()
 }
 
+/// What discovery found, as the lines an unconfigured env's App tab
+/// shows, each saying what found it.
+fn summary_lines(found: &crate::app_discover::Discovered) -> Vec<String> {
+    let d = &found.discovery;
+    let mut out = Vec::new();
+    if let Some((prefix, n)) = &d.alarm_prefix {
+        out.push(format!("{n} alarms named {prefix}…"));
+    }
+    for (id, var) in &d.cache_found {
+        out.push(format!("cache node {id} (env var {var})"));
+    }
+    for (id, var) in &d.rds_found {
+        out.push(format!("RDS instance {id} (env var {var})"));
+    }
+    if !d.rds_options.is_empty() && d.rds_found.is_empty() {
+        out.push(format!(
+            "{} RDS instances to choose from",
+            d.rds_options.len()
+        ));
+    }
+    if let Some(log) = &d.app_log {
+        out.push(format!("app log {log} (choose it for top errors)"));
+    }
+    if let Some(app) = &d.app_metrics {
+        out.push(format!(
+            "{} metrics in {} dimensioned {}={}",
+            app.names.len(),
+            app.namespace,
+            app.dimension.0,
+            app.dimension.1
+        ));
+    }
+    for (what, why) in &found.failed {
+        out.push(format!("could not check {what}: {why}"));
+    }
+    out
+}
+
 /// `label  value unit  sparkline  instance value  instance value …`.
 fn series_row(s: &AppSeries, label_w: usize, width: u16, theme: &Theme) -> Line<'static> {
     let latest = s.points.last().map(|(_, v)| *v);
@@ -188,7 +226,7 @@ fn not_set_up(
         )));
         return;
     };
-    let summary = crate::app::summary_lines(found);
+    let summary = summary_lines(found);
     if summary.is_empty() {
         lines.push(Line::from(Span::styled(
             format!("Not set up yet, and nothing found for {env}: press e to set it up."),
@@ -215,7 +253,7 @@ fn not_set_up(
         Span::styled(" to review and save.", muted),
     ]));
     // The resources an env variable names, drawn now; nothing is saved.
-    if crate::app::preview_spec(found).is_some() {
+    if crate::app_discover::preview_spec(found).is_some() {
         lines.push(Line::default());
         lines.push(Line::from(Span::styled("Suggested, not saved:", muted)));
         metric_rows(lines, detail, width, theme);
@@ -815,6 +853,61 @@ mod tests {
             None,
             "no points, nothing to age"
         );
+    }
+
+    #[test]
+    fn the_summary_says_what_found_each_line_and_what_could_not_be_checked() {
+        let mut d = discovered();
+        d.failed = vec![("custom metrics".into(), "AccessDenied".into())];
+        let lines = summary_lines(&d);
+        assert!(
+            lines.contains(&"3 alarms named Shop-prod-…".to_string()),
+            "{lines:?}"
+        );
+        assert!(
+            lines.contains(&"cache node sessions-001 (env var REDIS)".to_string()),
+            "{lines:?}"
+        );
+        assert!(
+            lines.contains(&"2 RDS instances to choose from".to_string()),
+            "{lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.starts_with("app log var/log/app.log")),
+            "{lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l.starts_with("3 metrics in Shop")),
+            "{lines:?}"
+        );
+        assert_eq!(
+            lines.last().unwrap(),
+            "could not check custom metrics: AccessDenied"
+        );
+        assert!(summary_lines(&crate::app_discover::Discovered::default()).is_empty());
+    }
+
+    fn discovered() -> crate::app_discover::Discovered {
+        crate::app_discover::Discovered {
+            discovery: crate::app_discover::Discovery {
+                log_groups: vec!["var/log/eb-engine.log".into(), "var/log/app.log".into()],
+                app_log: Some("var/log/app.log".into()),
+                alarm_prefix: Some(("Shop-prod-".into(), 3)),
+                rds_options: vec!["other-db".into(), "shop-db".into()],
+                rds_found: vec![],
+                cache_options: vec!["sessions-001".into()],
+                cache_found: vec![("sessions-001".into(), "REDIS".into())],
+                app_metrics: Some(crate::app_discover::AppMetricsFound {
+                    namespace: "Shop".into(),
+                    dimension: ("Environment".into(), "Shop-prod".into()),
+                    instance_dimension: Some("InstanceId".into()),
+                    names: vec!["usersActive".into(), "heap.used".into(), "heap_used".into()],
+                }),
+            },
+            failed: vec![],
+        }
     }
 
     #[test]

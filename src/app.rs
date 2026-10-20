@@ -116,7 +116,6 @@ mod cmd_write; // bulk writes: batch-action, batch-deploy
 // Interactive surfaces.
 mod action_flow; // action menu -> confirm -> undo window -> dispatch
 mod app_tab_form; // the App tab's editor + discovery
-pub(crate) use app_tab_form::{preview_spec, summary_lines};
 mod apps_menu; // the Applications scope's menu + info overlay
 mod config_edit; // Detail's Config tab editor + template CRUD
 mod detail_nav; // the per-environment Detail view
@@ -549,7 +548,7 @@ pub struct App {
     pub(crate) config_seen: Option<Option<crate::config::ConfigStamp>>,
     /// What discovery found per env, kept for the session: the App tab
     /// of an env with no config shows it, and the editor opens with it.
-    pub(crate) app_discovered: std::collections::HashMap<String, app_tab_form::Discovered>,
+    pub(crate) app_discovered: std::collections::HashMap<String, crate::app_discover::Discovered>,
     /// Envs whose discovery is running, so it is not started twice.
     /// When each running one started: past [`app_tab_form::DISCOVERY_STALE`]
     /// it is treated as lost (a result dropped by a context switch, a
@@ -697,7 +696,7 @@ pub(crate) enum AppMsg {
         /// in-flight marker (an older one may answer after the stale
         /// timeout let a newer one start).
         started: std::time::Instant,
-        found: Box<app_tab_form::Discovered>,
+        found: Box<crate::app_discover::Discovered>,
     },
     /// The App tab's top errors for one env.
     DetailTopErrors {
