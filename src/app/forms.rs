@@ -57,6 +57,23 @@ impl App {
         });
     }
 
+    /// Leave a form unsaved, back to where it was opened from: the App
+    /// tab's editor returns to the Detail view, every other form to the
+    /// table.
+    fn close_form(&mut self) {
+        let from_detail = self
+            .form
+            .as_ref()
+            .is_some_and(|f| matches!(f.submit, crate::form::FormSubmit::AppTab))
+            && self.detail.is_some();
+        self.form = None;
+        self.mode = if from_detail {
+            Mode::Detail
+        } else {
+            Mode::Normal
+        };
+    }
+
     /// Key handler for `Mode::Form`. Loading-state forms ignore input
     /// (operator waits for the pre-fill); Ready forms route through Tab /
     /// arrow nav + per-field input; Submitting forms ignore input (waiting
@@ -74,8 +91,7 @@ impl App {
             None => return,
             Some(FormState::Loading) | Some(FormState::Submitting) => {
                 if matches!(key.code, KeyCode::Esc) {
-                    self.form = None;
-                    self.mode = Mode::Normal;
+                    self.close_form();
                 }
                 return;
             }
@@ -87,8 +103,7 @@ impl App {
             return;
         }
         if matches!(key.code, KeyCode::Esc) {
-            self.form = None;
-            self.mode = Mode::Normal;
+            self.close_form();
             return;
         }
         // Field navigation that's always available: Tab, Shift-Tab, Up, Down.
@@ -223,6 +238,10 @@ impl App {
         };
         if let Err(failing) = form.validate() {
             form.cursor = failing[0];
+            return;
+        }
+        if matches!(form.submit, crate::form::FormSubmit::AppTab) {
+            self.submit_app_tab_form();
             return;
         }
         // LocalConfig submits write `config.toml` and apply changes live to

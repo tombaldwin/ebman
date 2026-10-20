@@ -483,6 +483,13 @@ impl App {
             }
             KeyCode::Char('d') => self.open_dlq(),
             KeyCode::Char('D') => self.open_describe_overlay(),
+            // Not with Ctrl: ^E toggles the events panel everywhere.
+            KeyCode::Char('e')
+                if !key.modifiers.contains(KeyModifiers::CONTROL)
+                    && matches!(self.detail.as_ref().map(|d| d.tab()), Some(DetailTab::App)) =>
+            {
+                self.open_app_tab_form();
+            }
             KeyCode::Char(']')
                 if matches!(
                     self.detail.as_ref().map(|d| d.tab()),

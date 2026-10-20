@@ -121,6 +121,14 @@ safety.accounts.prod.read_only = true
 # without a restart: the App tab re-reads these lines when config.toml
 # has changed, on opening and on ^R.
 #
+# Or press `e` on the App tab to edit them in a form. It is pre-filled
+# with what the env's own evidence suggests, each saying where it came
+# from: the one log group that is not Elastic Beanstalk's, alarms named
+# for the env, cache nodes an environment variable's endpoint leads to,
+# and metrics dimensioned by the env's name. RDS instances are offered,
+# never assumed: one is pre-chosen only when an env variable names its
+# endpoint. Saving writes only that env's lines and applies them.
+#
 # app.ENV.namespace           CloudWatch namespace your app publishes to
 # app.ENV.dimensions          "Name=Value,…" selecting this env's series
 #                             (default EnvironmentName=<env>)

@@ -27,8 +27,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   last 15 minutes, run on `^R` and when the tab opens (reopening it
   keeps an answer under five minutes old), never on the auto-refresh
   tick. The MCP
-  `app_metrics` tool returns the same data for agents. A config
-  line that
+  `app_metrics` tool returns the same data for agents. `e` on the tab
+  edits its config in a form pre-filled by discovery (from the env's
+  own log groups, env-var endpoints, alarm names and metrics; RDS is
+  offered, never assumed), and hand edits to `config.toml` apply
+  without a restart. A config line that
   cannot be applied is shown on the tab, not skipped, and kept on
   `:settings` save. See `docs/configuration.md`.
 

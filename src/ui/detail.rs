@@ -255,7 +255,12 @@ pub(super) fn detail_tab_keys(tab: DetailTab) -> &'static [(&'static str, &'stat
             ("T", "time"),
             ("^R", "refresh"),
         ],
-        DetailTab::App => &[("[ ]", "range"), ("R", "auto-refresh"), ("^R", "refresh")],
+        DetailTab::App => &[
+            ("e", "edit"),
+            ("[ ]", "range"),
+            ("R", "auto-refresh"),
+            ("^R", "refresh"),
+        ],
         DetailTab::Metrics => &[
             ("[ ]", "range"),
             ("hover", "values"),

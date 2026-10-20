@@ -186,6 +186,12 @@ now head the list.*
    step 6 (top errors) and step 7 (`app_metrics` on MCP), then three
    review rounds (13 findings, then 7, then 3, all fixed with tests).
 
+   **Then, by request (2026-10-20):** edits apply without a restart,
+   `e` on the tab opens an editor pre-filled by discovery from the env's
+   own evidence (maintainer ruling: discovery yes; RDS offered, never
+   assumed), and an alarm prefix gives way to a longer env name it
+   covers (found on the live fleet).
+
    **Left, both needing the maintainer:**
    - **A live check against a real account.** Nothing here has met real
      CloudWatch or Logs Insights: the SEARCH expression and its dynamic

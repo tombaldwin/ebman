@@ -2465,3 +2465,107 @@ fn the_app_tab_refresh_re_reads_its_config() {
         "the App tab refresh must re-read app. lines"
     );
 }
+
+/// `e` opens the App tab's editor on the App tab and nowhere else; Esc
+/// returns to Detail; discovery for another env is ignored, and failed
+/// lookups are named in the banner; a bad entry is not saved.
+#[tokio::test]
+async fn the_app_tab_editor_opens_fills_and_refuses_bad_entries() {
+    use crate::app::app_tab_form::Discovered;
+    let mut app = test_app();
+    app.demo_mode = true;
+    app.environments = vec![mk_env("api-prod", "shop", "WebServer", "Green")];
+    app.rebuild_view();
+    app.table_state.select(Some(0));
+    app.open_detail();
+    press(&mut app, KeyCode::Char('e'), KeyModifiers::NONE);
+    assert!(app.form.is_none(), "not on the Health tab");
+    app.detail.as_mut().unwrap().tab_idx = 1;
+    assert_eq!(app.detail.as_ref().unwrap().tab(), DetailTab::App);
+    press(&mut app, KeyCode::Char('e'), KeyModifiers::CONTROL);
+    assert!(app.form.is_none(), "^E is the events panel, not the editor");
+    press(&mut app, KeyCode::Char('e'), KeyModifiers::NONE);
+    assert!(matches!(app.mode, Mode::Form));
+    assert!(matches!(
+        app.form.as_ref().map(|f| &f.submit),
+        Some(crate::form::FormSubmit::AppTab)
+    ));
+
+    // Another env's discovery is not this form's.
+    let mut found = Discovered::default();
+    found.discovery.alarm_prefix = Some(("api-prod-".into(), 2));
+    found.failed = vec![("custom metrics".into(), "AccessDenied".into())];
+    app.handle_msg(AppMsg::AppTabDiscovered {
+        gen: app.generation,
+        env_name: "other".into(),
+        found: found.clone(),
+    });
+    assert_eq!(
+        app.form.as_ref().unwrap().state,
+        crate::form::FormState::Loading
+    );
+    app.handle_msg(AppMsg::AppTabDiscovered {
+        gen: app.generation,
+        env_name: "api-prod".into(),
+        found,
+    });
+    let form = app.form.as_ref().unwrap();
+    assert_eq!(form.state, crate::form::FormState::Ready);
+    assert!(
+        form.banner.contains("custom metrics: AccessDenied"),
+        "{}",
+        form.banner
+    );
+    let prefix = form
+        .fields
+        .iter()
+        .find(|f| f.key == "alarm_prefix")
+        .unwrap();
+    assert_eq!(prefix.value, "api-prod-");
+
+    // A bad entry: refused, said why, nothing saved, the form stays.
+    app.form
+        .as_mut()
+        .unwrap()
+        .fields
+        .iter_mut()
+        .find(|f| f.key == "metrics")
+        .unwrap()
+        .value = "u=users|Avg".into();
+    press(&mut app, KeyCode::Char('s'), KeyModifiers::CONTROL);
+    let form = app.form.as_ref().expect("still open");
+    assert!(form.banner.starts_with("not saved:"), "{}", form.banner);
+    assert!(
+        form.banner.contains("not a CloudWatch statistic"),
+        "{}",
+        form.banner
+    );
+
+    press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+    assert!(app.form.is_none());
+    assert!(
+        matches!(app.mode, Mode::Detail),
+        "back to Detail, not the table"
+    );
+}
+
+/// A save writes this env's lines and applies them to the running tab.
+/// Pinned by source: running it would write the shared test config dir.
+#[test]
+fn saving_the_app_tab_writes_then_applies() {
+    let src = std::fs::read_to_string("src/app/app_tab_form.rs").expect("read");
+    let body = src
+        .split("pub(super) fn submit_app_tab_form(")
+        .nth(1)
+        .and_then(|b| b.split("\n    }\n").next())
+        .expect("submit_app_tab_form");
+    let write = body
+        .find("save_app_lines(")
+        .expect("writes the env's lines");
+    let apply = body.find("self.cfg.app_tabs =").expect("applies them");
+    assert!(write < apply, "applied only after the write succeeded");
+    assert!(
+        body.contains("self.config_seen ="),
+        "and the reload knows it has them"
+    );
+}

@@ -115,6 +115,7 @@ mod cmd_write; // bulk writes: batch-action, batch-deploy
 
 // Interactive surfaces.
 mod action_flow; // action menu -> confirm -> undo window -> dispatch
+mod app_tab_form; // the App tab's editor + discovery
 mod apps_menu; // the Applications scope's menu + info overlay
 mod config_edit; // Detail's Config tab editor + template CRUD
 mod detail_nav; // the per-environment Detail view
@@ -678,6 +679,12 @@ pub(crate) enum AppMsg {
         /// fetches, and the one for the old range must not land last.
         range_secs: i64,
         result: crate::app::spawn_detail::MetricsResult,
+    },
+    /// What discovery found for the App tab's editor.
+    AppTabDiscovered {
+        gen: u64,
+        env_name: String,
+        found: app_tab_form::Discovered,
     },
     /// The App tab's top errors for one env.
     DetailTopErrors {

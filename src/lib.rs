@@ -75,6 +75,7 @@
 #![warn(missing_docs)]
 
 pub mod app;
+pub(crate) mod app_discover;
 pub(crate) mod app_tab;
 pub mod audit;
 pub(crate) mod aws;

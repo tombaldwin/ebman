@@ -128,6 +128,10 @@ pub(crate) enum FormSubmit {
     /// the submit handler can update the right slots without per-field
     /// branching. No AWS round-trip.
     LocalConfig,
+    /// The App tab's editor: writes the env's `app.ENV.*` lines to
+    /// `config.toml` and applies them. Pre-filled by discovery, not by
+    /// an option-settings fetch.
+    AppTab,
 }
 
 impl Form {
@@ -217,7 +221,7 @@ impl Form {
     ) -> (Vec<(String, String, String)>, Vec<(String, String)>) {
         let mappings = match &self.submit {
             FormSubmit::OptionSettings { mappings } => mappings,
-            FormSubmit::LocalConfig => return (Vec::new(), Vec::new()),
+            FormSubmit::LocalConfig | FormSubmit::AppTab => return (Vec::new(), Vec::new()),
         };
         let mut to_set: Vec<(String, String, String)> = Vec::new();
         // No field kind currently maps to "remove this setting"; a blank

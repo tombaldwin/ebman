@@ -66,6 +66,7 @@ impl AppMsg {
             | DetailAlarms { gen, .. }
             | DetailAppMetrics { gen, .. }
             | DetailTopErrors { gen, .. }
+            | AppTabDiscovered { gen, .. }
             | EnvVarsForEdit { gen, .. }
             | CostsFetched { gen, .. }
             | DetailRecentVersions { gen, .. }
@@ -145,6 +146,9 @@ impl App {
                     self.apply_detail_msg(&env_name, result, |d, r| d.app_metrics.settle(r))
                 }
             }
+            AppMsg::AppTabDiscovered {
+                env_name, found, ..
+            } => self.handle_app_tab_discovered(env_name, found),
             AppMsg::DetailTopErrors {
                 env_name,
                 started,
@@ -1497,6 +1501,8 @@ impl App {
                     // the result if one arrives anyway (stale message after
                     // the user switched form types).
                     crate::form::FormSubmit::LocalConfig => return,
+                    // Pre-filled by discovery (`AppTabDiscovered`).
+                    crate::form::FormSubmit::AppTab => return,
                 };
                 for (key, ns, opt) in mappings {
                     if let Some(value) = lookup.get(&(ns, opt)) {

@@ -773,6 +773,47 @@ fn clone_io_error(e: &std::io::Error) -> std::io::Error {
     std::io::Error::new(e.kind(), e.to_string())
 }
 
+/// `text` with `env`'s `app.` lines replaced by `lines`: every other
+/// line, comments and other envs' `app.` lines included, is kept as it
+/// was. The new lines go where the env's first old one was, or at the
+/// end.
+pub(crate) fn replace_app_lines(text: &str, env: &str, lines: &[String]) -> String {
+    let prefix = format!("app.{env}.");
+    let is_envs = |l: &str| {
+        l.trim_start()
+            .split_once('=')
+            .is_some_and(|(k, _)| k.trim().starts_with(&prefix))
+    };
+    let mut out: Vec<String> = Vec::new();
+    let mut placed = false;
+    for l in text.lines() {
+        if is_envs(l) {
+            if !placed {
+                out.extend(lines.iter().cloned());
+                placed = true;
+            }
+            continue;
+        }
+        out.push(l.to_string());
+    }
+    if !placed {
+        out.extend(lines.iter().cloned());
+    }
+    let mut body = out.join("\n");
+    body.push('\n');
+    body
+}
+
+/// Write `env`'s App tab lines into `config.toml`, touching nothing
+/// else; refused, like [`save`], when the file exists and cannot be read.
+pub(crate) fn save_app_lines(env: &str, lines: &[String]) -> std::io::Result<()> {
+    let path = config_path();
+    let existing = std::fs::read_to_string(&path);
+    refuse_to_clobber_unreadable(existing.as_ref().map(|_| ()).map_err(clone_io_error), &path)?;
+    let body = replace_app_lines(existing.as_deref().unwrap_or(""), env, lines);
+    crate::util::write_atomic(&path, &body)
+}
+
 /// What a save writes: `cfg`, except that the `app.` lines are the ones
 /// in the file now rather than the ones read at startup.
 ///
@@ -1305,6 +1346,32 @@ accounts.staging.external_id = "abc-xyz"
         // is in, so `parse` must call `finish`.
         let cfg = parse("app.e.metric.x = \"X\"\n");
         assert_eq!(cfg.app_tabs.errors.len(), 1, "{:?}", cfg.app_tabs.errors);
+    }
+
+    #[test]
+    fn replacing_one_envs_app_lines_keeps_everything_else() {
+        let text =
+            "# mine\ntheme = \"dark\"\napp.a.namespace = \"Old\"\napp.ab.namespace = \"Other\"\n\
+                    app.a.metric.x = \"X\"\nalias.dp = \"deploy\"\n";
+        let out = replace_app_lines(text, "a", &["app.a.namespace = \"New\"".to_string()]);
+        assert_eq!(
+            out,
+            "# mine\ntheme = \"dark\"\napp.a.namespace = \"New\"\napp.ab.namespace = \"Other\"\n\
+             alias.dp = \"deploy\"\n",
+            "in place of the first old line; app.ab is another env"
+        );
+        let added = replace_app_lines(
+            "theme = \"dark\"\n",
+            "a",
+            &["app.a.rds = \"db\"".to_string()],
+        );
+        assert_eq!(
+            added, "theme = \"dark\"\napp.a.rds = \"db\"\n",
+            "appended when absent"
+        );
+        let cleared = replace_app_lines(text, "a", &[]);
+        assert!(!cleared.contains("app.a."), "{cleared}");
+        assert!(cleared.contains("app.ab.namespace"));
     }
 
     #[test]
