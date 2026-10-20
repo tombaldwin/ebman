@@ -743,9 +743,32 @@ pub(crate) fn config_path() -> PathBuf {
 /// crash mid-write can't truncate `config.toml`.
 pub(crate) fn save(cfg: &Config) -> std::io::Result<()> {
     let path = config_path();
-    refuse_to_clobber_unreadable(std::fs::read_to_string(&path).map(|_| ()), &path)?;
-    let body = serialize(cfg);
+    let existing = std::fs::read_to_string(&path);
+    refuse_to_clobber_unreadable(existing.as_ref().map(|_| ()).map_err(clone_io_error), &path)?;
+    let body = body_for_save(cfg, existing.ok().as_deref());
     crate::util::write_atomic(&path, &body)
+}
+
+fn clone_io_error(e: &std::io::Error) -> std::io::Error {
+    std::io::Error::new(e.kind(), e.to_string())
+}
+
+/// What a save writes: `cfg`, except that the `app.` lines are the ones
+/// in the file now rather than the ones read at startup.
+///
+/// `:settings` does not edit them, and they are hand-written: an
+/// operator who edits them while ebman runs and then saves `:settings`
+/// would otherwise have the edit silently reverted to the startup copy.
+/// The same reason `lint.fix_disable` is re-read from disk.
+fn body_for_save(cfg: &Config, existing: Option<&str>) -> String {
+    match existing {
+        Some(text) => {
+            let mut cfg = cfg.clone();
+            cfg.app_tabs = parse(text).app_tabs;
+            serialize(&cfg)
+        }
+        None => serialize(cfg),
+    }
 }
 
 /// Refuse to overwrite a `config.toml` that exists but could not be
@@ -1262,6 +1285,17 @@ accounts.staging.external_id = "abc-xyz"
         // is in, so `parse` must call `finish`.
         let cfg = parse("app.e.metric.x = \"X\"\n");
         assert_eq!(cfg.app_tabs.errors.len(), 1, "{:?}", cfg.app_tabs.errors);
+    }
+
+    #[test]
+    fn a_save_keeps_the_app_lines_in_the_file_not_the_startup_copy() {
+        let at_startup = parse("app.e.namespace = \"Old\"\n");
+        let edited_since = "theme = \"dark\"\napp.e.namespace = \"New\"\n";
+        let written = parse(&body_for_save(&at_startup, Some(edited_since)));
+        assert_eq!(written.app_tabs.envs["e"].namespace.as_deref(), Some("New"));
+        // No file yet: the in-memory copy is all there is.
+        let first = parse(&body_for_save(&at_startup, None));
+        assert_eq!(first.app_tabs.envs["e"].namespace.as_deref(), Some("Old"));
     }
 
     #[test]
@@ -2001,6 +2035,12 @@ explain.max_tokens = 512
         assert!(
             body.contains("write_atomic"),
             "the body extraction is not finding save(): {body}"
+        );
+        // And builds what it writes with the disk's app. lines, which
+        // only `body_for_save` does; `serialize` alone reverts them.
+        assert!(
+            body.contains("body_for_save(") && !body.contains("serialize("),
+            "save() must write through body_for_save"
         );
     }
 
