@@ -2466,6 +2466,8 @@ fn the_app_tab_refresh_re_reads_its_config() {
         .expect("re-reads app. lines");
     let first_use = body.find("match tab").expect("then refreshes the tab");
     assert!(reload < first_use, "before any tab reads them");
+    let guard = body.find("tab_loading()").expect("the in-flight guard");
+    assert!(guard < reload, "and not under a fetch still in flight");
     for (file, entry) in [
         (
             "src/app/spawn_refresh.rs",

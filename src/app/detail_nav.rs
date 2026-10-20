@@ -338,9 +338,6 @@ impl App {
     }
 
     fn detail_refresh(&mut self, trigger: RefreshTrigger) {
-        // Before anything reads app. config: the App tab's own fetches,
-        // and every tab's alarm match (alarm_prefix).
-        self.reload_app_tabs_from_disk();
         let Some(detail) = self.detail.as_ref() else {
             return;
         };
@@ -365,6 +362,11 @@ impl App {
         // Release the immutable borrow of `detail` before calling
         // spawn_* methods which take `&mut self`.
         let _ = detail;
+        // Before anything reads app. config (the App tab's fetches, every
+        // tab's alarm match), and only when a fetch is about to start:
+        // swapping config under one still in flight would show its
+        // result beside config it was not fetched for.
+        self.reload_app_tabs_from_disk();
         match tab {
             // Health tab is a rollup — refresh events (for the recent-
             // events list) and queues (for worker DLQ depth shown
