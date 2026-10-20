@@ -786,11 +786,14 @@ fn clone_io_error(e: &std::io::Error) -> std::io::Error {
 /// was. The new lines go where the env's first old one was, or at the
 /// end.
 pub(crate) fn replace_app_lines(text: &str, env: &str, lines: &[String]) -> String {
-    let prefix = format!("app.{env}.");
+    // The key as the parser reads it, each dot-separated part trimmed:
+    // `app. e.namespace` is env e's line, and leaving it would re-apply
+    // the old value over the one just written.
     let is_envs = |l: &str| {
-        l.trim_start()
-            .split_once('=')
-            .is_some_and(|(k, _)| k.trim().starts_with(&prefix))
+        l.split_once('=').is_some_and(|(k, _)| {
+            let mut parts = k.split('.').map(str::trim);
+            parts.next() == Some("app") && parts.next() == Some(env)
+        })
     };
     let mut out: Vec<String> = Vec::new();
     let mut placed = false;
@@ -1407,6 +1410,15 @@ accounts.staging.external_id = "abc-xyz"
         assert_eq!(
             crlf, "theme = \"dark\"\r\napp.a.rds = \"y\"\r\n",
             "a CRLF file stays CRLF"
+        );
+        let spaced = replace_app_lines(
+            "app. a.namespace = \"Old\"\n",
+            "a",
+            &["app.a.namespace = \"New\"".to_string()],
+        );
+        assert_eq!(
+            spaced, "app.a.namespace = \"New\"\n",
+            "a spaced key is still env a's line"
         );
         let cleared = replace_app_lines(text, "a", &[]);
         assert!(!cleared.contains("app.a."), "{cleared}");
