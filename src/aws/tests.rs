@@ -3886,6 +3886,10 @@ fn a_prefix_gives_way_to_a_longer_env_name_it_also_covers() {
     let none: [(Option<&str>, Option<&str>); 0] = [];
     assert!(m.matches("Shop-prod", "Shop-prod-app-5xx", &none));
     assert!(
+        m.matches("Shop-prod", "Shop-prod-wkld-cpu", &none),
+        "Shop-prod's own wkld alarm, not the worker's"
+    );
+    assert!(
         !m.matches("Shop-prod", "Shop-prod-wk-health", &none),
         "the worker's alarm"
     );

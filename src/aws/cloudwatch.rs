@@ -66,7 +66,7 @@ impl AlarmMatch {
             && !self
                 .shadowed_by
                 .iter()
-                .any(|other| name.starts_with(other.as_str()));
+                .any(|other| alarm_names_env(name, other));
         let by_dimension = dimensions.iter().any(|(n, v)| {
             *v == Some(env) && n.is_some_and(|n| self.dimension_names.iter().any(|w| w == n))
         });
@@ -81,6 +81,16 @@ pub(crate) const DISCOVERY_PAGES: usize = 40;
 /// How long one discovery lookup may page for. The editor waits on
 /// them, so past this the lookup is reported as incomplete instead.
 pub(crate) const DISCOVERY_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Whether alarm `name` is named for environment `env`: the env's name
+/// itself, or it followed by `-`. A bare prefix would take
+/// `Shop-prod-wkld-cpu` as the worker `Shop-prod-wk`'s.
+pub(crate) fn alarm_names_env(name: &str, env: &str) -> bool {
+    name == env
+        || name
+            .strip_prefix(env)
+            .is_some_and(|rest| rest.starts_with('-'))
+}
 
 /// ALARM first, then INSUFFICIENT_DATA, then the rest, each by name, so
 /// every surface that lists alarms leads with the ones firing.

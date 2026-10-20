@@ -186,7 +186,11 @@ pub(crate) fn discover(env: &str, inputs: &Inputs) -> Discovery {
         .prefixed_alarms
         .iter()
         .filter(|a| a.starts_with(&prefix))
-        .filter(|a| !shadowing.iter().any(|other| a.starts_with(other.as_str())))
+        .filter(|a| {
+            !shadowing
+                .iter()
+                .any(|other| crate::aws::alarm_names_env(a, other))
+        })
         .count();
     let alarm_prefix = (named > 0).then_some((prefix, named));
 
@@ -376,7 +380,7 @@ mod tests {
                 "sessions-eu-001",
                 "other-001",
             ]),
-            prefixed_alarms: s(&["Shop-prod-5xx", "Shop-prod-cpu", "Shop-prod-wk-health"]),
+            prefixed_alarms: s(&["Shop-prod-5xx", "Shop-prod-wkld-cpu", "Shop-prod-wk-health"]),
             fleet: s(&["Shop-prod", "Shop-prod-wk"]),
             custom_metrics: vec![],
         }
