@@ -78,7 +78,7 @@ toml = "1"
 # noyalib, not `serde_yml`: that crate became a deprecated shim pinned to
 # a noyalib release with an advisory against it (RUSTSEC-2026-0333).
 # Pre-1.0, so the version is pinned to what the parsers were tested on.
-noyalib = "0.0.58"
+noyalib = { version = "0.0.58", default-features = false, features = ["std"] }
 # Used by `ebman explain` to talk to the LLM provider (Anthropic API
 # or a local Ollama). `rustls-tls` reuses the rustls already pulled
 # in by aws-sdk; default-features = false skips the openssl path.
