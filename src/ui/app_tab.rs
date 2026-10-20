@@ -104,8 +104,12 @@ pub(super) fn draw_detail_app(
 /// The tab's own non-ASCII punctuation, for `icons = "ascii"`: one
 /// choke point over every line, so a string added later cannot slip
 /// past it. Sparklines are already drawn in ASCII in that mode.
+///
+/// One cell for one cell: this runs after rows were fitted to the
+/// width, so `…` becomes `.`, not `...`, or a fitted row would grow
+/// two cells and wrap.
 fn asciify(s: &str) -> String {
-    s.replace('—', "-").replace('…', "...").replace('·', "|")
+    s.replace('—', "-").replace('…', ".").replace('·', "|")
 }
 
 /// `label  value unit  sparkline  instance value  instance value …`.
@@ -686,6 +690,18 @@ mod tests {
         assert_eq!(format_latency(1.0), "1s");
         assert_eq!(format_latency(2.14), "2.14s");
         assert_eq!(format_latency(f64::NAN), "—");
+    }
+
+    #[test]
+    fn asciify_keeps_every_cell_count() {
+        let s = "loading… — a · b";
+        let a = asciify(s);
+        assert!(a.is_ascii(), "{a}");
+        assert_eq!(
+            Span::raw(a.clone()).width(),
+            Span::raw(s).width(),
+            "a fitted row must not grow"
+        );
     }
 
     #[test]
