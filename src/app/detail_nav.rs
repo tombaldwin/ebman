@@ -324,14 +324,71 @@ impl App {
             Err(_) => return false,
         };
         self.config_seen = Some(stamp);
-        self.cfg.app_tabs = tabs;
+        self.set_app_tabs(tabs);
         true
+    }
+
+    /// Replace the app. config, and forget what the Detail view fetched
+    /// under the old one wherever it no longer applies: the rows would
+    /// otherwise stay on screen beside config they were not fetched for,
+    /// and an answer still in flight for the old config would land as
+    /// the new one's. Top errors only when what it queries changed: it
+    /// is billed per scan, and a threshold edit is no reason to rerun it.
+    pub(crate) fn set_app_tabs(&mut self, tabs: crate::app_tab::AppTabs) {
+        let old = std::mem::replace(&mut self.cfg.app_tabs, tabs);
+        let Some(d) = self.detail.as_mut() else {
+            return;
+        };
+        let (was, now) = (
+            old.envs.get(&d.env_name),
+            self.cfg.app_tabs.envs.get(&d.env_name),
+        );
+        if was == now {
+            return;
+        }
+        d.app_metrics.reset();
+        let queried = |s: Option<&crate::app_tab::AppTabSpec>| {
+            s.map(|s| (s.log_group.clone(), s.error_fingerprint.clone()))
+        };
+        if queried(was) != queried(now) {
+            d.top_errors.reset();
+            d.top_errors_started = None;
+        }
+    }
+
+    /// [`reload_app_tabs_from_disk`](Self::reload_app_tabs_from_disk)
+    /// outside a Detail refresh (the editor, `:alarms`, `:why`): when the
+    /// reload emptied the App tab on screen, fetch it again, or it would
+    /// stay empty until the next refresh. A refresh fetches it anyway.
+    pub(crate) fn reload_app_tabs_and_refetch(&mut self) {
+        self.reload_app_tabs_from_disk();
+        self.refetch_app_tab_if_emptied();
+    }
+
+    /// The App tab on screen with nothing to show and nothing coming
+    /// (what [`set_app_tabs`](Self::set_app_tabs) leaves when the env's
+    /// config changed): fetch it.
+    pub(crate) fn refetch_app_tab_if_emptied(&mut self) {
+        let emptied = self.detail.as_ref().is_some_and(|d| {
+            d.tab() == DetailTab::App
+                && !d.app_metrics.in_flight()
+                && d.app_metrics.ready().is_none()
+                && d.app_metrics.error().is_none()
+        });
+        if emptied {
+            let env = self
+                .detail
+                .as_ref()
+                .map(|d| d.env_name.clone())
+                .unwrap_or_default();
+            self.spawn_detail_app(env);
+        }
     }
 
     /// [`reload_app_tabs_if_changed`](Self::reload_app_tabs_if_changed)
     /// against the real file. Called wherever app. config is about to be
     /// used: any Detail refresh, the App tab's editor, `:alarms`, `:why`.
-    pub(crate) fn reload_app_tabs_from_disk(&mut self) {
+    fn reload_app_tabs_from_disk(&mut self) {
         self.reload_app_tabs_if_changed(crate::config::config_stamp(), || {
             std::fs::read_to_string(crate::config::config_path())
         });

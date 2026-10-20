@@ -580,11 +580,25 @@ async fn every_detail_tab_reports_its_own_loading_state() {
             |d| d.loading_metrics = true,
             &[DetailTab::Metrics],
         ),
-        ("alarms", |d| d.cw_alarms.begin(), &[DetailTab::Health]),
-        ("app metrics", |d| d.app_metrics.begin(), &[DetailTab::App]),
+        (
+            "alarms",
+            |d| {
+                d.cw_alarms.begin();
+            },
+            &[DetailTab::Health],
+        ),
+        (
+            "app metrics",
+            |d| {
+                d.app_metrics.begin();
+            },
+            &[DetailTab::App],
+        ),
         (
             "recent versions",
-            |d| d.recent_versions.begin(),
+            |d| {
+                d.recent_versions.begin();
+            },
             &[DetailTab::Health],
         ),
         (
@@ -1221,11 +1235,11 @@ async fn detail_results_for_another_env_are_dropped() {
         notes: vec!["marker".into()],
     };
     let mut app = armed();
+    let ticket = app.detail.as_mut().unwrap().app_metrics.begin();
     app.handle_msg(AppMsg::DetailAppMetrics {
         gen: app.generation,
-        preview: true,
         env_name: "worker-prod".into(),
-        range_secs: 3600,
+        ticket,
         result: Ok(app_metrics()),
     });
     assert!(
@@ -1234,9 +1248,8 @@ async fn detail_results_for_another_env_are_dropped() {
     );
     app.handle_msg(AppMsg::DetailAppMetrics {
         gen: app.generation,
-        preview: true,
         env_name: "api-prod".into(),
-        range_secs: 3600,
+        ticket,
         result: Ok(app_metrics()),
     });
     assert_eq!(
@@ -1256,30 +1269,34 @@ async fn detail_results_for_another_env_are_dropped() {
         fetched_at: chrono::DateTime::from_timestamp(0, 0).unwrap(),
     };
     let mut app = armed();
-    let started = std::time::Instant::now();
-    app.detail.as_mut().unwrap().top_errors_started = Some(started);
+    // An earlier query, superseded after the stuck escape.
+    let earlier = app.detail.as_mut().unwrap().top_errors.begin();
+    let ticket = app.detail.as_mut().unwrap().top_errors.begin();
     app.handle_msg(AppMsg::DetailTopErrors {
         gen: app.generation,
         env_name: "worker-prod".into(),
-        started,
+        ticket,
         result: Ok(top()),
     });
     assert!(app.detail.as_ref().unwrap().top_errors.ready().is_none());
-    // An answer to an earlier query, superseded after the stuck escape.
     app.handle_msg(AppMsg::DetailTopErrors {
         gen: app.generation,
         env_name: "api-prod".into(),
-        started: started - std::time::Duration::from_secs(200),
+        ticket: earlier,
         result: Ok(top()),
     });
     assert!(
         app.detail.as_ref().unwrap().top_errors.ready().is_none(),
         "only the latest query's answer settles the tab"
     );
+    assert!(
+        app.detail.as_ref().unwrap().top_errors.in_flight(),
+        "and the latest is still awaited"
+    );
     app.handle_msg(AppMsg::DetailTopErrors {
         gen: app.generation,
         env_name: "api-prod".into(),
-        started,
+        ticket,
         result: Ok(top()),
     });
     assert_eq!(
@@ -2241,9 +2258,11 @@ async fn a_metrics_result_for_a_range_left_behind_is_dropped() {
     app.table_state.select(Some(0));
     app.open_detail();
     let d = app.detail.as_mut().unwrap();
+    // The fetch for the old range, then the range change's.
+    let old = d.app_metrics.begin();
     d.metrics_range_secs = 86_400;
     d.loading_metrics = true;
-    d.app_metrics.begin();
+    let new = d.app_metrics.begin();
     let series = |label: &str| crate::aws::MetricSeries {
         id: label.into(),
         label: label.into(),
@@ -2263,9 +2282,8 @@ async fn a_metrics_result_for_a_range_left_behind_is_dropped() {
     });
     app.handle_msg(AppMsg::DetailAppMetrics {
         gen: app.generation,
-        preview: true,
         env_name: "api-prod".into(),
-        range_secs: 900,
+        ticket: old,
         result: Ok(app_metrics("old")),
     });
     let d = app.detail.as_ref().unwrap();
@@ -2287,9 +2305,8 @@ async fn a_metrics_result_for_a_range_left_behind_is_dropped() {
     });
     app.handle_msg(AppMsg::DetailAppMetrics {
         gen: app.generation,
-        preview: true,
         env_name: "api-prod".into(),
-        range_secs: 86_400,
+        ticket: new,
         result: Ok(app_metrics("new")),
     });
     let d = app.detail.as_ref().unwrap();
@@ -2449,6 +2466,16 @@ async fn app_lines_are_re_read_when_the_file_changed() {
     let gone = || Err(std::io::Error::from(std::io::ErrorKind::NotFound));
     assert!(app.reload_app_tabs_if_changed(None, gone));
     assert!(app.cfg.app_tabs.envs.is_empty());
+
+    // An edit to the env on screen drops its rows fetched under the old
+    // config (`set_app_tabs`), rather than leaving them beside the new.
+    let mut app = detail_on("e");
+    app.config_seen = Some(Some(t0));
+    let d = app.detail.as_mut().unwrap();
+    let t = d.app_metrics.begin();
+    d.app_metrics.settle_ticket(t, Ok(Default::default()));
+    assert!(app.reload_app_tabs_if_changed(Some(t1), edited));
+    assert!(app.detail.as_ref().unwrap().app_metrics.ready().is_none());
 }
 
 /// The App tab's refresh is where hand edits are picked up. Pinned by
@@ -2483,7 +2510,7 @@ fn the_app_tab_refresh_re_reads_its_config() {
         let body = src.split(entry).nth(1).expect(entry);
         let body = body.split("\n    }\n").next().unwrap();
         assert!(
-            body.contains("reload_app_tabs_from_disk("),
+            body.contains("reload_app_tabs_and_refetch("),
             "{entry} uses alarm_prefix"
         );
     }
@@ -2589,11 +2616,12 @@ fn saving_the_app_tab_writes_then_applies() {
     let write = body
         .find("save_app_lines(")
         .expect("writes the env's lines");
-    let apply = body.find("self.cfg.app_tabs =").expect("applies them");
+    // Through set_app_tabs, which drops what was fetched under the old.
+    let apply = body.find("self.set_app_tabs(").expect("applies them");
     assert!(write < apply, "applied only after the write succeeded");
     assert!(
         body.contains("self.detail_fetch_started = None;"),
-        "the save's refresh is not skipped for a preview in flight"
+        "the save's refresh is not skipped for a query in flight"
     );
     assert!(
         !body.contains("read_to_string"),
@@ -2614,7 +2642,7 @@ fn saving_the_app_tab_writes_then_applies() {
         .nth(1)
         .expect("open_app_tab_form");
     let reload = open
-        .find("reload_app_tabs_from_disk(")
+        .find("reload_app_tabs_and_refetch(")
         .expect("re-reads on open");
     let build = open
         .find("fields(self.cfg.app_tabs")
@@ -2681,17 +2709,17 @@ async fn a_preview_result_landing_after_a_save_is_dropped() {
     app.rebuild_view();
     app.table_state.select(Some(0));
     app.open_detail();
-    app.cfg.app_tabs = crate::config::parse("app.api-prod.rds = \"db\"\n").app_tabs;
     let marked = |note: &str| crate::app_tab::AppMetrics {
         notes: vec![note.into()],
         ..Default::default()
     };
-    app.detail.as_mut().unwrap().app_metrics.begin();
+    // A preview's fetch, then the config is saved under it.
+    let preview = app.detail.as_mut().unwrap().app_metrics.begin();
+    app.set_app_tabs(crate::config::parse("app.api-prod.rds = \"db\"\n").app_tabs);
     app.handle_msg(AppMsg::DetailAppMetrics {
         gen: app.generation,
         env_name: "api-prod".into(),
-        range_secs: 3600,
-        preview: true,
+        ticket: preview,
         result: Ok(marked("preview")),
     });
     let m = &app.detail.as_ref().unwrap().app_metrics;
@@ -2700,11 +2728,11 @@ async fn a_preview_result_landing_after_a_save_is_dropped() {
         !m.in_flight(),
         "and no longer loading, or refreshes are refused"
     );
+    let config = app.detail.as_mut().unwrap().app_metrics.begin();
     app.handle_msg(AppMsg::DetailAppMetrics {
         gen: app.generation,
         env_name: "api-prod".into(),
-        range_secs: 3600,
-        preview: false,
+        ticket: config,
         result: Ok(marked("config")),
     });
     assert_eq!(
@@ -2762,4 +2790,143 @@ async fn only_the_latest_discoverys_answer_clears_its_marker() {
     assert!(!app
         .app_discovering
         .contains_key(&app.discovery_key("api-prod")));
+}
+
+/// A ticket settles only the latest request's answer; `reset` drops
+/// what is shown and any answer still coming; and tickets are unique
+/// across `Fetch`es, so a Detail view reopened on the same env does not
+/// take the old view's late answer as its own.
+#[test]
+fn only_the_latest_tickets_answer_settles_a_fetch() {
+    let mut f: crate::app::Fetch<u32> = Default::default();
+    let first = f.begin();
+    let second = f.begin();
+    assert!(!f.settle_ticket(first, Ok(1)), "superseded");
+    assert!(
+        f.ready().is_none() && f.in_flight(),
+        "the latest still awaited"
+    );
+    assert!(f.settle_ticket(second, Ok(2)));
+    assert_eq!(f.ready(), Some(&2));
+
+    let third = f.begin();
+    f.reset();
+    assert!(
+        f.ready().is_none() && !f.in_flight(),
+        "nothing shown, nothing awaited"
+    );
+    assert!(
+        !f.settle_ticket(third, Ok(3)),
+        "an answer from before the reset"
+    );
+    assert!(f.ready().is_none());
+
+    let mut reopened: crate::app::Fetch<u32> = Default::default();
+    let fresh = reopened.begin();
+    assert!(
+        !reopened.settle_ticket(second, Ok(9)),
+        "another Fetch's ticket"
+    );
+    assert!(reopened.settle_ticket(fresh, Ok(4)));
+}
+
+/// A config change forgets what the Detail view fetched under the old
+/// config, and only that: the env's rows when its spec changed, top
+/// errors only when what it queries changed (it is billed per scan), and
+/// nothing for another env's edit.
+#[tokio::test]
+async fn a_config_change_forgets_only_what_it_invalidates() {
+    let mut app = detail_on("api-prod");
+    let tabs = |text: &str| crate::config::parse(text).app_tabs;
+    let base = "app.api-prod.namespace = \"Shop\"\napp.api-prod.log_group = \"var/log/app.log\"\n";
+    app.set_app_tabs(tabs(base));
+    let settle = |app: &mut App| {
+        let d = app.detail.as_mut().unwrap();
+        let t = d.app_metrics.begin();
+        d.app_metrics.settle_ticket(t, Ok(Default::default()));
+        let t = d.top_errors.begin();
+        d.top_errors.settle_ticket(
+            t,
+            Ok(crate::app_tab::TopErrors {
+                log_group: "g".into(),
+                rows: vec![],
+                more: (0, 0),
+                truncated: false,
+                unmatched: 0,
+                records_scanned: 0,
+                fetched_at: chrono::DateTime::from_timestamp(0, 0).unwrap(),
+            }),
+        );
+    };
+    let kept = |app: &App| {
+        let d = app.detail.as_ref().unwrap();
+        (
+            d.app_metrics.ready().is_some(),
+            d.top_errors.ready().is_some(),
+        )
+    };
+
+    settle(&mut app);
+    app.set_app_tabs(tabs(&format!("{base}app.other.namespace = \"X\"\n")));
+    assert_eq!(kept(&app), (true, true), "another env's edit");
+
+    settle(&mut app);
+    app.set_app_tabs(tabs(&format!("{base}app.api-prod.threshold.x = \"1,2\"\n")));
+    assert_eq!(kept(&app), (false, true), "a threshold edit keeps the scan");
+
+    settle(&mut app);
+    app.set_app_tabs(tabs("app.api-prod.namespace = \"Shop\"\n"));
+    assert_eq!(
+        kept(&app),
+        (false, false),
+        "log_group removed: its rows go too"
+    );
+
+    settle(&mut app);
+    app.set_app_tabs(tabs(
+        "app.api-prod.namespace = \"Shop\"\napp.api-prod.error_fingerprint = \"x(?<fp>y)\"\n",
+    ));
+    assert_eq!(kept(&app), (false, false), "a new fingerprint");
+}
+
+/// After a reload outside a refresh empties the App tab on screen, it is
+/// fetched again, and not when it still has rows or is not on screen.
+#[tokio::test]
+async fn an_emptied_app_tab_on_screen_is_fetched_again() {
+    let mut app = detail_on("api-prod");
+    app.demo_mode = true;
+    app.detail.as_mut().unwrap().tab_idx = 1;
+    assert_eq!(app.detail.as_ref().unwrap().tab(), DetailTab::App);
+    app.refetch_app_tab_if_emptied();
+    assert!(
+        app.detail.as_ref().unwrap().app_metrics.in_flight(),
+        "emptied: fetched"
+    );
+
+    let mut app = detail_on("api-prod");
+    app.refetch_app_tab_if_emptied();
+    assert!(
+        !app.detail.as_ref().unwrap().app_metrics.in_flight(),
+        "not on screen"
+    );
+}
+
+/// The App's `app.` config is replaced only through `set_app_tabs`,
+/// which drops what was fetched under the old config: a direct
+/// assignment would leave the old rows beside the new config, and an
+/// answer in flight for the old landing as the new one's.
+#[test]
+fn app_config_is_replaced_only_through_set_app_tabs() {
+    let assigned = super::scan::find_in_production("self.cfg.app_tabs =");
+    assert!(assigned.is_empty(), "{assigned:?}: use set_app_tabs");
+    let borrowed = super::scan::find_in_production("&mut self.cfg.app_tabs");
+    assert_eq!(
+        borrowed.len(),
+        1,
+        "{borrowed:?}: only set_app_tabs's own swap"
+    );
+    assert!(
+        borrowed[0].starts_with("src/app/detail_nav.rs:"),
+        "{borrowed:?}"
+    );
 }

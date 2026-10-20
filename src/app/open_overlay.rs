@@ -12,7 +12,7 @@ impl App {
     /// own `AppMsg::WhyRed*` variant gated on `session_id`.
     pub(crate) fn open_why_red(&mut self, env_name: String, app_name: String) {
         // `alarm_prefix` may have been edited by hand since.
-        self.reload_app_tabs_from_disk();
+        self.reload_app_tabs_and_refetch();
         self.why_red_session = self.why_red_session.wrapping_add(1);
         let session_id = self.why_red_session;
         // Tier captured up front so the renderer can hide the queue
@@ -221,7 +221,8 @@ impl App {
         d.metrics_range_secs = RANGES[next];
         let env_name = d.env_name.clone();
         // The range is shared, so both tabs refetch: a result for the
-        // old range is dropped on arrival (`is_current_metrics_range`),
+        // old range is dropped on arrival (`is_current_metrics_range` on
+        // the Metrics tab, the App tab's newer ticket on that one),
         // and only a fetch for the new one outstanding on EACH tab
         // guarantees its loading state clears. Refetching just the tab
         // on screen left the other's in flight until the 120s stuck

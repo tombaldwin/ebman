@@ -118,7 +118,7 @@ impl App {
 
     pub(crate) fn spawn_alarms_fetch(&mut self, env_name: String) {
         // `alarm_prefix` may have been edited by hand since.
-        self.reload_app_tabs_from_disk();
+        self.reload_app_tabs_and_refetch();
         // The fetch's env name lives on the Overlay::Alarms variant so a late
         // result for a different env can be dropped at the handler. The body
         // is initially a placeholder until the result arrives.

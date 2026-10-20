@@ -138,23 +138,12 @@ impl App {
             }
             AppMsg::DetailAppMetrics {
                 env_name,
-                range_secs,
-                preview,
+                ticket,
                 result,
                 ..
-            } => {
-                let still = preview != self.cfg.app_tabs.envs.contains_key(&env_name);
-                if !self.is_current_metrics_range(range_secs) {
-                    // A fetch for the current range is always outstanding
-                    // (a range change refetches both tabs): leave it.
-                } else if still {
-                    self.apply_detail_msg(&env_name, result, |d, r| d.app_metrics.settle(r))
-                } else {
-                    // Config changed under it, and nothing else may be
-                    // coming: not shown, but no longer loading either.
-                    self.apply_detail_msg(&env_name, result, |d, _| d.app_metrics.abandon())
-                }
-            }
+            } => self.apply_detail_msg(&env_name, result, |d, r| {
+                d.app_metrics.settle_ticket(ticket, r);
+            }),
             AppMsg::AppTabDiscovered {
                 region,
                 env_name,
@@ -164,13 +153,11 @@ impl App {
             } => self.handle_app_tab_discovered((region, env_name), started, *found),
             AppMsg::DetailTopErrors {
                 env_name,
-                started,
+                ticket,
                 result,
                 ..
             } => self.apply_detail_msg(&env_name, result, |d, r| {
-                if d.top_errors_started == Some(started) {
-                    d.top_errors.settle(r);
-                }
+                d.top_errors.settle_ticket(ticket, r);
             }),
             AppMsg::DetailLogsProgress {
                 env_name,

@@ -1085,6 +1085,28 @@ pub(crate) struct ResolvedConfig {
 pub(crate) struct Fetch<T> {
     settled: Option<Result<T, String>>,
     in_flight: bool,
+    /// The latest request's [`Ticket`]: only its answer settles.
+    issued: u64,
+}
+
+/// Which request a [`Fetch`]'s answer belongs to. A fetch that can be
+/// superseded (a range change, a config edit, a stuck query retried)
+/// carries the ticket [`Fetch::begin`] gave it, and settles through
+/// [`Fetch::settle_ticket`]: an earlier request's answer, arriving
+/// late, is dropped rather than shown over the later one's.
+///
+/// Drawn from one counter for the process, not per `Fetch`: a Detail
+/// view closed and reopened on the same env has a new `Fetch`, and a
+/// per-instance count would hand its first request the same ticket as
+/// the old view's, whose answer may still be coming.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct Ticket(u64);
+
+impl Ticket {
+    fn next() -> u64 {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    }
 }
 
 impl<T> Default for Fetch<T> {
@@ -1092,6 +1114,7 @@ impl<T> Default for Fetch<T> {
         Self {
             settled: None,
             in_flight: false,
+            issued: 0,
         }
     }
 }
@@ -1099,8 +1122,30 @@ impl<T> Default for Fetch<T> {
 impl<T> Fetch<T> {
     /// Mark a request as started. Deliberately does NOT clear a previous
     /// result: the panel keeps showing it until the new one lands.
-    pub(crate) fn begin(&mut self) {
+    pub(crate) fn begin(&mut self) -> Ticket {
         self.in_flight = true;
+        self.issued = Ticket::next();
+        Ticket(self.issued)
+    }
+
+    /// [`settle`](Self::settle) with the answer to `ticket`, if it is the
+    /// latest request's; otherwise dropped, and a later request stays
+    /// in flight. Returns whether it settled.
+    pub(crate) fn settle_ticket(&mut self, ticket: Ticket, result: Result<T, String>) -> bool {
+        let latest = ticket.0 == self.issued;
+        if latest {
+            self.settle(result);
+        }
+        latest
+    }
+
+    /// Forget the value and any request outstanding: what was fetched no
+    /// longer applies (the config it was fetched for changed). Every
+    /// ticket issued before this is then stale, so its answer is dropped.
+    pub(crate) fn reset(&mut self) {
+        self.settled = None;
+        self.in_flight = false;
+        self.issued = Ticket::next();
     }
 
     /// Record a result and clear the in-flight flag together, which is
@@ -1108,14 +1153,6 @@ impl<T> Fetch<T> {
     /// handler.
     pub(crate) fn settle(&mut self, result: Result<T, String>) {
         self.settled = Some(result);
-        self.in_flight = false;
-    }
-
-    /// The request was answered with something not to show (a result for
-    /// state that has since changed): no longer in flight, the previous
-    /// value kept. Without this a dropped answer left the tab "loading",
-    /// refusing refreshes until the stuck timeout.
-    pub(crate) fn abandon(&mut self) {
         self.in_flight = false;
     }
 

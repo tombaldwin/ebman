@@ -278,11 +278,12 @@ impl App {
             .as_ref()
             .map(|d| d.metrics_range_secs)
             .unwrap_or(3600);
-        if let Some(d) = self.detail.as_mut() {
-            d.app_metrics.begin();
-        }
+        let ticket = self
+            .detail
+            .as_mut()
+            .map(|d| d.app_metrics.begin())
+            .unwrap_or_default();
         // No config: preview what discovery found evidence for, if any.
-        let preview = !self.cfg.app_tabs.envs.contains_key(&env_name);
         let spec = self.cfg.app_tabs.envs.get(&env_name).cloned().or_else(|| {
             self.discovered_for(&env_name)
                 .and_then(crate::app_discover::preview_spec)
@@ -298,8 +299,7 @@ impl App {
             let _ = self.msg_tx.send(AppMsg::DetailAppMetrics {
                 gen,
                 env_name,
-                range_secs: range,
-                preview,
+                ticket,
                 result: Ok(demo_rows.unwrap_or_default()),
             });
             return;
@@ -312,8 +312,7 @@ impl App {
             move |gen, result| AppMsg::DetailAppMetrics {
                 gen,
                 env_name: env_for_msg,
-                range_secs: range,
-                preview,
+                ticket,
                 result,
             },
         );
@@ -347,9 +346,8 @@ impl App {
         if running || self.demo_mode {
             return;
         }
-        d.top_errors.begin();
-        let started = std::time::Instant::now();
-        d.top_errors_started = Some(started);
+        let ticket = d.top_errors.begin();
+        d.top_errors_started = Some(std::time::Instant::now());
         let fingerprint = self
             .cfg
             .app_tabs
@@ -371,7 +369,7 @@ impl App {
             move |gen, result| AppMsg::DetailTopErrors {
                 gen,
                 env_name: env_for_msg,
-                started,
+                ticket,
                 result,
             },
         );

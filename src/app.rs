@@ -710,18 +710,17 @@ pub(crate) enum AppMsg {
         env_name: String,
         /// Which query this answers: after the stuck escape a second can
         /// run beside the first, and only the latest may settle the tab.
-        started: std::time::Instant,
+        ticket: Ticket,
         result: Result<crate::app_tab::TopErrors, String>,
     },
     /// The App tab's series for one env.
     DetailAppMetrics {
         gen: u64,
         env_name: String,
-        /// As `DetailMetrics::range_secs`.
-        range_secs: i64,
-        /// Fetched for discovery's preview rather than for config: dropped
-        /// once the env has config, or it would be drawn as the config's.
-        preview: bool,
+        /// Which fetch this answers: a range change or a config edit
+        /// starts another, and only the latest may settle the tab (a
+        /// preview's rows must not be drawn as the config's).
+        ticket: Ticket,
         result: Result<crate::app_tab::AppMetrics, String>,
     },
     DetailTags {
