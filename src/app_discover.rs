@@ -153,14 +153,20 @@ fn cache_target_of(host: &str) -> Option<&str> {
 /// `<group>-<shard>-<node>` (`-0001-001`) with cluster mode on. A bare
 /// prefix would take `shop-sessions-001` as a node of group `prod`.
 fn is_node_of(node: &str, target: &str) -> bool {
-    node == target
-        || node
-            .strip_prefix(target)
-            .and_then(|rest| rest.strip_prefix('-'))
-            .is_some_and(|rest| {
-                rest.split('-')
-                    .all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit()))
-            })
+    let digits = |s: &str, n: usize| s.len() == n && s.chars().all(|c| c.is_ascii_digit());
+    if node == target {
+        return true;
+    }
+    let Some(suffix) = node.strip_prefix(target).and_then(|r| r.strip_prefix('-')) else {
+        return false;
+    };
+    // ElastiCache's own suffixes only: `-001`, or `-0001-001` with
+    // cluster mode on. Any digits would take group `app-2`'s `app-2-001`
+    // as a node of group `app`.
+    match suffix.split_once('-') {
+        None => digits(suffix, 3),
+        Some((shard, n)) => digits(shard, 4) && digits(n, 3),
+    }
 }
 
 pub(crate) fn discover(env: &str, inputs: &Inputs) -> Discovery {
@@ -382,6 +388,8 @@ mod tests {
                 "sessions-0002-001",
                 "sessionsx-001",
                 "sessions-eu-001",
+                "sessions-2-001",
+                "sessions-12",
                 "other-001",
             ]),
             prefixed_alarms: s(&["Shop-prod-5xx", "Shop-prod-wkld-cpu", "Shop-prod-wk-health"]),
@@ -406,7 +414,7 @@ mod tests {
             "every instance offered, deduplicated"
         );
         assert_eq!(d.rds_found, [("shop-db".to_string(), "DB".to_string())]);
-        assert_eq!(d.cache_options.len(), 5);
+        assert_eq!(d.cache_options.len(), 7);
         assert_eq!(
             d.cache_found,
             [
