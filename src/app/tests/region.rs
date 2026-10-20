@@ -915,10 +915,10 @@ async fn what_discovery_found_does_not_survive_a_context_switch() {
     // Another account's `api-prod` has its own alarms, cache and logs:
     // showing the first account's findings on it would be wrong.
     let mut app = test_app();
-    app.app_discovered
-        .insert("api-prod".into(), Default::default());
+    let key = app.discovery_key("api-prod");
+    app.app_discovered.insert(key.clone(), Default::default());
     app.app_discovering
-        .insert("api-prod".into(), std::time::Instant::now());
+        .insert(key.clone(), std::time::Instant::now());
     app.handle_msg(AppMsg::Rebuild {
         epoch: app.rebuild_epoch,
         result: Ok(Box::new(crate::aws::AwsClient::stub())),
@@ -928,4 +928,68 @@ async fn what_discovery_found_does_not_survive_a_context_switch() {
         app.app_discovering.is_empty(),
         "nor the in-flight marker, or it never reruns"
     );
+}
+
+#[tokio::test]
+async fn discovery_for_a_same_named_env_in_another_region_is_not_this_ones() {
+    // Under a fan-out `api-prod` in us-east-1 and `api-prod` in
+    // eu-west-2 are two envs with their own databases, caches and logs.
+    let mut app = test_app();
+    let mut home = mk_env("api-prod", "poly", "Web", "Green");
+    home.region = Some("us-east-1".into());
+    let mut away = mk_env("api-prod", "poly", "Web", "Green");
+    away.region = Some("eu-west-2".into());
+    app.environments = vec![home, away];
+    app.rebuild_view();
+    let away_row = (0..app.display_rows().len())
+        .find(|&row| {
+            app.table_state.select(Some(row));
+            app.selected_env()
+                .is_some_and(|e| e.region.as_deref() == Some("eu-west-2"))
+        })
+        .expect("the eu-west-2 row");
+    app.table_state.select(Some(away_row));
+    app.open_detail();
+    assert_eq!(
+        app.discovery_key("api-prod"),
+        ("eu-west-2".to_string(), "api-prod".to_string()),
+        "Detail's env, by its own region, not the first row of that name"
+    );
+    let key = app.discovery_key("api-prod");
+    assert_eq!(
+        app.discovery_client(&key).region_for_tests(),
+        "eu-west-2",
+        "the lookups run where the env is"
+    );
+
+    let mut found = crate::app_discover::Discovered::default();
+    found.discovery.app_log = Some("var/log/app.log".into());
+    app.app_discovered
+        .insert(("us-east-1".into(), "api-prod".into()), found);
+    assert!(
+        app.discovered_for("api-prod").is_none(),
+        "us-east-1's findings are not shown on eu-west-2's env"
+    );
+
+    // Nor does its answer fill the editor open on eu-west-2's env.
+    app.demo_mode = true;
+    app.detail.as_mut().unwrap().tab_idx = 1;
+    assert_eq!(app.detail.as_ref().unwrap().tab(), DetailTab::App);
+    press(&mut app, KeyCode::Char('e'), KeyModifiers::NONE);
+    let loading = || Some(crate::form::FormState::Loading);
+    assert_eq!(app.form.as_ref().map(|f| f.state.clone()), loading());
+    for (region, still_loading) in [("us-east-1", true), ("eu-west-2", false)] {
+        app.handle_msg(AppMsg::AppTabDiscovered {
+            gen: app.generation,
+            region: region.into(),
+            env_name: "api-prod".into(),
+            started: std::time::Instant::now(),
+            found: Box::default(),
+        });
+        assert_eq!(
+            app.form.as_ref().map(|f| f.state.clone()) == loading(),
+            still_loading,
+            "{region}"
+        );
+    }
 }

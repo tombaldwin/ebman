@@ -2520,6 +2520,7 @@ async fn the_app_tab_editor_opens_fills_and_refuses_bad_entries() {
     found.failed = vec![("custom metrics".into(), "AccessDenied".into())];
     app.handle_msg(AppMsg::AppTabDiscovered {
         gen: app.generation,
+        region: app.discovery_key("other").0,
         env_name: "other".into(),
         started: std::time::Instant::now(),
         found: Box::new(found.clone()),
@@ -2530,6 +2531,7 @@ async fn the_app_tab_editor_opens_fills_and_refuses_bad_entries() {
     );
     app.handle_msg(AppMsg::AppTabDiscovered {
         gen: app.generation,
+        region: app.discovery_key("api-prod").0,
         env_name: "api-prod".into(),
         started: std::time::Instant::now(),
         found: Box::new(found),
@@ -2645,8 +2647,8 @@ async fn discovery_is_reused_on_open_rerun_on_ctrl_r_and_never_wedged() {
     };
 
     app.app_discovering.clear();
-    app.app_discovered
-        .insert("api-prod".into(), Discovered::default());
+    let key = app.discovery_key("api-prod");
+    app.app_discovered.insert(key, Discovered::default());
     settle(&mut app);
     app.detail_refresh_on_open();
     assert!(
@@ -2662,7 +2664,8 @@ async fn discovery_is_reused_on_open_rerun_on_ctrl_r_and_never_wedged() {
     let long_ago = std::time::Instant::now()
         .checked_sub(std::time::Duration::from_secs(120))
         .expect("clock past two minutes");
-    app.app_discovering.insert("api-prod".into(), long_ago);
+    app.app_discovering
+        .insert(app.discovery_key("api-prod"), long_ago);
     assert!(!app.discovery_running("api-prod"), "lost, not running");
     settle(&mut app);
     app.detail_refresh_active_tab();
@@ -2735,23 +2738,28 @@ async fn only_the_latest_discoverys_answer_clears_its_marker() {
     let mut app = test_app();
     let newer = std::time::Instant::now();
     let older = newer - std::time::Duration::from_secs(90);
-    app.app_discovering.insert("api-prod".into(), newer);
+    app.app_discovering
+        .insert(app.discovery_key("api-prod"), newer);
     app.handle_msg(AppMsg::AppTabDiscovered {
         gen: app.generation,
+        region: app.discovery_key("api-prod").0,
         env_name: "api-prod".into(),
         started: older,
         found: Box::default(),
     });
     assert_eq!(
-        app.app_discovering.get("api-prod"),
+        app.app_discovering.get(&app.discovery_key("api-prod")),
         Some(&newer),
         "still running"
     );
     app.handle_msg(AppMsg::AppTabDiscovered {
         gen: app.generation,
+        region: app.discovery_key("api-prod").0,
         env_name: "api-prod".into(),
         started: newer,
         found: Box::default(),
     });
-    assert!(!app.app_discovering.contains_key("api-prod"));
+    assert!(!app
+        .app_discovering
+        .contains_key(&app.discovery_key("api-prod")));
 }

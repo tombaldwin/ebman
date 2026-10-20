@@ -2207,7 +2207,8 @@ async fn an_unconfigured_app_tab_shows_what_discovery_found() {
     press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
     press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
     assert!(
-        app.app_discovering.contains_key("api-prod"),
+        app.app_discovering
+            .contains_key(&app.discovery_key("api-prod")),
         "opening the tab looks"
     );
     let text = render(&mut app, 160, 34);
@@ -2227,14 +2228,20 @@ async fn an_unconfigured_app_tab_shows_what_discovery_found() {
         },
         failed: vec![],
     };
-    let started = *app.app_discovering.get("api-prod").expect("running");
+    let started = *app
+        .app_discovering
+        .get(&app.discovery_key("api-prod"))
+        .expect("running");
     app.handle_msg(AppMsg::AppTabDiscovered {
         gen: app.generation,
+        region: app.discovery_key("api-prod").0,
         env_name: "api-prod".into(),
         started,
         found: Box::new(found),
     });
-    assert!(!app.app_discovering.contains_key("api-prod"));
+    assert!(!app
+        .app_discovering
+        .contains_key(&app.discovery_key("api-prod")));
     // The preview is a real fetch (the stub fails it); with nothing to
     // preview the tab would settle empty without calling AWS.
     let msg = tokio::time::timeout(std::time::Duration::from_secs(10), async {
@@ -2270,7 +2277,8 @@ async fn an_unconfigured_app_tab_shows_what_discovery_found() {
     let form = app.form.as_ref().expect("editor open");
     assert_eq!(form.state, crate::form::FormState::Ready, "no waiting");
     assert!(
-        !app.app_discovering.contains_key("api-prod"),
+        !app.app_discovering
+            .contains_key(&app.discovery_key("api-prod")),
         "not looked up again"
     );
     let cache = form.fields.iter().find(|f| f.key == "elasticache").unwrap();

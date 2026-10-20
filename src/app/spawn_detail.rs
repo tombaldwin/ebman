@@ -284,8 +284,7 @@ impl App {
         // No config: preview what discovery found evidence for, if any.
         let preview = !self.cfg.app_tabs.envs.contains_key(&env_name);
         let spec = self.cfg.app_tabs.envs.get(&env_name).cloned().or_else(|| {
-            self.app_discovered
-                .get(&env_name)
+            self.discovered_for(&env_name)
                 .and_then(crate::app_discover::preview_spec)
         });
         // In demo mode: the configured rows, empty, so the tab still

@@ -548,12 +548,16 @@ pub struct App {
     pub(crate) config_seen: Option<Option<crate::config::ConfigStamp>>,
     /// What discovery found per env, kept for the session: the App tab
     /// of an env with no config shows it, and the editor opens with it.
-    pub(crate) app_discovered: std::collections::HashMap<String, crate::app_discover::Discovered>,
+    /// Keyed by [`App::discovery_key`], (region, env): under a fan-out a
+    /// same-named env in another region is another env, with its own
+    /// resources.
+    pub(crate) app_discovered:
+        std::collections::HashMap<(String, String), crate::app_discover::Discovered>,
     /// Envs whose discovery is running, so it is not started twice.
     /// When each running one started: past [`app_tab_form::DISCOVERY_STALE`]
     /// it is treated as lost (a result dropped by a context switch, a
     /// task that died) rather than blocking the env's discovery for good.
-    pub(crate) app_discovering: std::collections::HashMap<String, std::time::Instant>,
+    pub(crate) app_discovering: std::collections::HashMap<(String, String), std::time::Instant>,
     pub(crate) newly_red: HashSet<String>,
     /// Env names that appeared for the first time on the most recent
     /// refresh (weren't in `prev_health` last cycle). Used by the env
@@ -691,6 +695,8 @@ pub(crate) enum AppMsg {
     /// What discovery found for the App tab's editor.
     AppTabDiscovered {
         gen: u64,
+        /// The region the lookups ran in: with `env_name`, the cache key.
+        region: String,
         env_name: String,
         /// When the run started: only the latest run's answer clears the
         /// in-flight marker (an older one may answer after the stale

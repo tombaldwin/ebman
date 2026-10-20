@@ -420,9 +420,10 @@ impl App {
                     // `^R` looks again: resources come and go, and a
                     // result cached for the session would never see them.
                     if trigger == RefreshTrigger::Asked {
-                        self.app_discovered.remove(&env_name);
+                        let key = self.discovery_key(&env_name);
+                        self.app_discovered.remove(&key);
                     }
-                    if !self.app_discovered.contains_key(&env_name) {
+                    if self.discovered_for(&env_name).is_none() {
                         self.spawn_app_discovery(env_name.clone());
                     }
                 }

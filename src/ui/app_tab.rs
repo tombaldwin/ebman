@@ -216,7 +216,7 @@ fn not_set_up(
         )));
         return;
     }
-    let Some(found) = app.app_discovered.get(env) else {
+    let Some(found) = app.discovered_for(env) else {
         lines.push(Line::from(Span::styled(
             format!(
                 "No App tab config for {env}: press e to set it up, or add \

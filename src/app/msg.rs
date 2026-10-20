@@ -156,11 +156,12 @@ impl App {
                 }
             }
             AppMsg::AppTabDiscovered {
+                region,
                 env_name,
                 started,
                 found,
                 ..
-            } => self.handle_app_tab_discovered(env_name, started, *found),
+            } => self.handle_app_tab_discovered((region, env_name), started, *found),
             AppMsg::DetailTopErrors {
                 env_name,
                 started,

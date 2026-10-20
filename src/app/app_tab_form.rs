@@ -377,7 +377,7 @@ impl App {
         // Found already this session, and nothing failed: use it.
         if let Some(found) = self
             .app_discovered
-            .get(&env)
+            .get(&self.discovery_key(&env))
             .filter(|f| f.failed.is_empty())
             .cloned()
         {
@@ -390,11 +390,13 @@ impl App {
     /// Start discovery for `env` unless it is already running. Demo mode
     /// answers at once with nothing, without calling AWS.
     pub(crate) fn spawn_app_discovery(&mut self, env: String) {
+        let key = self.discovery_key(&env);
         if self.demo_mode {
             // Not cached: demo mode found nothing because it looked at
             // nothing, and the tab should keep saying what to configure.
             let _ = self.msg_tx.send(AppMsg::AppTabDiscovered {
                 gen: self.generation,
+                region: key.0,
                 env_name: env,
                 started: std::time::Instant::now(),
                 found: Box::default(),
@@ -405,7 +407,7 @@ impl App {
             return;
         }
         let started = std::time::Instant::now();
-        self.app_discovering.insert(env.clone(), started);
+        self.app_discovering.insert(key.clone(), started);
         // The Detail view's own env: by name alone, a same-named env in
         // another region of a fan-out could name another application.
         let app_name = self
@@ -425,7 +427,8 @@ impl App {
             &self.cfg.alarm_dimensions,
             self.cfg.app_tabs.envs.get(&env),
         );
-        let client = self.detail_client();
+        let client = self.discovery_client(&key);
+        let region = key.0;
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         tokio::spawn(async move {
@@ -440,6 +443,7 @@ impl App {
             };
             let _ = tx.send(AppMsg::AppTabDiscovered {
                 gen,
+                region,
                 env_name: env,
                 started,
                 found: Box::new(found),
@@ -451,21 +455,52 @@ impl App {
     /// result must have been lost.
     pub(crate) fn discovery_running(&self, env: &str) -> bool {
         self.app_discovering
-            .get(env)
+            .get(&self.discovery_key(env))
             .is_some_and(|t| t.elapsed() < DISCOVERY_STALE)
+    }
+
+    /// What discovery found for `env` this session, if anything.
+    pub(crate) fn discovered_for(&self, env: &str) -> Option<&Discovered> {
+        self.app_discovered.get(&self.discovery_key(env))
+    }
+
+    /// The discovery caches' key for `env`: (region, env). The Detail
+    /// view's own env by its snapshot's region (it may have left the
+    /// list), any other by its row's.
+    pub(crate) fn discovery_key(&self, env: &str) -> (String, String) {
+        let region = self
+            .detail
+            .as_ref()
+            .filter(|d| d.env_name == env)
+            .map(|d| self.region_for(&d.env_snapshot))
+            .unwrap_or_else(|| self.region_for_name(env));
+        (region, env.to_string())
+    }
+
+    /// The client discovery for `key` runs on: the key's region, so the
+    /// lookups and the cache entry they fill agree.
+    pub(crate) fn discovery_client(&self, key: &(String, String)) -> RegionClient {
+        self.client_for_region(&key.0)
     }
 
     pub(super) fn handle_app_tab_discovered(
         &mut self,
-        env_name: String,
+        key: (String, String),
         started: std::time::Instant,
         found: Discovered,
     ) {
-        if self.app_discovering.get(&env_name) == Some(&started) {
-            self.app_discovering.remove(&env_name);
+        if self.app_discovering.get(&key) == Some(&started) {
+            self.app_discovering.remove(&key);
         }
+        // Another region's same-named env is not the one on screen: its
+        // answer is cached for it, and fills nothing here.
+        let current = key == self.discovery_key(&key.1);
+        let env_name = key.1.clone();
         if !self.demo_mode {
-            self.app_discovered.insert(env_name.clone(), found.clone());
+            self.app_discovered.insert(key, found.clone());
+        }
+        if !current {
+            return;
         }
         self.fill_app_tab_form(&env_name, &found);
         // An unconfigured env's App tab on screen: preview what was found.
