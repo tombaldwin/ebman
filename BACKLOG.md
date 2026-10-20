@@ -543,18 +543,6 @@ Proposed during the Powerline-aesthetic pass but skipped because the cost / payo
 
 - [ ] **TIER / STATUS pill caps in env table (option A)** — every row's pills get a Powerline trailing wedge so they read as ribbon-style tags. ~~Blocker: TIER column is `Constraint::Length(7)`~~ — STALE: TIER is `Length(11)` now and `pill_chain` already renders wedge-capped pills in the header, so the machinery exists and the width objection is gone. What remains is the design call about applying it per-row. Old note: and the existing `" Worker "` pill is already 8 cells; STATUS column is 10 and `" Terminating "` is 13. Caps would overflow more rows. Revisit if/when the table column widths get widened — or render the cap *only* when the cell has room.
 
-- [ ] **cargo-deny fails on main: RUSTSEC-2026-0333 has no lockfile fix**
-  (found 2026-10-19). The rustls advisories are fixed: rustls 0.23.46
-  (b9c7228), and the SDK crates' legacy rustls 0.21 client is off
-  (default features dropped). What remains:
-  - RUSTSEC-2026-0333 on **noyalib 0.0.5**, via `serde_yml` 0.0.13. That
-    crate is now a deprecated shim pinned to noyalib 0.0.5, and the fix
-    is 0.0.53. Replacing the YAML crate is a choice of successor
-    (noyalib directly, `serde_yaml_ng`, `serde_norway`), so it needs a
-    decision first. 5 non-test modules use it (saved configs,
-    `.ebextensions` lint, EB CLI config, terraform), so it is not small.
-  Not an `ignore` in `deny.toml`: that is a stop condition.
-
 - [ ] **`icons = "ascii"` still draws non-ascii text.** Found while
   moving the chrome helpers onto `tui_common::chrome` (2026-10-19), which
   made the cursor, separators and corners ascii-safe. Panel titles and
