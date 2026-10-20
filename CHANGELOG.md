@@ -4,6 +4,28 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **`icons = "ascii"` panel chrome is ascii.** Panel borders, the
+  cursor marker and field separators now come from tb-tui-common 0.2.2:
+  square corners, `>` and `|`. Unicode and Powerline render as before.
+
+### Fixed
+
+- **`:config-diff-local` reads a saved config containing `K: {}`.** The
+  old YAML parser rejected an inline empty mapping and failed the whole
+  file; it now diffs as `{}`. A tagged value (`!tag value`) keeps its
+  tag, so two differently-tagged values no longer diff as identical.
+
+### Security
+
+- **Advisories cleared.** rustls 0.23.46 (RUSTSEC-2026-0346 to 0349);
+  the AWS SDK's deprecated rustls 0.21 HTTPS client is no longer
+  compiled in; `serde_yml` is replaced by `noyalib`
+  (RUSTSEC-2026-0333, and the RUSTSEC-2025-0068 waiver is gone).
+
 ## [0.45.2] - 2026-09-30
 
 ### Changed
