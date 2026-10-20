@@ -92,6 +92,7 @@ fn estimate_cost_handles_mixed() {
         instance_type: t.into(),
         availability_zone: az.into(),
         launched_at: None,
+        app_stats: None,
     };
     let instances = vec![
         mk("t3.micro", "us-east-1a"),

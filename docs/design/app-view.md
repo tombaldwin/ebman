@@ -158,7 +158,10 @@ from layers into vertical slices: a pure builder with no caller fails
 3. Done: linked resources (`rds`, `elasticache`) in the same call, one
    row each; a named resource with no data at all gets a note asking
    whether the name is the right kind of id.
-4. Surface the instance `ApplicationMetrics` / `System` already fetched.
+4. Done: the instance `ApplicationMetrics` / `System` already fetched,
+   as instance rows on every env's App tab (no config needed). The tab's
+   loading state stays its own: tying it to `loading_instances` let the
+   eager fetch on open block the tab's first metrics fetch.
 5. Alarm prefix, ALARM-first alarms on the tab and in `:alarms`.
 6. Top errors.
 7. `app_metrics` on MCP, and `docs/headless.md`.

@@ -380,6 +380,31 @@ pub(crate) fn instances_for(env_name: &str) -> Vec<Instance> {
         instance_type: "t3.medium".into(),
         availability_zone: az.into(),
         launched_at: Some(now - chrono::Duration::minutes(ago_min)),
+        // Shaped by health so the App tab's instance rows tell the same
+        // story as the colour: a Red instance is slow and failing.
+        app_stats: Some(match color {
+            "Red" => crate::aws::InstanceAppStats {
+                requests_per_sec: Some(3.1),
+                p99_secs: Some(4.2),
+                pct_4xx: Some(2),
+                pct_5xx: Some(38),
+                cpu_pct: Some(97.0),
+            },
+            "Yellow" => crate::aws::InstanceAppStats {
+                requests_per_sec: Some(9.4),
+                p99_secs: Some(1.6),
+                pct_4xx: Some(1),
+                pct_5xx: Some(4),
+                cpu_pct: Some(81.0),
+            },
+            _ => crate::aws::InstanceAppStats {
+                requests_per_sec: Some(12.0),
+                p99_secs: Some(0.21),
+                pct_4xx: Some(1),
+                pct_5xx: Some(0),
+                cpu_pct: Some(34.0),
+            },
+        }),
     };
     match env_name {
         "poly-staging-api" => vec![

@@ -679,6 +679,7 @@ async fn detail_instances_tab_renders_its_instances() {
         instance_type: "t3.medium".into(),
         availability_zone: "eu-west-2a".into(),
         launched_at: None,
+        app_stats: None,
     }];
 
     let out = render(&mut app, 160, 44);
@@ -1446,6 +1447,7 @@ async fn x_arms_the_delete_belonging_to_the_focused_tab_and_no_other() {
                 instance_type: "t3.small".into(),
                 availability_zone: "us-east-1a".into(),
                 launched_at: None,
+                app_stats: None,
             }];
             d.instances_cursor = 0;
         }
@@ -1753,4 +1755,33 @@ async fn the_app_tab_settles_at_once_without_config_or_in_demo_mode() {
     assert_eq!(demo.series.len(), 1, "the configured row is still drawn");
     assert!(demo.series[0].points.is_empty());
     assert_eq!(demo.notes, ["demo mode makes no CloudWatch calls"]);
+}
+
+/// The App tab's instance rows come from the instance list, so its
+/// refresh refetches that list — unless a fetch is already running,
+/// which must not stop the tab's own metrics fetch either.
+#[tokio::test]
+async fn the_app_tab_refresh_brings_the_instance_list_along() {
+    let mut app = test_app();
+    app.environments = vec![mk_env("api-prod", "shop", "WebServer", "Green")];
+    app.rebuild_view();
+    app.table_state.select(Some(0));
+    app.open_detail();
+    let d = app.detail.as_mut().unwrap();
+    assert!(d.loading_instances, "open_detail fetches instances eagerly");
+    d.tab_idx = d.tabs.iter().position(|t| *t == DetailTab::App).unwrap();
+    app.detail_refresh_active_tab();
+    assert!(
+        app.detail.as_ref().unwrap().app_metrics.in_flight(),
+        "an instance fetch in flight must not block the App tab's own"
+    );
+
+    let d = app.detail.as_mut().unwrap();
+    d.loading_instances = false;
+    d.app_metrics.settle(Ok(Default::default()));
+    app.detail_fetch_started = None;
+    app.detail_refresh_active_tab();
+    let d = app.detail.as_ref().unwrap();
+    assert!(d.loading_instances, "the App refresh refetches instances");
+    assert!(d.app_metrics.in_flight());
 }

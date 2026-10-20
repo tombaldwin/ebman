@@ -723,6 +723,7 @@ async fn ssm_run_is_refused_in_read_only_mode() {
             instance_type: "t3.medium".into(),
             availability_zone: "eu-west-2a".into(),
             launched_at: None,
+            app_stats: None,
         }];
     }
 

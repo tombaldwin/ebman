@@ -555,6 +555,8 @@ impl DetailState {
             DetailTab::Instances => self.loading_instances,
             DetailTab::Queue => self.loading_queues,
             DetailTab::Metrics => self.loading_metrics,
+            // Not `loading_instances`: the eager instance fetch from
+            // opening Detail would then block the tab's own first fetch.
             DetailTab::App => self.app_metrics.in_flight(),
             DetailTab::Logs => matches!(
                 self.log_tail.stage,
@@ -720,6 +722,7 @@ mod tests {
             instance_type: "t3.medium".into(),
             availability_zone: "us-east-1a".into(),
             launched_at: None,
+            app_stats: None,
         }
     }
 

@@ -31,6 +31,55 @@ pub(crate) struct Instance {
     pub instance_type: String,
     pub availability_zone: String,
     pub launched_at: Option<DateTime<Utc>>,
+    /// Enhanced health's last window (usually 10s) for this instance.
+    /// `None` without enhanced health, or before the agent reports.
+    pub app_stats: Option<InstanceAppStats>,
+}
+
+/// One instance's request rate, latency, status mix and CPU, as
+/// `DescribeInstancesHealth` reports them for its last window. Fetched
+/// with the instance list already; read by the App tab.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct InstanceAppStats {
+    pub requests_per_sec: Option<f64>,
+    pub p99_secs: Option<f64>,
+    /// Percent of requests, not counts: the API reports shares.
+    pub pct_4xx: Option<i32>,
+    pub pct_5xx: Option<i32>,
+    /// 100 minus idle.
+    pub cpu_pct: Option<f64>,
+}
+
+/// Map enhanced health's `ApplicationMetrics` and `System` to
+/// [`InstanceAppStats`], or `None` when neither says anything.
+///
+/// `request_count` is documented two ways (per second, and per window
+/// alongside `duration`); the window reading is what `eb health` shows
+/// as requests per second, so it is divided by `duration` when there is
+/// one.
+pub(crate) fn instance_app_stats(
+    h: &aws_sdk_elasticbeanstalk::types::SingleInstanceHealth,
+) -> Option<InstanceAppStats> {
+    let app = h.application_metrics();
+    let stats = InstanceAppStats {
+        requests_per_sec: app.map(|a| match a.duration() {
+            Some(d) if d > 0 => f64::from(a.request_count()) / f64::from(d),
+            _ => f64::from(a.request_count()),
+        }),
+        p99_secs: app.and_then(|a| a.latency()).and_then(|l| l.p99()),
+        pct_4xx: app
+            .and_then(|a| a.status_codes())
+            .and_then(|s| s.status4xx()),
+        pct_5xx: app
+            .and_then(|a| a.status_codes())
+            .and_then(|s| s.status5xx()),
+        cpu_pct: h
+            .system()
+            .and_then(|s| s.cpu_utilization())
+            .and_then(|c| c.idle())
+            .map(|idle| (100.0 - idle).clamp(0.0, 100.0)),
+    };
+    (stats != InstanceAppStats::default()).then_some(stats)
 }
 
 #[derive(Clone, Debug)]
@@ -2092,6 +2141,7 @@ impl AwsClient {
         let instances = raw
             .into_iter()
             .map(|i| Instance {
+                app_stats: instance_app_stats(&i),
                 id: i.instance_id.unwrap_or_default(),
                 health: i.health_status.unwrap_or_default(),
                 color: i.color.unwrap_or_default(),

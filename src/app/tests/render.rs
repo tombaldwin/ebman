@@ -1908,6 +1908,22 @@ async fn the_app_tab_draws_series_thresholds_and_config_errors() {
     let d = app.detail.as_mut().expect("detail open");
     assert_eq!(d.tab(), DetailTab::App, "the App tab is second");
     assert!(d.app_metrics.in_flight(), "opening the tab fetches");
+    d.instances = vec![crate::aws::Instance {
+        id: "i-0bad".into(),
+        health: "Severe".into(),
+        color: "Red".into(),
+        causes: vec![],
+        instance_type: "t3.small".into(),
+        availability_zone: "us-east-1a".into(),
+        launched_at: None,
+        app_stats: Some(crate::aws::InstanceAppStats {
+            requests_per_sec: Some(12.0),
+            p99_secs: Some(0.84),
+            pct_4xx: Some(2),
+            pct_5xx: Some(7),
+            cpu_pct: Some(41.0),
+        }),
+    }];
     d.app_metrics.settle(Ok(AppMetrics {
         series: vec![
             AppSeries {
@@ -1976,6 +1992,19 @@ async fn the_app_tab_draws_series_thresholds_and_config_errors() {
         "a metric with no data is left out: {rds}"
     );
     let theme = app.theme.clone();
+    // Instances: enhanced health per instance, 5xx in red when non-zero.
+    let i_row = text
+        .lines()
+        .find(|l| l.contains("i-0bad"))
+        .expect("instance row");
+    for want in ["req/s 12", "p99 840ms", "5xx 7%", "4xx 2%", "cpu 41%"] {
+        assert!(i_row.contains(want), "instance row lacks {want:?}: {i_row}");
+    }
+    let i_y = find_row(&buf, "i-0bad").expect("instance row");
+    assert!(
+        count_symbol_fg(&buf, i_y, "7", theme.health_red) == 1,
+        "a non-zero 5xx share is red"
+    );
     let heap = find_row(&buf, "heap ").expect("heap row");
     assert!(
         row_has_fg(&buf, heap, theme.health_red),
@@ -1993,7 +2022,24 @@ async fn the_app_tab_draws_series_thresholds_and_config_errors() {
     press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
     press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
     let text = render(&mut app, 160, 30);
-    assert!(text.contains("No App tab for api-staging"), "{text}");
+    assert!(text.contains("No App tab config for api-staging"), "{text}");
+    // Without config the instance section still draws; these stub
+    // instances carry no enhanced health.
+    app.detail.as_mut().unwrap().instances = vec![crate::aws::Instance {
+        id: "i-0basic".into(),
+        health: "Ok".into(),
+        color: "Green".into(),
+        causes: vec![],
+        instance_type: "t3.small".into(),
+        availability_zone: "us-east-1a".into(),
+        launched_at: None,
+        app_stats: None,
+    }];
+    let text = render(&mut app, 160, 30);
+    assert!(
+        text.contains("instances: no enhanced health data"),
+        "{text}"
+    );
     assert!(
         !text.contains("config: app.api-prod"),
         "another env's errors are not shown:\n{text}"

@@ -3555,6 +3555,40 @@ async fn list_instances_follows_next_token() {
     assert_eq!(page2.num_calls(), 1, "next_token must be followed");
 }
 
+#[tokio::test]
+async fn list_instances_keeps_enhanced_health_stats() {
+    // The App tab's instance rows are this call's ApplicationMetrics
+    // and System sections, which used to be fetched and dropped.
+    use aws_sdk_elasticbeanstalk::operation::describe_instances_health::DescribeInstancesHealthOutput;
+    use aws_sdk_elasticbeanstalk::types::{ApplicationMetrics, SingleInstanceHealth};
+    let rule = mock!(Client::describe_instances_health).then_output(|| {
+        DescribeInstancesHealthOutput::builder()
+            .instance_health_list(
+                SingleInstanceHealth::builder()
+                    .instance_id("i-aaa")
+                    .application_metrics(
+                        ApplicationMetrics::builder()
+                            .duration(10)
+                            .request_count(30)
+                            .build(),
+                    )
+                    .build(),
+            )
+            .instance_health_list(SingleInstanceHealth::builder().instance_id("i-bbb").build())
+            .build()
+    });
+    let client = client_with_eb(mock_client!(aws_sdk_elasticbeanstalk, [&rule]));
+    let instances = client.list_instances("api-prod").await.unwrap();
+    assert_eq!(
+        instances[0]
+            .app_stats
+            .as_ref()
+            .and_then(|s| s.requests_per_sec),
+        Some(3.0)
+    );
+    assert_eq!(instances[1].app_stats, None, "basic health has none");
+}
+
 // ── profile+region client cache ────────────────────────────────────
 
 #[tokio::test]
@@ -5374,4 +5408,63 @@ fn a_non_service_cause_is_still_classified_by_the_tui() {
         "a throttle that never reached the service must still back off: {flat}"
     );
     assert!(flat.contains("Rate exceeded"), "and keep its cause: {flat}");
+}
+
+#[test]
+fn enhanced_health_maps_to_per_instance_app_stats() {
+    use aws_sdk_elasticbeanstalk::types::{
+        ApplicationMetrics, CpuUtilization, Latency, SingleInstanceHealth, StatusCodes,
+        SystemStatus,
+    };
+    let full = SingleInstanceHealth::builder()
+        .application_metrics(
+            ApplicationMetrics::builder()
+                .duration(10)
+                .request_count(120)
+                .latency(Latency::builder().p99(0.84).build())
+                .status_codes(StatusCodes::builder().status4xx(2).status5xx(7).build())
+                .build(),
+        )
+        .system(
+            SystemStatus::builder()
+                .cpu_utilization(CpuUtilization::builder().idle(59.0).build())
+                .build(),
+        )
+        .build();
+    assert_eq!(
+        crate::aws::instance_app_stats(&full),
+        Some(crate::aws::InstanceAppStats {
+            requests_per_sec: Some(12.0),
+            p99_secs: Some(0.84),
+            pct_4xx: Some(2),
+            pct_5xx: Some(7),
+            cpu_pct: Some(41.0),
+        })
+    );
+
+    // No window length: the count is taken as already per second.
+    let no_window = SingleInstanceHealth::builder()
+        .application_metrics(ApplicationMetrics::builder().request_count(5).build())
+        .build();
+    assert_eq!(
+        crate::aws::instance_app_stats(&no_window).and_then(|s| s.requests_per_sec),
+        Some(5.0)
+    );
+
+    // Basic health reports neither section.
+    assert_eq!(
+        crate::aws::instance_app_stats(&SingleInstanceHealth::builder().build()),
+        None
+    );
+
+    // CPU only, and a bogus idle is clamped rather than going negative.
+    let cpu_only = SingleInstanceHealth::builder()
+        .system(
+            SystemStatus::builder()
+                .cpu_utilization(CpuUtilization::builder().idle(140.0).build())
+                .build(),
+        )
+        .build();
+    let s = crate::aws::instance_app_stats(&cpu_only).expect("cpu alone is something");
+    assert_eq!((s.cpu_pct, s.requests_per_sec), (Some(0.0), None));
 }

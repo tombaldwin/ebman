@@ -1394,6 +1394,7 @@ async fn the_instance_console_link_follows_the_row_now_that_the_data_does() {
         instance_type: "t3.small".into(),
         availability_zone: "eu-west-2a".into(),
         launched_at: None,
+        app_stats: None,
     }];
     detail.instances_cursor = 0;
 

@@ -16,7 +16,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   colours a value past its warn or critical level. RDS instances and
   ElastiCache nodes named in `app.ENV.rds` / `app.ENV.elasticache` get a
   row each (CPU, connections, memory, replica lag or evictions), from
-  the same CloudWatch call. A config line that
+  the same CloudWatch call. Every env's tab, configured or not, lists
+  its instances with enhanced health's last window: requests per
+  second, p99 latency, 4xx/5xx share and CPU. A config line that
   cannot be applied is shown on the tab, not skipped, and kept on
   `:settings` save. See `docs/configuration.md`.
 

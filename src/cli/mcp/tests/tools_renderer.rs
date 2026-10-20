@@ -60,6 +60,7 @@ fn instances_render_their_causes() {
         instance_type: "t3.medium".into(),
         availability_zone: "us-west-1a".into(),
         launched_at: None,
+        app_stats: None,
     }];
     let v = parse(&render_instances_json(&instances));
     assert_eq!(v[0]["id"], "i-0abc");

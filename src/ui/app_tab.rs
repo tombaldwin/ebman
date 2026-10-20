@@ -27,8 +27,9 @@ pub(super) fn draw_detail_app(
         None => {
             lines.push(Line::from(Span::styled(
                 format!(
-                    "No App tab for {env}. Add app.{env}.namespace and \
-                     app.{env}.metric.LABEL lines to config.toml (docs/configuration.md)."
+                    "No App tab config for {env}: add app.{env}.namespace and \
+                     app.{env}.metric.LABEL lines to config.toml for your own \
+                     metrics (docs/configuration.md)."
                 ),
                 muted,
             )));
@@ -76,6 +77,7 @@ pub(super) fn draw_detail_app(
             }
         }
     }
+    instance_rows(&mut lines, &detail.instances, area.width, theme);
     let block = titled_block(
         &theme.chrome(),
         &format!("App · {}", range_label(detail.metrics_range_secs)),
@@ -141,6 +143,89 @@ fn series_row(s: &AppSeries, label_w: usize, width: u16, theme: &Theme) -> Line<
     let room = (width as usize).saturating_sub(used + 4);
     spans.extend(join_fields_to_fit(groups, &theme.chrome(), room as u16));
     Line::from(spans)
+}
+
+/// Enhanced health's last window per instance: requests, p99, error
+/// shares, CPU. Needs no config, so every env gets it; an env without
+/// enhanced health says so once instead of drawing empty rows.
+fn instance_rows(
+    lines: &mut Vec<Line<'static>>,
+    instances: &[crate::aws::Instance],
+    width: u16,
+    theme: &Theme,
+) {
+    if instances.is_empty() {
+        return;
+    }
+    let muted = Style::default().fg(theme.muted);
+    lines.push(Line::default());
+    if instances.iter().all(|i| i.app_stats.is_none()) {
+        lines.push(Line::from(Span::styled(
+            "instances: no enhanced health data (requests, latency and CPU \
+             per instance need enhanced health on)",
+            muted,
+        )));
+        return;
+    }
+    lines.push(Line::from(Span::styled(
+        "instances (enhanced health, last window)",
+        muted,
+    )));
+    let id_w = instances
+        .iter()
+        .map(|i| i.id.chars().count())
+        .max()
+        .unwrap_or(0);
+    for i in instances {
+        let mut spans = vec![Span::styled(
+            format!("{:<id_w$}  ", i.id),
+            Style::default().fg(health_color(&i.color, theme)),
+        )];
+        let used: usize = spans.iter().map(Span::width).sum();
+        let stat = |label: &str, value: String, style: Style| {
+            vec![
+                Span::styled(format!("{label} "), muted),
+                Span::styled(value, style),
+            ]
+        };
+        let plain = Style::default().fg(theme.text);
+        let errors = |pct: i32| {
+            if pct > 0 {
+                Style::default().fg(theme.health_red)
+            } else {
+                plain
+            }
+        };
+        let groups: Vec<Vec<Span<'static>>> = match &i.app_stats {
+            None => vec![vec![Span::styled("no data", muted)]],
+            Some(s) => [
+                s.requests_per_sec
+                    .map(|r| stat("req/s", format_value(r), plain)),
+                s.p99_secs.map(|p| stat("p99", format_latency(p), plain)),
+                s.pct_5xx.map(|p| stat("5xx", format!("{p}%"), errors(p))),
+                s.pct_4xx.map(|p| stat("4xx", format!("{p}%"), plain)),
+                s.cpu_pct
+                    .map(|c| stat("cpu", format!("{}%", format_value(c)), plain)),
+            ]
+            .into_iter()
+            .flatten()
+            .collect(),
+        };
+        let room = (width as usize).saturating_sub(used + 4);
+        spans.extend(join_fields_to_fit(groups, &theme.chrome(), room as u16));
+        lines.push(Line::from(spans));
+    }
+}
+
+/// `840ms` under a second, `2.1s` from one.
+pub(crate) fn format_latency(secs: f64) -> String {
+    if !secs.is_finite() {
+        "—".to_string()
+    } else if secs < 1.0 {
+        format!("{:.0}ms", secs * 1000.0)
+    } else {
+        format!("{}s", format_value(secs))
+    }
 }
 
 fn resource_label(r: &ResourceRow) -> String {
@@ -406,6 +491,15 @@ mod tests {
         assert_eq!(format_linked(48.0, ValueUnit::Count), "48");
         assert_eq!(format_linked(0.4, ValueUnit::Seconds), "0.4s");
         assert_eq!(format_linked(2048.0, ValueUnit::Bytes), "2.0K");
+    }
+
+    #[test]
+    fn latency_reads_in_ms_under_a_second() {
+        assert_eq!(format_latency(0.84), "840ms");
+        assert_eq!(format_latency(0.0), "0ms");
+        assert_eq!(format_latency(1.0), "1s");
+        assert_eq!(format_latency(2.14), "2.14s");
+        assert_eq!(format_latency(f64::NAN), "—");
     }
 
     #[test]

@@ -297,7 +297,14 @@ impl App {
             DetailTab::Instances => self.spawn_detail_instances(env_name),
             DetailTab::Queue => self.spawn_detail_queues(app_name, env_name),
             DetailTab::Metrics => self.spawn_detail_metrics(env_name),
-            DetailTab::App => self.spawn_detail_app(env_name),
+            DetailTab::App => {
+                // Its instance rows come from the instance list; one
+                // already in flight (the eager fetch on open) will do.
+                if !self.detail.as_ref().is_some_and(|d| d.loading_instances) {
+                    self.spawn_detail_instances(env_name.clone());
+                }
+                self.spawn_detail_app(env_name);
+            }
             DetailTab::Logs => self.spawn_detail_logs(env_name),
             DetailTab::Config => {}
         }
