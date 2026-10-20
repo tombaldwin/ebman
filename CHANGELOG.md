@@ -23,7 +23,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   starts with it the env's as well, on every surface (Health, `:why`,
   `:alarms`, MCP `why`). `app.ENV.log_group` adds top errors: a Logs
   Insights count of ERROR lines by `app.ENV.error_fingerprint` over the
-  last 15 minutes, run when the tab opens and on `^R` only. The MCP
+  last 15 minutes, run on `^R` and when the tab opens (reopening it
+  keeps an answer under five minutes old), never on the auto-refresh
+  tick. The MCP
   `app_metrics` tool returns the same data for agents. A config
   line that
   cannot be applied is shown on the tab, not skipped, and kept on

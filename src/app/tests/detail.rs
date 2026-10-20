@@ -1977,7 +1977,42 @@ async fn top_errors_runs_when_a_person_asks_and_only_then() {
     app.detail.as_mut().unwrap().tab_idx = 0;
     app.detail_cycle_tab(1);
     assert_eq!(app.detail.as_ref().unwrap().tab(), DetailTab::App);
-    assert!(running(&app), "opening the tab runs it");
+    assert!(running(&app), "opening the tab with no answer runs it");
+
+    // Opening it again with a fresh answer keeps that answer; a stale
+    // one, or ^R, runs it again.
+    let answer = |mins_ago: i64| crate::app_tab::TopErrors {
+        log_group: "g".into(),
+        rows: vec![],
+        unmatched: 0,
+        records_scanned: 0,
+        fetched_at: chrono::Utc::now() - chrono::Duration::minutes(mins_ago),
+    };
+    let reopen = |mins_ago: i64| {
+        let mut app = armed(configured, false);
+        app.detail
+            .as_mut()
+            .unwrap()
+            .top_errors
+            .settle(Ok(answer(mins_ago)));
+        app.detail.as_mut().unwrap().tab_idx = 0;
+        app.detail_cycle_tab(1);
+        app
+    };
+    assert!(
+        !running(&reopen(1)),
+        "a 1-minute-old answer stands on reopening"
+    );
+    assert!(running(&reopen(10)), "a 10-minute-old one is rerun");
+    let mut app = reopen(1);
+    app.detail_fetch_started = None;
+    app.detail
+        .as_mut()
+        .unwrap()
+        .app_metrics
+        .settle(Ok(Default::default()));
+    app.detail_refresh_active_tab();
+    assert!(running(&app), "^R reruns even a fresh answer");
 }
 
 /// The query top errors sends: the configured fingerprint, against the

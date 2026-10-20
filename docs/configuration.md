@@ -140,9 +140,10 @@ safety.accounts.prod.read_only = true
 #                             alarm_dimensions
 # app.ENV.log_group           turns on top errors: a Logs Insights count of
 #                             ERROR lines over the last 15 minutes, run
-#                             when the tab opens and on ^R (never on the
-#                             auto-refresh tick: Insights bills per GB
-#                             scanned). A full name, or a suffix under
+#                             on ^R and when the tab opens (reopening it
+#                             keeps an answer under 5 minutes old; never
+#                             on the auto-refresh tick: Insights bills
+#                             per GB scanned). A full name, or a suffix under
 #                             /aws/elasticbeanstalk/<env>/
 # app.ENV.error_fingerprint   Logs Insights regex with a named group fp
 #                             that top errors counts by (default: the

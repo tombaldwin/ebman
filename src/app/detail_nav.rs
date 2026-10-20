@@ -4,6 +4,22 @@
 
 use super::*;
 
+/// Why the active Detail tab is being refreshed. Only top errors, which
+/// is billed per scan, tells these apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RefreshTrigger {
+    /// `^R`.
+    Asked,
+    /// The tab came on screen.
+    Opened,
+    /// The auto-refresh tick.
+    Tick,
+}
+
+/// How long a top-errors answer stands when the App tab is merely
+/// opened again.
+const TOP_ERRORS_FRESH: chrono::TimeDelta = chrono::TimeDelta::minutes(5);
+
 impl App {
     pub(crate) fn open_detail(&mut self) {
         let Some(env) = self.selected_env().cloned() else {
@@ -74,7 +90,7 @@ impl App {
         };
         self.detail = Some(detail);
         self.mode = Mode::Detail;
-        self.detail_refresh_active_tab();
+        self.detail_refresh_on_open();
         // Tags & instances load eagerly so the Config tab (tags + cost
         // annotation) is populated without the user having to switch tabs.
         self.spawn_detail_tags();
@@ -133,7 +149,7 @@ impl App {
                 }
                 d.instances_cursor = instance_idx.min(d.instances.len().saturating_sub(1));
                 d.instances_scroll = (d.instances_cursor as u16).saturating_sub(3);
-                self.detail_refresh_active_tab();
+                self.detail_refresh_on_open();
             }
             HealthItem::MainQueue | HealthItem::Dlq => {
                 let Some(d) = self.detail.as_mut() else {
@@ -147,7 +163,7 @@ impl App {
                     HealthItem::Dlq => 1,
                     _ => 0,
                 };
-                self.detail_refresh_active_tab();
+                self.detail_refresh_on_open();
             }
         }
     }
@@ -159,7 +175,7 @@ impl App {
         let n = detail.tabs.len() as i32;
         let next = crate::util::wrap_index(detail.tab_idx, delta as isize, n as usize);
         detail.tab_idx = next;
-        self.detail_refresh_active_tab();
+        self.detail_refresh_on_open();
         // NB: an earlier iteration auto-spawned the CW Logs streaming
         // overlay here when groups were discovered. Reverted because
         // jumping into a popup obscures the Logs tab's own snapshot path
@@ -255,15 +271,24 @@ impl App {
     /// operator retrying by hand isn't left tapping.
     const DETAIL_FETCH_STUCK_AFTER: Duration = Duration::from_secs(120);
 
+    /// `^R`: refresh the active tab, everything on it.
     pub(crate) fn detail_refresh_active_tab(&mut self) {
-        self.detail_refresh(false);
+        self.detail_refresh(RefreshTrigger::Asked);
+    }
+
+    /// A tab came on screen (Detail opened, a tab switch, a drill-in).
+    /// The same as `^R`, except that a top-errors answer younger than
+    /// [`TOP_ERRORS_FRESH`] is kept: cycling past the App tab must not
+    /// buy a Logs Insights scan each time.
+    pub(crate) fn detail_refresh_on_open(&mut self) {
+        self.detail_refresh(RefreshTrigger::Opened);
     }
 
     /// The auto-refresh tick's refresh: the same as `^R`, except that
     /// what is billed per scan (top errors' Logs Insights query) waits
     /// for a person to ask.
     pub(crate) fn detail_refresh_on_tick(&mut self) {
-        self.detail_refresh(true);
+        self.detail_refresh(RefreshTrigger::Tick);
     }
 
     /// The refresh tick's part for an open Detail view: refresh the
@@ -276,7 +301,7 @@ impl App {
         }
     }
 
-    fn detail_refresh(&mut self, tick: bool) {
+    fn detail_refresh(&mut self, trigger: RefreshTrigger) {
         let Some(detail) = self.detail.as_ref() else {
             return;
         };
@@ -334,7 +359,17 @@ impl App {
                 {
                     self.spawn_detail_alarms(env_name.clone());
                 }
-                if !tick {
+                let fresh = self
+                    .detail
+                    .as_ref()
+                    .and_then(|d| d.top_errors.ready())
+                    .is_some_and(|t| chrono::Utc::now() - t.fetched_at < TOP_ERRORS_FRESH);
+                let run = match trigger {
+                    RefreshTrigger::Asked => true,
+                    RefreshTrigger::Opened => !fresh,
+                    RefreshTrigger::Tick => false,
+                };
+                if run {
                     self.spawn_detail_top_errors(env_name.clone());
                 }
                 self.spawn_detail_app(env_name);
