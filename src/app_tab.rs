@@ -117,7 +117,7 @@ impl AppTabs {
 
     /// Attribute `message` to the env named in `rest`, if it names one.
     fn record_error(&mut self, rest: &str, message: String, line: Option<&str>) {
-        let env = rest.split_once('.').map_or(rest, |(env, _)| env).trim();
+        let (env, _) = split_rest(rest);
         self.errors.push(AppTabError {
             env: Some(env.to_string()).filter(|e| !e.is_empty()),
             message,
@@ -151,15 +151,13 @@ impl AppTabs {
     }
 
     fn apply_field(&mut self, rest: &str, value: &str) -> Result<(), String> {
-        // EB environment names are letters, digits and hyphens, so the
-        // env is everything up to the first dot.
-        let Some((env, field)) = rest.split_once('.') else {
+        let Some((env, field)) = rest.split_once('.').map(|_| split_rest(rest)) else {
             return Err(format!(
                 "app.{rest} is missing a field (expected app.ENV.namespace, \
                  app.ENV.metric.LABEL, …)"
             ));
         };
-        let (env, field) = (env.trim(), field.trim());
+        let (env, field) = (env.as_str(), field.as_str());
         if env.is_empty() {
             return Err(format!("app..{field} has an empty environment name"));
         }
@@ -241,6 +239,31 @@ impl AppTabs {
             }
         }
     }
+}
+
+/// How `config::parse` reads an `app.` line's key, as `(env, field)`:
+/// each part trimmed, and a family's label too (`metric. heap` is
+/// `metric.heap`). `None` when the parser does not read the line as an
+/// `app.` line at all (`app .e.x` is passed through). The one place this
+/// is decided: the parser, the editor's save and its rejected-line
+/// matching all go through it, so they cannot disagree about which
+/// line is whose.
+pub(crate) fn key_of(line: &str) -> Option<(String, String)> {
+    let (key, _) = line.trim().split_once('=')?;
+    Some(split_rest(key.trim().strip_prefix("app.")?))
+}
+
+/// `ENV.FIELD` after `app.`, as [`key_of`] describes. EB environment
+/// names are letters, digits and hyphens, so the env is everything up
+/// to the first dot.
+fn split_rest(rest: &str) -> (String, String) {
+    let (env, field) = rest.split_once('.').unwrap_or((rest, ""));
+    let field = field.trim();
+    let field = match field.split_once('.') {
+        Some((family @ ("metric" | "threshold"), label)) => format!("{family}.{}", label.trim()),
+        _ => field.to_string(),
+    };
+    (env.trim().to_string(), field)
 }
 
 /// The fields `app.ENV.` accepts, for the error message and the docs
@@ -956,6 +979,31 @@ mod tests {
         let tabs = parse(lines);
         assert_eq!(tabs.errors.len(), 1, "{:?}", tabs.errors);
         tabs.errors[0].message.clone()
+    }
+
+    #[test]
+    fn a_key_is_read_as_the_parser_reads_it() {
+        let k = |l: &str| key_of(l).map(|(e, f)| format!("{e}|{f}"));
+        assert_eq!(k("app.e.namespace = \"N\""), Some("e|namespace".into()));
+        assert_eq!(
+            k("  app. e .metric. heap = \"X\""),
+            Some("e|metric.heap".into())
+        );
+        assert_eq!(
+            k("app.e.threshold.lag=\"1,2\""),
+            Some("e|threshold.lag".into())
+        );
+        assert_eq!(
+            k("app .e.namespace = \"N\""),
+            None,
+            "the parser passes this through"
+        );
+        assert_eq!(k("theme = \"dark\""), None);
+        assert_eq!(
+            k("app.e = \"x\""),
+            Some("e|".into()),
+            "an env with no field"
+        );
     }
 
     #[test]

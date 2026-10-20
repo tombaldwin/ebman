@@ -475,7 +475,12 @@ fn unquote(raw: &str) -> &str {
 /// comments, so a `#` after a quoted value would become part of the
 /// value and match no data.
 fn app_value_problem(raw: &str) -> Option<&'static str> {
-    let inner = raw.strip_prefix('"')?;
+    const COMMENT: &str = "looks like it carries an inline # comment, which is not \
+                           supported: put the comment on its own line";
+    let Some(inner) = raw.strip_prefix('"') else {
+        // Unquoted: `Shop # prod` would apply as `Shop # prod`.
+        return raw.contains(" #").then_some(COMMENT);
+    };
     if !inner.ends_with('"') {
         return Some(if inner.contains('"') {
             "has text after its closing quote (inline # comments are not \
@@ -484,10 +489,16 @@ fn app_value_problem(raw: &str) -> Option<&'static str> {
             "has an opening quote and no closing one"
         });
     }
-    // `"Shop" # the "prod"` ends in a quote too; with or without the
-    // space before `#`.
-    (inner.contains("\" #") || inner.contains("\"#"))
-        .then_some("looks like it carries an inline # comment, which is not supported: put the comment on its own line")
+    // `"Shop" # the "prod"` ends in a quote too, so look for a quote
+    // that closes a value and is followed by `#`. Not one written `\"`:
+    // that is part of the value (`href=\"#…\"`).
+    let chars: Vec<char> = inner.chars().collect();
+    let closes_then_comment = (0..chars.len()).any(|i| {
+        chars[i] == '"'
+            && (i == 0 || chars[i - 1] != '\\')
+            && chars[i + 1..].iter().find(|c| !c.is_whitespace()) == Some(&'#')
+    });
+    closes_then_comment.then_some(COMMENT)
 }
 
 pub(crate) fn parse(text: &str) -> Config {
@@ -786,15 +797,11 @@ fn clone_io_error(e: &std::io::Error) -> std::io::Error {
 /// was. The new lines go where the env's first old one was, or at the
 /// end.
 pub(crate) fn replace_app_lines(text: &str, env: &str, lines: &[String]) -> String {
-    // The key as the parser reads it, each dot-separated part trimmed:
-    // `app. e.namespace` is env e's line, and leaving it would re-apply
-    // the old value over the one just written.
-    let is_envs = |l: &str| {
-        l.split_once('=').is_some_and(|(k, _)| {
-            let mut parts = k.split('.').map(str::trim);
-            parts.next() == Some("app") && parts.next() == Some(env)
-        })
-    };
+    // Whose line it is, exactly as the parser reads it: `app. e.namespace`
+    // is env e's (left, it would re-apply the old value), and
+    // `app .e.namespace` is not an `app.` line at all (deleting it would
+    // lose a line the parser never used).
+    let is_envs = |l: &str| crate::app_tab::key_of(l).is_some_and(|(e, _)| e == env);
     let mut out: Vec<String> = Vec::new();
     let mut placed = false;
     for l in text.lines() {
@@ -1411,6 +1418,11 @@ accounts.staging.external_id = "abc-xyz"
             crlf, "theme = \"dark\"\r\napp.a.rds = \"y\"\r\n",
             "a CRLF file stays CRLF"
         );
+        let not_app = replace_app_lines("app .a.namespace = \"Kept\"\n", "a", &[]);
+        assert_eq!(
+            not_app, "app .a.namespace = \"Kept\"\n",
+            "not an app. line to the parser: kept"
+        );
         let spaced = replace_app_lines(
             "app. a.namespace = \"Old\"\n",
             "a",
@@ -1470,6 +1482,9 @@ accounts.staging.external_id = "abc-xyz"
             (r#""Shop" # the "prod""#, Some("looks like it carries")),
             (r##""Shop"# the "prod""##, Some("looks like it carries")),
             (r#""Shop"#, Some("no closing one")),
+            ("Shop # prod", Some("looks like it carries")),
+            // A quote written \" is the value's, not a closing one.
+            (r##""href=\"#(?<fp>\w+)\"""##, None),
             (r#""Shop""#, None),
             (r#""msg="(?<fp>[^"]+)"""#, None),
             ("Shop", None),

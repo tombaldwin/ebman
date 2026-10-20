@@ -354,13 +354,10 @@ pub(crate) fn with_rejected_lines<'a>(
     mut lines: Vec<String>,
     rejected: impl Iterator<Item = &'a str>,
 ) -> Vec<String> {
-    // Each dot-separated part trimmed, as the parser reads a key, so
-    // `app.e.metric. heap` is the same key as `app.e.metric.heap`.
-    let key = |l: &str| {
-        l.split_once('=')
-            .map(|(k, _)| k.split('.').map(str::trim).collect::<Vec<_>>().join("."))
-    };
-    let written: Vec<Option<String>> = lines.iter().map(|l| key(l)).collect();
+    // As the parser reads a key: `app.e.metric. heap` is
+    // `app.e.metric.heap`.
+    let key = crate::app_tab::key_of;
+    let written: Vec<_> = lines.iter().map(|l| key(l)).collect();
     for r in rejected {
         if !written.contains(&key(r)) {
             lines.push(r.to_string());
