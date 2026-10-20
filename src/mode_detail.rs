@@ -427,6 +427,9 @@ pub(crate) struct DetailState {
     /// and must not hold it up. `spawn_detail_top_errors` refuses to
     /// stack instead.
     pub top_errors: crate::app::Fetch<crate::app_tab::TopErrors>,
+    /// When the in-flight top-errors query started, so a task that never
+    /// answered stops blocking the next one.
+    pub top_errors_started: Option<std::time::Instant>,
     pub auto_refresh: bool,
     pub search_input: TextInput,
     pub search_active: bool, // true while user is typing a pattern
@@ -743,6 +746,7 @@ mod tests {
             metrics: vec![],
             app_metrics: Default::default(),
             top_errors: Default::default(),
+            top_errors_started: None,
             metrics_range_secs: 3600,
             auto_refresh: false,
             search_input: TextInput::new(),

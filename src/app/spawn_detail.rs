@@ -312,10 +312,18 @@ impl App {
         let Some(d) = self.detail.as_mut() else {
             return;
         };
-        if d.top_errors.in_flight() || self.demo_mode {
+        // In flight blocks a second query, unless it is older than any
+        // answer could be (the query is bounded below): a task that
+        // died without answering must not leave `^R` doing nothing.
+        let stuck_after = crate::app_tab::TOP_ERRORS_BOUND + std::time::Duration::from_secs(30);
+        let running = d.top_errors.in_flight()
+            && d.top_errors_started
+                .is_some_and(|t| t.elapsed() < stuck_after);
+        if running || self.demo_mode {
             return;
         }
         d.top_errors.begin();
+        d.top_errors_started = Some(std::time::Instant::now());
         let query = crate::app_tab::top_errors_query(
             self.cfg
                 .app_tabs
@@ -331,11 +339,12 @@ impl App {
                 let end = chrono::Utc::now();
                 let start = end - chrono::Duration::minutes(crate::app_tab::TOP_ERRORS_WINDOW_MINS);
                 let r = aws
-                    .run_insights_query(
+                    .run_insights_query_within(
                         std::slice::from_ref(&group),
                         start.timestamp_millis(),
                         end.timestamp_millis(),
                         &query,
+                        Some(crate::app_tab::TOP_ERRORS_BOUND),
                     )
                     .await?;
                 let rows: Vec<Vec<(String, String)>> =

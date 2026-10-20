@@ -785,6 +785,11 @@ pub(crate) fn series_from_results(
 /// day of logs on every `^R`.
 pub(crate) const TOP_ERRORS_WINDOW_MINS: i64 = 15;
 
+/// How long the TUI waits for a top-errors query before stopping it on
+/// the server: well past a 15-minute scan of one group, short of
+/// leaving `^R` blocked.
+pub(crate) const TOP_ERRORS_BOUND: std::time::Duration = std::time::Duration::from_secs(120);
+
 /// Used when `app.ENV.error_fingerprint` is unset: the first hundred
 /// characters from `ERROR`, which groups identical messages and keeps
 /// distinct ones apart without knowing the app's log format.

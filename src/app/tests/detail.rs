@@ -2066,3 +2066,96 @@ async fn top_errors_queries_the_configured_group_with_the_fingerprint() {
     assert_eq!(t.records_scanned, 50);
     assert_eq!(start.num_calls(), 1);
 }
+
+/// A top-errors query whose task never answered stops blocking the next
+/// one once it is older than any answer could be.
+#[tokio::test]
+async fn a_top_errors_query_that_never_answered_does_not_block_forever() {
+    let mut app = App::for_tests(
+        crate::aws::AwsClient::stub(),
+        crate::config::parse("app.api-prod.log_group = \"g\"\n"),
+    );
+    app.environments = vec![mk_env("api-prod", "shop", "WebServer", "Green")];
+    app.rebuild_view();
+    app.table_state.select(Some(0));
+    app.open_detail();
+    let long_ago = std::time::Instant::now()
+        .checked_sub(std::time::Duration::from_secs(600))
+        .expect("the clock is past ten minutes");
+    let d = app.detail.as_mut().unwrap();
+    d.top_errors.begin();
+    d.top_errors_started = Some(long_ago);
+    app.spawn_detail_top_errors("api-prod".into());
+    let started = app.detail.as_ref().unwrap().top_errors_started.unwrap();
+    assert!(started > long_ago, "a fresh query replaced the stuck one");
+}
+
+/// The TUI's top-errors query is bounded too: past
+/// `TOP_ERRORS_BOUND` it is stopped on the server and the tab gets an
+/// error, not a spinner that never ends.
+#[tokio::test(start_paused = true)]
+async fn the_tabs_top_errors_query_is_stopped_past_its_bound() {
+    use aws_sdk_cloudwatchlogs::types::QueryStatus;
+    let start =
+        aws_smithy_mocks::mock!(aws_sdk_cloudwatchlogs::Client::start_query).then_output(|| {
+            aws_sdk_cloudwatchlogs::operation::start_query::StartQueryOutput::builder()
+                .query_id("q")
+                .build()
+        });
+    let running = aws_smithy_mocks::mock!(aws_sdk_cloudwatchlogs::Client::get_query_results)
+        .then_output(|| {
+            aws_sdk_cloudwatchlogs::operation::get_query_results::GetQueryResultsOutput::builder()
+                .status(QueryStatus::Running)
+                .build()
+        });
+    // Opening Detail looks up the env's log groups for the Logs tab.
+    let groups = aws_smithy_mocks::mock!(aws_sdk_cloudwatchlogs::Client::describe_log_groups)
+        .then_output(|| {
+            aws_sdk_cloudwatchlogs::operation::describe_log_groups::DescribeLogGroupsOutput::builder()
+                .build()
+        });
+    let stop =
+        aws_smithy_mocks::mock!(aws_sdk_cloudwatchlogs::Client::stop_query).then_output(|| {
+            aws_sdk_cloudwatchlogs::operation::stop_query::StopQueryOutput::builder().build()
+        });
+    let sdk = aws_config::SdkConfig::builder()
+        .region(aws_config::Region::new("us-east-1"))
+        .behavior_version(aws_config::BehaviorVersion::latest())
+        .build();
+    let client = crate::aws::AwsClient::for_tests(
+        aws_sdk_elasticbeanstalk::Client::new(&sdk),
+        aws_sdk_sqs::Client::new(&sdk),
+        aws_sdk_cloudwatch::Client::new(&sdk),
+        aws_smithy_mocks::mock_client!(
+            aws_sdk_cloudwatchlogs,
+            aws_smithy_mocks::RuleMode::MatchAny,
+            [&start, &running, &stop, &groups]
+        ),
+        aws_sdk_s3::Client::new(&sdk),
+        aws_sdk_ec2::Client::new(&sdk),
+    );
+    let mut app = App::for_tests(
+        client,
+        crate::config::parse("app.api-prod.log_group = \"g\"\n"),
+    );
+    app.environments = vec![mk_env("api-prod", "shop", "WebServer", "Green")];
+    app.rebuild_view();
+    app.table_state.select(Some(0));
+    app.open_detail();
+    while app.msg_rx.try_recv().is_ok() {}
+    app.spawn_detail_top_errors("api-prod".into());
+    // Virtual time: generous, and a hang fails instead of stalling.
+    let result = tokio::time::timeout(std::time::Duration::from_secs(600), async {
+        loop {
+            match app.msg_rx.recv().await.expect("a result") {
+                AppMsg::DetailTopErrors { result, .. } => break result,
+                _ => continue,
+            }
+        }
+    })
+    .await
+    .expect("an answer within the bound");
+    let err = result.expect_err("the query never completed");
+    assert!(err.contains("ran past 120s and was stopped"), "{err}");
+    assert_eq!(stop.num_calls(), 1);
+}

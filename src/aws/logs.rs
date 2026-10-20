@@ -460,7 +460,24 @@ impl AwsClient {
         end_ms: i64,
         query: &str,
     ) -> Result<InsightsResults> {
+        self.run_insights_query_within(log_groups, start_ms, end_ms, query, None)
+            .await
+    }
+
+    /// [`run_insights_query`](Self::run_insights_query), given up on
+    /// after `within`: the query is stopped (`StopQuery`) rather than
+    /// left scanning, and billing, on the server after nobody is
+    /// waiting for it.
+    pub(crate) async fn run_insights_query_within(
+        &self,
+        log_groups: &[String],
+        start_ms: i64,
+        end_ms: i64,
+        query: &str,
+        within: Option<std::time::Duration>,
+    ) -> Result<InsightsResults> {
         use aws_sdk_cloudwatchlogs::types::QueryStatus;
+        let started = tokio::time::Instant::now();
         // StartQuery's start_time / end_time are epoch *seconds*, not ms.
         let start_s = start_ms / 1000;
         let end_s = end_ms / 1000;
@@ -483,6 +500,14 @@ impl AwsClient {
         // surfaces Timeout when the server gives up.
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            if let Some(limit) = within.filter(|l| started.elapsed() >= *l) {
+                // Best effort: a failed stop still means we gave up.
+                let _ = self.cw_logs.stop_query().query_id(&query_id).send().await;
+                return Err(eyre!(
+                    "Insights query ran past {}s and was stopped",
+                    limit.as_secs()
+                ));
+            }
             let resp = self
                 .cw_logs
                 .get_query_results()

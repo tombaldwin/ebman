@@ -37,6 +37,7 @@ impl App {
             metrics_range_secs: 3600, // 1h default
             app_metrics: Default::default(),
             top_errors: Default::default(),
+            top_errors_started: None,
             auto_refresh: false,
             search_input: TextInput::new(),
             search_active: false,

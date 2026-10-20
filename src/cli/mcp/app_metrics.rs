@@ -8,8 +8,9 @@
 use super::*;
 use crate::app_tab::{AppMetrics, AppTabSpec, Point, TopErrors};
 
-/// How long top errors may run inside the 30s tool bound, leaving the
-/// rest of the bundle room to come back.
+/// How long top errors may run inside the 30s tool bound. The sections
+/// run concurrently, so this bounds the query, not the bundle; past it
+/// the query is stopped on the server.
 const TOP_ERRORS_BOUND_SECS: u64 = 20;
 
 pub(super) const DESCRIPTION: &str = "The App tab for one environment: the operator's own CloudWatch metrics and the RDS / ElastiCache resources named under `app.ENV.*` in config.toml, enhanced health's figures per instance, and the env's alarms (matched by dimension or by `app.ENV.alarm_prefix`, ALARM first). CAVEATS: only what config names is read, so a clean result says nothing about metrics or resources it was not told about; `configured: false` means the env has no App tab config and `metrics` / `resources` are empty for that reason, not because nothing is wrong. A metric is only as fresh as the application publishes it: read `latest_at`, not just `latest`. Instance figures are enhanced health's last window (about 10s), null without enhanced health. `top_errors` is null unless you pass `top_errors: true` AND the env has `app.ENV.log_group`: it runs a Logs Insights query, which is billed per GB scanned, over the last 15 minutes, and counts only lines containing ERROR. `notes` carries anything short of a complete CloudWatch answer, `config_errors` the env's config lines that did not apply, and `errors` each section that failed (that section is null).";
@@ -68,82 +69,58 @@ impl Server {
         }
 
         let client = self.client(args).await?;
-        let metrics = match &spec {
-            None => None,
-            Some(s) => match client.fetch_app_metrics(&env, minutes * 60, s).await {
-                Ok(m) => Some(m),
-                Err(e) => {
-                    errors.push(("metrics".into(), e.to_string()));
-                    None
-                }
-            },
-        };
-        let instances = match client.list_instances(&env).await {
-            Ok(i) => Some(i),
-            Err(e) => {
-                errors.push(("instances".into(), e.to_string()));
-                None
-            }
-        };
         let matching = aws::AlarmMatch::for_env(&self.safety_cfg.alarm_dimensions, tabs, &env);
-        let alarms = match client.list_alarms_for_env(&env, &matching).await {
-            Ok(a) => Some(a),
-            Err(e) => {
-                errors.push(("alarms".into(), e.to_string()));
-                None
-            }
-        };
         let log_group = spec
             .as_ref()
             .and_then(|s| s.log_group.as_deref())
-            .map(|g| crate::app_tab::top_errors_log_group(&env, g));
-        let top_errors = match (want_top, log_group) {
-            (true, Some(group)) => {
+            .map(|g| crate::app_tab::top_errors_log_group(&env, g))
+            .filter(|_| want_top);
+        // Concurrently, so the slowest section and not their sum meets
+        // the 30s tool bound; top errors has its own, shorter one.
+        let (metrics, instances, alarms, top_errors) = tokio::join!(
+            async {
+                match &spec {
+                    None => Ok(None),
+                    Some(s) => client
+                        .fetch_app_metrics(&env, minutes * 60, s)
+                        .await
+                        .map(Some),
+                }
+            },
+            client.list_instances(&env),
+            client.list_alarms_for_env(&env, &matching),
+            async {
+                let Some(group) = log_group else {
+                    return Ok(None);
+                };
                 let query = crate::app_tab::top_errors_query(
                     spec.as_ref().and_then(|s| s.error_fingerprint.as_deref()),
                 );
                 let end = chrono::Utc::now();
                 let start = end - chrono::Duration::minutes(crate::app_tab::TOP_ERRORS_WINDOW_MINS);
-                let run = client.run_insights_query(
-                    std::slice::from_ref(&group),
-                    start.timestamp_millis(),
-                    end.timestamp_millis(),
-                    &query,
-                );
-                match tokio::time::timeout(
-                    std::time::Duration::from_secs(TOP_ERRORS_BOUND_SECS),
-                    run,
-                )
-                .await
-                {
-                    Ok(Ok(r)) => {
-                        let rows: Vec<Vec<(String, String)>> =
-                            r.rows.into_iter().map(|row| row.fields).collect();
-                        Some(crate::app_tab::top_errors_from(
-                            group,
-                            &rows,
-                            r.records_scanned,
-                            end,
-                        ))
-                    }
-                    Ok(Err(e)) => {
-                        errors.push(("top_errors".into(), e.to_string()));
-                        None
-                    }
-                    Err(_) => {
-                        errors.push((
-                            "top_errors".into(),
-                            format!(
-                                "the Logs Insights query ran past {TOP_ERRORS_BOUND_SECS}s; \
-                                 the TUI's App tab has no such bound"
-                            ),
-                        ));
-                        None
-                    }
-                }
-            }
-            _ => None,
-        };
+                let r = client
+                    .run_insights_query_within(
+                        std::slice::from_ref(&group),
+                        start.timestamp_millis(),
+                        end.timestamp_millis(),
+                        &query,
+                        Some(std::time::Duration::from_secs(TOP_ERRORS_BOUND_SECS)),
+                    )
+                    .await?;
+                let rows: Vec<Vec<(String, String)>> =
+                    r.rows.into_iter().map(|row| row.fields).collect();
+                Ok::<_, color_eyre::eyre::Report>(Some(crate::app_tab::top_errors_from(
+                    group,
+                    &rows,
+                    r.records_scanned,
+                    end,
+                )))
+            },
+        );
+        let metrics = keep(&mut errors, "metrics", metrics);
+        let instances = keep(&mut errors, "instances", instances.map(Some));
+        let alarms = keep(&mut errors, "alarms", alarms.map(Some));
+        let top_errors = keep(&mut errors, "top_errors", top_errors);
         Ok(render(&Bundle {
             env: &env,
             minutes,
@@ -157,6 +134,18 @@ impl Server {
         })
         .to_string())
     }
+}
+
+/// A section's value, or `None` with its failure recorded in `errors`.
+fn keep<T>(
+    errors: &mut Vec<(String, String)>,
+    section: &str,
+    r: color_eyre::eyre::Result<Option<T>>,
+) -> Option<T> {
+    r.unwrap_or_else(|e| {
+        errors.push((section.to_string(), e.to_string()));
+        None
+    })
 }
 
 /// Everything the tool answers with. A `None` section is `null` in the
@@ -489,6 +478,71 @@ mod tests {
             v["top_errors"]["rows"],
             json!([{"fingerprint": "Boom", "count": 3}])
         );
+    }
+
+    /// Top errors is bounded inside the call: past 20s the query is
+    /// stopped on the server and the section fails, not the bundle.
+    #[tokio::test(start_paused = true)]
+    async fn a_slow_top_errors_query_fails_its_section_and_is_stopped() {
+        use aws_sdk_cloudwatchlogs::types::QueryStatus;
+        let health = mock!(aws_sdk_elasticbeanstalk::Client::describe_instances_health).then_output(|| {
+            aws_sdk_elasticbeanstalk::operation::describe_instances_health::DescribeInstancesHealthOutput::builder().build()
+        });
+        let alarms = mock!(aws_sdk_cloudwatch::Client::describe_alarms).then_output(|| {
+            aws_sdk_cloudwatch::operation::describe_alarms::DescribeAlarmsOutput::builder().build()
+        });
+        let start = mock!(aws_sdk_cloudwatchlogs::Client::start_query).then_output(|| {
+            aws_sdk_cloudwatchlogs::operation::start_query::StartQueryOutput::builder()
+                .query_id("q")
+                .build()
+        });
+        let running = mock!(aws_sdk_cloudwatchlogs::Client::get_query_results).then_output(|| {
+            aws_sdk_cloudwatchlogs::operation::get_query_results::GetQueryResultsOutput::builder()
+                .status(QueryStatus::Running)
+                .build()
+        });
+        let stop = mock!(aws_sdk_cloudwatchlogs::Client::stop_query).then_output(|| {
+            aws_sdk_cloudwatchlogs::operation::stop_query::StopQueryOutput::builder().build()
+        });
+        let sdk = aws_config::SdkConfig::builder()
+            .region(aws_config::Region::new("us-west-1"))
+            .behavior_version(aws_config::BehaviorVersion::latest())
+            .build();
+        let client = crate::aws::AwsClient::for_tests(
+            mock_client!(aws_sdk_elasticbeanstalk, RuleMode::MatchAny, [&health]),
+            aws_sdk_sqs::Client::new(&sdk),
+            mock_client!(aws_sdk_cloudwatch, RuleMode::MatchAny, [&alarms]),
+            mock_client!(
+                aws_sdk_cloudwatchlogs,
+                RuleMode::MatchAny,
+                [&start, &running, &stop]
+            ),
+            aws_sdk_s3::Client::new(&sdk),
+            aws_sdk_ec2::Client::new(&sdk),
+        );
+        let cfg = crate::config::parse("app.e.log_group = \"g\"\n");
+        // Virtual time; bounded so an unbounded query fails the test
+        // rather than hanging it.
+        let server = Server::with_injected_client(WriteScope::None, cfg, client);
+        let out = tokio::time::timeout(
+            std::time::Duration::from_secs(60),
+            server.call_tool("app_metrics", &json!({"env": "e", "top_errors": true})),
+        )
+        .await
+        .expect("answered within the tool's own bound")
+        .expect("the bundle still answers");
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["top_errors"], Value::Null);
+        assert_eq!(v["errors"][0]["section"], "top_errors");
+        assert!(
+            v["errors"][0]["error"]
+                .as_str()
+                .unwrap_or("")
+                .contains("ran past 20s"),
+            "{v}"
+        );
+        assert_eq!(v["alarms"], json!([]), "the other sections came back");
+        assert_eq!(stop.num_calls(), 1);
     }
 
     #[tokio::test]

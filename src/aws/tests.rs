@@ -5584,3 +5584,48 @@ fn enhanced_health_maps_to_per_instance_app_stats() {
     let s = crate::aws::instance_app_stats(&cpu_only).expect("cpu alone is something");
     assert_eq!((s.cpu_pct, s.requests_per_sec), (Some(0.0), None));
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_bounded_insights_query_is_stopped_on_the_server_when_it_runs_over() {
+    // Giving up client-side and leaving the query running would keep it
+    // scanning, and billing, with nobody waiting for the answer.
+    use aws_sdk_cloudwatchlogs::types::QueryStatus;
+    let start = mock!(aws_sdk_cloudwatchlogs::Client::start_query).then_output(|| {
+        aws_sdk_cloudwatchlogs::operation::start_query::StartQueryOutput::builder()
+            .query_id("q1")
+            .build()
+    });
+    let running = mock!(aws_sdk_cloudwatchlogs::Client::get_query_results).then_output(|| {
+        aws_sdk_cloudwatchlogs::operation::get_query_results::GetQueryResultsOutput::builder()
+            .status(QueryStatus::Running)
+            .build()
+    });
+    let stop = mock!(aws_sdk_cloudwatchlogs::Client::stop_query)
+        .match_requests(|req| req.query_id() == Some("q1"))
+        .then_output(|| {
+            aws_sdk_cloudwatchlogs::operation::stop_query::StopQueryOutput::builder()
+                .success(true)
+                .build()
+        });
+    let client = client_with_cw_logs(mock_client!(
+        aws_sdk_cloudwatchlogs,
+        aws_smithy_mocks::RuleMode::MatchAny,
+        [&start, &running, &stop]
+    ));
+    let err = client
+        .run_insights_query_within(
+            &["g".to_string()],
+            0,
+            1000,
+            "fields @message",
+            Some(std::time::Duration::from_secs(5)),
+        )
+        .await
+        .expect_err("ran past its bound");
+    assert!(
+        err.to_string().contains("ran past 5s and was stopped"),
+        "{err}"
+    );
+    assert_eq!(stop.num_calls(), 1, "the query is stopped on the server");
+    assert!(running.num_calls() >= 2, "it polled until the bound");
+}
