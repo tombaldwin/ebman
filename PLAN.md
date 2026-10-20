@@ -177,6 +177,13 @@ now head the list.*
      caveats (a metric is only as fresh as its publish interval).
    - Later: config thresholds that colour values; a two-env compare.
 
+   Steps are in `docs/design/app-view.md`. **Step 1 done 2026-10-20**
+   (`app.ENV.*` parsing, docs, family docs guard). Its parse errors are
+   collected but shown nowhere until step 5 renders the tab, and
+   `docs/configuration.md` already says they appear there: steps 1–5
+   ship together or not at all. `Threshold::classify` was written and
+   held back for step 2 (no caller yet).
+
 ### Next
 
 4. **Assume-role elevation for MCP writes** (`runtime-grants.md`

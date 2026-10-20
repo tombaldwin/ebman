@@ -1033,6 +1033,8 @@ pub(crate) struct ResolvedConfig {
     pub profile_themes: std::collections::HashMap<String, String>,
     /// Per-env runbook URLs (`runbooks.ENV`).
     pub runbooks: std::collections::HashMap<String, String>,
+    /// The App tab, per env (`app.ENV.*`).
+    pub app_tabs: crate::app_tab::AppTabs,
     /// Per-env read-only locks (`safety.envs.NAME.read_only`).
     pub safety_envs: std::collections::HashMap<String, bool>,
     /// Per-account read-only locks (`safety.accounts.NAME.read_only`).

@@ -1745,6 +1745,113 @@ mod docs_drift {
              docs/configuration.md: {missing:?}"
         );
     }
+    /// Prefix families (`runbooks.ENV`, `app.ENV.FIELD`, …) are
+    /// invisible to `every_config_key_is_documented`, which only sees
+    /// literal match arms. Each family's prefix must be documented, and
+    /// each `app.ENV.` field by name.
+    #[test]
+    fn every_config_key_family_is_documented() {
+        let docs = std::fs::read_to_string("docs/configuration.md").expect("read configuration.md");
+        let config = std::fs::read_to_string("src/config.rs").expect("read config.rs");
+
+        // `other if other.starts_with("runbooks.") =>`
+        let mut prefixes = Vec::new();
+        for line in config
+            .lines()
+            .map(crate::app::tests::scan::strip_line_comment)
+        {
+            if let Some((_, rest)) = line.split_once("other if other.starts_with(\"") {
+                if let Some((prefix, _)) = rest.split_once('"') {
+                    prefixes.push(prefix.to_string());
+                }
+            }
+        }
+        assert!(
+            prefixes.len() >= 6 && prefixes.iter().any(|p| p == "app."),
+            "the prefix extractor found {prefixes:?} — broken, and a guard \
+             over nothing passes vacuously"
+        );
+        let missing: Vec<_> = prefixes
+            .iter()
+            .filter(|p| !docs.contains(p.as_str()))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "undocumented config key families: {missing:?}"
+        );
+
+        let missing: Vec<_> = crate::app_tab::FIELDS
+            .iter()
+            .map(|f| format!("app.ENV.{f}"))
+            .filter(|k| !docs.contains(k.as_str()))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "undocumented App tab fields: {missing:?}"
+        );
+    }
+
+    /// `app_tab::FIELDS` is what the docs guard and the error message
+    /// list, so it must name every field the parser accepts: a field
+    /// added to the match but not to FIELDS would ship undocumented.
+    #[test]
+    fn the_app_tab_field_list_matches_its_parser() {
+        let src = std::fs::read_to_string("src/app_tab.rs").expect("read app_tab.rs");
+        let body = src
+            .split_once("fn apply_field")
+            .and_then(|(_, rest)| rest.split_once("fn finish"))
+            .map(|(body, _)| body)
+            .expect("apply_field is followed by finish");
+        let mut accepted = Vec::new();
+        for line in body
+            .lines()
+            .map(crate::app::tests::scan::strip_line_comment)
+        {
+            let t = line.trim();
+            if let Some(rest) = t.strip_prefix('"') {
+                if let Some((name, tail)) = rest.split_once('"') {
+                    if tail.trim_start().starts_with("=>") {
+                        accepted.push(name.to_string());
+                    }
+                }
+            }
+            if let Some((_, rest)) = t.split_once("strip_prefix(\"") {
+                if let Some((prefix, _)) = rest.split_once('"') {
+                    accepted.push(format!("{prefix}LABEL"));
+                }
+            }
+        }
+        accepted.sort();
+        let mut fields: Vec<String> = crate::app_tab::FIELDS
+            .iter()
+            .map(|f| f.to_string())
+            .collect();
+        fields.sort();
+        assert!(accepted.len() >= 8, "extractor found only {accepted:?}");
+        assert_eq!(accepted, fields);
+    }
+
+    /// The documented App tab example parses with no errors. An example
+    /// an operator copies must not be the thing that breaks their tab.
+    #[test]
+    fn the_documented_app_tab_example_parses_cleanly() {
+        let docs = std::fs::read_to_string("docs/configuration.md").expect("read configuration.md");
+        let example: String = docs
+            .lines()
+            .filter_map(|l| l.strip_prefix("# app.Shop-prod."))
+            .map(|l| format!("app.Shop-prod.{l}\n"))
+            .collect();
+        let cfg = crate::config::parse(&example);
+        assert!(
+            cfg.app_tabs
+                .envs
+                .get("Shop-prod")
+                .is_some_and(|s| s.metrics.len() >= 2),
+            "the example was not found or lost its metrics:\n{example}"
+        );
+        assert_eq!(cfg.app_tabs.errors, Vec::<String>::new());
+    }
+
     /// `[Unreleased]` has one section per kind, in Keep a Changelog
     /// order.
     ///
@@ -2825,6 +2932,24 @@ fn a_settings_snapshot_preserves_withheld_peek_bodies() {
         on.current_config_snapshot().mcp_peek_bodies,
         "the default must round-trip as on"
     );
+}
+
+/// `app.ENV.*` lines survive the `:settings` form, failed ones included.
+///
+/// Same hole as the peek-bodies test above: the snapshot is rebuilt from
+/// App state, so a field the App does not carry is deleted by the save.
+#[test]
+fn a_settings_snapshot_preserves_the_app_tab_config() {
+    let cfg = crate::config::parse(
+        "app.e.namespace = \"N\"\n\
+         app.e.metric.x = \"X|Avg\"\n",
+    );
+    assert_eq!(cfg.app_tabs.lines.len(), 2);
+    let original = cfg.app_tabs.clone();
+    let app = crate::app::App::for_tests(crate::aws::AwsClient::stub(), cfg);
+
+    let written = crate::config::parse(&crate::config::serialize(&app.current_config_snapshot()));
+    assert_eq!(written.app_tabs, original);
 }
 
 /// A standing `safety.read_only` outranks the session toggle.

@@ -47,9 +47,9 @@ app.Shop-prod.elasticache = "shop-prod-cache"   # CacheClusterId
 app.Shop-prod.alarm_prefix = "Shop-prod-"
 # A log group name, or a suffix under /aws/elasticbeanstalk/<env>/.
 app.Shop-prod.log_group = "var/log/app/main.log"
-# Named group `fp` is the fingerprint. Default: the first 80 characters
-# after ERROR.
-app.Shop-prod.error_fingerprint = "ERROR (?<fp>[\\w.$]+(Exception|Error))"
+# Named group `fp` is the fingerprint. Values are literal: one
+# backslash. Default: the first 80 characters after ERROR.
+app.Shop-prod.error_fingerprint = "ERROR (?<fp>[\w.$]+(Exception|Error))"
 ```
 
 Unknown fields under `app.ENV.` are a parse error carried to the

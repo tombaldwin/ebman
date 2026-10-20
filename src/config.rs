@@ -73,6 +73,8 @@ pub struct Config {
     /// operator wants surfaced during triage. Lines in `config.toml` use
     /// `runbooks.ENV = "https://…"`. Shown in the `:why` overlay.
     pub(crate) runbooks: std::collections::HashMap<String, String>,
+    /// The App tab, per env (`app.ENV.field`). See `app_tab`.
+    pub(crate) app_tabs: crate::app_tab::AppTabs,
     /// Per-env read-only locks. When `safety_envs.get(env_name) ==
     /// Some(true)`, destructive actions against that env are refused
     /// even when the global `--read-only` toggle is off. Borrowed from
@@ -233,6 +235,7 @@ impl Default for Config {
             profile_themes: std::collections::HashMap::new(),
             accounts: std::collections::HashMap::new(),
             runbooks: std::collections::HashMap::new(),
+            app_tabs: crate::app_tab::AppTabs::default(),
             safety_envs: std::collections::HashMap::new(),
             safety_accounts: std::collections::HashMap::new(),
             safety_parse_errors: Vec::new(),
@@ -540,6 +543,10 @@ pub(crate) fn parse(text: &str) -> Config {
                     cfg.runbooks.insert(name.to_string(), value);
                 }
             }
+            other if other.starts_with("app.") => {
+                cfg.app_tabs
+                    .apply(other.trim_start_matches("app."), &value, line);
+            }
             other if other.starts_with("accounts.") => {
                 // `accounts.NAME.field = "value"`. Split on the LAST
                 // dot so multi-line specs accumulate into one HashMap
@@ -695,6 +702,7 @@ pub(crate) fn parse(text: &str) -> Config {
             _ => cfg.passthrough.push(line.to_string()),
         }
     }
+    cfg.app_tabs.finish();
     cfg
 }
 
@@ -860,6 +868,13 @@ pub(crate) fn serialize(cfg: &Config) -> String {
         for (env, url) in pairs {
             out.push_str(&format!("runbooks.{env} = \"{url}\"\n"));
         }
+    }
+    // Verbatim and in order: the App tab is hand-written config that
+    // `:settings` does not manage, and rebuilding it from the parsed
+    // form would drop a line that failed to apply.
+    for line in &cfg.app_tabs.lines {
+        out.push_str(line);
+        out.push('\n');
     }
     if !cfg.safety_envs.is_empty() {
         let mut pairs: Vec<(&String, &bool)> = cfg.safety_envs.iter().collect();
@@ -1156,6 +1171,11 @@ accounts.staging.external_id = "abc-xyz"
             profile_themes,
             accounts: std::collections::HashMap::new(),
             runbooks: std::collections::HashMap::new(),
+            app_tabs: parse(
+                "app.Shop-prod.namespace = \"Shop\"\n\
+                 app.Shop-prod.metric.heap = \"heapUsedMb|Average|MB\"\n",
+            )
+            .app_tabs,
             safety_envs: std::collections::HashMap::new(),
             safety_accounts: std::collections::HashMap::new(),
             safety_parse_errors: Vec::new(),
@@ -1202,6 +1222,44 @@ accounts.staging.external_id = "abc-xyz"
         assert_eq!(reparsed.explain_api_key_env, cfg.explain_api_key_env);
         assert_eq!(reparsed.explain_ollama_url, cfg.explain_ollama_url);
         assert_eq!(reparsed.explain_max_tokens, cfg.explain_max_tokens);
+        assert!(
+            !cfg.app_tabs.envs.is_empty(),
+            "the fixture must configure an App tab"
+        );
+        assert_eq!(reparsed.app_tabs, cfg.app_tabs);
+    }
+
+    #[test]
+    fn app_checks_that_need_every_line_run_after_parsing() {
+        // A metric with no namespace is only knowable once every line
+        // is in, so `parse` must call `finish`.
+        let cfg = parse("app.e.metric.x = \"X\"\n");
+        assert_eq!(cfg.app_tabs.errors.len(), 1, "{:?}", cfg.app_tabs.errors);
+    }
+
+    #[test]
+    fn an_app_line_survives_a_save_even_when_it_did_not_apply() {
+        // Rebuilding `app.` lines from the parsed form would drop the
+        // one that failed, along with the operator's only clue to it.
+        // The `=` inside the fingerprint must survive too: the parser
+        // splits the line on the FIRST `=`.
+        let body = "\
+app.e.namespace = \"N\"
+app.e.metric.x = \"X|Avg\"
+app.e.error_fingerprint = \"ERROR (?<fp>\\w+)=\"
+";
+        let cfg = parse(body);
+        assert_eq!(cfg.app_tabs.errors.len(), 1, "{:?}", cfg.app_tabs.errors);
+        let reparsed = parse(&serialize(&cfg));
+        assert_eq!(reparsed.app_tabs, cfg.app_tabs);
+        assert_eq!(
+            reparsed.app_tabs.envs["e"].error_fingerprint.as_deref(),
+            Some("ERROR (?<fp>\\w+)=")
+        );
+        assert!(
+            reparsed.passthrough.is_empty(),
+            "app lines are modelled, not passed through"
+        );
     }
 
     #[test]

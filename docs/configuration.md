@@ -114,6 +114,41 @@ safety.accounts.prod.read_only = true
 # alias.dp = "deploy --auto-rollback 5m"
 # alias.shipit = "promote-env staging prod --wait-for-green 5m"
 
+# The App tab, per environment: `app.ENV.FIELD = "value"`. Every field
+# is optional. Values are taken literally (no escapes), so a regex
+# backslash is written once. A line that cannot be applied is reported
+# on the App tab rather than skipped, and is kept on save.
+#
+# app.ENV.namespace           CloudWatch namespace your app publishes to
+# app.ENV.dimensions          "Name=Value,…" selecting this env's series
+#                             (default EnvironmentName=<env>)
+# app.ENV.instance_dimension  dimension naming an instance, for the
+#                             per-instance breakdown (e.g. InstanceId)
+# app.ENV.metric.LABEL        "MetricName|stat|unit"; stat defaults to
+#                             Average (also Sum, Minimum, Maximum,
+#                             SampleCount, p99, p99.9 …); unit is a label
+# app.ENV.threshold.LABEL     "warn,critical" colours that metric; prefix
+#                             "<" when lower is worse ("<500,100")
+# app.ENV.rds                 DB instance identifiers, comma-separated
+# app.ENV.elasticache         cache cluster ids, comma-separated
+# app.ENV.alarm_prefix        alarms whose name starts with this belong to
+#                             the env, as well as those matched by
+#                             alarm_dimensions
+# app.ENV.log_group           log group for top errors: a full name, or a
+#                             suffix under /aws/elasticbeanstalk/<env>/
+# app.ENV.error_fingerprint   Logs Insights regex with a named group fp;
+#                             a / must be written \/
+#
+# app.Shop-prod.namespace = "Shop"
+# app.Shop-prod.instance_dimension = "InstanceId"
+# app.Shop-prod.metric.users = "usersActive|Maximum|count"
+# app.Shop-prod.metric.heap = "heapUsedMb|Average|MB"
+# app.Shop-prod.threshold.heap = "1500,1800"
+# app.Shop-prod.rds = "shop-prod-db"
+# app.Shop-prod.alarm_prefix = "Shop-prod-"
+# app.Shop-prod.log_group = "var/log/app/main.log"
+# app.Shop-prod.error_fingerprint = "ERROR (?<fp>[\w.$]+(Exception|Error))"
+
 # Lint engine disables — CSV form. Disabled rules are skipped at
 # registry-load time so they have zero per-env cost. Project-local
 # `.ebman/ebman.toml` can extend (never override) this list via

@@ -670,6 +670,7 @@ impl App {
             // whatever was loaded.
             accounts: self.cfg.accounts.clone(),
             runbooks: self.cfg.runbooks.clone(),
+            app_tabs: self.cfg.app_tabs.clone(),
             safety_envs: self.cfg.safety_envs.clone(),
             safety_accounts: self.cfg.safety_accounts.clone(),
             notify_webhook: self.cfg.notify_webhook.clone(),
