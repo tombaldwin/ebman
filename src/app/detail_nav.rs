@@ -66,9 +66,7 @@ impl App {
             queues: WorkerQueues::default(),
             metrics: Vec::new(),
             metrics_range_secs: 3600, // 1h default
-            app_metrics: Default::default(),
-            top_errors: Default::default(),
-            top_errors_started: None,
+            app_tab: Default::default(),
             auto_refresh: false,
             search_input: TextInput::new(),
             search_active: false,
@@ -361,13 +359,13 @@ impl App {
         if was == now {
             return;
         }
-        d.app_metrics.reset();
+        d.app_tab.metrics.reset();
         let queried = |s: Option<&crate::app_tab::AppTabSpec>| {
             s.map(|s| (s.log_group.clone(), s.error_fingerprint.clone()))
         };
         if queried(was) != queried(now) {
-            d.top_errors.reset();
-            d.top_errors_started = None;
+            d.app_tab.top_errors.reset();
+            d.app_tab.top_errors_started = None;
         }
     }
 
@@ -386,9 +384,9 @@ impl App {
     pub(crate) fn refetch_app_tab_if_emptied(&mut self) {
         let emptied = self.detail.as_ref().is_some_and(|d| {
             d.tab() == DetailTab::App
-                && !d.app_metrics.in_flight()
-                && d.app_metrics.ready().is_none()
-                && d.app_metrics.error().is_none()
+                && !d.app_tab.metrics.in_flight()
+                && d.app_tab.metrics.ready().is_none()
+                && d.app_tab.metrics.error().is_none()
         });
         if emptied {
             let env = self
@@ -430,7 +428,7 @@ impl App {
         let fetched_at = self
             .detail
             .as_ref()
-            .and_then(|d| d.top_errors.ready())
+            .and_then(|d| d.app_tab.top_errors.ready())
             .map(|t| t.fetched_at);
         if top_errors_due(trigger, fetched_at, chrono::Utc::now()) {
             self.spawn_detail_top_errors(env_name.clone());
@@ -443,7 +441,7 @@ impl App {
             // result cached for the session would never see them.
             if trigger == RefreshTrigger::Asked {
                 let key = self.discovery_key(&env_name);
-                self.app_discovered.remove(&key);
+                self.app_tab_session.discovered.remove(&key);
             }
             if self.discovered_for(&env_name).is_none() {
                 self.spawn_app_discovery(env_name.clone());

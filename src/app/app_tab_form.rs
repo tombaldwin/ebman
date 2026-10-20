@@ -376,7 +376,8 @@ impl App {
         self.mode = Mode::Form;
         // Found already this session, and nothing failed: use it.
         if let Some(found) = self
-            .app_discovered
+            .app_tab_session
+            .discovered
             .get(&self.discovery_key(&env))
             .filter(|f| f.failed.is_empty())
             .cloned()
@@ -407,7 +408,9 @@ impl App {
             return;
         }
         let started = std::time::Instant::now();
-        self.app_discovering.insert(key.clone(), started);
+        self.app_tab_session
+            .discovering
+            .insert(key.clone(), started);
         // The Detail view's own env: by name alone, a same-named env in
         // another region of a fan-out could name another application.
         let app_name = self
@@ -454,7 +457,8 @@ impl App {
     /// Whether `env`'s discovery is running, and not so long that its
     /// result must have been lost.
     pub(crate) fn discovery_running(&self, env: &str) -> bool {
-        self.app_discovering
+        self.app_tab_session
+            .discovering
             .get(&self.discovery_key(env))
             .is_some_and(|t| t.elapsed() < DISCOVERY_STALE)
     }
@@ -478,7 +482,9 @@ impl App {
 
     /// What discovery found for `env` this session, if anything.
     pub(crate) fn discovered_for(&self, env: &str) -> Option<&Discovered> {
-        self.app_discovered.get(&self.discovery_key(env))
+        self.app_tab_session
+            .discovered
+            .get(&self.discovery_key(env))
     }
 
     /// The discovery caches' key for `env`: (region, env). The Detail
@@ -506,15 +512,15 @@ impl App {
         started: std::time::Instant,
         found: Discovered,
     ) {
-        if self.app_discovering.get(&key) == Some(&started) {
-            self.app_discovering.remove(&key);
+        if self.app_tab_session.discovering.get(&key) == Some(&started) {
+            self.app_tab_session.discovering.remove(&key);
         }
         // Another region's same-named env is not the one on screen: its
         // answer is cached for it, and fills nothing here.
         let current = key == self.discovery_key(&key.1);
         let env_name = key.1.clone();
         if !self.demo_mode {
-            self.app_discovered.insert(key, found.clone());
+            self.app_tab_session.discovered.insert(key, found.clone());
         }
         if !current {
             return;

@@ -1908,7 +1908,7 @@ async fn the_app_tab_draws_series_thresholds_and_config_errors() {
     press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
     let d = app.detail.as_mut().expect("detail open");
     assert_eq!(d.tab(), DetailTab::App, "the App tab is second");
-    assert!(d.app_metrics.in_flight(), "opening the tab fetches");
+    assert!(d.app_tab.metrics.in_flight(), "opening the tab fetches");
     let alarm = |name: &str, state: &str| crate::aws::CwAlarm {
         name: name.into(),
         state: state.into(),
@@ -1916,7 +1916,7 @@ async fn the_app_tab_draws_series_thresholds_and_config_errors() {
         metric_name: String::new(),
         namespace: String::new(),
     };
-    d.top_errors.settle(Ok(crate::app_tab::TopErrors {
+    d.app_tab.top_errors.settle(Ok(crate::app_tab::TopErrors {
         log_group: "/aws/elasticbeanstalk/api-prod/var/log/app.log".into(),
         rows: vec![("PoolTimeoutException".into(), 12), ("NPE".into(), 4)],
         more: (6, 9),
@@ -1946,7 +1946,7 @@ async fn the_app_tab_draws_series_thresholds_and_config_errors() {
             cpu_pct: Some(41.0),
         }),
     }];
-    d.app_metrics.settle(Ok(AppMetrics {
+    d.app_tab.metrics.settle(Ok(AppMetrics {
         series: vec![
             AppSeries {
                 label: "users".into(),
@@ -2155,9 +2155,9 @@ async fn the_app_tab_is_ascii_in_ascii_mode() {
 
     // First load: the loading lines.
     let d = app.detail.as_mut().unwrap();
-    d.app_metrics.begin();
+    d.app_tab.metrics.begin();
     d.cw_alarms.begin();
-    d.top_errors.begin();
+    d.app_tab.top_errors.begin();
     check(&mut app, "first load");
 
     // Settled: a missing value, alarms of every state, a sparkline.
@@ -2167,7 +2167,7 @@ async fn the_app_tab_is_ascii_in_ascii_mode() {
         alarm("b", "INSUFFICIENT_DATA"),
         alarm("c", "OK"),
     ]));
-    d.app_metrics.settle(Ok(AppMetrics {
+    d.app_tab.metrics.settle(Ok(AppMetrics {
         series: vec![
             AppSeries {
                 label: "users".into(),
@@ -2207,7 +2207,8 @@ async fn an_unconfigured_app_tab_shows_what_discovery_found() {
     press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
     press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
     assert!(
-        app.app_discovering
+        app.app_tab_session
+            .discovering
             .contains_key(&app.discovery_key("api-prod")),
         "opening the tab looks"
     );
@@ -2229,7 +2230,8 @@ async fn an_unconfigured_app_tab_shows_what_discovery_found() {
         failed: vec![],
     };
     let started = *app
-        .app_discovering
+        .app_tab_session
+        .discovering
         .get(&app.discovery_key("api-prod"))
         .expect("running");
     app.handle_msg(AppMsg::AppTabDiscovered {
@@ -2240,7 +2242,8 @@ async fn an_unconfigured_app_tab_shows_what_discovery_found() {
         found: Box::new(found),
     });
     assert!(!app
-        .app_discovering
+        .app_tab_session
+        .discovering
         .contains_key(&app.discovery_key("api-prod")));
     // The preview is a real fetch (the stub fails it); with nothing to
     // preview the tab would settle empty without calling AWS.
@@ -2256,7 +2259,13 @@ async fn an_unconfigured_app_tab_shows_what_discovery_found() {
     .expect("the preview was fetched");
     app.handle_msg(msg);
     assert!(
-        app.detail.as_ref().unwrap().app_metrics.error().is_some(),
+        app.detail
+            .as_ref()
+            .unwrap()
+            .app_tab
+            .metrics
+            .error()
+            .is_some(),
         "and its result is the tab's, as a preview"
     );
     let text = render(&mut app, 160, 34);
@@ -2277,7 +2286,8 @@ async fn an_unconfigured_app_tab_shows_what_discovery_found() {
     let form = app.form.as_ref().expect("editor open");
     assert_eq!(form.state, crate::form::FormState::Ready, "no waiting");
     assert!(
-        !app.app_discovering
+        !app.app_tab_session
+            .discovering
             .contains_key(&app.discovery_key("api-prod")),
         "not looked up again"
     );

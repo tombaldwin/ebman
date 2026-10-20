@@ -409,6 +409,22 @@ pub(crate) struct DetailError {
     pub message: String,
 }
 
+/// The App tab's fetched state for the Detail view's env. Made fresh
+/// with the view; its fetches reset one by one by `App::set_app_tabs`
+/// when the config they were made for changes.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct AppTabState {
+    /// The series (`app.ENV.*` config, or discovery's preview).
+    pub metrics: crate::app::Fetch<crate::app_tab::AppMetrics>,
+    /// The top errors (Logs Insights over `app.ENV.log_group`). Not in
+    /// `tab_loading`: a query can outlast the metrics refresh, and must
+    /// not hold it up. `spawn_detail_top_errors` refuses to stack instead.
+    pub top_errors: crate::app::Fetch<crate::app_tab::TopErrors>,
+    /// When the in-flight top-errors query started, so a task that never
+    /// answered stops blocking the next one.
+    pub top_errors_started: Option<std::time::Instant>,
+}
+
 pub(crate) struct DetailState {
     pub env_name: String,
     pub env_snapshot: Environment, // taken at open-time; not refreshed
@@ -420,16 +436,8 @@ pub(crate) struct DetailState {
     pub metrics: Vec<MetricSeries>,
     /// Shared by the Metrics and App tabs, so `[` `]` moves both.
     pub metrics_range_secs: i64,
-    /// The App tab's series (`app.ENV.*` config).
-    pub app_metrics: crate::app::Fetch<crate::app_tab::AppMetrics>,
-    /// The App tab's top errors (Logs Insights over `app.ENV.log_group`).
-    /// Not in `tab_loading`: a query can outlast the metrics refresh,
-    /// and must not hold it up. `spawn_detail_top_errors` refuses to
-    /// stack instead.
-    pub top_errors: crate::app::Fetch<crate::app_tab::TopErrors>,
-    /// When the in-flight top-errors query started, so a task that never
-    /// answered stops blocking the next one.
-    pub top_errors_started: Option<std::time::Instant>,
+    /// What the App tab fetched for this env.
+    pub app_tab: AppTabState,
     pub auto_refresh: bool,
     pub search_input: TextInput,
     pub search_active: bool, // true while user is typing a pattern
@@ -565,7 +573,7 @@ impl DetailState {
             DetailTab::Metrics => self.loading_metrics,
             // Not `loading_instances`: the eager instance fetch from
             // opening Detail would then block the tab's own first fetch.
-            DetailTab::App => self.app_metrics.in_flight(),
+            DetailTab::App => self.app_tab.metrics.in_flight(),
             DetailTab::Logs => matches!(
                 self.log_tail.stage,
                 LogTailStage::Requesting | LogTailStage::Polling | LogTailStage::Fetching
@@ -744,9 +752,7 @@ mod tests {
             instances: vec![],
             queues: WorkerQueues::default(),
             metrics: vec![],
-            app_metrics: Default::default(),
-            top_errors: Default::default(),
-            top_errors_started: None,
+            app_tab: Default::default(),
             metrics_range_secs: 3600,
             auto_refresh: false,
             search_input: TextInput::new(),

@@ -281,7 +281,7 @@ impl App {
         let ticket = self
             .detail
             .as_mut()
-            .map(|d| d.app_metrics.begin())
+            .map(|d| d.app_tab.metrics.begin())
             .unwrap_or_default();
         // No config: preview what discovery found evidence for, if any.
         let spec = self.app_tab_source(&env_name).spec();
@@ -337,14 +337,15 @@ impl App {
         // answer could be (the query is bounded below): a task that
         // died without answering must not leave `^R` doing nothing.
         let stuck_after = crate::app_tab::TOP_ERRORS_BOUND + std::time::Duration::from_secs(30);
-        let running = d.top_errors.in_flight()
-            && d.top_errors_started
+        let running = d.app_tab.top_errors.in_flight()
+            && d.app_tab
+                .top_errors_started
                 .is_some_and(|t| t.elapsed() < stuck_after);
         if running || self.demo_mode {
             return;
         }
-        let ticket = d.top_errors.begin();
-        d.top_errors_started = Some(std::time::Instant::now());
+        let ticket = d.app_tab.top_errors.begin();
+        d.app_tab.top_errors_started = Some(std::time::Instant::now());
         let fingerprint = self
             .cfg
             .app_tabs

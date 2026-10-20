@@ -45,7 +45,7 @@ pub(super) fn draw_detail_app(
         }
     }
     instance_rows(&mut lines, &detail.instances, area.width, theme);
-    top_error_rows(&mut lines, &detail.top_errors, theme);
+    top_error_rows(&mut lines, &detail.app_tab.top_errors, theme);
     let mut title = format!("App · {}", humanize_range(detail.metrics_range_secs));
     if theme.icons == IconStyle::Ascii {
         title = asciify(&title);
@@ -278,13 +278,13 @@ fn metric_rows(
 ) {
     let red = Style::default().fg(theme.health_red);
     let muted = Style::default().fg(theme.muted);
-    if detail.app_metrics.is_first_load() {
+    if detail.app_tab.metrics.is_first_load() {
         lines.push(Line::from(Span::styled("loading metrics…", muted)));
     }
-    if let Some(e) = detail.app_metrics.error() {
+    if let Some(e) = detail.app_tab.metrics.error() {
         lines.push(Line::from(Span::styled(format!("metrics: {e}"), red)));
     }
-    let Some(m) = detail.app_metrics.ready() else {
+    let Some(m) = detail.app_tab.metrics.ready() else {
         return;
     };
     for note in &m.notes {

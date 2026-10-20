@@ -916,16 +916,19 @@ async fn what_discovery_found_does_not_survive_a_context_switch() {
     // showing the first account's findings on it would be wrong.
     let mut app = test_app();
     let key = app.discovery_key("api-prod");
-    app.app_discovered.insert(key.clone(), Default::default());
-    app.app_discovering
+    app.app_tab_session
+        .discovered
+        .insert(key.clone(), Default::default());
+    app.app_tab_session
+        .discovering
         .insert(key.clone(), std::time::Instant::now());
     app.handle_msg(AppMsg::Rebuild {
         epoch: app.rebuild_epoch,
         result: Ok(Box::new(crate::aws::AwsClient::stub())),
     });
-    assert!(app.app_discovered.is_empty());
+    assert!(app.app_tab_session.discovered.is_empty());
     assert!(
-        app.app_discovering.is_empty(),
+        app.app_tab_session.discovering.is_empty(),
         "nor the in-flight marker, or it never reruns"
     );
 }
@@ -964,7 +967,8 @@ async fn discovery_for_a_same_named_env_in_another_region_is_not_this_ones() {
 
     let mut found = crate::app_discover::Discovered::default();
     found.discovery.app_log = Some("var/log/app.log".into());
-    app.app_discovered
+    app.app_tab_session
+        .discovered
         .insert(("us-east-1".into(), "api-prod".into()), found);
     assert!(
         app.discovered_for("api-prod").is_none(),

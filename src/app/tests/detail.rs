@@ -543,7 +543,7 @@ async fn every_detail_tab_reports_its_own_loading_state() {
     d.loading_metrics = false;
     d.cw_alarms = Default::default();
     d.recent_versions = Default::default();
-    d.app_metrics = Default::default();
+    d.app_tab.metrics = Default::default();
     d.log_tail.stage = crate::app::LogTailStage::Idle;
 
     // Every flag off: no tab claims to be loading.
@@ -590,7 +590,7 @@ async fn every_detail_tab_reports_its_own_loading_state() {
         (
             "app metrics",
             |d| {
-                d.app_metrics.begin();
+                d.app_tab.metrics.begin();
             },
             &[DetailTab::App],
         ),
@@ -624,7 +624,7 @@ async fn every_detail_tab_reports_its_own_loading_state() {
         d.loading_metrics = false;
         d.cw_alarms = Default::default();
         d.recent_versions = Default::default();
-        d.app_metrics = Default::default();
+        d.app_tab.metrics = Default::default();
         d.log_tail.stage = crate::app::LogTailStage::Idle;
         set(d);
         for idx in 0..d.tabs.len() {
@@ -1235,7 +1235,7 @@ async fn detail_results_for_another_env_are_dropped() {
         notes: vec!["marker".into()],
     };
     let mut app = armed();
-    let ticket = app.detail.as_mut().unwrap().app_metrics.begin();
+    let ticket = app.detail.as_mut().unwrap().app_tab.metrics.begin();
     app.handle_msg(AppMsg::DetailAppMetrics {
         gen: app.generation,
         env_name: "worker-prod".into(),
@@ -1243,7 +1243,13 @@ async fn detail_results_for_another_env_are_dropped() {
         result: Ok(app_metrics()),
     });
     assert!(
-        app.detail.as_ref().unwrap().app_metrics.ready().is_none(),
+        app.detail
+            .as_ref()
+            .unwrap()
+            .app_tab
+            .metrics
+            .ready()
+            .is_none(),
         "another env's App metrics settled this env's App tab"
     );
     app.handle_msg(AppMsg::DetailAppMetrics {
@@ -1253,7 +1259,7 @@ async fn detail_results_for_another_env_are_dropped() {
         result: Ok(app_metrics()),
     });
     assert_eq!(
-        app.detail.as_ref().unwrap().app_metrics.ready(),
+        app.detail.as_ref().unwrap().app_tab.metrics.ready(),
         Some(&app_metrics()),
         "the matching env's App metrics must apply"
     );
@@ -1270,15 +1276,22 @@ async fn detail_results_for_another_env_are_dropped() {
     };
     let mut app = armed();
     // An earlier query, superseded after the stuck escape.
-    let earlier = app.detail.as_mut().unwrap().top_errors.begin();
-    let ticket = app.detail.as_mut().unwrap().top_errors.begin();
+    let earlier = app.detail.as_mut().unwrap().app_tab.top_errors.begin();
+    let ticket = app.detail.as_mut().unwrap().app_tab.top_errors.begin();
     app.handle_msg(AppMsg::DetailTopErrors {
         gen: app.generation,
         env_name: "worker-prod".into(),
         ticket,
         result: Ok(top()),
     });
-    assert!(app.detail.as_ref().unwrap().top_errors.ready().is_none());
+    assert!(app
+        .detail
+        .as_ref()
+        .unwrap()
+        .app_tab
+        .top_errors
+        .ready()
+        .is_none());
     app.handle_msg(AppMsg::DetailTopErrors {
         gen: app.generation,
         env_name: "api-prod".into(),
@@ -1286,11 +1299,17 @@ async fn detail_results_for_another_env_are_dropped() {
         result: Ok(top()),
     });
     assert!(
-        app.detail.as_ref().unwrap().top_errors.ready().is_none(),
+        app.detail
+            .as_ref()
+            .unwrap()
+            .app_tab
+            .top_errors
+            .ready()
+            .is_none(),
         "only the latest query's answer settles the tab"
     );
     assert!(
-        app.detail.as_ref().unwrap().top_errors.in_flight(),
+        app.detail.as_ref().unwrap().app_tab.top_errors.in_flight(),
         "and the latest is still awaited"
     );
     app.handle_msg(AppMsg::DetailTopErrors {
@@ -1300,7 +1319,7 @@ async fn detail_results_for_another_env_are_dropped() {
         result: Ok(top()),
     });
     assert_eq!(
-        app.detail.as_ref().unwrap().top_errors.ready(),
+        app.detail.as_ref().unwrap().app_tab.top_errors.ready(),
         Some(&top())
     );
 
@@ -1769,14 +1788,14 @@ async fn the_range_keys_refetch_both_tabs_that_share_the_range() {
     app.open_detail();
     let d = app.detail.as_mut().unwrap();
     d.tab_idx = d.tabs.iter().position(|t| *t == DetailTab::App).unwrap();
-    d.app_metrics.settle(Ok(Default::default()));
+    d.app_tab.metrics.settle(Ok(Default::default()));
     d.loading_metrics = false;
     assert_eq!(d.metrics_range_secs, 3600);
 
     press(&mut app, KeyCode::Char(']'), KeyModifiers::NONE);
     let d = app.detail.as_ref().unwrap();
     assert_eq!(d.metrics_range_secs, 21_600, "] widens the range");
-    assert!(d.app_metrics.in_flight(), "the App tab refetches");
+    assert!(d.app_tab.metrics.in_flight(), "the App tab refetches");
     assert!(
         d.loading_metrics,
         "and so does the Metrics tab: the range is shared, and its old-range \
@@ -1806,7 +1825,8 @@ async fn the_app_tab_settles_at_once_without_config_or_in_demo_mode() {
         app.detail
             .as_ref()
             .unwrap()
-            .app_metrics
+            .app_tab
+            .metrics
             .ready()
             .cloned()
             .expect("settled ok")
@@ -1838,20 +1858,20 @@ async fn the_app_tab_refresh_brings_the_instance_list_along() {
     d.tab_idx = d.tabs.iter().position(|t| *t == DetailTab::App).unwrap();
     app.detail_refresh_active_tab();
     assert!(
-        app.detail.as_ref().unwrap().app_metrics.in_flight(),
+        app.detail.as_ref().unwrap().app_tab.metrics.in_flight(),
         "an instance fetch in flight must not block the App tab's own"
     );
 
     let d = app.detail.as_mut().unwrap();
     d.loading_instances = false;
-    d.app_metrics.settle(Ok(Default::default()));
+    d.app_tab.metrics.settle(Ok(Default::default()));
     d.cw_alarms.settle(Ok(Vec::new()));
     app.detail_fetch_started = None;
     app.detail_refresh_active_tab();
     let d = app.detail.as_ref().unwrap();
     assert!(d.loading_instances, "the App refresh refetches instances");
     assert!(d.cw_alarms.in_flight(), "and alarms, for its alarm line");
-    assert!(d.app_metrics.in_flight());
+    assert!(d.app_tab.metrics.in_flight());
 }
 
 /// Every TUI alarm fetch applies the env's `app.ENV.alarm_prefix`: the
@@ -1973,13 +1993,13 @@ async fn top_errors_runs_when_a_person_asks_and_only_then() {
         app
     };
     let configured = "app.api-prod.log_group = \"var/log/app.log\"\n";
-    let running = |app: &App| app.detail.as_ref().unwrap().top_errors.in_flight();
+    let running = |app: &App| app.detail.as_ref().unwrap().app_tab.top_errors.in_flight();
 
     let mut app = armed(configured, false);
     app.detail_refresh_on_tick();
     assert!(!running(&app), "the tick does not run it");
     assert!(
-        app.detail.as_ref().unwrap().app_metrics.in_flight(),
+        app.detail.as_ref().unwrap().app_tab.metrics.in_flight(),
         "but does refresh metrics"
     );
 
@@ -2003,7 +2023,7 @@ async fn top_errors_runs_when_a_person_asks_and_only_then() {
     app.detail.as_mut().unwrap().auto_refresh = true;
     app.refresh_open_detail_on_tick();
     assert!(
-        app.detail.as_ref().unwrap().app_metrics.in_flight(),
+        app.detail.as_ref().unwrap().app_tab.metrics.in_flight(),
         "the tick refreshes"
     );
     assert!(!running(&app), "but leaves the query alone");
@@ -2011,7 +2031,7 @@ async fn top_errors_runs_when_a_person_asks_and_only_then() {
     app.mode = Mode::Detail;
     app.refresh_open_detail_on_tick();
     assert!(
-        !app.detail.as_ref().unwrap().app_metrics.in_flight(),
+        !app.detail.as_ref().unwrap().app_tab.metrics.in_flight(),
         "auto-refresh off: the tick does nothing"
     );
 
@@ -2046,6 +2066,7 @@ async fn top_errors_runs_when_a_person_asks_and_only_then() {
         app.detail
             .as_mut()
             .unwrap()
+            .app_tab
             .top_errors
             .settle(Ok(answer(mins_ago)));
         app.detail.as_mut().unwrap().tab_idx = 0;
@@ -2062,7 +2083,8 @@ async fn top_errors_runs_when_a_person_asks_and_only_then() {
     app.detail
         .as_mut()
         .unwrap()
-        .app_metrics
+        .app_tab
+        .metrics
         .settle(Ok(Default::default()));
     app.detail_refresh_active_tab();
     assert!(running(&app), "^R reruns even a fresh answer");
@@ -2146,6 +2168,7 @@ async fn top_errors_queries_the_configured_group_with_the_fingerprint() {
         .detail
         .as_ref()
         .unwrap()
+        .app_tab
         .top_errors
         .ready()
         .cloned()
@@ -2171,10 +2194,16 @@ async fn a_top_errors_query_that_never_answered_does_not_block_forever() {
         .checked_sub(std::time::Duration::from_secs(600))
         .expect("the clock is past ten minutes");
     let d = app.detail.as_mut().unwrap();
-    d.top_errors.begin();
-    d.top_errors_started = Some(long_ago);
+    d.app_tab.top_errors.begin();
+    d.app_tab.top_errors_started = Some(long_ago);
     app.spawn_detail_top_errors("api-prod".into());
-    let started = app.detail.as_ref().unwrap().top_errors_started.unwrap();
+    let started = app
+        .detail
+        .as_ref()
+        .unwrap()
+        .app_tab
+        .top_errors_started
+        .unwrap();
     assert!(started > long_ago, "a fresh query replaced the stuck one");
 }
 
@@ -2259,10 +2288,10 @@ async fn a_metrics_result_for_a_range_left_behind_is_dropped() {
     app.open_detail();
     let d = app.detail.as_mut().unwrap();
     // The fetch for the old range, then the range change's.
-    let old = d.app_metrics.begin();
+    let old = d.app_tab.metrics.begin();
     d.metrics_range_secs = 86_400;
     d.loading_metrics = true;
-    let new = d.app_metrics.begin();
+    let new = d.app_tab.metrics.begin();
     let series = |label: &str| crate::aws::MetricSeries {
         id: label.into(),
         label: label.into(),
@@ -2292,7 +2321,7 @@ async fn a_metrics_result_for_a_range_left_behind_is_dropped() {
         "Metrics tab kept waiting"
     );
     assert!(
-        d.app_metrics.ready().is_none() && d.app_metrics.in_flight(),
+        d.app_tab.metrics.ready().is_none() && d.app_tab.metrics.in_flight(),
         "App tab kept waiting"
     );
 
@@ -2312,7 +2341,7 @@ async fn a_metrics_result_for_a_range_left_behind_is_dropped() {
     let d = app.detail.as_ref().unwrap();
     assert_eq!(d.metrics[0].label, "new");
     assert_eq!(
-        d.app_metrics.ready().map(|m| m.notes[0].as_str()),
+        d.app_tab.metrics.ready().map(|m| m.notes[0].as_str()),
         Some("new")
     );
 }
@@ -2472,10 +2501,17 @@ async fn app_lines_are_re_read_when_the_file_changed() {
     let mut app = detail_on("e");
     app.config_seen = Some(Some(t0));
     let d = app.detail.as_mut().unwrap();
-    let t = d.app_metrics.begin();
-    d.app_metrics.settle_ticket(t, Ok(Default::default()));
+    let t = d.app_tab.metrics.begin();
+    d.app_tab.metrics.settle_ticket(t, Ok(Default::default()));
     assert!(app.reload_app_tabs_if_changed(Some(t1), edited));
-    assert!(app.detail.as_ref().unwrap().app_metrics.ready().is_none());
+    assert!(app
+        .detail
+        .as_ref()
+        .unwrap()
+        .app_tab
+        .metrics
+        .ready()
+        .is_none());
 }
 
 /// This test's own `config.toml`, under the per-process test temp dir
@@ -2513,13 +2549,13 @@ async fn the_app_tab_refresh_re_reads_its_config() {
     };
     app.detail.as_mut().unwrap().tab_idx = 1;
     assert_eq!(app.detail.as_ref().unwrap().tab(), DetailTab::App);
-    app.detail.as_mut().unwrap().app_metrics.begin();
+    app.detail.as_mut().unwrap().app_tab.metrics.begin();
     app.detail_fetch_started = Some(std::time::Instant::now());
     app.detail_refresh_active_tab();
     assert_eq!(namespace(&app), None, "not under a fetch in flight");
 
     app.detail_fetch_started = None;
-    app.detail.as_mut().unwrap().app_metrics.reset();
+    app.detail.as_mut().unwrap().app_tab.metrics.reset();
     app.detail_refresh_active_tab();
     assert_eq!(namespace(&app).as_deref(), Some("Hand"));
 
@@ -2664,7 +2700,7 @@ async fn saving_the_app_tab_writes_then_applies() {
     ns.value = "Saved-and-longer".into();
 
     // A fetch in flight under the old config, which the guard honours.
-    app.detail.as_mut().unwrap().app_metrics.begin();
+    app.detail.as_mut().unwrap().app_tab.metrics.begin();
     app.detail_fetch_started = Some(std::time::Instant::now());
     app.submit_app_tab_form();
 
@@ -2741,14 +2777,17 @@ async fn discovery_is_reused_on_open_rerun_on_ctrl_r_and_never_wedged() {
         app.detail
             .as_mut()
             .unwrap()
-            .app_metrics
+            .app_tab
+            .metrics
             .settle(Ok(Default::default()));
         app.detail_fetch_started = None;
     };
 
-    app.app_discovering.clear();
+    app.app_tab_session.discovering.clear();
     let key = app.discovery_key("api-prod");
-    app.app_discovered.insert(key, Discovered::default());
+    app.app_tab_session
+        .discovered
+        .insert(key, Discovered::default());
     settle(&mut app);
     app.detail_refresh_on_open();
     assert!(
@@ -2764,7 +2803,8 @@ async fn discovery_is_reused_on_open_rerun_on_ctrl_r_and_never_wedged() {
     let long_ago = std::time::Instant::now()
         .checked_sub(std::time::Duration::from_secs(120))
         .expect("clock past two minutes");
-    app.app_discovering
+    app.app_tab_session
+        .discovering
         .insert(app.discovery_key("api-prod"), long_ago);
     assert!(!app.discovery_running("api-prod"), "lost, not running");
     settle(&mut app);
@@ -2786,7 +2826,7 @@ async fn a_preview_result_landing_after_a_save_is_dropped() {
         ..Default::default()
     };
     // A preview's fetch, then the config is saved under it.
-    let preview = app.detail.as_mut().unwrap().app_metrics.begin();
+    let preview = app.detail.as_mut().unwrap().app_tab.metrics.begin();
     app.set_app_tabs(crate::config::parse("app.api-prod.rds = \"db\"\n").app_tabs);
     app.handle_msg(AppMsg::DetailAppMetrics {
         gen: app.generation,
@@ -2794,13 +2834,13 @@ async fn a_preview_result_landing_after_a_save_is_dropped() {
         ticket: preview,
         result: Ok(marked("preview")),
     });
-    let m = &app.detail.as_ref().unwrap().app_metrics;
+    let m = &app.detail.as_ref().unwrap().app_tab.metrics;
     assert!(m.ready().is_none(), "dropped");
     assert!(
         !m.in_flight(),
         "and no longer loading, or refreshes are refused"
     );
-    let config = app.detail.as_mut().unwrap().app_metrics.begin();
+    let config = app.detail.as_mut().unwrap().app_tab.metrics.begin();
     app.handle_msg(AppMsg::DetailAppMetrics {
         gen: app.generation,
         env_name: "api-prod".into(),
@@ -2811,7 +2851,8 @@ async fn a_preview_result_landing_after_a_save_is_dropped() {
         app.detail
             .as_ref()
             .unwrap()
-            .app_metrics
+            .app_tab
+            .metrics
             .ready()
             .map(|m| m.notes[0].as_str()),
         Some("config")
@@ -2827,7 +2868,7 @@ async fn demo_mode_does_not_pass_off_an_empty_discovery() {
     app.spawn_app_discovery("api-prod".into());
     let msg = app.msg_rx.try_recv().expect("answered at once");
     app.handle_msg(msg);
-    assert!(app.app_discovered.is_empty());
+    assert!(app.app_tab_session.discovered.is_empty());
     assert!(!app.discovery_running("api-prod"));
 }
 
@@ -2838,7 +2879,8 @@ async fn only_the_latest_discoverys_answer_clears_its_marker() {
     let mut app = test_app();
     let newer = std::time::Instant::now();
     let older = newer - std::time::Duration::from_secs(90);
-    app.app_discovering
+    app.app_tab_session
+        .discovering
         .insert(app.discovery_key("api-prod"), newer);
     app.handle_msg(AppMsg::AppTabDiscovered {
         gen: app.generation,
@@ -2848,7 +2890,9 @@ async fn only_the_latest_discoverys_answer_clears_its_marker() {
         found: Box::default(),
     });
     assert_eq!(
-        app.app_discovering.get(&app.discovery_key("api-prod")),
+        app.app_tab_session
+            .discovering
+            .get(&app.discovery_key("api-prod")),
         Some(&newer),
         "still running"
     );
@@ -2860,7 +2904,8 @@ async fn only_the_latest_discoverys_answer_clears_its_marker() {
         found: Box::default(),
     });
     assert!(!app
-        .app_discovering
+        .app_tab_session
+        .discovering
         .contains_key(&app.discovery_key("api-prod")));
 }
 
@@ -2914,10 +2959,10 @@ async fn a_config_change_forgets_only_what_it_invalidates() {
     app.set_app_tabs(tabs(base));
     let settle = |app: &mut App| {
         let d = app.detail.as_mut().unwrap();
-        let t = d.app_metrics.begin();
-        d.app_metrics.settle_ticket(t, Ok(Default::default()));
-        let t = d.top_errors.begin();
-        d.top_errors.settle_ticket(
+        let t = d.app_tab.metrics.begin();
+        d.app_tab.metrics.settle_ticket(t, Ok(Default::default()));
+        let t = d.app_tab.top_errors.begin();
+        d.app_tab.top_errors.settle_ticket(
             t,
             Ok(crate::app_tab::TopErrors {
                 log_group: "g".into(),
@@ -2933,8 +2978,8 @@ async fn a_config_change_forgets_only_what_it_invalidates() {
     let kept = |app: &App| {
         let d = app.detail.as_ref().unwrap();
         (
-            d.app_metrics.ready().is_some(),
-            d.top_errors.ready().is_some(),
+            d.app_tab.metrics.ready().is_some(),
+            d.app_tab.top_errors.ready().is_some(),
         )
     };
 
@@ -2971,14 +3016,14 @@ async fn an_emptied_app_tab_on_screen_is_fetched_again() {
     assert_eq!(app.detail.as_ref().unwrap().tab(), DetailTab::App);
     app.refetch_app_tab_if_emptied();
     assert!(
-        app.detail.as_ref().unwrap().app_metrics.in_flight(),
+        app.detail.as_ref().unwrap().app_tab.metrics.in_flight(),
         "emptied: fetched"
     );
 
     let mut app = detail_on("api-prod");
     app.refetch_app_tab_if_emptied();
     assert!(
-        !app.detail.as_ref().unwrap().app_metrics.in_flight(),
+        !app.detail.as_ref().unwrap().app_tab.metrics.in_flight(),
         "not on screen"
     );
 }
@@ -3015,14 +3060,16 @@ async fn an_envs_app_tab_comes_from_config_then_a_preview_then_nothing() {
     let key = app.discovery_key("api-prod");
     let mut found = crate::app_discover::Discovered::default();
     found.discovery.app_log = Some("var/log/app.log".into());
-    app.app_discovered.insert(key.clone(), found.clone());
+    app.app_tab_session
+        .discovered
+        .insert(key.clone(), found.clone());
     assert_eq!(
         app.app_tab_source("api-prod"),
         AppTabSource::NotSetUp,
         "found, but nothing an env variable names"
     );
     found.discovery.rds_found = vec![("db-a".into(), "DB_HOST".into())];
-    app.app_discovered.insert(key, found);
+    app.app_tab_session.discovered.insert(key, found);
     let preview = app.app_tab_source("api-prod");
     assert!(!preview.is_configured());
     assert_eq!(

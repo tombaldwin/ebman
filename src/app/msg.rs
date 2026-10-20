@@ -142,7 +142,7 @@ impl App {
                 result,
                 ..
             } => self.apply_detail_msg(&env_name, result, |d, r| {
-                d.app_metrics.settle_ticket(ticket, r);
+                d.app_tab.metrics.settle_ticket(ticket, r);
             }),
             AppMsg::AppTabDiscovered {
                 region,
@@ -157,7 +157,7 @@ impl App {
                 result,
                 ..
             } => self.apply_detail_msg(&env_name, result, |d, r| {
-                d.top_errors.settle_ticket(ticket, r);
+                d.app_tab.top_errors.settle_ticket(ticket, r);
             }),
             AppMsg::DetailLogsProgress {
                 env_name,

@@ -697,8 +697,7 @@ impl App {
                 self.env_regions.clear();
                 // So is what discovery found for one: another account's
                 // `Shop-prod` has its own alarms, cache and log groups.
-                self.app_discovered.clear();
-                self.app_discovering.clear();
+                self.app_tab_session = Default::default();
                 // Covers every view-cache input this block clears —
                 // `environments` here and `latest_stacks` below.
                 self.view.invalidate();

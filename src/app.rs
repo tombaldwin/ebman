@@ -179,6 +179,23 @@ pub(crate) fn builtin_commands() -> Vec<&'static str> {
     crate::commands::all_names()
 }
 
+/// The App tab's discovery, per env, for the session; both maps are
+/// keyed by [`App::discovery_key`], (region, env): under a fan-out a
+/// same-named env in another region is another env, with its own
+/// resources. Cleared on a context switch.
+#[derive(Debug, Default)]
+pub(crate) struct AppTabSession {
+    /// What discovery found: the App tab of an env with no config shows
+    /// it, and the editor opens with it.
+    pub(crate) discovered:
+        std::collections::HashMap<(String, String), crate::app_discover::Discovered>,
+    /// The runs in flight, so one is not started twice, and when each
+    /// started: past [`app_tab_form::DISCOVERY_STALE`] it is treated as
+    /// lost (a result dropped by a context switch, a task that died)
+    /// rather than blocking the env's discovery for good.
+    pub(crate) discovering: std::collections::HashMap<(String, String), std::time::Instant>,
+}
+
 /// The whole TUI: fleet state, derived view, and every in-flight
 /// background task.
 ///
@@ -551,18 +568,8 @@ pub struct App {
     /// saves to: `config.toml`, or a test's own file so the real reload
     /// and save paths can be driven without the shared test config dir.
     pub(crate) config_file: std::path::PathBuf,
-    /// What discovery found per env, kept for the session: the App tab
-    /// of an env with no config shows it, and the editor opens with it.
-    /// Keyed by [`App::discovery_key`], (region, env): under a fan-out a
-    /// same-named env in another region is another env, with its own
-    /// resources.
-    pub(crate) app_discovered:
-        std::collections::HashMap<(String, String), crate::app_discover::Discovered>,
-    /// Envs whose discovery is running, so it is not started twice.
-    /// When each running one started: past [`app_tab_form::DISCOVERY_STALE`]
-    /// it is treated as lost (a result dropped by a context switch, a
-    /// task that died) rather than blocking the env's discovery for good.
-    pub(crate) app_discovering: std::collections::HashMap<(String, String), std::time::Instant>,
+    /// The App tab's discovery, kept for the session.
+    pub(crate) app_tab_session: AppTabSession,
     pub(crate) newly_red: HashSet<String>,
     /// Env names that appeared for the first time on the most recent
     /// refresh (weren't in `prev_health` last cycle). Used by the env
@@ -1464,8 +1471,7 @@ impl App {
             notify_bell: config.notify_bell,
             config_seen: Some(crate::config::config_stamp()),
             config_file: crate::config::config_path(),
-            app_discovered: Default::default(),
-            app_discovering: Default::default(),
+            app_tab_session: Default::default(),
             cfg: ResolvedConfig {
                 notify_webhook: config.notify_webhook.clone(),
                 safety_read_only: config.safety_read_only,
@@ -1772,8 +1778,7 @@ impl App {
             notify_bell: config.notify_bell,
             config_seen: None,
             config_file: crate::config::config_path(),
-            app_discovered: Default::default(),
-            app_discovering: Default::default(),
+            app_tab_session: Default::default(),
             cfg: ResolvedConfig {
                 notify_webhook: config.notify_webhook.clone(),
                 safety_read_only: config.safety_read_only,
