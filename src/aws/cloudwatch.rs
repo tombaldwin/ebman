@@ -510,6 +510,10 @@ impl AwsClient {
         // gathered by (id, label) before assembly.
         let mut gathered: Vec<RawSeries> = Vec::new();
         let mut notes: Vec<String> = Vec::new();
+        // Each series' status as of the latest page it appeared on.
+        // CloudWatch says PartialData on every page that has a next one,
+        // so a status is only a finding once paging is over.
+        let mut statuses: Vec<(String, StatusCode)> = Vec::new();
         let mut token: Option<String> = None;
         for _ in 0..SCAN_PAGES {
             let resp = self
@@ -535,10 +539,10 @@ impl AwsClient {
             for r in resp.metric_data_results.unwrap_or_default() {
                 let id = r.id.unwrap_or_default();
                 let label = r.label.unwrap_or_default();
-                if let Some(code) = r.status_code.filter(|c| *c != StatusCode::Complete) {
-                    let note = format!("{id}: {}", code.as_str());
-                    if !notes.contains(&note) {
-                        notes.push(note);
+                if let Some(code) = r.status_code {
+                    match statuses.iter_mut().find(|(i, _)| *i == id) {
+                        Some(s) => s.1 = code,
+                        None => statuses.push((id.clone(), code)),
                     }
                 }
                 let points = r
@@ -565,6 +569,10 @@ impl AwsClient {
             notes.push(format!(
                 "stopped after {SCAN_PAGES} pages; the oldest points are missing"
             ));
+        } else {
+            for (id, code) in statuses.iter().filter(|(_, c)| *c != StatusCode::Complete) {
+                notes.push(format!("{id}: {}", code.as_str()));
+            }
         }
         Ok(crate::app_tab::series_from_results(spec, gathered, notes))
     }

@@ -1869,8 +1869,10 @@ async fn fetch_env_metrics_batches_and_reorders_by_canonical_id() {
 #[tokio::test]
 async fn fetch_app_metrics_follows_pages_and_reports_a_short_answer() {
     // One series split across two pages must come back whole, and a
-    // PartialData result or a CloudWatch message must surface as a note
-    // rather than as a quietly shorter chart.
+    // series still short once paging is over (here Forbidden), or a
+    // CloudWatch message, must surface as a note rather than as a
+    // quietly shorter chart. PartialData on a page with a next one is
+    // just paging, and must NOT become a note.
     use aws_sdk_cloudwatch::operation::get_metric_data::GetMetricDataOutput;
     use aws_sdk_cloudwatch::types::{MessageData, MetricDataResult, StatusCode};
     use aws_smithy_types::DateTime as SdkDateTime;
@@ -1912,6 +1914,7 @@ async fn fetch_app_metrics_follows_pages_and_reports_a_short_answer() {
             GetMetricDataOutput::builder()
                 .metric_data_results(result("a0", "users", 1, 8.0, StatusCode::Complete))
                 .metric_data_results(result("i0", "i-a", 1, 3.0, StatusCode::Complete))
+                .metric_data_results(result("x0", "", 1, 3.0, StatusCode::Forbidden))
                 .build()
         });
     let cw = mock_client!(
@@ -1944,7 +1947,11 @@ async fn fetch_app_metrics_follows_pages_and_reports_a_short_answer() {
         "one instance across two pages"
     );
     assert_eq!(m.series[0].instances[0].1.len(), 2);
-    assert_eq!(m.notes, ["MaxQueryResults: 500 limit", "i0: PartialData"]);
+    assert_eq!(
+        m.notes,
+        ["MaxQueryResults: 500 limit", "x0: Forbidden"],
+        "i0 was PartialData only on a page with a next one"
+    );
 }
 
 #[tokio::test]
