@@ -1932,6 +1932,24 @@ async fn the_app_tab_draws_series_thresholds_and_config_errors() {
                 instances: vec![],
             },
         ],
+        resources: vec![crate::app_tab::ResourceRow {
+            kind: crate::app_tab::ResourceKind::Rds,
+            id: "shop-db".into(),
+            metrics: crate::app_tab::ResourceKind::Rds
+                .metrics()
+                .iter()
+                .map(|m| {
+                    let points = match m.label {
+                        "cpu" => vec![at(31.0)],
+                        "conns" => vec![at(48.0)],
+                        "free" => vec![at(1.25 * 1024.0 * 1024.0 * 1024.0)],
+                        // A primary: no replica lag.
+                        _ => vec![],
+                    };
+                    (*m, points)
+                })
+                .collect(),
+        }],
         notes: vec!["i0: PartialData".into()],
     }));
 
@@ -1946,6 +1964,17 @@ async fn the_app_tab_draws_series_thresholds_and_config_errors() {
     for want in ["42", "count", "i-a 20", "i-b 22"] {
         assert!(users.contains(want), "users row lacks {want:?}: {users}");
     }
+    let rds = text
+        .lines()
+        .find(|l| l.contains("rds shop-db"))
+        .expect("rds row");
+    for want in ["31%", "cpu", "conns 48", "free 1.2G"] {
+        assert!(rds.contains(want), "rds row lacks {want:?}: {rds}");
+    }
+    assert!(
+        !rds.contains("lag"),
+        "a metric with no data is left out: {rds}"
+    );
     let theme = app.theme.clone();
     let heap = find_row(&buf, "heap ").expect("heap row");
     assert!(

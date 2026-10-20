@@ -1216,6 +1216,7 @@ async fn detail_results_for_another_env_are_dropped() {
     // App tab metrics: dropped for another env, applied for this one.
     let app_metrics = || crate::app_tab::AppMetrics {
         series: Vec::new(),
+        resources: Vec::new(),
         notes: vec!["marker".into()],
     };
     let mut app = armed();

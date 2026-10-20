@@ -129,8 +129,12 @@ safety.accounts.prod.read_only = true
 #                             SampleCount, p99, p99.9 …); unit is a label
 # app.ENV.threshold.LABEL     "warn,critical" colours that metric; prefix
 #                             "<" when lower is worse ("<500,100")
-# app.ENV.rds                 DB instance identifiers, comma-separated
-# app.ENV.elasticache         cache cluster ids, comma-separated
+# app.ENV.rds                 DB instance identifiers, comma-separated:
+#                             CPU, connections, freeable memory, replica lag
+# app.ENV.elasticache         cache node ids (CacheClusterId, e.g.
+#                             name-001), comma-separated: memory %, engine
+#                             CPU, connections, evictions. Serverless caches
+#                             are not read.
 # app.ENV.alarm_prefix        alarms whose name starts with this belong to
 #                             the env, as well as those matched by
 #                             alarm_dimensions

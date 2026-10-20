@@ -155,7 +155,9 @@ from layers into vertical slices: a pure builder with no caller fails
    paginated fetch, a `Fetch<AppMetrics>` (not a `DetailFetch` variant:
    the newer pattern carries its own error), rendering with
    thresholds, and the env's config errors on screen.
-3. Linked resources (`rds`, `elasticache`) through the same queries.
+3. Done: linked resources (`rds`, `elasticache`) in the same call, one
+   row each; a named resource with no data at all gets a note asking
+   whether the name is the right kind of id.
 4. Surface the instance `ApplicationMetrics` / `System` already fetched.
 5. Alarm prefix, ALARM-first alarms on the tab and in `:alarms`.
 6. Top errors.

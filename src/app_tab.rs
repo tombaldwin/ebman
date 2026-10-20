@@ -399,6 +399,127 @@ pub(crate) enum MetricQuery {
 const AGGREGATE: char = 'a';
 const PER_INSTANCE: char = 'i';
 const COMBINED: char = 'x';
+const RESOURCE: char = 'r';
+
+/// A linked resource's kind: which namespace and dimension name it, and
+/// the fixed metrics read for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ResourceKind {
+    Rds,
+    Cache,
+}
+
+/// How a linked metric's value is written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ValueUnit {
+    Percent,
+    Count,
+    Bytes,
+    Seconds,
+}
+
+/// One fixed metric of a linked resource. The first in each kind's list
+/// is the row's headline value and sparkline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct LinkedMetric {
+    pub label: &'static str,
+    pub name: &'static str,
+    pub stat: &'static str,
+    pub unit: ValueUnit,
+}
+
+const fn linked(
+    label: &'static str,
+    name: &'static str,
+    stat: &'static str,
+    unit: ValueUnit,
+) -> LinkedMetric {
+    LinkedMetric {
+        label,
+        name,
+        stat,
+        unit,
+    }
+}
+
+const RDS_METRICS: &[LinkedMetric] = &[
+    linked("cpu", "CPUUtilization", "Average", ValueUnit::Percent),
+    linked("conns", "DatabaseConnections", "Average", ValueUnit::Count),
+    linked("free", "FreeableMemory", "Average", ValueUnit::Bytes),
+    // Replicas only: a primary returns no series and the row omits it.
+    linked("lag", "ReplicaLag", "Average", ValueUnit::Seconds),
+];
+
+const CACHE_METRICS: &[LinkedMetric] = &[
+    linked(
+        "mem",
+        "DatabaseMemoryUsagePercentage",
+        "Average",
+        ValueUnit::Percent,
+    ),
+    linked("cpu", "EngineCPUUtilization", "Average", ValueUnit::Percent),
+    linked("conns", "CurrConnections", "Average", ValueUnit::Count),
+    linked("evict", "Evictions", "Sum", ValueUnit::Count),
+];
+
+impl ResourceKind {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Rds => "rds",
+            Self::Cache => "cache",
+        }
+    }
+
+    fn namespace(self) -> &'static str {
+        match self {
+            Self::Rds => "AWS/RDS",
+            Self::Cache => "AWS/ElastiCache",
+        }
+    }
+
+    fn dimension(self) -> &'static str {
+        match self {
+            Self::Rds => "DBInstanceIdentifier",
+            Self::Cache => "CacheClusterId",
+        }
+    }
+
+    pub(crate) fn metrics(self) -> &'static [LinkedMetric] {
+        match self {
+            Self::Rds => RDS_METRICS,
+            Self::Cache => CACHE_METRICS,
+        }
+    }
+
+    /// Said when a named resource returns nothing at all, which is
+    /// almost always a name CloudWatch does not know.
+    fn no_data_hint(self) -> &'static str {
+        match self {
+            Self::Rds => "is it a DB instance identifier, not a cluster name?",
+            Self::Cache => {
+                "is it a node id (e.g. name-001)? Serverless caches are \
+                 dimensioned by clusterId and are not read"
+            }
+        }
+    }
+}
+
+impl AppTabSpec {
+    /// The named resources, RDS first, each in config order.
+    pub(crate) fn resources(&self) -> impl Iterator<Item = (ResourceKind, &str)> {
+        let rds = self.rds.iter().map(|id| (ResourceKind::Rds, id.as_str()));
+        let cache = self
+            .elasticache
+            .iter()
+            .map(|id| (ResourceKind::Cache, id.as_str()));
+        rds.chain(cache)
+    }
+
+    /// Anything for the tab to fetch.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.metrics.is_empty() && self.rds.is_empty() && self.elasticache.is_empty()
+    }
+}
 
 /// The queries for an env's App metrics, in one `GetMetricData` call.
 ///
@@ -409,7 +530,26 @@ const COMBINED: char = 'x';
 ///   stat), shown when the app publishes per-instance series only and
 ///   `a{n}` comes back empty. A percentile cannot be combined, so it
 ///   has no `x{n}`.
+///
+/// Then, per named resource, `r{k}_{m}`: metric `m` of resource `k` in
+/// [`AppTabSpec::resources`] order.
 pub(crate) fn metric_queries(env: &str, spec: &AppTabSpec, period: i32) -> Vec<MetricQuery> {
+    let mut out = app_queries(env, spec, period);
+    for (k, (kind, id)) in spec.resources().enumerate() {
+        for (m, metric) in kind.metrics().iter().enumerate() {
+            out.push(MetricQuery::Stat {
+                id: format!("{RESOURCE}{k}_{m}"),
+                namespace: kind.namespace().to_string(),
+                metric: metric.name.to_string(),
+                stat: metric.stat.to_string(),
+                dimensions: vec![(kind.dimension().to_string(), id.to_string())],
+            });
+        }
+    }
+    out
+}
+
+fn app_queries(env: &str, spec: &AppTabSpec, period: i32) -> Vec<MetricQuery> {
     let Some(namespace) = &spec.namespace else {
         return Vec::new();
     };
@@ -527,10 +667,20 @@ pub(crate) struct RawSeries {
 pub(crate) struct AppMetrics {
     /// One per configured metric, in config order.
     pub series: Vec<AppSeries>,
+    /// One per named resource, in [`AppTabSpec::resources`] order.
+    pub resources: Vec<ResourceRow>,
     /// What CloudWatch said about the answer (partial data, a SEARCH
     /// that hit its limit). Shown, so a short answer does not read as a
     /// complete one.
     pub notes: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ResourceRow {
+    pub kind: ResourceKind,
+    pub id: String,
+    /// Each of the kind's metrics, in its fixed order, oldest first.
+    pub metrics: Vec<(LinkedMetric, Vec<Point>)>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -563,7 +713,30 @@ pub(crate) fn series_from_results(
         })
         .collect();
     let mut combined: Vec<Vec<Point>> = vec![Vec::new(); series.len()];
+    let mut resources: Vec<ResourceRow> = spec
+        .resources()
+        .map(|(kind, id)| ResourceRow {
+            kind,
+            id: id.to_string(),
+            metrics: kind.metrics().iter().map(|m| (*m, Vec::new())).collect(),
+        })
+        .collect();
+    // CloudWatch answers every query, if only with an empty series, so
+    // no results at all means no call was made (demo mode): there is
+    // nothing to diagnose a resource name from.
+    let answered = !results.is_empty();
     for mut r in results {
+        r.points.sort_by_key(|(t, _)| *t);
+        if let Some((k, m)) =
+            r.id.strip_prefix(RESOURCE)
+                .and_then(|rest| rest.split_once('_'))
+                .and_then(|(k, m)| Some((k.parse::<usize>().ok()?, m.parse::<usize>().ok()?)))
+        {
+            if let Some(slot) = resources.get_mut(k).and_then(|row| row.metrics.get_mut(m)) {
+                slot.1 = r.points;
+            }
+            continue;
+        }
         let mut chars = r.id.chars();
         let kind = chars.next();
         let Some(n) = chars
@@ -574,7 +747,6 @@ pub(crate) fn series_from_results(
         else {
             continue;
         };
-        r.points.sort_by_key(|(t, _)| *t);
         match kind {
             Some(AGGREGATE) => series[n].points = r.points,
             Some(PER_INSTANCE) if !r.points.is_empty() => {
@@ -590,7 +762,22 @@ pub(crate) fn series_from_results(
         }
         s.instances.sort_by(|a, b| a.0.cmp(&b.0));
     }
-    AppMetrics { series, notes }
+    let mut notes = notes;
+    for row in resources.iter().filter(|_| answered) {
+        if row.metrics.iter().all(|(_, points)| points.is_empty()) {
+            notes.push(format!(
+                "no data for {} {}: {}",
+                row.kind.label(),
+                row.id,
+                row.kind.no_data_hint()
+            ));
+        }
+    }
+    AppMetrics {
+        series,
+        resources,
+        notes,
+    }
 }
 
 #[cfg(test)]
@@ -1015,6 +1202,94 @@ mod tests {
             "sorted, and an empty series is dropped"
         );
         assert_eq!(h.instances[1].1, [at(1, 4.0), at(2, 5.0)]);
+    }
+
+    #[test]
+    fn each_named_resource_gets_its_kinds_metrics() {
+        let s = spec(&[("e.rds", "db-a, db-b"), ("e.elasticache", "cache-001")]);
+        let q = metric_queries("e", &s, 60);
+        type Dims = Vec<(String, String)>;
+        let stats: Vec<(String, String, String, Dims)> = q
+            .into_iter()
+            .map(|q| match q {
+                MetricQuery::Stat {
+                    id,
+                    namespace,
+                    metric,
+                    dimensions,
+                    ..
+                } => (id, namespace, metric, dimensions),
+                other => panic!("a resource query is a plain stat: {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            stats.len(),
+            12,
+            "four each for db-a, db-b, cache-001: {stats:?}"
+        );
+        assert_eq!(
+            stats[0],
+            (
+                "r0_0".into(),
+                "AWS/RDS".into(),
+                "CPUUtilization".into(),
+                vec![("DBInstanceIdentifier".into(), "db-a".into())]
+            )
+        );
+        assert_eq!(stats[4].0, "r1_0");
+        assert_eq!(
+            stats[4].3,
+            [("DBInstanceIdentifier".to_string(), "db-b".to_string())]
+        );
+        assert_eq!(
+            stats[8],
+            (
+                "r2_0".into(),
+                "AWS/ElastiCache".into(),
+                "DatabaseMemoryUsagePercentage".into(),
+                vec![("CacheClusterId".into(), "cache-001".into())]
+            )
+        );
+        assert!(!s.is_empty(), "resources alone are something to show");
+        assert!(AppTabSpec::default().is_empty());
+    }
+
+    #[test]
+    fn resource_results_land_on_their_row_and_metric() {
+        let s = spec(&[("e.rds", "db"), ("e.elasticache", "c1, c2")]);
+        let m = series_from_results(
+            &s,
+            vec![
+                raw("r0_2", "", &[(2, 9.0), (1, 8.0)]),
+                raw("r1_0", "", &[(1, 44.0)]),
+                raw("r2_9", "", &[(1, 1.0)]),
+                raw("r7_0", "", &[(1, 1.0)]),
+                raw("r2_", "", &[(1, 1.0)]),
+            ],
+            vec![],
+        );
+        let ids: Vec<&str> = m.resources.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(ids, ["db", "c1", "c2"]);
+        assert_eq!(m.resources[0].metrics[2].0.name, "FreeableMemory");
+        assert_eq!(m.resources[0].metrics[2].1, [at(1, 8.0), at(2, 9.0)]);
+        assert_eq!(m.resources[1].metrics[0].1, [at(1, 44.0)]);
+        // c2 got only out-of-range ids: nothing, and a note saying so.
+        assert!(m.resources[2].metrics.iter().all(|(_, p)| p.is_empty()));
+        assert_eq!(m.notes.len(), 1, "{:?}", m.notes);
+        assert!(
+            m.notes[0].starts_with("no data for cache c2: is it a node id"),
+            "{:?}",
+            m.notes
+        );
+    }
+
+    #[test]
+    fn without_any_answer_no_resource_is_diagnosed() {
+        // Demo mode makes no call: an unknown-name hint would be wrong.
+        let s = spec(&[("e.rds", "db")]);
+        let m = series_from_results(&s, vec![], vec![]);
+        assert_eq!(m.resources.len(), 1);
+        assert!(m.notes.is_empty(), "{:?}", m.notes);
     }
 
     #[test]

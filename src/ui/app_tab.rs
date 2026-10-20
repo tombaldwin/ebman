@@ -2,7 +2,7 @@
 //! one row per series. Design: `docs/design/app-view.md`.
 
 use super::*;
-use crate::app_tab::{AppSeries, Level};
+use crate::app_tab::{AppSeries, Level, ResourceRow, ValueUnit};
 
 /// Cells given to each row's sparkline.
 const SPARK_WIDTH: usize = 24;
@@ -33,9 +33,12 @@ pub(super) fn draw_detail_app(
                 muted,
             )));
         }
-        Some(spec) if spec.metrics.is_empty() => {
+        Some(spec) if spec.is_empty() => {
             lines.push(Line::from(Span::styled(
-                format!("No metrics configured: add app.{env}.metric.LABEL lines to config.toml."),
+                format!(
+                    "Nothing to show: add app.{env}.metric.LABEL, app.{env}.rds or \
+                     app.{env}.elasticache lines to config.toml."
+                ),
                 muted,
             )));
         }
@@ -57,10 +60,18 @@ pub(super) fn draw_detail_app(
                     .series
                     .iter()
                     .map(|s| s.label.chars().count())
+                    .chain(
+                        m.resources
+                            .iter()
+                            .map(|r| resource_label(r).chars().count()),
+                    )
                     .max()
                     .unwrap_or(0);
                 for s in &m.series {
                     lines.push(series_row(s, label_w, area.width, theme));
+                }
+                for r in &m.resources {
+                    lines.push(resource_row(r, label_w, area.width, theme));
                 }
             }
         }
@@ -130,6 +141,94 @@ fn series_row(s: &AppSeries, label_w: usize, width: u16, theme: &Theme) -> Line<
     let room = (width as usize).saturating_sub(used + 4);
     spans.extend(join_fields_to_fit(groups, &theme.chrome(), room as u16));
     Line::from(spans)
+}
+
+fn resource_label(r: &ResourceRow) -> String {
+    format!("{} {}", r.kind.label(), r.id)
+}
+
+/// `rds shop-db  31%  sparkline  conns 48 · free 1.2G · lag 0s`: the
+/// kind's first metric is the headline, the rest follow when they have
+/// data (a primary has no replica lag).
+fn resource_row(r: &ResourceRow, label_w: usize, width: u16, theme: &Theme) -> Line<'static> {
+    let muted = Style::default().fg(theme.muted);
+    let latest = |points: &[crate::app_tab::Point]| points.last().map(|(_, v)| *v);
+    let (headline, rest) = match r.metrics.split_first() {
+        Some((h, rest)) => (Some(h), rest),
+        None => (None, &[][..]),
+    };
+    let value = headline
+        .and_then(|(m, points)| latest(points).map(|v| format_linked(v, m.unit)))
+        .unwrap_or_else(|| "—".to_string());
+    let values: Vec<f64> = headline
+        .map(|(_, points)| points.iter().map(|(_, v)| *v).collect())
+        .unwrap_or_default();
+    let mut spans = vec![
+        Span::styled(format!("{:<label_w$}  ", resource_label(r)), muted),
+        Span::styled(
+            format!("{value:>8}"),
+            Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!(" {:<6} ", headline.map_or("", |(m, _)| m.label)),
+            muted,
+        ),
+        Span::styled(
+            format!(
+                "{:<SPARK_WIDTH$}  ",
+                sparkline(&values, SPARK_WIDTH, theme.icons)
+            ),
+            Style::default().fg(theme.title),
+        ),
+    ];
+    let used: usize = spans.iter().map(Span::width).sum();
+    let groups: Vec<Vec<Span<'static>>> = rest
+        .iter()
+        .filter_map(|(m, points)| {
+            let v = latest(points)?;
+            Some(vec![
+                Span::styled(format!("{} ", m.label), muted),
+                Span::styled(format_linked(v, m.unit), Style::default().fg(theme.text)),
+            ])
+        })
+        .collect();
+    let room = (width as usize).saturating_sub(used + 4);
+    spans.extend(join_fields_to_fit(groups, &theme.chrome(), room as u16));
+    Line::from(spans)
+}
+
+/// A linked metric's value with its unit: `31%`, `48`, `1.2G`, `0.4s`.
+pub(crate) fn format_linked(v: f64, unit: ValueUnit) -> String {
+    match unit {
+        ValueUnit::Percent => format!("{}%", format_value(v)),
+        ValueUnit::Count => format_value(v),
+        ValueUnit::Seconds => format!("{}s", format_value(v)),
+        ValueUnit::Bytes => format_bytes(v),
+    }
+}
+
+/// Bytes in powers of 1024: `900B`, `3.4K`, `512M`, `1.2G`.
+pub(crate) fn format_bytes(v: f64) -> String {
+    if !v.is_finite() {
+        return "—".to_string();
+    }
+    const STEPS: [(f64, &str); 4] = [
+        (1024.0 * 1024.0 * 1024.0 * 1024.0, "T"),
+        (1024.0 * 1024.0 * 1024.0, "G"),
+        (1024.0 * 1024.0, "M"),
+        (1024.0, "K"),
+    ];
+    for (size, suffix) in STEPS {
+        if v.abs() >= size {
+            let n = v / size;
+            return if n.abs() >= 100.0 {
+                format!("{n:.0}{suffix}")
+            } else {
+                format!("{n:.1}{suffix}")
+            };
+        }
+    }
+    format!("{v:.0}B")
 }
 
 fn range_label(secs: i64) -> String {
@@ -285,6 +384,28 @@ mod tests {
         let s = sparkline(&[0.0, 7.0, 3.0, f64::NAN], 8, IconStyle::Ascii);
         assert_eq!(s, "_#:", "non-finite points are skipped");
         assert!(s.is_ascii());
+    }
+
+    #[test]
+    fn bytes_format_in_powers_of_1024() {
+        for (v, want) in [
+            (900.0, "900B"),
+            (3.4 * 1024.0, "3.4K"),
+            (512.0 * 1024.0 * 1024.0, "512M"),
+            (1.25 * 1024.0 * 1024.0 * 1024.0, "1.2G"),
+            (2.0 * 1024f64.powi(4), "2.0T"),
+            (f64::NAN, "—"),
+        ] {
+            assert_eq!(format_bytes(v), want, "{v}");
+        }
+    }
+
+    #[test]
+    fn linked_values_carry_their_unit() {
+        assert_eq!(format_linked(31.0, ValueUnit::Percent), "31%");
+        assert_eq!(format_linked(48.0, ValueUnit::Count), "48");
+        assert_eq!(format_linked(0.4, ValueUnit::Seconds), "0.4s");
+        assert_eq!(format_linked(2048.0, ValueUnit::Bytes), "2.0K");
     }
 
     #[test]
