@@ -5706,7 +5706,58 @@ async fn a_discovery_scan_that_runs_out_of_pages_is_refused_not_shortened() {
         aws_smithy_mocks::RuleMode::MatchAny,
         [&endless]
     ));
-    let err = client.list_custom_metrics().await.expect_err("truncated");
+    let err = client
+        .list_metrics_dimensioned_by(&["Environment".to_string()], "e")
+        .await
+        .expect_err("truncated");
     assert!(err.to_string().contains("page budget"), "{err}");
     assert_eq!(endless.num_calls(), super::DISCOVERY_PAGES);
+}
+
+#[tokio::test]
+async fn an_envs_own_metrics_are_filtered_by_cloudwatch_not_after() {
+    // The filter is the env's dimension name AND value, sent with the
+    // request, so the page budget is spent on that env's metrics; and
+    // AWS/ namespaces (EB's own carry EnvironmentName too) are dropped.
+    use aws_sdk_cloudwatch::types::{Dimension, Metric};
+    let rule = mock!(aws_sdk_cloudwatch::Client::list_metrics)
+        .match_requests(|r| {
+            r.namespace().is_none()
+                && r.dimensions().len() == 1
+                && r.dimensions()[0].name() == Some("Environment")
+                && r.dimensions()[0].value() == Some("Shop-prod")
+        })
+        .then_output(|| {
+            let m = |ns: &str, name: &str| {
+                Metric::builder()
+                    .namespace(ns)
+                    .metric_name(name)
+                    .dimensions(
+                        Dimension::builder()
+                            .name("Environment")
+                            .value("Shop-prod")
+                            .build(),
+                    )
+                    .build()
+            };
+            aws_sdk_cloudwatch::operation::list_metrics::ListMetricsOutput::builder()
+                .metrics(m("Shop", "usersActive"))
+                .metrics(m("AWS/ElasticBeanstalk", "EnvironmentHealth"))
+                .build()
+        });
+    let client = client_with_cw(mock_client!(
+        aws_sdk_cloudwatch,
+        aws_smithy_mocks::RuleMode::MatchAny,
+        [&rule]
+    ));
+    let got = client
+        .list_metrics_dimensioned_by(&["Environment".to_string()], "Shop-prod")
+        .await
+        .expect("listed");
+    let names: Vec<(&str, &str)> = got
+        .iter()
+        .map(|m| (m.namespace.as_str(), m.name.as_str()))
+        .collect();
+    assert_eq!(names, [("Shop", "usersActive")]);
+    assert_eq!(rule.num_calls(), 1);
 }

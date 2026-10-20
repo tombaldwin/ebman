@@ -401,12 +401,14 @@ impl App {
             return;
         }
         let fleet: Vec<String> = self.environments.iter().map(|e| e.name.clone()).collect();
+        let dimension_names =
+            env_dimension_names(&self.cfg.alarm_dimensions, self.cfg.app_tabs.envs.get(&env));
         let client = self.detail_client();
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         tokio::spawn(async move {
             let found = match client.resolve().await {
-                Ok(aws) => discover(&aws, &app_name, &env, fleet).await,
+                Ok(aws) => discover(&aws, &app_name, &env, fleet, dimension_names).await,
                 Err(e) => Discovered {
                     failed: vec![("AWS client".into(), flatten_err("cached_client", e))],
                     ..Default::default()
@@ -492,6 +494,39 @@ async fn bounded<T>(
         })
 }
 
+/// Dimension names an env's own metrics might be valued by: what ebman
+/// already matches envs by (`alarm_dimensions`), what this env's config
+/// names, and the usual spellings. CloudWatch filters by a dimension's
+/// name and value, not by value alone, so the names have to be given.
+pub(crate) fn env_dimension_names(
+    alarm_dimensions: &[String],
+    spec: Option<&AppTabSpec>,
+) -> Vec<String> {
+    const USUAL: &[&str] = &[
+        "EnvironmentName",
+        "Environment",
+        "Env",
+        "environment",
+        "env",
+        "EnvName",
+    ];
+    let mut names: Vec<String> = Vec::new();
+    let configured = spec
+        .into_iter()
+        .flat_map(|s| s.dimensions.iter().map(|(k, _)| k.clone()));
+    for n in alarm_dimensions
+        .iter()
+        .cloned()
+        .chain(configured)
+        .chain(USUAL.iter().map(|s| s.to_string()))
+    {
+        if !names.contains(&n) {
+            names.push(n);
+        }
+    }
+    names
+}
+
 /// A lookup's result, or nothing with its failure recorded.
 fn take<T>(
     failed: &mut Vec<(String, String)>,
@@ -510,6 +545,7 @@ async fn discover(
     app_name: &str,
     env: &str,
     fleet: Vec<String>,
+    dimension_names: Vec<String>,
 ) -> Discovered {
     let prefix = format!("{env}-");
     // Each lookup pages within its own deadline; `bounded` also caps a
@@ -520,7 +556,7 @@ async fn discover(
         bounded(aws.list_dimension_values("AWS/RDS", "CPUUtilization", "DBInstanceIdentifier")),
         bounded(aws.list_dimension_values("AWS/ElastiCache", "CPUUtilization", "CacheClusterId")),
         bounded(aws.list_alarm_names_with_prefix(&prefix)),
-        bounded(aws.list_custom_metrics()),
+        bounded(aws.list_metrics_dimensioned_by(&dimension_names, env)),
     );
     let mut failed = Vec::new();
     let inputs = crate::app_discover::Inputs {
@@ -745,7 +781,14 @@ mod tests {
             aws_sdk_s3::Client::new(&sdk),
             aws_sdk_ec2::Client::new(&sdk),
         );
-        let found = discover(&aws, "shop", "e", vec!["e".into()]).await;
+        let found = discover(
+            &aws,
+            "shop",
+            "e",
+            vec!["e".into()],
+            vec!["Environment".into()],
+        )
+        .await;
         let d = &found.discovery;
         assert_eq!(d.app_log.as_deref(), Some("var/log/app.log"));
         assert_eq!(d.alarm_prefix, Some(("e-".to_string(), 1)));
@@ -805,6 +848,23 @@ mod tests {
         let e = r.expect_err("gave up");
         assert!(e.to_string().contains("no answer within 15s"), "{e}");
         assert!(bounded(async { Ok(1) }).await.is_ok());
+    }
+
+    #[test]
+    fn the_dimension_names_tried_are_ebmans_the_configs_and_the_usual() {
+        let spec = crate::config::parse("app.e.dimensions = \"Stage=prod\"\n")
+            .app_tabs
+            .envs
+            .remove("e")
+            .unwrap();
+        let names = env_dimension_names(&["EnvironmentName".into(), "Svc".into()], Some(&spec));
+        assert_eq!(&names[..3], ["EnvironmentName", "Svc", "Stage"]);
+        assert!(names.contains(&"Environment".to_string()));
+        assert_eq!(
+            names.iter().filter(|n| *n == "EnvironmentName").count(),
+            1,
+            "no name tried twice"
+        );
     }
 
     #[test]
