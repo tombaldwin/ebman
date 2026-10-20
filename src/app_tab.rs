@@ -986,6 +986,78 @@ pub(crate) fn top_errors_from(
     out
 }
 
+/// Which alarms belong to an environment: a dimension naming it, or a
+/// name starting with the env's `app.ENV.alarm_prefix`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct AlarmMatch {
+    /// Dimension names that identify an env (`alarm_dimensions`).
+    pub dimension_names: Vec<String>,
+    pub name_prefix: Option<String>,
+    /// Other environments whose names start with the prefix: an alarm
+    /// named for one of them is theirs, not this env's. `Shop-prod-`
+    /// would otherwise take `Shop-prod-wk-…`, the worker's alarms.
+    pub shadowed_by: Vec<String>,
+}
+
+impl AlarmMatch {
+    /// The match for `env`: the configured dimension names, and that
+    /// env's App tab alarm prefix if it has one.
+    ///
+    /// `fleet` is every environment name ebman knows of, so a prefix
+    /// can give way to a longer env name it also covers.
+    pub(crate) fn for_env<'a>(
+        dimension_names: &[String],
+        app_tabs: &crate::app_tab::AppTabs,
+        env: &str,
+        fleet: impl IntoIterator<Item = &'a str>,
+    ) -> Self {
+        let name_prefix = app_tabs.envs.get(env).and_then(|s| s.alarm_prefix.clone());
+        let shadowed_by = match &name_prefix {
+            Some(p) if !p.is_empty() => fleet
+                .into_iter()
+                .filter(|other| *other != env && other.starts_with(p.as_str()))
+                .map(str::to_string)
+                .collect(),
+            _ => Vec::new(),
+        };
+        Self {
+            dimension_names: dimension_names.to_vec(),
+            name_prefix,
+            shadowed_by,
+        }
+    }
+
+    pub(crate) fn matches(
+        &self,
+        env: &str,
+        name: &str,
+        dimensions: &[(Option<&str>, Option<&str>)],
+    ) -> bool {
+        let by_name = self
+            .name_prefix
+            .as_deref()
+            .is_some_and(|p| !p.is_empty() && name.starts_with(p))
+            && !self
+                .shadowed_by
+                .iter()
+                .any(|other| alarm_names_env(name, other));
+        let by_dimension = dimensions.iter().any(|(n, v)| {
+            *v == Some(env) && n.is_some_and(|n| self.dimension_names.iter().any(|w| w == n))
+        });
+        by_name || by_dimension
+    }
+}
+
+/// Whether alarm `name` is named for environment `env`: the env's name
+/// itself, or it followed by `-`. A bare prefix would take
+/// `Shop-prod-wkld-cpu` as the worker `Shop-prod-wk`'s.
+pub(crate) fn alarm_names_env(name: &str, env: &str) -> bool {
+    name == env
+        || name
+            .strip_prefix(env)
+            .is_some_and(|rest| rest.starts_with('-'))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -107,8 +107,8 @@ impl App {
     /// Which alarms belong to `env`: the shared dimension names plus the
     /// env's `app.ENV.alarm_prefix`. Every alarm fetch goes through
     /// this, so a prefix applies on every surface or none.
-    pub(crate) fn alarm_match_for(&self, env: &str) -> crate::aws::AlarmMatch {
-        crate::aws::AlarmMatch::for_env(
+    pub(crate) fn alarm_match_for(&self, env: &str) -> crate::app_tab::AlarmMatch {
+        crate::app_tab::AlarmMatch::for_env(
             &self.cfg.alarm_dimensions,
             &self.cfg.app_tabs,
             env,

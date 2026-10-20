@@ -395,14 +395,14 @@ fn alarm_line(
 
 /// Alarms by state: the firing ones by name, the others counted.
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) struct AlarmSummary {
+struct AlarmSummary {
     pub firing: Vec<String>,
     pub insufficient: usize,
     pub ok: usize,
 }
 
 impl AlarmSummary {
-    pub(crate) fn of(alarms: &[crate::aws::CwAlarm]) -> Self {
+    fn of(alarms: &[crate::aws::CwAlarm]) -> Self {
         let mut s = Self {
             firing: Vec::new(),
             insufficient: 0,
@@ -492,7 +492,7 @@ fn instance_rows(
 }
 
 /// `840ms` under a second, `2.1s` from one.
-pub(crate) fn format_latency(secs: f64) -> String {
+fn format_latency(secs: f64) -> String {
     if !secs.is_finite() {
         "—".to_string()
     } else if secs < 1.0 {
@@ -558,7 +558,7 @@ fn resource_row(r: &ResourceRow, label_w: usize, width: u16, theme: &Theme) -> L
 }
 
 /// A linked metric's value with its unit: `31%`, `48`, `1.2G`, `0.4s`.
-pub(crate) fn format_linked(v: f64, unit: ValueUnit) -> String {
+fn format_linked(v: f64, unit: ValueUnit) -> String {
     match unit {
         ValueUnit::Percent => format!("{}%", format_value(v)),
         ValueUnit::Count => format_value(v),
@@ -568,7 +568,7 @@ pub(crate) fn format_linked(v: f64, unit: ValueUnit) -> String {
 }
 
 /// Bytes in powers of 1024: `900B`, `3.4K`, `512M`, `1.2G`.
-pub(crate) fn format_bytes(v: f64) -> String {
+fn format_bytes(v: f64) -> String {
     if !v.is_finite() {
         return "—".to_string();
     }
@@ -593,7 +593,7 @@ pub(crate) fn format_bytes(v: f64) -> String {
 
 /// A metric value in at most about six cells: `1620`, `41.5`, `0.42`,
 /// `12.3k`, `4.1M`.
-pub(crate) fn format_value(v: f64) -> String {
+fn format_value(v: f64) -> String {
     if !v.is_finite() {
         return "—".to_string();
     }
@@ -627,7 +627,7 @@ pub(crate) fn format_value(v: f64) -> String {
 /// One cell per bucket, scaled between the series' own min and max.
 /// More points than cells are averaged into buckets; fewer draw one
 /// cell each.
-pub(crate) fn sparkline(values: &[f64], width: usize, icons: IconStyle) -> String {
+fn sparkline(values: &[f64], width: usize, icons: IconStyle) -> String {
     const UNICODE: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
     const ASCII: [char; 8] = ['_', '.', '-', ':', '=', '+', '*', '#'];
     let glyphs = if icons == IconStyle::Ascii {

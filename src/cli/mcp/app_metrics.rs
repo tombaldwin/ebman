@@ -112,7 +112,7 @@ impl Server {
                 } else {
                     Vec::new()
                 };
-                let matching = aws::AlarmMatch::for_env(
+                let matching = crate::app_tab::AlarmMatch::for_env(
                     &self.safety_cfg.alarm_dimensions,
                     tabs,
                     &env,

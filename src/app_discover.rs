@@ -199,7 +199,7 @@ pub(crate) fn discover(env: &str, inputs: &Inputs) -> Discovery {
         .filter(|a| {
             !shadowing
                 .iter()
-                .any(|other| crate::aws::alarm_names_env(a, other))
+                .any(|other| crate::app_tab::alarm_names_env(a, other))
         })
         .count();
     let alarm_prefix = (named > 0).then_some((prefix, named));
