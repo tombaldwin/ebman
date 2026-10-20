@@ -36,6 +36,7 @@ impl App {
             metrics: Vec::new(),
             metrics_range_secs: 3600, // 1h default
             app_metrics: Default::default(),
+            top_errors: Default::default(),
             auto_refresh: false,
             search_input: TextInput::new(),
             search_active: false,
@@ -254,6 +255,27 @@ impl App {
     const DETAIL_FETCH_STUCK_AFTER: Duration = Duration::from_secs(120);
 
     pub(crate) fn detail_refresh_active_tab(&mut self) {
+        self.detail_refresh(false);
+    }
+
+    /// The auto-refresh tick's refresh: the same as `^R`, except that
+    /// what is billed per scan (top errors' Logs Insights query) waits
+    /// for a person to ask.
+    pub(crate) fn detail_refresh_on_tick(&mut self) {
+        self.detail_refresh(true);
+    }
+
+    /// The refresh tick's part for an open Detail view: refresh the
+    /// active tab when `R` turned auto-refresh on. Out of the run loop's
+    /// `select!` so a test can drive it.
+    pub(crate) fn refresh_open_detail_on_tick(&mut self) {
+        if matches!(self.mode, Mode::Detail) && self.detail.as_ref().is_some_and(|d| d.auto_refresh)
+        {
+            self.detail_refresh_on_tick();
+        }
+    }
+
+    fn detail_refresh(&mut self, tick: bool) {
         let Some(detail) = self.detail.as_ref() else {
             return;
         };
@@ -310,6 +332,9 @@ impl App {
                     .is_some_and(|d| d.cw_alarms.in_flight())
                 {
                     self.spawn_detail_alarms(env_name.clone());
+                }
+                if !tick {
+                    self.spawn_detail_top_errors(env_name.clone());
                 }
                 self.spawn_detail_app(env_name);
             }

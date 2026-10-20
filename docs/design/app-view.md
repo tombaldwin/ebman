@@ -48,7 +48,7 @@ app.Shop-prod.alarm_prefix = "Shop-prod-"
 # A log group name, or a suffix under /aws/elasticbeanstalk/<env>/.
 app.Shop-prod.log_group = "var/log/app/main.log"
 # Named group `fp` is the fingerprint. Values are literal: one
-# backslash. Default: the first 80 characters after ERROR.
+# backslash. Default: the first 100 characters from ERROR.
 app.Shop-prod.error_fingerprint = "ERROR (?<fp>[\w.$]+(Exception|Error))"
 ```
 
@@ -167,7 +167,10 @@ from layers into vertical slices: a pure builder with no caller fails
    `:alarms`, MCP `why`), each pinned by its own test; results sorted
    ALARM first at the source, so `:alarms` is too; an alarm line on the
    App tab. Composite alarms are not read, as before.
-6. Top errors.
+6. Done: top errors, opt-in by `log_group`, over a fixed 15 minutes, on
+   tab open and `^R` only (an explicit tick trigger, with the tick's
+   Detail refresh pulled out of the run loop so a test drives it); not
+   stacked, not in `tab_loading` (a query must not hold up metrics).
 7. `app_metrics` on MCP, and `docs/headless.md`.
 8. Later, by ruling: a two-env compare layout.
 

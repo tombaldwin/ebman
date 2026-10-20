@@ -1241,6 +1241,31 @@ async fn detail_results_for_another_env_are_dropped() {
         "the matching env's App metrics must apply"
     );
 
+    // Top errors: dropped for another env, applied for this one.
+    let top = || crate::app_tab::TopErrors {
+        log_group: "g".into(),
+        rows: vec![],
+        unmatched: 0,
+        records_scanned: 0,
+        fetched_at: chrono::DateTime::from_timestamp(0, 0).unwrap(),
+    };
+    let mut app = armed();
+    app.handle_msg(AppMsg::DetailTopErrors {
+        gen: app.generation,
+        env_name: "worker-prod".into(),
+        result: Ok(top()),
+    });
+    assert!(app.detail.as_ref().unwrap().top_errors.ready().is_none());
+    app.handle_msg(AppMsg::DetailTopErrors {
+        gen: app.generation,
+        env_name: "api-prod".into(),
+        result: Ok(top()),
+    });
+    assert_eq!(
+        app.detail.as_ref().unwrap().top_errors.ready(),
+        Some(&top())
+    );
+
     // And the matching env DOES apply — without this half, a handler
     // that dropped everything would pass all of the above.
     let mut app = armed();
@@ -1839,8 +1864,13 @@ async fn every_tui_alarm_fetch_takes_the_envs_alarm_prefix() {
         app
     }
     async fn alarm_names(app: &mut App) -> Vec<String> {
+        // Bounded, as a rejected mock request would otherwise hang.
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
         loop {
-            let msg = app.msg_rx.recv().await.expect("a result");
+            let msg = tokio::time::timeout_at(deadline, app.msg_rx.recv())
+                .await
+                .expect("an alarm result within 10s")
+                .expect("a result");
             let result = match msg {
                 AppMsg::DetailAlarms { result, .. }
                 | AppMsg::WhyRedAlarms { result, .. }
@@ -1872,4 +1902,167 @@ async fn every_tui_alarm_fetch_takes_the_envs_alarm_prefix() {
     let mut app = app_with_alarms();
     app.spawn_alarms_fetch("api-prod".into());
     assert_eq!(alarm_names(&mut app).await, ["api-prod-db-cpu"], ":alarms");
+}
+
+/// Top errors runs on `^R` and when the tab opens, never on the
+/// auto-refresh tick (Logs Insights bills per GB scanned), never
+/// stacked on a query still running, never without `app.ENV.log_group`
+/// and never in demo mode.
+#[tokio::test]
+async fn top_errors_runs_when_a_person_asks_and_only_then() {
+    let armed = |config: &str, demo: bool| {
+        let mut app = App::for_tests(crate::aws::AwsClient::stub(), crate::config::parse(config));
+        app.demo_mode = demo;
+        app.environments = vec![mk_env("api-prod", "shop", "WebServer", "Green")];
+        app.rebuild_view();
+        app.table_state.select(Some(0));
+        app.open_detail();
+        let d = app.detail.as_mut().unwrap();
+        d.tab_idx = d.tabs.iter().position(|t| *t == DetailTab::App).unwrap();
+        app
+    };
+    let configured = "app.api-prod.log_group = \"var/log/app.log\"\n";
+    let running = |app: &App| app.detail.as_ref().unwrap().top_errors.in_flight();
+
+    let mut app = armed(configured, false);
+    app.detail_refresh_on_tick();
+    assert!(!running(&app), "the tick does not run it");
+    assert!(
+        app.detail.as_ref().unwrap().app_metrics.in_flight(),
+        "but does refresh metrics"
+    );
+
+    let mut app = armed(configured, false);
+    app.detail_refresh_active_tab();
+    assert!(running(&app), "^R runs it");
+    // A second ask while it runs does not start another: one query, so
+    // one answer (the stub client fails at once).
+    app.spawn_detail_top_errors("api-prod".into());
+    let mut answers = 0;
+    while let Ok(Some(msg)) =
+        tokio::time::timeout(std::time::Duration::from_millis(500), app.msg_rx.recv()).await
+    {
+        answers += usize::from(matches!(msg, AppMsg::DetailTopErrors { .. }));
+    }
+    assert_eq!(answers, 1, "a query in flight is not stacked on");
+
+    // The run loop's tick, with auto-refresh on: metrics, not the query.
+    let mut app = armed(configured, false);
+    app.mode = Mode::Detail;
+    app.detail.as_mut().unwrap().auto_refresh = true;
+    app.refresh_open_detail_on_tick();
+    assert!(
+        app.detail.as_ref().unwrap().app_metrics.in_flight(),
+        "the tick refreshes"
+    );
+    assert!(!running(&app), "but leaves the query alone");
+    let mut app = armed(configured, false);
+    app.mode = Mode::Detail;
+    app.refresh_open_detail_on_tick();
+    assert!(
+        !app.detail.as_ref().unwrap().app_metrics.in_flight(),
+        "auto-refresh off: the tick does nothing"
+    );
+
+    let mut app = armed("app.api-prod.namespace = \"N\"\n", false);
+    app.detail_refresh_active_tab();
+    assert!(!running(&app), "no log_group, no query");
+
+    let mut app = armed(configured, true);
+    app.detail_refresh_active_tab();
+    assert!(!running(&app), "demo mode makes no Logs Insights call");
+
+    // Switching to the tab is asking.
+    let mut app = armed(configured, false);
+    app.detail.as_mut().unwrap().tab_idx = 0;
+    app.detail_cycle_tab(1);
+    assert_eq!(app.detail.as_ref().unwrap().tab(), DetailTab::App);
+    assert!(running(&app), "opening the tab runs it");
+}
+
+/// The query top errors sends: the configured fingerprint, against the
+/// configured log group under the env, over the last fifteen minutes;
+/// and its rows land on the tab.
+#[tokio::test]
+async fn top_errors_queries_the_configured_group_with_the_fingerprint() {
+    use aws_sdk_cloudwatchlogs::operation::get_query_results::GetQueryResultsOutput;
+    use aws_sdk_cloudwatchlogs::operation::start_query::StartQueryOutput;
+    use aws_sdk_cloudwatchlogs::types::{QueryStatistics, QueryStatus, ResultField};
+    let start = aws_smithy_mocks::mock!(aws_sdk_cloudwatchlogs::Client::start_query)
+        .match_requests(|req| {
+            let window = req.end_time().unwrap_or(0) - req.start_time().unwrap_or(0);
+            req.log_group_names() == ["/aws/elasticbeanstalk/api-prod/var/log/app.log"]
+                && req
+                    .query_string()
+                    .is_some_and(|q| q.contains(r"parse @message /ERROR (?<fp>\w+)/"))
+                && (899..=901).contains(&window)
+        })
+        .then_output(|| StartQueryOutput::builder().query_id("q1").build());
+    let results = aws_smithy_mocks::mock!(aws_sdk_cloudwatchlogs::Client::get_query_results)
+        .then_output(|| {
+            let field = |k: &str, v: &str| ResultField::builder().field(k).value(v).build();
+            GetQueryResultsOutput::builder()
+                .status(QueryStatus::Complete)
+                .results(vec![field("fp", "Boom"), field("n", "7")])
+                .statistics(QueryStatistics::builder().records_scanned(50.0).build())
+                .build()
+        });
+    // Opening Detail looks up the env's log groups for the Logs tab.
+    let groups = aws_smithy_mocks::mock!(aws_sdk_cloudwatchlogs::Client::describe_log_groups)
+        .then_output(|| {
+            aws_sdk_cloudwatchlogs::operation::describe_log_groups::DescribeLogGroupsOutput::builder()
+                .build()
+        });
+    let logs = aws_smithy_mocks::mock_client!(
+        aws_sdk_cloudwatchlogs,
+        aws_smithy_mocks::RuleMode::MatchAny,
+        [&start, &results, &groups]
+    );
+    let sdk = aws_config::SdkConfig::builder()
+        .region(aws_config::Region::new("us-east-1"))
+        .behavior_version(aws_config::BehaviorVersion::latest())
+        .build();
+    let client = crate::aws::AwsClient::for_tests(
+        aws_sdk_elasticbeanstalk::Client::new(&sdk),
+        aws_sdk_sqs::Client::new(&sdk),
+        aws_sdk_cloudwatch::Client::new(&sdk),
+        logs,
+        aws_sdk_s3::Client::new(&sdk),
+        aws_sdk_ec2::Client::new(&sdk),
+    );
+    let cfg = crate::config::parse(
+        "app.api-prod.log_group = \"var/log/app.log\"\n\
+         app.api-prod.error_fingerprint = \"ERROR (?<fp>\\w+)\"\n",
+    );
+    let mut app = App::for_tests(client, cfg);
+    app.environments = vec![mk_env("api-prod", "shop", "WebServer", "Green")];
+    app.rebuild_view();
+    app.table_state.select(Some(0));
+    app.open_detail();
+    while app.msg_rx.try_recv().is_ok() {}
+    app.spawn_detail_top_errors("api-prod".into());
+    // Bounded: a mock that rejects the request panics inside the
+    // spawned task, and an unbounded wait would hang the suite.
+    let msg = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            match app.msg_rx.recv().await.expect("a result") {
+                m @ AppMsg::DetailTopErrors { .. } => break m,
+                _ => continue,
+            }
+        }
+    })
+    .await
+    .expect("top errors answered within 10s");
+    app.handle_msg(msg);
+    let t = app
+        .detail
+        .as_ref()
+        .unwrap()
+        .top_errors
+        .ready()
+        .cloned()
+        .expect("settled ok");
+    assert_eq!(t.rows, [("Boom".to_string(), 7)]);
+    assert_eq!(t.records_scanned, 50);
+    assert_eq!(start.num_calls(), 1);
 }

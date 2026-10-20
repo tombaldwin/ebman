@@ -138,10 +138,16 @@ safety.accounts.prod.read_only = true
 # app.ENV.alarm_prefix        alarms whose name starts with this belong to
 #                             the env, as well as those matched by
 #                             alarm_dimensions
-# app.ENV.log_group           log group for top errors: a full name, or a
-#                             suffix under /aws/elasticbeanstalk/<env>/
-# app.ENV.error_fingerprint   Logs Insights regex with a named group fp;
-#                             a / must be written \/
+# app.ENV.log_group           turns on top errors: a Logs Insights count of
+#                             ERROR lines over the last 15 minutes, run
+#                             when the tab opens and on ^R (never on the
+#                             auto-refresh tick: Insights bills per GB
+#                             scanned). A full name, or a suffix under
+#                             /aws/elasticbeanstalk/<env>/
+# app.ENV.error_fingerprint   Logs Insights regex with a named group fp
+#                             that top errors counts by (default: the
+#                             first 100 characters from ERROR); a / must
+#                             be written \/
 #
 # app.Shop-prod.namespace = "Shop"
 # app.Shop-prod.instance_dimension = "InstanceId"

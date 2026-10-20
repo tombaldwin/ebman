@@ -1894,7 +1894,8 @@ async fn the_app_tab_draws_series_thresholds_and_config_errors() {
          app.api-prod.metric.users = \"usersActive|Maximum|count\"\n\
          app.api-prod.metric.heap = \"heapUsedMb|Average|MB\"\n\
          app.api-prod.threshold.heap = \"1500,1800\"\n\
-         app.api-prod.namspace = \"typo\"\n",
+         app.api-prod.namspace = \"typo\"\n\
+         app.api-prod.log_group = \"var/log/app.log\"\n",
     );
     let mut app = App::for_tests(crate::aws::AwsClient::stub(), cfg);
     app.environments = vec![
@@ -1915,6 +1916,13 @@ async fn the_app_tab_draws_series_thresholds_and_config_errors() {
         metric_name: String::new(),
         namespace: String::new(),
     };
+    d.top_errors.settle(Ok(crate::app_tab::TopErrors {
+        log_group: "/aws/elasticbeanstalk/api-prod/var/log/app.log".into(),
+        rows: vec![("PoolTimeoutException".into(), 12), ("NPE".into(), 4)],
+        unmatched: 3,
+        records_scanned: 900,
+        fetched_at: chrono::Utc::now(),
+    }));
     d.cw_alarms.settle(Ok(vec![
         alarm("api-prod-5xx", "ALARM"),
         alarm("api-prod-cpu", "OK"),
@@ -2003,6 +2011,17 @@ async fn the_app_tab_draws_series_thresholds_and_config_errors() {
         !rds.contains("lag"),
         "a metric with no data is left out: {rds}"
     );
+    assert!(
+        text.contains("top errors (last 15m of /aws/elasticbeanstalk/api-prod/var/log/app.log"),
+        "{text}"
+    );
+    for want in [
+        "    12  PoolTimeoutException",
+        "     4  NPE",
+        "     3  ERROR lines the fingerprint did not match",
+    ] {
+        assert!(text.contains(want), "top errors lack {want:?}:\n{text}");
+    }
     let theme = app.theme.clone();
     let alarms = text
         .lines()
@@ -2048,6 +2067,10 @@ async fn the_app_tab_draws_series_thresholds_and_config_errors() {
     press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
     let text = render(&mut app, 160, 30);
     assert!(text.contains("No App tab config for api-staging"), "{text}");
+    assert!(
+        !text.contains("top errors"),
+        "no log_group, no top errors:\n{text}"
+    );
     // Without config the instance section still draws; these stub
     // instances carry no enhanced health.
     app.detail.as_mut().unwrap().instances = vec![crate::aws::Instance {

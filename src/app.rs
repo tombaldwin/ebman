@@ -671,6 +671,12 @@ pub(crate) enum AppMsg {
         env_name: String,
         result: Result<Vec<MetricSeries>, String>,
     },
+    /// The App tab's top errors for one env.
+    DetailTopErrors {
+        gen: u64,
+        env_name: String,
+        result: Result<crate::app_tab::TopErrors, String>,
+    },
     /// The App tab's series for one env.
     DetailAppMetrics {
         gen: u64,
@@ -1905,13 +1911,7 @@ impl App {
                         .unwrap_or(false);
                     if !self.frozen && !backed_off {
                         self.spawn_refresh();
-                        if matches!(self.mode, Mode::Detail) {
-                            if let Some(d) = self.detail.as_ref() {
-                                if d.auto_refresh {
-                                    self.detail_refresh_active_tab();
-                                }
-                            }
-                        }
+                        self.refresh_open_detail_on_tick();
                     } else if backed_off && self.throttle_until.is_some_and(|t| now >= t) {
                         // Just crossed the back-off horizon — clear so the next
                         // tick proceeds normally even if no refresh fired here.

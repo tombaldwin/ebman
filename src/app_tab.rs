@@ -780,6 +780,91 @@ pub(crate) fn series_from_results(
     }
 }
 
+/// How far back top errors looks. Fixed rather than the tab's range:
+/// Logs Insights bills per GB scanned, and a 24h range would scan a
+/// day of logs on every `^R`.
+pub(crate) const TOP_ERRORS_WINDOW_MINS: i64 = 15;
+
+/// Used when `app.ENV.error_fingerprint` is unset: the first hundred
+/// characters from `ERROR`, which groups identical messages and keeps
+/// distinct ones apart without knowing the app's log format.
+const DEFAULT_FINGERPRINT: &str = "(?<fp>ERROR.{0,100})";
+
+/// The Logs Insights query counting ERROR lines by fingerprint, most
+/// frequent first. The fingerprint was checked at parse time for its
+/// `fp` group and for an unescaped `/`.
+pub(crate) fn top_errors_query(fingerprint: Option<&str>) -> String {
+    let fp = fingerprint.unwrap_or(DEFAULT_FINGERPRINT);
+    format!(
+        "fields @message\n\
+         | filter @message like /ERROR/\n\
+         | parse @message /{fp}/\n\
+         | stats count(*) as n by fp\n\
+         | sort n desc\n\
+         | limit 10"
+    )
+}
+
+/// `app.ENV.log_group` as a log group name: a full name as given, or a
+/// suffix under `/aws/elasticbeanstalk/<env>/`, which is where Elastic
+/// Beanstalk streams instance logs.
+pub(crate) fn top_errors_log_group(env: &str, configured: &str) -> String {
+    if configured.starts_with('/') {
+        configured.to_string()
+    } else {
+        format!(
+            "/aws/elasticbeanstalk/{env}/{}",
+            configured.trim_start_matches('/')
+        )
+    }
+}
+
+/// The env's most frequent ERROR fingerprints over the last window.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct TopErrors {
+    pub log_group: String,
+    /// `(fingerprint, count)`, most frequent first.
+    pub rows: Vec<(String, u64)>,
+    /// ERROR lines the fingerprint did not match: counted, not hidden.
+    pub unmatched: u64,
+    pub records_scanned: i64,
+    pub fetched_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// Read the query's rows. A row with no `fp` is the ERROR lines the
+/// fingerprint did not match, which Insights groups under an empty key.
+pub(crate) fn top_errors_from(
+    log_group: String,
+    rows: &[Vec<(String, String)>],
+    records_scanned: i64,
+    fetched_at: chrono::DateTime<chrono::Utc>,
+) -> TopErrors {
+    let mut out = TopErrors {
+        log_group,
+        rows: Vec::new(),
+        unmatched: 0,
+        records_scanned,
+        fetched_at,
+    };
+    for row in rows {
+        let field = |name: &str| {
+            row.iter()
+                .find(|(k, _)| k == name)
+                .map(|(_, v)| v.trim().to_string())
+        };
+        let Some(n) = field("n").and_then(|n| n.parse::<u64>().ok()) else {
+            continue;
+        };
+        match field("fp").filter(|fp| !fp.is_empty()) {
+            Some(fp) => out.rows.push((fp, n)),
+            None => out.unmatched += n,
+        }
+    }
+    out.rows
+        .sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1301,6 +1386,64 @@ mod tests {
             vec![],
         );
         assert_eq!(m.series[0].points, [at(1, 2.0)]);
+    }
+
+    #[test]
+    fn the_top_errors_query_counts_by_fingerprint() {
+        assert_eq!(
+            top_errors_query(Some(r"ERROR (?<fp>\w+Exception)")),
+            "fields @message\n\
+             | filter @message like /ERROR/\n\
+             | parse @message /ERROR (?<fp>\\w+Exception)/\n\
+             | stats count(*) as n by fp\n\
+             | sort n desc\n\
+             | limit 10"
+        );
+        assert!(top_errors_query(None).contains("parse @message /(?<fp>ERROR.{0,100})/"));
+    }
+
+    #[test]
+    fn a_log_group_is_a_full_name_or_a_suffix_under_the_env() {
+        assert_eq!(
+            top_errors_log_group("Shop-prod", "var/log/app.log"),
+            "/aws/elasticbeanstalk/Shop-prod/var/log/app.log"
+        );
+        assert_eq!(top_errors_log_group("e", "/custom/group"), "/custom/group");
+    }
+
+    #[test]
+    fn top_errors_rows_are_read_and_unmatched_lines_counted() {
+        let at = chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap();
+        let row = |fields: &[(&str, &str)]| -> Vec<(String, String)> {
+            fields
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect()
+        };
+        let t = top_errors_from(
+            "g".into(),
+            &[
+                row(&[("fp", "NPE"), ("n", "4")]),
+                row(&[("fp", "PoolTimeout"), ("n", "12")]),
+                row(&[("n", "3")]),
+                row(&[("fp", ""), ("n", "2")]),
+                row(&[("fp", "Odd"), ("n", "x")]),
+                row(&[("fp", "Also4"), ("n", "4")]),
+            ],
+            900,
+            at,
+        );
+        assert_eq!(
+            t.rows,
+            [
+                ("PoolTimeout".to_string(), 12),
+                ("Also4".to_string(), 4),
+                ("NPE".to_string(), 4)
+            ],
+            "most frequent first, ties by name, a non-numeric count dropped"
+        );
+        assert_eq!(t.unmatched, 5);
+        assert_eq!((t.records_scanned, t.fetched_at), (900, at));
     }
 
     #[test]

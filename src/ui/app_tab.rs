@@ -79,6 +79,7 @@ pub(super) fn draw_detail_app(
         }
     }
     instance_rows(&mut lines, &detail.instances, area.width, theme);
+    top_error_rows(&mut lines, &detail.top_errors, theme);
     let block = titled_block(
         &theme.chrome(),
         &format!("App · {}", range_label(detail.metrics_range_secs)),
@@ -144,6 +145,69 @@ fn series_row(s: &AppSeries, label_w: usize, width: u16, theme: &Theme) -> Line<
     let room = (width as usize).saturating_sub(used + 4);
     spans.extend(join_fields_to_fit(groups, &theme.chrome(), room as u16));
     Line::from(spans)
+}
+
+/// The env's most frequent ERROR fingerprints, one per line, with how
+/// old the answer is: the query runs on open and `^R` only.
+fn top_error_rows(
+    lines: &mut Vec<Line<'static>>,
+    top: &crate::app::Fetch<crate::app_tab::TopErrors>,
+    theme: &Theme,
+) {
+    // Never asked: no `app.ENV.log_group`, or demo mode.
+    if !top.in_flight() && top.ready().is_none() && top.error().is_none() {
+        return;
+    }
+    let muted = Style::default().fg(theme.muted);
+    let window = crate::app_tab::TOP_ERRORS_WINDOW_MINS;
+    lines.push(Line::default());
+    if let Some(e) = top.error() {
+        lines.push(Line::from(vec![
+            Span::styled("top errors  ", muted),
+            Span::styled(e.to_string(), Style::default().fg(theme.health_red)),
+        ]));
+        return;
+    }
+    let Some(t) = top.ready() else {
+        if top.is_first_load() {
+            lines.push(Line::from(Span::styled(
+                "top errors  querying Logs Insights…",
+                muted,
+            )));
+        }
+        return;
+    };
+    let age = humanize_age(chrono::Utc::now() - t.fetched_at);
+    lines.push(Line::from(Span::styled(
+        format!(
+            "top errors (last {window}m of {}, {age} ago, ^R to rerun)",
+            t.log_group
+        ),
+        muted,
+    )));
+    if t.rows.is_empty() && t.unmatched == 0 {
+        lines.push(Line::from(Span::styled("  no ERROR lines", muted)));
+    }
+    for (fp, n) in &t.rows {
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("{n:>6}  "),
+                Style::default()
+                    .fg(theme.health_red)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(fp.clone(), Style::default().fg(theme.text)),
+        ]));
+    }
+    if t.unmatched > 0 {
+        lines.push(Line::from(Span::styled(
+            format!(
+                "{:>6}  ERROR lines the fingerprint did not match",
+                t.unmatched
+            ),
+            muted,
+        )));
+    }
 }
 
 /// `alarms  2 in ALARM: a, b · 1 insufficient data · 6 OK`, firing

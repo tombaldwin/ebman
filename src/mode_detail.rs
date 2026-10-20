@@ -422,6 +422,11 @@ pub(crate) struct DetailState {
     pub metrics_range_secs: i64,
     /// The App tab's series (`app.ENV.*` config).
     pub app_metrics: crate::app::Fetch<crate::app_tab::AppMetrics>,
+    /// The App tab's top errors (Logs Insights over `app.ENV.log_group`).
+    /// Not in `tab_loading`: a query can outlast the metrics refresh,
+    /// and must not hold it up. `spawn_detail_top_errors` refuses to
+    /// stack instead.
+    pub top_errors: crate::app::Fetch<crate::app_tab::TopErrors>,
     pub auto_refresh: bool,
     pub search_input: TextInput,
     pub search_active: bool, // true while user is typing a pattern
@@ -737,6 +742,7 @@ mod tests {
             queues: WorkerQueues::default(),
             metrics: vec![],
             app_metrics: Default::default(),
+            top_errors: Default::default(),
             metrics_range_secs: 3600,
             auto_refresh: false,
             search_input: TextInput::new(),

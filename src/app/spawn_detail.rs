@@ -294,6 +294,67 @@ impl App {
         );
     }
 
+    /// The App tab's top errors: a Logs Insights query over the env's
+    /// `app.ENV.log_group`. Opt-in by that key, because a query is billed
+    /// per GB scanned; never stacked on one still running; never in
+    /// demo mode.
+    pub(super) fn spawn_detail_top_errors(&mut self, env_name: String) {
+        let Some(group) = self
+            .cfg
+            .app_tabs
+            .envs
+            .get(&env_name)
+            .and_then(|s| s.log_group.as_deref())
+            .map(|g| crate::app_tab::top_errors_log_group(&env_name, g))
+        else {
+            return;
+        };
+        let Some(d) = self.detail.as_mut() else {
+            return;
+        };
+        if d.top_errors.in_flight() || self.demo_mode {
+            return;
+        }
+        d.top_errors.begin();
+        let query = crate::app_tab::top_errors_query(
+            self.cfg
+                .app_tabs
+                .envs
+                .get(&env_name)
+                .and_then(|s| s.error_fingerprint.as_deref()),
+        );
+        let env_for_msg = env_name.clone();
+        self.spawn_aws_in(
+            self.detail_client(),
+            "run_insights_query",
+            move |aws| async move {
+                let end = chrono::Utc::now();
+                let start = end - chrono::Duration::minutes(crate::app_tab::TOP_ERRORS_WINDOW_MINS);
+                let r = aws
+                    .run_insights_query(
+                        std::slice::from_ref(&group),
+                        start.timestamp_millis(),
+                        end.timestamp_millis(),
+                        &query,
+                    )
+                    .await?;
+                let rows: Vec<Vec<(String, String)>> =
+                    r.rows.into_iter().map(|row| row.fields).collect();
+                Ok(crate::app_tab::top_errors_from(
+                    group,
+                    &rows,
+                    r.records_scanned,
+                    end,
+                ))
+            },
+            move |gen, result| AppMsg::DetailTopErrors {
+                gen,
+                env_name: env_for_msg,
+                result,
+            },
+        );
+    }
+
     pub(super) fn spawn_detail_queues(&mut self, application_name: String, env_name: String) {
         if let Some(d) = self.detail.as_mut() {
             d.loading_queues = true;

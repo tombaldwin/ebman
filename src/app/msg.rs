@@ -65,6 +65,7 @@ impl AppMsg {
             | DetailLogGroups { gen, .. }
             | DetailAlarms { gen, .. }
             | DetailAppMetrics { gen, .. }
+            | DetailTopErrors { gen, .. }
             | EnvVarsForEdit { gen, .. }
             | CostsFetched { gen, .. }
             | DetailRecentVersions { gen, .. }
@@ -130,6 +131,9 @@ impl App {
             AppMsg::DetailAppMetrics {
                 env_name, result, ..
             } => self.apply_detail_msg(&env_name, result, |d, r| d.app_metrics.settle(r)),
+            AppMsg::DetailTopErrors {
+                env_name, result, ..
+            } => self.apply_detail_msg(&env_name, result, |d, r| d.top_errors.settle(r)),
             AppMsg::DetailLogsProgress {
                 env_name,
                 stage,
