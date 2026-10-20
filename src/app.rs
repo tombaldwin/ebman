@@ -545,7 +545,7 @@ pub struct App {
     /// read, so the App tab can pick up hand edits without a restart.
     /// `None` when this App's config did not come from the file (tests),
     /// which is never re-read; `Some(None)` when there was no file.
-    pub(crate) config_seen: Option<Option<std::time::SystemTime>>,
+    pub(crate) config_seen: Option<Option<crate::config::ConfigStamp>>,
     pub(crate) newly_red: HashSet<String>,
     /// Env names that appeared for the first time on the most recent
     /// refresh (weren't in `prev_health` last cycle). Used by the env
@@ -1437,7 +1437,7 @@ impl App {
             shell_return_mode: Mode::Normal,
             last_rendered_buffer: None,
             notify_bell: config.notify_bell,
-            config_seen: Some(crate::config::config_mtime()),
+            config_seen: Some(crate::config::config_stamp()),
             cfg: ResolvedConfig {
                 notify_webhook: config.notify_webhook.clone(),
                 safety_read_only: config.safety_read_only,

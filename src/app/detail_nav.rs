@@ -308,13 +308,13 @@ impl App {
     /// config dir. Returns whether anything was re-read.
     pub(crate) fn reload_app_tabs_if_changed(
         &mut self,
-        mtime: Option<std::time::SystemTime>,
+        stamp: Option<crate::config::ConfigStamp>,
         read: impl FnOnce() -> std::io::Result<String>,
     ) -> bool {
         let Some(seen) = self.config_seen else {
             return false;
         };
-        if seen == mtime {
+        if seen == stamp {
             return false;
         }
         let tabs = match read() {
@@ -323,12 +323,24 @@ impl App {
             // Unreadable: keep what we have, and try again next time.
             Err(_) => return false,
         };
-        self.config_seen = Some(mtime);
+        self.config_seen = Some(stamp);
         self.cfg.app_tabs = tabs;
         true
     }
 
+    /// [`reload_app_tabs_if_changed`](Self::reload_app_tabs_if_changed)
+    /// against the real file. Called wherever app. config is about to be
+    /// used: any Detail refresh, the App tab's editor, `:alarms`, `:why`.
+    pub(crate) fn reload_app_tabs_from_disk(&mut self) {
+        self.reload_app_tabs_if_changed(crate::config::config_stamp(), || {
+            std::fs::read_to_string(crate::config::config_path())
+        });
+    }
+
     fn detail_refresh(&mut self, trigger: RefreshTrigger) {
+        // Before anything reads app. config: the App tab's own fetches,
+        // and every tab's alarm match (alarm_prefix).
+        self.reload_app_tabs_from_disk();
         let Some(detail) = self.detail.as_ref() else {
             return;
         };
@@ -373,9 +385,6 @@ impl App {
             DetailTab::Queue => self.spawn_detail_queues(app_name, env_name),
             DetailTab::Metrics => self.spawn_detail_metrics(env_name),
             DetailTab::App => {
-                self.reload_app_tabs_if_changed(crate::config::config_mtime(), || {
-                    std::fs::read_to_string(crate::config::config_path())
-                });
                 // Its instance rows come from the instance list; one
                 // already in flight (the eager fetch on open) will do.
                 if !self.detail.as_ref().is_some_and(|d| d.loading_instances) {

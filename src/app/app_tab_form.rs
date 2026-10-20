@@ -375,9 +375,7 @@ impl App {
         // Built from the file as it is now: a hand edit since the last
         // refresh would otherwise be missing from the form, and saving
         // the form replaces the env's lines on disk.
-        self.reload_app_tabs_if_changed(crate::config::config_mtime(), || {
-            std::fs::read_to_string(crate::config::config_path())
-        });
+        self.reload_app_tabs_from_disk();
         let form = crate::form::Form {
             title: format!("App tab: {env}"),
             fields: fields(self.cfg.app_tabs.envs.get(&env)),
@@ -467,9 +465,9 @@ impl App {
                 return;
             }
         };
-        let mtime = crate::config::config_mtime();
+        let stamp = crate::config::config_stamp();
         self.cfg.app_tabs = crate::config::parse(&written).app_tabs;
-        self.config_seen = Some(mtime);
+        self.config_seen = Some(stamp);
         self.form = None;
         self.mode = Mode::Detail;
         self.pin_status(format!("App tab saved for {env}"));

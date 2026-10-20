@@ -118,8 +118,9 @@ safety.accounts.prod.read_only = true
 # is optional. Values are taken literally (no escapes), so a regex
 # backslash is written once. A line that cannot be applied is reported
 # on the App tab rather than skipped, and is kept on save. Edits apply
-# without a restart: the App tab re-reads these lines when config.toml
-# has changed, on opening and on ^R.
+# without a restart: these lines are re-read whenever config.toml has
+# changed and something is about to use them (any Detail tab's refresh,
+# the App tab's editor, :alarms, :why).
 #
 # Or press `e` on the App tab to edit them in a form. It is pre-filled
 # with what the env's own evidence suggests, each saying where it came

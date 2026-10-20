@@ -745,12 +745,20 @@ pub(crate) fn parse(text: &str) -> Config {
     cfg
 }
 
-/// `config.toml`'s modification time, or `None` when there is no file
-/// (or its time cannot be read).
-pub(crate) fn config_mtime() -> Option<std::time::SystemTime> {
-    std::fs::metadata(config_path())
-        .and_then(|m| m.modified())
-        .ok()
+/// What says whether `config.toml` changed: its modification time and
+/// its size. The size as well because a filesystem with one-second
+/// times misses an edit made in the same second as the last read.
+pub(crate) type ConfigStamp = (std::time::SystemTime, u64);
+
+/// `config.toml`'s [`ConfigStamp`], or `None` when there is no file (or
+/// its metadata cannot be read).
+pub(crate) fn config_stamp() -> Option<ConfigStamp> {
+    stamp_of(&config_path())
+}
+
+fn stamp_of(path: &std::path::Path) -> Option<ConfigStamp> {
+    let m = std::fs::metadata(path).ok()?;
+    Some((m.modified().ok()?, m.len()))
 }
 
 pub(crate) fn config_path() -> PathBuf {
@@ -1351,6 +1359,23 @@ accounts.staging.external_id = "abc-xyz"
         // is in, so `parse` must call `finish`.
         let cfg = parse("app.e.metric.x = \"X\"\n");
         assert_eq!(cfg.app_tabs.errors.len(), 1, "{:?}", cfg.app_tabs.errors);
+    }
+
+    #[test]
+    fn a_stamp_changes_with_the_size_even_within_the_second() {
+        // A private file, not the shared test config dir.
+        let path = std::env::temp_dir().join(format!("ebman-stamp-{}", std::process::id()));
+        std::fs::write(&path, "a").unwrap();
+        let first = stamp_of(&path).expect("stamped");
+        std::fs::write(&path, "abc").unwrap();
+        let second = stamp_of(&path).expect("stamped");
+        assert_eq!((first.1, second.1), (1, 3));
+        assert_ne!(
+            first, second,
+            "an edit within the same second is still an edit"
+        );
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(stamp_of(&path), None, "no file, no stamp");
     }
 
     #[test]

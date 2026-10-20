@@ -30,7 +30,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   `app_metrics` tool returns the same data for agents. `e` on the tab
   edits its config in a form pre-filled by discovery (from the env's
   own log groups, env-var endpoints, alarm names and metrics; RDS is
-  offered, never assumed), and hand edits to `config.toml` apply
+  offered, never assumed), and hand edits to its `app.` lines apply
   without a restart. A config line that
   cannot be applied is shown on the tab, not skipped, and kept on
   `:settings` save. See `docs/configuration.md`.

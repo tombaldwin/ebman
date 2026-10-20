@@ -2409,8 +2409,10 @@ async fn a_partial_metrics_result_draws_and_reports_its_failure() {
 #[tokio::test]
 async fn app_lines_are_re_read_when_the_file_changed() {
     use std::time::{Duration, SystemTime};
-    let t0 = SystemTime::UNIX_EPOCH + Duration::from_secs(1000);
-    let t1 = t0 + Duration::from_secs(5);
+    let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1000);
+    let t0 = (at, 100);
+    // The same second, a different size: an edit, not the same file.
+    let t1 = (at, 130);
     let mut app = test_app();
     let edited = || Ok("app.e.namespace = \"New\"\n".to_string());
 
@@ -2450,20 +2452,35 @@ async fn app_lines_are_re_read_when_the_file_changed() {
 #[test]
 fn the_app_tab_refresh_re_reads_its_config() {
     let src = std::fs::read_to_string("src/app/detail_nav.rs").expect("read");
-    let arm = src
+    let body = src
         .split("fn detail_refresh(")
         .nth(1)
-        .and_then(|body| body.split("DetailTab::App => {").nth(1))
-        .and_then(|rest| rest.split("DetailTab::Logs").next())
-        .expect("the App arm of detail_refresh");
+        .and_then(|b| b.split("\n    }\n").next())
+        .expect("detail_refresh");
     assert!(
-        arm.contains("spawn_detail_app("),
-        "canary: this is the refresh arm"
+        body.contains("spawn_detail_app("),
+        "canary: this is the refresh"
     );
-    assert!(
-        arm.contains("reload_app_tabs_if_changed("),
-        "the App tab refresh must re-read app. lines"
-    );
+    let reload = body
+        .find("reload_app_tabs_from_disk(")
+        .expect("re-reads app. lines");
+    let first_use = body.find("match tab").expect("then refreshes the tab");
+    assert!(reload < first_use, "before any tab reads them");
+    for (file, entry) in [
+        (
+            "src/app/spawn_refresh.rs",
+            "pub(crate) fn spawn_alarms_fetch(",
+        ),
+        ("src/app/open_overlay.rs", "pub(crate) fn open_why_red("),
+    ] {
+        let src = std::fs::read_to_string(file).expect("read");
+        let body = src.split(entry).nth(1).expect(entry);
+        let body = body.split("\n    }\n").next().unwrap();
+        assert!(
+            body.contains("reload_app_tabs_from_disk("),
+            "{entry} uses alarm_prefix"
+        );
+    }
 }
 
 /// `e` opens the App tab's editor on the App tab and nowhere else; Esc
@@ -2583,7 +2600,7 @@ fn saving_the_app_tab_writes_then_applies() {
         .nth(1)
         .expect("open_app_tab_form");
     let reload = open
-        .find("reload_app_tabs_if_changed(")
+        .find("reload_app_tabs_from_disk(")
         .expect("re-reads on open");
     let build = open
         .find("fields(self.cfg.app_tabs")
