@@ -30,6 +30,11 @@ pub(crate) struct AppTabs {
 pub(crate) struct AppTabError {
     pub env: Option<String>,
     pub message: String,
+    /// The line that failed to apply, verbatim; `None` for a check over
+    /// several lines (a metric with no namespace). The App tab's editor
+    /// writes these back, so saving the form never deletes a line the
+    /// operator wrote and the parser could not use.
+    pub line: Option<String>,
 }
 
 /// One environment's App tab.
@@ -106,17 +111,26 @@ impl AppTabs {
     pub(crate) fn apply(&mut self, rest: &str, value: &str, line: &str) {
         self.lines.push(line.to_string());
         if let Err(message) = self.apply_field(rest, value) {
-            self.record_error(rest, message);
+            self.record_error(rest, message, Some(line));
         }
     }
 
     /// Attribute `message` to the env named in `rest`, if it names one.
-    fn record_error(&mut self, rest: &str, message: String) {
+    fn record_error(&mut self, rest: &str, message: String, line: Option<&str>) {
         let env = rest.split_once('.').map_or(rest, |(env, _)| env).trim();
         self.errors.push(AppTabError {
             env: Some(env.to_string()).filter(|e| !e.is_empty()),
             message,
+            line: line.map(str::to_string),
         });
+    }
+
+    /// `env`'s lines that did not apply, verbatim.
+    pub(crate) fn rejected_lines<'a>(&'a self, env: &'a str) -> impl Iterator<Item = &'a str> {
+        self.errors
+            .iter()
+            .filter(move |e| e.env.as_deref() == Some(env))
+            .filter_map(|e| e.line.as_deref())
     }
 
     /// Keep `line` for `serialize` but record `message` instead of
@@ -124,7 +138,7 @@ impl AppTabs {
     /// malformed.
     pub(crate) fn reject(&mut self, rest: &str, line: &str, message: String) {
         self.lines.push(line.to_string());
-        self.record_error(rest, message);
+        self.record_error(rest, message, Some(line));
     }
 
     /// The errors to show on `env`'s tab: its own, and any that name no
@@ -203,6 +217,7 @@ impl AppTabs {
             let error = |message: String| AppTabError {
                 env: Some(env.clone()),
                 message,
+                line: None,
             };
             if spec.namespace.is_none() && !spec.metrics.is_empty() {
                 self.errors.push(error(format!(

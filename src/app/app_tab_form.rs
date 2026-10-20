@@ -331,6 +331,24 @@ pub(crate) fn lines_from_fields(
     }
 }
 
+/// The form's lines, plus the env's lines that did not apply: the form
+/// cannot show those (it is built from what parsed), and dropping them
+/// would delete config the operator wrote, a field a newer ebman reads
+/// included. One the form now writes the same key for is replaced.
+pub(crate) fn with_rejected_lines<'a>(
+    mut lines: Vec<String>,
+    rejected: impl Iterator<Item = &'a str>,
+) -> Vec<String> {
+    let key = |l: &str| l.split_once('=').map(|(k, _)| k.trim().to_string());
+    let written: Vec<Option<String>> = lines.iter().map(|l| key(l)).collect();
+    for r in rejected {
+        if !written.contains(&key(r)) {
+            lines.push(r.to_string());
+        }
+    }
+    lines
+}
+
 impl App {
     /// `e` on the App tab: open the editor for the Detail view's env.
     pub(crate) fn open_app_tab_form(&mut self) {
@@ -339,6 +357,12 @@ impl App {
         };
         let env = detail.env_name.clone();
         let app_name = detail.env_snapshot.application.clone();
+        // Built from the file as it is now: a hand edit since the last
+        // refresh would otherwise be missing from the form, and saving
+        // the form replaces the env's lines on disk.
+        self.reload_app_tabs_if_changed(crate::config::config_mtime(), || {
+            std::fs::read_to_string(crate::config::config_path())
+        });
         let form = crate::form::Form {
             title: format!("App tab: {env}"),
             fields: fields(self.cfg.app_tabs.envs.get(&env)),
@@ -415,7 +439,7 @@ impl App {
         };
         let env = form.env_name.clone();
         let lines = match lines_from_fields(&env, &form.fields) {
-            Ok(lines) => lines,
+            Ok(lines) => with_rejected_lines(lines, self.cfg.app_tabs.rejected_lines(&env)),
             Err(errors) => {
                 form.banner = format!("not saved: {}", errors.join("; "));
                 return;
@@ -688,6 +712,36 @@ mod tests {
         assert!(
             !format!("{found:?}").contains("hunter2"),
             "no other env var value is kept"
+        );
+    }
+
+    #[test]
+    fn a_save_keeps_the_envs_lines_that_did_not_apply() {
+        let tabs = crate::config::parse(
+            "app.e.namespace = \"N\"\n\
+             app.e.threshold.heap = \"1800,1500\"\n\
+             app.e.future_field = \"x\"\n\
+             app.e.alarm_prefix = \"\"\n\
+             app.other.future_field = \"y\"\n",
+        )
+        .app_tabs;
+        let lines = with_rejected_lines(
+            vec![
+                "app.e.namespace = \"N\"".to_string(),
+                // The form now writes alarm_prefix: the empty, rejected one goes.
+                "app.e.alarm_prefix = \"e-\"".to_string(),
+            ],
+            tabs.rejected_lines("e"),
+        );
+        assert_eq!(
+            lines,
+            [
+                "app.e.namespace = \"N\"",
+                "app.e.alarm_prefix = \"e-\"",
+                "app.e.threshold.heap = \"1800,1500\"",
+                "app.e.future_field = \"x\"",
+            ],
+            "another env's lines are not this save's"
         );
     }
 

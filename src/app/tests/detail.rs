@@ -2568,4 +2568,21 @@ fn saving_the_app_tab_writes_then_applies() {
         body.contains("self.config_seen ="),
         "and the reload knows it has them"
     );
+    assert!(
+        body.contains("with_rejected_lines("),
+        "a save keeps the env's lines that did not apply"
+    );
+    // Opening re-reads first, or a hand edit since the last refresh is
+    // missing from the form and the save deletes it.
+    let open = src
+        .split("pub(crate) fn open_app_tab_form(")
+        .nth(1)
+        .expect("open_app_tab_form");
+    let reload = open
+        .find("reload_app_tabs_if_changed(")
+        .expect("re-reads on open");
+    let build = open
+        .find("fields(self.cfg.app_tabs")
+        .expect("builds the fields");
+    assert!(reload < build, "re-read before the form is built");
 }
