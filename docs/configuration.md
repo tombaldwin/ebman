@@ -122,7 +122,10 @@ safety.accounts.prod.read_only = true
 # changed and something is about to use them (any Detail tab's refresh,
 # the App tab's editor, :alarms, :why).
 #
-# Or press `e` on the App tab to edit them in a form. It is pre-filled
+# An env with no app. lines needs none of this to start: its App tab
+# looks for what the env uses, lists what it found, and draws the
+# resources an env variable names, marked "Suggested, not saved". Press
+# `e` on the App tab to review and save, or to edit later, in a form. It is pre-filled
 # with what the env's own evidence suggests, each saying where it came
 # from: alarms named for the env, cache nodes an environment variable's
 # endpoint leads to, and metrics dimensioned by the env's name. RDS

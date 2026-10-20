@@ -116,6 +116,7 @@ mod cmd_write; // bulk writes: batch-action, batch-deploy
 // Interactive surfaces.
 mod action_flow; // action menu -> confirm -> undo window -> dispatch
 mod app_tab_form; // the App tab's editor + discovery
+pub(crate) use app_tab_form::{preview_spec, summary_lines};
 mod apps_menu; // the Applications scope's menu + info overlay
 mod config_edit; // Detail's Config tab editor + template CRUD
 mod detail_nav; // the per-environment Detail view
@@ -546,6 +547,11 @@ pub struct App {
     /// `None` when this App's config did not come from the file (tests),
     /// which is never re-read; `Some(None)` when there was no file.
     pub(crate) config_seen: Option<Option<crate::config::ConfigStamp>>,
+    /// What discovery found per env, kept for the session: the App tab
+    /// of an env with no config shows it, and the editor opens with it.
+    pub(crate) app_discovered: std::collections::HashMap<String, app_tab_form::Discovered>,
+    /// Envs whose discovery is running, so it is not started twice.
+    pub(crate) app_discovering: std::collections::HashSet<String>,
     pub(crate) newly_red: HashSet<String>,
     /// Env names that appeared for the first time on the most recent
     /// refresh (weren't in `prev_health` last cycle). Used by the env
@@ -1438,6 +1444,8 @@ impl App {
             last_rendered_buffer: None,
             notify_bell: config.notify_bell,
             config_seen: Some(crate::config::config_stamp()),
+            app_discovered: Default::default(),
+            app_discovering: Default::default(),
             cfg: ResolvedConfig {
                 notify_webhook: config.notify_webhook.clone(),
                 safety_read_only: config.safety_read_only,
@@ -1743,6 +1751,8 @@ impl App {
             last_rendered_buffer: None,
             notify_bell: config.notify_bell,
             config_seen: None,
+            app_discovered: Default::default(),
+            app_discovering: Default::default(),
             cfg: ResolvedConfig {
                 notify_webhook: config.notify_webhook.clone(),
                 safety_read_only: config.safety_read_only,

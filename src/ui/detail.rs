@@ -157,6 +157,8 @@ pub(super) fn draw_detail(f: &mut Frame, area: Rect, app: &mut App) {
     }
     // Snapshot the fields the footer block needs before we drop the immutable
     // borrow and reach for `app.detail.as_mut()` to write metrics_body_rect.
+    // Read before `detail`'s borrow ends, for the key strip's wording.
+    let configured = app.cfg.app_tabs.envs.contains_key(&detail.env_name);
     let footer_state = DetailFooterState {
         auto_refresh: detail.auto_refresh,
         error: detail.error.as_ref().map(|e| e.message.clone()),
@@ -221,7 +223,7 @@ pub(super) fn draw_detail(f: &mut Frame, area: Rect, app: &mut App) {
             Span::raw("   "),
             auto_badge,
         ]),
-        render_detail_keystrip(active_tab, &app.theme),
+        app_tab_keystrip(active_tab, &app.theme, configured),
     ]);
     f.render_widget(footer, chunks[3]);
 }
@@ -296,6 +298,21 @@ pub(super) const DETAIL_GLOBAL_KEYS: &[(&str, &str)] =
 /// then `key`/`label` pairs where the key is bold + bright and the label
 /// muted, separated by a thin dim `·`. The visual key/label contrast lets
 /// the operator scan keys without the strip needing extra width.
+/// The key strip, with the App tab's `e` saying "set up" for an env
+/// that has no App tab config yet: "edit" hid that there is anything to
+/// set up, and that discovery does most of it.
+pub(super) fn app_tab_keystrip(tab: DetailTab, theme: &Theme, configured: bool) -> Line<'static> {
+    let mut line = render_detail_keystrip(tab, theme);
+    if tab == DetailTab::App && !configured {
+        for span in &mut line.spans {
+            if span.content == "edit" {
+                span.content = "set up".into();
+            }
+        }
+    }
+    line
+}
+
 pub(super) fn render_detail_keystrip(tab: DetailTab, theme: &Theme) -> Line<'static> {
     let key_style = Style::default().fg(theme.text).add_modifier(Modifier::BOLD);
     let label_style = Style::default().fg(theme.muted);

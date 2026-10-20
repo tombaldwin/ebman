@@ -2609,3 +2609,49 @@ fn saving_the_app_tab_writes_then_applies() {
         .expect("builds the fields");
     assert!(reload < build, "re-read before the form is built");
 }
+
+/// An unconfigured env's discovery runs once a session; `^R` runs it
+/// again only when a lookup failed.
+#[tokio::test]
+async fn discovery_runs_once_and_again_on_ctrl_r_only_after_a_failure() {
+    use crate::app::app_tab_form::Discovered;
+    let mut app = test_app();
+    app.environments = vec![mk_env("api-prod", "shop", "WebServer", "Green")];
+    app.rebuild_view();
+    app.table_state.select(Some(0));
+    app.open_detail();
+    let d = app.detail.as_mut().unwrap();
+    d.tab_idx = d.tabs.iter().position(|t| *t == DetailTab::App).unwrap();
+    app.detail_refresh_on_open();
+    assert!(app.app_discovering.contains("api-prod"));
+    app.app_discovering.clear();
+    app.app_discovered
+        .insert("api-prod".into(), Discovered::default());
+    let settle = |app: &mut App| {
+        app.detail
+            .as_mut()
+            .unwrap()
+            .app_metrics
+            .settle(Ok(Default::default()));
+        app.detail_fetch_started = None;
+    };
+    settle(&mut app);
+    app.detail_refresh_active_tab();
+    assert!(
+        !app.app_discovering.contains("api-prod"),
+        "found already: not again"
+    );
+    app.app_discovered.get_mut("api-prod").unwrap().failed = vec![("alarms".into(), "x".into())];
+    settle(&mut app);
+    app.detail_refresh_on_open();
+    assert!(
+        !app.app_discovering.contains("api-prod"),
+        "opening does not retry"
+    );
+    settle(&mut app);
+    app.detail_refresh_active_tab();
+    assert!(
+        app.app_discovering.contains("api-prod"),
+        "^R retries a failed lookup"
+    );
+}

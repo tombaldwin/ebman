@@ -27,7 +27,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   last 15 minutes, run on `^R` and when the tab opens (reopening it
   keeps an answer under five minutes old), never on the auto-refresh
   tick. The MCP
-  `app_metrics` tool returns the same data for agents. `e` on the tab
+  `app_metrics` tool returns the same data for agents. An env with no
+  config needs no setup to start: its App tab lists what discovery
+  found and previews the resources an env variable names, unsaved.
+  `e` on the tab
   edits its config in a form pre-filled by discovery (from the env's
   own log groups, env-var endpoints, alarm names and metrics; RDS is
   offered, never assumed), and hand edits to its `app.` lines apply

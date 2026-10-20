@@ -281,7 +281,12 @@ impl App {
         if let Some(d) = self.detail.as_mut() {
             d.app_metrics.begin();
         }
-        let spec = self.cfg.app_tabs.envs.get(&env_name).cloned();
+        // No config: preview what discovery found evidence for, if any.
+        let spec = self.cfg.app_tabs.envs.get(&env_name).cloned().or_else(|| {
+            self.app_discovered
+                .get(&env_name)
+                .and_then(crate::app::preview_spec)
+        });
         // In demo mode: the configured rows, empty, so the tab still
         // shows what is configured and says why there are no values.
         let demo_rows = spec.as_ref().filter(|_| self.demo_mode).map(|spec| {

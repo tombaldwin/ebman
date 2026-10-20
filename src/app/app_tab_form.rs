@@ -376,7 +376,6 @@ impl App {
             return;
         };
         let env = detail.env_name.clone();
-        let app_name = detail.env_snapshot.application.clone();
         // Built from the file as it is now: a hand edit since the last
         // refresh would otherwise be missing from the form, and saving
         // the form replaces the env's lines on disk.
@@ -397,6 +396,25 @@ impl App {
         };
         self.form = Some(form);
         self.mode = Mode::Form;
+        // Found already this session, and nothing failed: use it.
+        if let Some(found) = self
+            .app_discovered
+            .get(&env)
+            .filter(|f| f.failed.is_empty())
+            .cloned()
+        {
+            self.fill_app_tab_form(&env, &found);
+            return;
+        }
+        self.spawn_app_discovery(env);
+    }
+
+    /// Start discovery for `env` unless it is already running. Demo mode
+    /// answers at once with nothing, without calling AWS.
+    pub(crate) fn spawn_app_discovery(&mut self, env: String) {
+        if !self.app_discovering.insert(env.clone()) {
+            return;
+        }
         if self.demo_mode {
             let _ = self.msg_tx.send(AppMsg::AppTabDiscovered {
                 gen: self.generation,
@@ -405,6 +423,12 @@ impl App {
             });
             return;
         }
+        let app_name = self
+            .environments
+            .iter()
+            .find(|e| e.name == env)
+            .map(|e| e.application.clone())
+            .unwrap_or_default();
         let fleet: Vec<String> = self.environments.iter().map(|e| e.name.clone()).collect();
         let dimension_names =
             env_dimension_names(&self.cfg.alarm_dimensions, self.cfg.app_tabs.envs.get(&env));
@@ -428,13 +452,28 @@ impl App {
     }
 
     pub(super) fn handle_app_tab_discovered(&mut self, env_name: String, found: Discovered) {
+        self.app_discovering.remove(&env_name);
+        self.app_discovered.insert(env_name.clone(), found.clone());
+        self.fill_app_tab_form(&env_name, &found);
+        // An unconfigured env's App tab on screen: preview what was found.
+        let on_tab = self
+            .detail
+            .as_ref()
+            .is_some_and(|d| d.env_name == env_name && d.tab() == DetailTab::App);
+        if on_tab && !self.cfg.app_tabs.envs.contains_key(&env_name) && self.form.is_none() {
+            self.spawn_detail_app(env_name);
+        }
+    }
+
+    /// Merge `found` into the open editor for `env_name`, if there is one.
+    fn fill_app_tab_form(&mut self, env_name: &str, found: &Discovered) {
         let Some(form) = self.form.as_mut() else {
             return;
         };
         if form.env_name != env_name || !matches!(form.submit, crate::form::FormSubmit::AppTab) {
             return;
         }
-        apply_discovery(&mut form.fields, &found);
+        apply_discovery(&mut form.fields, found);
         form.banner = if found.failed.is_empty() {
             format!("app.{env_name}.* in config.toml; suggestions say what found them")
         } else {
@@ -480,6 +519,58 @@ impl App {
         self.pin_status(format!("App tab saved for {env}"));
         self.detail_refresh_active_tab();
     }
+}
+
+/// The App tab to preview for an env with no config: the resources an
+/// env variable names, which is evidence, and nothing else. No log
+/// group (that is billed) and no alarm prefix (that would change which
+/// alarms other screens call the env's); `None` when there is nothing.
+pub(crate) fn preview_spec(found: &Discovered) -> Option<AppTabSpec> {
+    let d = &found.discovery;
+    let spec = AppTabSpec {
+        rds: d.rds_found.iter().map(|(id, _)| id.clone()).collect(),
+        elasticache: d.cache_found.iter().map(|(id, _)| id.clone()).collect(),
+        ..Default::default()
+    };
+    (!spec.is_empty()).then_some(spec)
+}
+
+/// What discovery found, as the lines an unconfigured env's App tab
+/// shows, each saying what found it.
+pub(crate) fn summary_lines(found: &Discovered) -> Vec<String> {
+    let d = &found.discovery;
+    let mut out = Vec::new();
+    if let Some((prefix, n)) = &d.alarm_prefix {
+        out.push(format!("{n} alarms named {prefix}…"));
+    }
+    for (id, var) in &d.cache_found {
+        out.push(format!("cache node {id} (env var {var})"));
+    }
+    for (id, var) in &d.rds_found {
+        out.push(format!("RDS instance {id} (env var {var})"));
+    }
+    if !d.rds_options.is_empty() && d.rds_found.is_empty() {
+        out.push(format!(
+            "{} RDS instances to choose from",
+            d.rds_options.len()
+        ));
+    }
+    if let Some(log) = &d.app_log {
+        out.push(format!("app log {log} (choose it for top errors)"));
+    }
+    if let Some(app) = &d.app_metrics {
+        out.push(format!(
+            "{} metrics in {} dimensioned {}={}",
+            app.names.len(),
+            app.namespace,
+            app.dimension.0,
+            app.dimension.1
+        ));
+    }
+    for (what, why) in &found.failed {
+        out.push(format!("could not check {what}: {why}"));
+    }
+    out
 }
 
 /// The longest the editor waits on any one discovery lookup.
@@ -874,6 +965,58 @@ mod tests {
             1,
             "no name tried twice"
         );
+    }
+
+    #[test]
+    fn the_preview_takes_only_what_an_env_variable_names() {
+        let mut d = found();
+        assert_eq!(
+            preview_spec(&d),
+            Some(AppTabSpec {
+                elasticache: vec!["sessions-001".into()],
+                ..Default::default()
+            }),
+            "no log group (billed), no alarm prefix, no RDS without evidence"
+        );
+        d.discovery.rds_found = vec![("shop-db".into(), "DB_HOST".into())];
+        assert_eq!(preview_spec(&d).unwrap().rds, ["shop-db"]);
+        d.discovery.rds_found.clear();
+        d.discovery.cache_found.clear();
+        assert_eq!(preview_spec(&d), None, "nothing named, nothing previewed");
+    }
+
+    #[test]
+    fn the_summary_says_what_found_each_line_and_what_could_not_be_checked() {
+        let mut d = found();
+        d.failed = vec![("custom metrics".into(), "AccessDenied".into())];
+        let lines = summary_lines(&d);
+        assert!(
+            lines.contains(&"3 alarms named Shop-prod-…".to_string()),
+            "{lines:?}"
+        );
+        assert!(
+            lines.contains(&"cache node sessions-001 (env var REDIS)".to_string()),
+            "{lines:?}"
+        );
+        assert!(
+            lines.contains(&"2 RDS instances to choose from".to_string()),
+            "{lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.starts_with("app log var/log/app.log")),
+            "{lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l.starts_with("3 metrics in Shop")),
+            "{lines:?}"
+        );
+        assert_eq!(
+            lines.last().unwrap(),
+            "could not check custom metrics: AccessDenied"
+        );
+        assert!(summary_lines(&Discovered::default()).is_empty());
     }
 
     #[test]

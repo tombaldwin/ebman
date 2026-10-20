@@ -413,6 +413,22 @@ impl App {
                 if run {
                     self.spawn_detail_top_errors(env_name.clone());
                 }
+                // No config yet: find what the env uses, once a session,
+                // so the tab can say so rather than point at a file. `^R`
+                // tries again when a lookup failed.
+                if !self.cfg.app_tabs.envs.contains_key(&env_name) {
+                    let retry = trigger == RefreshTrigger::Asked
+                        && self
+                            .app_discovered
+                            .get(&env_name)
+                            .is_some_and(|f| !f.failed.is_empty());
+                    if retry {
+                        self.app_discovered.remove(&env_name);
+                    }
+                    if !self.app_discovered.contains_key(&env_name) {
+                        self.spawn_app_discovery(env_name.clone());
+                    }
+                }
                 self.spawn_detail_app(env_name);
             }
             DetailTab::Logs => self.spawn_detail_logs(env_name),

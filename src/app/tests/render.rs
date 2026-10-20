@@ -2076,7 +2076,10 @@ async fn the_app_tab_draws_series_thresholds_and_config_errors() {
     press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
     press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
     let text = render(&mut app, 160, 30);
-    assert!(text.contains("No App tab config for api-staging"), "{text}");
+    assert!(
+        text.contains("Not set up yet. Looking for what api-staging uses"),
+        "{text}"
+    );
     assert!(
         !text.contains("top errors"),
         "no log_group, no top errors:\n{text}"
@@ -2185,4 +2188,86 @@ async fn the_app_tab_is_ascii_in_ascii_mode() {
         notes: vec![],
     }));
     check(&mut app, "settled");
+}
+
+/// An env with no App tab config runs discovery and says what it found,
+/// inviting `e`; resources an env variable names are drawn as
+/// suggestions; the key strip says "set up"; and the editor opens
+/// already filled from the same result, without a second lookup.
+#[tokio::test]
+async fn an_unconfigured_app_tab_shows_what_discovery_found() {
+    use crate::app_discover::Discovery;
+    let mut app = App::for_tests(
+        crate::aws::AwsClient::stub(),
+        crate::config::Config::default(),
+    );
+    app.environments = vec![mk_env("api-prod", "poly", "Web", "Green")];
+    app.view.invalidate();
+    app.rebuild_view();
+    press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+    assert!(
+        app.app_discovering.contains("api-prod"),
+        "opening the tab looks"
+    );
+    let text = render(&mut app, 160, 34);
+    assert!(
+        text.contains("e set up"),
+        "the key strip says set up:\n{text}"
+    );
+
+    let found = crate::app::app_tab_form::Discovered {
+        discovery: Discovery {
+            alarm_prefix: Some(("api-prod-".into(), 9)),
+            cache_found: vec![("sessions-001".into(), "REDIS_HOST".into())],
+            cache_options: vec!["sessions-001".into()],
+            rds_options: vec!["db-a".into(), "db-b".into()],
+            app_log: Some("var/log/app.log".into()),
+            ..Default::default()
+        },
+        failed: vec![],
+    };
+    app.handle_msg(AppMsg::AppTabDiscovered {
+        gen: app.generation,
+        env_name: "api-prod".into(),
+        found,
+    });
+    assert!(!app.app_discovering.contains("api-prod"));
+    // The preview is a real fetch (the stub fails it); with nothing to
+    // preview the tab would settle empty without calling AWS.
+    let result = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            if let AppMsg::DetailAppMetrics { result, .. } = app.msg_rx.recv().await.expect("msg") {
+                if result.is_err() {
+                    break result;
+                }
+            }
+        }
+    })
+    .await
+    .expect("the preview was fetched");
+    assert!(result.is_err());
+    let text = render(&mut app, 160, 34);
+    for want in [
+        "Not set up yet. Found for api-prod:",
+        "9 alarms named api-prod-…",
+        "cache node sessions-001 (env var REDIS_HOST)",
+        "2 RDS instances to choose from",
+        "app log var/log/app.log (choose it for top errors)",
+        "Press e to review and save.",
+        "Suggested, not saved:",
+    ] {
+        assert!(text.contains(want), "lacks {want:?}:\n{text}");
+    }
+
+    // The editor opens from the same result: filled, no second lookup.
+    press(&mut app, KeyCode::Char('e'), KeyModifiers::NONE);
+    let form = app.form.as_ref().expect("editor open");
+    assert_eq!(form.state, crate::form::FormState::Ready, "no waiting");
+    assert!(
+        !app.app_discovering.contains("api-prod"),
+        "not looked up again"
+    );
+    let cache = form.fields.iter().find(|f| f.key == "elasticache").unwrap();
+    assert_eq!(cache.value, "sessions-001");
 }

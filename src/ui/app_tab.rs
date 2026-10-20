@@ -25,58 +25,17 @@ pub(super) fn draw_detail_app(
     }
     alarm_line(&mut lines, &detail.cw_alarms, theme);
     match tabs.envs.get(env) {
-        None => {
-            lines.push(Line::from(Span::styled(
-                format!(
-                    "No App tab config for {env}: add app.{env}.namespace and \
-                     app.{env}.metric.LABEL lines to config.toml for your own \
-                     metrics (docs/configuration.md)."
-                ),
-                muted,
-            )));
-        }
+        None => not_set_up(&mut lines, env, detail, app, area.width),
         Some(spec) if spec.is_empty() => {
             lines.push(Line::from(Span::styled(
                 format!(
                     "Nothing to show: add app.{env}.metric.LABEL, app.{env}.rds or \
-                     app.{env}.elasticache lines to config.toml."
+                     app.{env}.elasticache lines to config.toml, or press e."
                 ),
                 muted,
             )));
         }
-        Some(_) => {
-            if detail.app_metrics.is_first_load() {
-                lines.push(Line::from(Span::styled("loading metrics…", muted)));
-            }
-            if let Some(e) = detail.app_metrics.error() {
-                lines.push(Line::from(Span::styled(format!("metrics: {e}"), red)));
-            }
-            if let Some(m) = detail.app_metrics.ready() {
-                for note in &m.notes {
-                    lines.push(Line::from(Span::styled(
-                        format!("CloudWatch: {note}"),
-                        Style::default().fg(theme.health_yellow),
-                    )));
-                }
-                let label_w = m
-                    .series
-                    .iter()
-                    .map(|s| s.label.chars().count())
-                    .chain(
-                        m.resources
-                            .iter()
-                            .map(|r| resource_label(r).chars().count()),
-                    )
-                    .max()
-                    .unwrap_or(0);
-                for s in &m.series {
-                    lines.push(series_row(s, label_w, area.width, theme));
-                }
-                for r in &m.resources {
-                    lines.push(resource_row(r, label_w, area.width, theme));
-                }
-            }
-        }
+        Some(_) => metric_rows(&mut lines, detail, area.width, theme),
     }
     instance_rows(&mut lines, &detail.instances, area.width, theme);
     top_error_rows(&mut lines, &detail.top_errors, theme);
@@ -185,6 +144,115 @@ fn stale_group(
             Style::default().fg(theme.health_yellow),
         )]
     })
+}
+
+/// An env with no App tab config: what discovery found, as an
+/// invitation to `e`, with the resources it has evidence for drawn as
+/// suggestions. Without discovery (demo mode), the config keys to add.
+fn not_set_up(
+    lines: &mut Vec<Line<'static>>,
+    env: &str,
+    detail: &crate::app::DetailState,
+    app: &App,
+    width: u16,
+) {
+    let theme = &app.theme;
+    let muted = Style::default().fg(theme.muted);
+    let strong = Style::default()
+        .fg(theme.title)
+        .add_modifier(Modifier::BOLD);
+    if app.app_discovering.contains(env) {
+        lines.push(Line::from(Span::styled(
+            format!("Not set up yet. Looking for what {env} uses…"),
+            muted,
+        )));
+        return;
+    }
+    let Some(found) = app.app_discovered.get(env) else {
+        lines.push(Line::from(Span::styled(
+            format!(
+                "No App tab config for {env}: press e to set it up, or add \
+                 app.{env}.* lines to config.toml (docs/configuration.md)."
+            ),
+            muted,
+        )));
+        return;
+    };
+    let summary = crate::app::summary_lines(found);
+    if summary.is_empty() {
+        lines.push(Line::from(Span::styled(
+            format!("Not set up yet, and nothing found for {env}: press e to set it up."),
+            muted,
+        )));
+        return;
+    }
+    lines.push(Line::from(Span::styled(
+        format!("Not set up yet. Found for {env}:"),
+        strong,
+    )));
+    for line in summary {
+        lines.push(Line::from(Span::styled(
+            format!("  {line}"),
+            Style::default().fg(theme.text),
+        )));
+    }
+    lines.push(Line::from(vec![
+        Span::styled("Press ", muted),
+        Span::styled(
+            "e",
+            Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" to review and save.", muted),
+    ]));
+    // The resources an env variable names, drawn now; nothing is saved.
+    if crate::app::preview_spec(found).is_some() {
+        lines.push(Line::default());
+        lines.push(Line::from(Span::styled("Suggested, not saved:", muted)));
+        metric_rows(lines, detail, width, theme);
+    }
+}
+
+/// The configured (or previewed) series and resource rows.
+fn metric_rows(
+    lines: &mut Vec<Line<'static>>,
+    detail: &crate::app::DetailState,
+    width: u16,
+    theme: &Theme,
+) {
+    let red = Style::default().fg(theme.health_red);
+    let muted = Style::default().fg(theme.muted);
+    if detail.app_metrics.is_first_load() {
+        lines.push(Line::from(Span::styled("loading metrics…", muted)));
+    }
+    if let Some(e) = detail.app_metrics.error() {
+        lines.push(Line::from(Span::styled(format!("metrics: {e}"), red)));
+    }
+    let Some(m) = detail.app_metrics.ready() else {
+        return;
+    };
+    for note in &m.notes {
+        lines.push(Line::from(Span::styled(
+            format!("CloudWatch: {note}"),
+            Style::default().fg(theme.health_yellow),
+        )));
+    }
+    let label_w = m
+        .series
+        .iter()
+        .map(|s| s.label.chars().count())
+        .chain(
+            m.resources
+                .iter()
+                .map(|r| resource_label(r).chars().count()),
+        )
+        .max()
+        .unwrap_or(0);
+    for s in &m.series {
+        lines.push(series_row(s, label_w, width, theme));
+    }
+    for r in &m.resources {
+        lines.push(resource_row(r, label_w, width, theme));
+    }
 }
 
 /// The env's most frequent ERROR fingerprints, one per line, with how
