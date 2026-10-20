@@ -41,7 +41,7 @@ impl Server {
             .get("top_errors")
             .and_then(Value::as_bool)
             .unwrap_or(false);
-        let tabs = &self.safety_cfg.app_tabs;
+        let tabs = &self.app_tabs();
         let spec = tabs.envs.get(&env).cloned();
         let config_errors: Vec<String> = tabs.errors_for(&env).map(str::to_string).collect();
         let mut errors: Vec<(String, String)> = Vec::new();
@@ -668,6 +668,58 @@ mod tests {
         );
         assert_eq!(v["alarms"], json!([]), "the other sections came back");
         assert_eq!(stop.num_calls(), 1);
+    }
+
+    /// An edit made while the server runs (by hand, or through the
+    /// TUI's App tab editor) is what the next call answers for; a file
+    /// removed is no config; one unreadable keeps the startup copy.
+    #[tokio::test]
+    async fn the_app_lines_are_read_as_the_file_has_them_now() {
+        let dir =
+            std::env::temp_dir().join(format!("ebman-test-{}-mcp-app-lines", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        // The startup copy configures another env, so `e` is configured
+        // only when the call read the file.
+        let startup = crate::config::parse("app.other.namespace = \"Startup\"\n");
+        let server = Server::with_config(true, false, WriteScope::None, startup)
+            .reading_app_tabs_from(&path);
+        let namespace = |server: &Server, env: &str| {
+            server
+                .app_tabs()
+                .envs
+                .get(env)
+                .and_then(|s| s.namespace.clone())
+        };
+
+        std::fs::write(&path, "app.e.namespace = \"Edited\"\n").unwrap();
+        assert_eq!(namespace(&server, "e").as_deref(), Some("Edited"));
+        let out = server
+            .call_tool("app_metrics", &json!({"env": "e"}))
+            .await
+            .expect("answers");
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["configured"], true, "the tool reads it too: {v}");
+
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(namespace(&server, "e"), None, "removed: no config");
+        assert_eq!(namespace(&server, "other"), None, "not the startup copy");
+
+        let server = server.reading_app_tabs_from(&dir.join("config.toml").join("x"));
+        std::fs::write(dir.join("config.toml"), "").unwrap();
+        assert_eq!(
+            namespace(&server, "other").as_deref(),
+            Some("Startup"),
+            "unreadable: the startup copy"
+        );
+    }
+
+    #[test]
+    fn a_real_server_reads_config_toml_and_a_demo_one_does_not() {
+        let real = Server::with_scope(false, false, WriteScope::None);
+        assert_eq!(real.app_tabs_file, Some(crate::config::config_path()));
+        let demo = Server::with_scope(true, false, WriteScope::None);
+        assert_eq!(demo.app_tabs_file, None, "hermetic");
     }
 
     #[tokio::test]

@@ -1337,8 +1337,16 @@ mod orchestration {
             aws_sdk_s3::Client::new(&sdk),
             aws_sdk_ec2::Client::new(&sdk),
         );
-        let cfg = crate::config::parse("app.poly-prod-wk.alarm_prefix = \"poly-prod-wk-\"\n");
-        let out = Server::with_injected_client(WriteScope::None, cfg, client)
+        // Written after the server started, as an operator's edit is:
+        // the tool reads the file as it is now, not the startup copy.
+        let dir =
+            std::env::temp_dir().join(format!("ebman-test-{}-mcp-why-prefix", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        let server = Server::with_injected_client(WriteScope::None, Default::default(), client)
+            .reading_app_tabs_from(&path);
+        std::fs::write(&path, "app.poly-prod-wk.alarm_prefix = \"poly-prod-wk-\"\n").unwrap();
+        let out = server
             .call_tool("why", &json!({"env": "poly-prod-wk"}))
             .await
             .expect("why answers");

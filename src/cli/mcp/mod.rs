@@ -874,6 +874,12 @@ pub(crate) struct Server {
     /// Safety config loaded once at startup (pins). Demo servers get
     /// the default (hermetic).
     safety_cfg: crate::config::Config,
+    /// Where the `app.` lines are re-read from on each call that uses
+    /// them ([`Server::app_tabs`]): the operator edits them while the
+    /// server runs, often through the TUI's App tab editor, and a server
+    /// that kept its startup copy answered for config that was gone.
+    /// `None` (demo, tests) uses `safety_cfg`'s.
+    app_tabs_file: Option<std::path::PathBuf>,
     /// Two-phase write state: the single pending-plan slot (spec:
     /// writes are serialized server-wide).
     writes: tokio::sync::Mutex<writes::WriteState>,
@@ -959,7 +965,31 @@ impl Server {
         } else {
             crate::config::load()
         };
-        Self::with_config(demo, no_redact, scope, safety_cfg)
+        let mut s = Self::with_config(demo, no_redact, scope, safety_cfg);
+        s.app_tabs_file = (!demo).then(crate::config::config_path);
+        s
+    }
+
+    /// The `app.` config as the file has it now; with no file, none;
+    /// the startup copy when it cannot be read, or when this server
+    /// reads no file (demo, tests).
+    pub(crate) fn app_tabs(&self) -> crate::app_tab::AppTabs {
+        let Some(path) = &self.app_tabs_file else {
+            return self.safety_cfg.app_tabs.clone();
+        };
+        match std::fs::read_to_string(path) {
+            Ok(text) => crate::config::parse(&text).app_tabs,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Default::default(),
+            Err(_) => self.safety_cfg.app_tabs.clone(),
+        }
+    }
+
+    /// Read the `app.` lines from `path` on each call, as a real server
+    /// reads `config.toml`.
+    #[cfg(test)]
+    pub(crate) fn reading_app_tabs_from(mut self, path: &std::path::Path) -> Self {
+        self.app_tabs_file = Some(path.to_path_buf());
+        self
     }
 
     /// Test seam: inject the safety config (pin tests must not read
@@ -975,6 +1005,7 @@ impl Server {
             redact: !no_redact,
             write_scope: scope,
             safety_cfg,
+            app_tabs_file: None,
             writes: tokio::sync::Mutex::new(writes::WriteState::default()),
             outbound: std::sync::Mutex::new(None),
             pending_asks: std::sync::Mutex::new(std::collections::HashMap::new()),

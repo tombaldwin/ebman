@@ -1539,7 +1539,7 @@ impl Server {
                     &env_name,
                     &crate::app_tab::AlarmMatch::for_env(
                         &self.safety_cfg.alarm_dimensions,
-                        &self.safety_cfg.app_tabs,
+                        &self.app_tabs(),
                         &env_name,
                         envs.iter().map(|e| e.name.as_str()),
                     ),
