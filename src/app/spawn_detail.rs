@@ -290,13 +290,10 @@ impl App {
         });
         // In demo mode: the configured rows, empty, so the tab still
         // shows what is configured and says why there are no values.
-        let demo_rows = spec.as_ref().filter(|_| self.demo_mode).map(|spec| {
-            crate::app_tab::series_from_results(
-                spec,
-                Vec::new(),
-                vec!["demo mode makes no CloudWatch calls".to_string()],
-            )
-        });
+        let demo_rows = spec
+            .as_ref()
+            .filter(|_| self.demo_mode)
+            .map(crate::app_tab::demo_series);
         let Some(spec) = spec.filter(|_| demo_rows.is_none()) else {
             let gen = self.generation;
             let _ = self.msg_tx.send(AppMsg::DetailAppMetrics {
@@ -354,37 +351,23 @@ impl App {
         d.top_errors.begin();
         let started = std::time::Instant::now();
         d.top_errors_started = Some(started);
-        let query = crate::app_tab::top_errors_query(
-            self.cfg
-                .app_tabs
-                .envs
-                .get(&env_name)
-                .and_then(|s| s.error_fingerprint.as_deref()),
-        );
+        let fingerprint = self
+            .cfg
+            .app_tabs
+            .envs
+            .get(&env_name)
+            .and_then(|s| s.error_fingerprint.clone());
         let env_for_msg = env_name.clone();
         self.spawn_aws_in(
             self.detail_client(),
             "run_insights_query",
             move |aws| async move {
-                let end = chrono::Utc::now();
-                let start = end - chrono::Duration::minutes(crate::app_tab::TOP_ERRORS_WINDOW_MINS);
-                let r = aws
-                    .run_insights_query_within(
-                        std::slice::from_ref(&group),
-                        start.timestamp_millis(),
-                        end.timestamp_millis(),
-                        &query,
-                        Some(crate::app_tab::TOP_ERRORS_BOUND),
-                    )
-                    .await?;
-                let rows: Vec<Vec<(String, String)>> =
-                    r.rows.into_iter().map(|row| row.fields).collect();
-                Ok(crate::app_tab::top_errors_from(
+                aws.fetch_top_errors(
                     group,
-                    &rows,
-                    r.records_scanned,
-                    end,
-                ))
+                    fingerprint.as_deref(),
+                    crate::app_tab::TOP_ERRORS_BOUND,
+                )
+                .await
             },
             move |gen, result| AppMsg::DetailTopErrors {
                 gen,

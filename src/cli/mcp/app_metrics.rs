@@ -47,13 +47,7 @@ impl Server {
         let mut errors: Vec<(String, String)> = Vec::new();
 
         if matches!(self.backend, Backend::Demo) {
-            let metrics = spec.as_ref().map(|s| {
-                crate::app_tab::series_from_results(
-                    s,
-                    Vec::new(),
-                    vec!["demo mode makes no CloudWatch calls".into()],
-                )
-            });
+            let metrics = spec.as_ref().map(crate::app_tab::demo_series);
             return Ok(render(&Bundle {
                 env: &env,
                 minutes,
@@ -124,28 +118,14 @@ impl Server {
                 let Some(group) = log_group else {
                     return Ok(None);
                 };
-                let query = crate::app_tab::top_errors_query(
-                    spec.as_ref().and_then(|s| s.error_fingerprint.as_deref()),
-                );
-                let end = chrono::Utc::now();
-                let start = end - chrono::Duration::minutes(crate::app_tab::TOP_ERRORS_WINDOW_MINS);
-                let r = client
-                    .run_insights_query_within(
-                        std::slice::from_ref(&group),
-                        start.timestamp_millis(),
-                        end.timestamp_millis(),
-                        &query,
-                        Some(std::time::Duration::from_secs(TOP_ERRORS_BOUND_SECS)),
+                client
+                    .fetch_top_errors(
+                        group,
+                        spec.as_ref().and_then(|s| s.error_fingerprint.as_deref()),
+                        std::time::Duration::from_secs(TOP_ERRORS_BOUND_SECS),
                     )
-                    .await?;
-                let rows: Vec<Vec<(String, String)>> =
-                    r.rows.into_iter().map(|row| row.fields).collect();
-                Ok::<_, color_eyre::eyre::Report>(Some(crate::app_tab::top_errors_from(
-                    group,
-                    &rows,
-                    r.records_scanned,
-                    end,
-                )))
+                    .await
+                    .map(Some)
             },
         );
         let metrics = keep(&mut errors, "metrics", metrics);

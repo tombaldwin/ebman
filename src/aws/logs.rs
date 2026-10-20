@@ -464,6 +464,36 @@ impl AwsClient {
             .await
     }
 
+    /// The App tab's top errors for one log group over the last
+    /// `TOP_ERRORS_WINDOW_MINS`, given up on (and stopped) after
+    /// `within`. The TUI and MCP both read top errors through this.
+    pub(crate) async fn fetch_top_errors(
+        &self,
+        group: String,
+        fingerprint: Option<&str>,
+        within: std::time::Duration,
+    ) -> Result<crate::app_tab::TopErrors> {
+        let query = crate::app_tab::top_errors_query(fingerprint);
+        let end = chrono::Utc::now();
+        let start = end - chrono::Duration::minutes(crate::app_tab::TOP_ERRORS_WINDOW_MINS);
+        let r = self
+            .run_insights_query_within(
+                std::slice::from_ref(&group),
+                start.timestamp_millis(),
+                end.timestamp_millis(),
+                &query,
+                Some(within),
+            )
+            .await?;
+        let rows: Vec<Vec<(String, String)>> = r.rows.into_iter().map(|row| row.fields).collect();
+        Ok(crate::app_tab::top_errors_from(
+            group,
+            &rows,
+            r.records_scanned,
+            end,
+        ))
+    }
+
     /// [`run_insights_query`](Self::run_insights_query), given up on
     /// after `within`: the query is stopped (`StopQuery`) rather than
     /// left scanning, and billing, on the server after nobody is

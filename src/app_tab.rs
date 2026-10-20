@@ -946,6 +946,16 @@ pub(crate) struct TopErrors {
     pub fetched_at: chrono::DateTime<chrono::Utc>,
 }
 
+/// A spec's rows with no values, for demo mode: the tab (and the MCP
+/// tool) still show what is configured, and say why nothing is there.
+pub(crate) fn demo_series(spec: &AppTabSpec) -> AppMetrics {
+    series_from_results(
+        spec,
+        Vec::new(),
+        vec!["demo mode makes no CloudWatch calls".into()],
+    )
+}
+
 /// Read the query's rows. A row with no `fp` is the ERROR lines the
 /// fingerprint did not match, which Insights groups under an empty key.
 pub(crate) fn top_errors_from(
