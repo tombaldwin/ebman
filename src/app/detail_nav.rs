@@ -381,23 +381,27 @@ impl App {
     }
 
     /// [`reload_app_tabs_if_changed`](Self::reload_app_tabs_if_changed)
-    /// outside a Detail refresh (the editor, `:alarms`, `:why`): when the
-    /// reload emptied the App tab on screen, fetch it again, or it would
-    /// stay empty until the next refresh. A refresh fetches it anyway.
+    /// outside a Detail refresh (the editor, `:alarms`, `:why`): what the
+    /// reload emptied on the tab on screen is fetched again. A refresh
+    /// fetches it anyway.
     pub(super) fn reload_app_tabs_and_refetch(&mut self) {
         self.reload_app_tabs_if_changed();
-        self.refetch_app_tab_if_emptied();
+        self.refetch_what_an_edit_emptied();
     }
 
-    /// The App tab on screen with its series or alarms blank (what
-    /// [`set_app_tabs`](Self::set_app_tabs) leaves when the config they
-    /// were fetched for changed): fetch them again. Top errors is billed
-    /// per scan, so it waits for `^R`, and the tab says so.
-    pub(super) fn refetch_app_tab_if_emptied(&mut self) {
-        let Some(d) = self.detail.as_ref().filter(|d| d.tab() == DetailTab::App) else {
+    /// Fetch again what [`set_app_tabs`](Self::set_app_tabs) left blank
+    /// on the tab on screen: the alarms on the Health and App tabs (they
+    /// share them), the series on the App tab. Top errors is billed per
+    /// scan, so it waits for `^R`, and the tab says so. Without this a
+    /// reset fetch stayed blank until the next refresh, which reads as no
+    /// alarms at all.
+    pub(super) fn refetch_what_an_edit_emptied(&mut self) {
+        let Some(d) = self.detail.as_ref() else {
             return;
         };
-        let (series, alarms) = (d.app_tab.metrics.is_blank(), d.cw_alarms.is_blank());
+        let tab = d.tab();
+        let series = tab == DetailTab::App && d.app_tab.metrics.is_blank();
+        let alarms = matches!(tab, DetailTab::App | DetailTab::Health) && d.cw_alarms.is_blank();
         let env = d.env_name.clone();
         if series {
             self.spawn_detail_app(env.clone());

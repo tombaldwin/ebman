@@ -3087,7 +3087,7 @@ async fn an_emptied_app_tab_on_screen_is_fetched_again() {
     d.app_tab.metrics.reset();
     d.cw_alarms.reset();
     app.detail_fetch_started = None;
-    app.refetch_app_tab_if_emptied();
+    app.refetch_what_an_edit_emptied();
     assert_eq!(fetched(&mut app), (true, true), "both blank: both fetched");
     assert!(
         app.detail_fetch_started.is_some(),
@@ -3115,12 +3115,75 @@ async fn an_emptied_app_tab_on_screen_is_fetched_again() {
         app.detail.as_ref().unwrap().cw_alarms.ready().is_none(),
         "matched under the old prefix: dropped"
     );
-    app.refetch_app_tab_if_emptied();
+    app.refetch_what_an_edit_emptied();
     assert_eq!(fetched(&mut app), (false, true), "rows kept: not refetched");
 
+    // The Health tab shows the alarms too: a blank alarm list there is
+    // refetched (it would read as no alarms), the series are not.
     let mut app = detail_on("api-prod");
-    app.refetch_app_tab_if_emptied();
+    app.demo_mode = true;
+    assert_eq!(app.detail.as_ref().unwrap().tab(), DetailTab::Health);
+    fetched(&mut app);
+    let d = app.detail.as_mut().unwrap();
+    d.app_tab.metrics.reset();
+    d.cw_alarms.reset();
+    app.refetch_what_an_edit_emptied();
+    assert_eq!(fetched(&mut app), (false, true), "Health: alarms only");
+
+    // A tab that shows neither: nothing. Demo mode, so a fetch would be
+    // answered at once and seen below.
+    let mut app = detail_on("api-prod");
+    app.demo_mode = true;
+    app.detail.as_mut().unwrap().tab_idx = 2;
+    assert!(!matches!(
+        app.detail.as_ref().unwrap().tab(),
+        DetailTab::App | DetailTab::Health
+    ));
+    fetched(&mut app);
+    let d = app.detail.as_mut().unwrap();
+    d.app_tab.metrics.reset();
+    d.cw_alarms.reset();
+    app.refetch_what_an_edit_emptied();
     assert_eq!(fetched(&mut app), (false, false), "not on screen");
+}
+
+/// A save that changes only the alarm prefix, made while a series fetch
+/// is in flight (so the save's refresh is skipped by the guard), still
+/// refetches the alarms it reset: otherwise firing alarms vanish from the
+/// tab until a refresh that passes the guard.
+#[tokio::test]
+async fn a_prefix_only_save_under_a_fetch_in_flight_refetches_the_alarms() {
+    let mut app = detail_on("api-prod");
+    app.demo_mode = true;
+    let base = "app.api-prod.namespace = \"Shop\"\n";
+    let path = own_config_file(&mut app, "prefix-only-save", base);
+    app.detail.as_mut().unwrap().tab_idx = 1;
+    app.reload_app_tabs_if_changed();
+    press(&mut app, KeyCode::Char('e'), KeyModifiers::NONE);
+    while let Ok(msg) = app.msg_rx.try_recv() {
+        app.handle_msg(msg);
+    }
+    let form = app.form.as_mut().expect("the editor");
+    form.fields
+        .iter_mut()
+        .find(|f| f.key == "alarm_prefix")
+        .expect("alarm_prefix")
+        .value = "Shop-".into();
+    // Settled alarms, and a series fetch in flight under the guard.
+    let d = app.detail.as_mut().unwrap();
+    let t = d.cw_alarms.begin();
+    d.cw_alarms.settle_ticket(t, Ok(Vec::new()));
+    d.app_tab.metrics.begin();
+    app.detail_fetch_started = Some(std::time::Instant::now());
+    app.submit_app_tab_form();
+    assert!(app.form.is_none(), "saved");
+    assert!(std::fs::read_to_string(&path)
+        .unwrap()
+        .contains("alarm_prefix"));
+    assert!(
+        app.detail.as_ref().unwrap().cw_alarms.in_flight(),
+        "the reset alarms are being fetched again"
+    );
 }
 
 /// The App's `app.` config is changed only through `set_app_tabs`,

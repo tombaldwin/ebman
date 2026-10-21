@@ -602,10 +602,11 @@ impl App {
         self.form = None;
         self.mode = Mode::Detail;
         self.pin_status(format!("App tab saved for {env}"));
-        // A metrics fetch in flight does not make this skip when the
-        // save changed the env's spec: set_app_tabs reset it. When it
-        // did not, that fetch is for this same config.
+        // A refresh, then whatever set_app_tabs reset that it did not
+        // refill: a series fetch still in flight makes the refresh's guard
+        // skip it all, and a prefix-only edit has reset the alarms.
         self.detail_refresh_active_tab();
+        self.refetch_what_an_edit_emptied();
     }
 }
 
