@@ -150,7 +150,14 @@ impl App {
                 started,
                 found,
                 ..
-            } => self.handle_app_tab_discovered((region, env_name), started, *found),
+            } => self.handle_app_tab_discovered(
+                crate::app::DiscoveryKey {
+                    region,
+                    env: env_name,
+                },
+                started,
+                *found,
+            ),
             AppMsg::DetailTopErrors {
                 env_name,
                 ticket,

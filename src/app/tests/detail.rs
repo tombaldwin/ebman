@@ -2603,7 +2603,7 @@ async fn the_app_tab_editor_opens_fills_and_refuses_bad_entries() {
     found.failed = vec![("custom metrics".into(), "AccessDenied".into())];
     app.handle_msg(AppMsg::AppTabDiscovered {
         gen: app.generation,
-        region: app.discovery_key("other").0,
+        region: app.discovery_key("other").region,
         env_name: "other".into(),
         started: std::time::Instant::now(),
         found: Box::new(found.clone()),
@@ -2614,7 +2614,7 @@ async fn the_app_tab_editor_opens_fills_and_refuses_bad_entries() {
     );
     app.handle_msg(AppMsg::AppTabDiscovered {
         gen: app.generation,
-        region: app.discovery_key("api-prod").0,
+        region: app.discovery_key("api-prod").region,
         env_name: "api-prod".into(),
         started: std::time::Instant::now(),
         found: Box::new(found),
@@ -2787,9 +2787,9 @@ async fn discovery_is_reused_on_open_rerun_on_ctrl_r_and_never_wedged() {
         app.detail_fetch_started = None;
     };
 
-    app.app_tab_session.discovering.clear();
+    app.app_tab_discovery.discovering.clear();
     let key = app.discovery_key("api-prod");
-    app.app_tab_session
+    app.app_tab_discovery
         .discovered
         .insert(key, Discovered::default());
     settle(&mut app);
@@ -2807,7 +2807,7 @@ async fn discovery_is_reused_on_open_rerun_on_ctrl_r_and_never_wedged() {
     let long_ago = std::time::Instant::now()
         .checked_sub(std::time::Duration::from_secs(120))
         .expect("clock past two minutes");
-    app.app_tab_session
+    app.app_tab_discovery
         .discovering
         .insert(app.discovery_key("api-prod"), long_ago);
     assert!(!app.discovery_running("api-prod"), "lost, not running");
@@ -2872,7 +2872,7 @@ async fn demo_mode_does_not_pass_off_an_empty_discovery() {
     app.spawn_app_discovery("api-prod".into());
     let msg = app.msg_rx.try_recv().expect("answered at once");
     app.handle_msg(msg);
-    assert!(app.app_tab_session.discovered.is_empty());
+    assert!(app.app_tab_discovery.discovered.is_empty());
     assert!(!app.discovery_running("api-prod"));
 }
 
@@ -2883,18 +2883,18 @@ async fn only_the_latest_discoverys_answer_clears_its_marker() {
     let mut app = test_app();
     let newer = std::time::Instant::now();
     let older = newer - std::time::Duration::from_secs(90);
-    app.app_tab_session
+    app.app_tab_discovery
         .discovering
         .insert(app.discovery_key("api-prod"), newer);
     app.handle_msg(AppMsg::AppTabDiscovered {
         gen: app.generation,
-        region: app.discovery_key("api-prod").0,
+        region: app.discovery_key("api-prod").region,
         env_name: "api-prod".into(),
         started: older,
         found: Box::default(),
     });
     assert_eq!(
-        app.app_tab_session
+        app.app_tab_discovery
             .discovering
             .get(&app.discovery_key("api-prod")),
         Some(&newer),
@@ -2902,13 +2902,13 @@ async fn only_the_latest_discoverys_answer_clears_its_marker() {
     );
     app.handle_msg(AppMsg::AppTabDiscovered {
         gen: app.generation,
-        region: app.discovery_key("api-prod").0,
+        region: app.discovery_key("api-prod").region,
         env_name: "api-prod".into(),
         started: newer,
         found: Box::default(),
     });
     assert!(!app
-        .app_tab_session
+        .app_tab_discovery
         .discovering
         .contains_key(&app.discovery_key("api-prod")));
 }
@@ -3166,7 +3166,7 @@ async fn an_envs_app_tab_comes_from_config_then_a_preview_then_nothing() {
     let key = app.discovery_key("api-prod");
     let mut found = crate::app_discover::Discovered::default();
     found.discovery.app_log = Some("var/log/app.log".into());
-    app.app_tab_session
+    app.app_tab_discovery
         .discovered
         .insert(key.clone(), found.clone());
     assert_eq!(
@@ -3175,7 +3175,7 @@ async fn an_envs_app_tab_comes_from_config_then_a_preview_then_nothing() {
         "found, but nothing an env variable names"
     );
     found.discovery.rds_found = vec![("db-a".into(), "DB_HOST".into())];
-    app.app_tab_session.discovered.insert(key, found);
+    app.app_tab_discovery.discovered.insert(key, found);
     let preview = app.app_tab_source("api-prod");
     assert!(!preview.is_configured());
     assert_eq!(

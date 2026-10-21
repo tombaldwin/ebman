@@ -379,7 +379,7 @@ impl App {
         self.mode = Mode::Form;
         // Found already this session, and nothing failed: use it.
         if let Some(found) = self
-            .app_tab_session
+            .app_tab_discovery
             .discovered
             .get(&self.discovery_key(&env))
             .filter(|f| f.failed.is_empty())
@@ -400,7 +400,7 @@ impl App {
             // nothing, and the tab should keep saying what to configure.
             let _ = self.msg_tx.send(AppMsg::AppTabDiscovered {
                 gen: self.generation,
-                region: key.0,
+                region: key.region,
                 env_name: env,
                 started: std::time::Instant::now(),
                 found: Box::default(),
@@ -411,7 +411,7 @@ impl App {
             return;
         }
         let started = std::time::Instant::now();
-        self.app_tab_session
+        self.app_tab_discovery
             .discovering
             .insert(key.clone(), started);
         // The Detail view's own env: by name alone, a same-named env in
@@ -434,7 +434,7 @@ impl App {
             self.cfg.app_tabs.envs.get(&env),
         );
         let client = self.discovery_client(&key);
-        let region = key.0;
+        let region = key.region;
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         tokio::spawn(async move {
@@ -460,7 +460,7 @@ impl App {
     /// Whether `env`'s discovery is running, and not so long that its
     /// result must have been lost.
     pub(crate) fn discovery_running(&self, env: &str) -> bool {
-        self.app_tab_session
+        self.app_tab_discovery
             .discovering
             .get(&self.discovery_key(env))
             .is_some_and(|t| t.elapsed() < DISCOVERY_STALE)
@@ -485,7 +485,7 @@ impl App {
 
     /// What discovery found for `env` this session, if anything.
     pub(crate) fn discovered_for(&self, env: &str) -> Option<&Discovered> {
-        self.app_tab_session
+        self.app_tab_discovery
             .discovered
             .get(&self.discovery_key(env))
     }
@@ -493,37 +493,40 @@ impl App {
     /// The discovery caches' key for `env`: (region, env). The Detail
     /// view's own env by its snapshot's region (it may have left the
     /// list), any other by its row's.
-    pub(crate) fn discovery_key(&self, env: &str) -> (String, String) {
+    pub(crate) fn discovery_key(&self, env: &str) -> DiscoveryKey {
         let region = self
             .detail
             .as_ref()
             .filter(|d| d.env_name == env)
             .map(|d| self.region_for(&d.env_snapshot))
             .unwrap_or_else(|| self.region_for_name(env));
-        (region, env.to_string())
+        DiscoveryKey {
+            region,
+            env: env.to_string(),
+        }
     }
 
     /// The client discovery for `key` runs on: the key's region, so the
     /// lookups and the cache entry they fill agree.
-    pub(crate) fn discovery_client(&self, key: &(String, String)) -> RegionClient {
-        self.client_for_region(&key.0)
+    pub(crate) fn discovery_client(&self, key: &DiscoveryKey) -> RegionClient {
+        self.client_for_region(&key.region)
     }
 
     pub(super) fn handle_app_tab_discovered(
         &mut self,
-        key: (String, String),
+        key: DiscoveryKey,
         started: std::time::Instant,
         found: Discovered,
     ) {
-        if self.app_tab_session.discovering.get(&key) == Some(&started) {
-            self.app_tab_session.discovering.remove(&key);
+        if self.app_tab_discovery.discovering.get(&key) == Some(&started) {
+            self.app_tab_discovery.discovering.remove(&key);
         }
         // Another region's same-named env is not the one on screen: its
         // answer is cached for it, and fills nothing here.
-        let current = key == self.discovery_key(&key.1);
-        let env_name = key.1.clone();
+        let current = key == self.discovery_key(&key.env);
+        let env_name = key.env.clone();
         if !self.demo_mode {
-            self.app_tab_session.discovered.insert(key, found.clone());
+            self.app_tab_discovery.discovered.insert(key, found.clone());
         }
         if !current {
             return;
@@ -600,6 +603,29 @@ impl App {
         // did not, that fetch is for this same config.
         self.detail_refresh_active_tab();
     }
+}
+
+/// The App tab's discovery, per env, for the session. Cleared on a
+/// context switch.
+#[derive(Debug, Default)]
+pub(crate) struct AppTabDiscovery {
+    /// What discovery found: the App tab of an env with no config shows
+    /// it, and the editor opens with it.
+    pub(crate) discovered: std::collections::HashMap<DiscoveryKey, crate::app_discover::Discovered>,
+    /// The runs in flight, so one is not started twice, and when each
+    /// started: past [`DISCOVERY_STALE`] it is treated as
+    /// lost (a result dropped by a context switch, a task that died)
+    /// rather than blocking the env's discovery for good.
+    pub(crate) discovering: std::collections::HashMap<DiscoveryKey, std::time::Instant>,
+}
+
+/// Which env a discovery is for: under a fan-out a same-named env in
+/// another region is another env, with its own resources. Made by
+/// [`App::discovery_key`].
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct DiscoveryKey {
+    pub(crate) region: String,
+    pub(crate) env: String,
 }
 
 /// See [`App::app_tab_source`].

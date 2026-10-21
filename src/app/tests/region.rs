@@ -916,19 +916,19 @@ async fn what_discovery_found_does_not_survive_a_context_switch() {
     // showing the first account's findings on it would be wrong.
     let mut app = test_app();
     let key = app.discovery_key("api-prod");
-    app.app_tab_session
+    app.app_tab_discovery
         .discovered
         .insert(key.clone(), Default::default());
-    app.app_tab_session
+    app.app_tab_discovery
         .discovering
         .insert(key.clone(), std::time::Instant::now());
     app.handle_msg(AppMsg::Rebuild {
         epoch: app.rebuild_epoch,
         result: Ok(Box::new(crate::aws::AwsClient::stub())),
     });
-    assert!(app.app_tab_session.discovered.is_empty());
+    assert!(app.app_tab_discovery.discovered.is_empty());
     assert!(
-        app.app_tab_session.discovering.is_empty(),
+        app.app_tab_discovery.discovering.is_empty(),
         "nor the in-flight marker, or it never reruns"
     );
 }
@@ -955,7 +955,10 @@ async fn discovery_for_a_same_named_env_in_another_region_is_not_this_ones() {
     app.open_detail();
     assert_eq!(
         app.discovery_key("api-prod"),
-        ("eu-west-2".to_string(), "api-prod".to_string()),
+        crate::app::DiscoveryKey {
+            region: "eu-west-2".into(),
+            env: "api-prod".into(),
+        },
         "Detail's env, by its own region, not the first row of that name"
     );
     let key = app.discovery_key("api-prod");
@@ -964,12 +967,25 @@ async fn discovery_for_a_same_named_env_in_another_region_is_not_this_ones() {
         "eu-west-2",
         "the lookups run where the env is"
     );
+    // And the spawn itself uses that key, not a name or the home region.
+    app.spawn_app_discovery("api-prod".into());
+    let running: Vec<_> = app.app_tab_discovery.discovering.keys().cloned().collect();
+    assert_eq!(
+        running,
+        std::slice::from_ref(&key),
+        "the run is tracked under eu-west-2's key"
+    );
+    app.app_tab_discovery.discovering.clear();
 
     let mut found = crate::app_discover::Discovered::default();
     found.discovery.app_log = Some("var/log/app.log".into());
-    app.app_tab_session
-        .discovered
-        .insert(("us-east-1".into(), "api-prod".into()), found);
+    app.app_tab_discovery.discovered.insert(
+        crate::app::DiscoveryKey {
+            region: "us-east-1".into(),
+            env: "api-prod".into(),
+        },
+        found,
+    );
     assert!(
         app.discovered_for("api-prod").is_none(),
         "us-east-1's findings are not shown on eu-west-2's env"

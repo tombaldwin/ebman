@@ -2207,7 +2207,7 @@ async fn an_unconfigured_app_tab_shows_what_discovery_found() {
     press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
     press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
     assert!(
-        app.app_tab_session
+        app.app_tab_discovery
             .discovering
             .contains_key(&app.discovery_key("api-prod")),
         "opening the tab looks"
@@ -2230,19 +2230,19 @@ async fn an_unconfigured_app_tab_shows_what_discovery_found() {
         failed: vec![],
     };
     let started = *app
-        .app_tab_session
+        .app_tab_discovery
         .discovering
         .get(&app.discovery_key("api-prod"))
         .expect("running");
     app.handle_msg(AppMsg::AppTabDiscovered {
         gen: app.generation,
-        region: app.discovery_key("api-prod").0,
+        region: app.discovery_key("api-prod").region,
         env_name: "api-prod".into(),
         started,
         found: Box::new(found),
     });
     assert!(!app
-        .app_tab_session
+        .app_tab_discovery
         .discovering
         .contains_key(&app.discovery_key("api-prod")));
     // The preview is a real fetch (the stub fails it); with nothing to
@@ -2286,7 +2286,7 @@ async fn an_unconfigured_app_tab_shows_what_discovery_found() {
     let form = app.form.as_ref().expect("editor open");
     assert_eq!(form.state, crate::form::FormState::Ready, "no waiting");
     assert!(
-        !app.app_tab_session
+        !app.app_tab_discovery
             .discovering
             .contains_key(&app.discovery_key("api-prod")),
         "not looked up again"

@@ -116,7 +116,7 @@ mod cmd_write; // bulk writes: batch-action, batch-deploy
 // Interactive surfaces.
 mod action_flow; // action menu -> confirm -> undo window -> dispatch
 mod app_tab_form; // the App tab's editor + discovery
-pub(crate) use app_tab_form::AppTabSource;
+pub(crate) use app_tab_form::{AppTabSource, DiscoveryKey};
 mod apps_menu; // the Applications scope's menu + info overlay
 mod config_edit; // Detail's Config tab editor + template CRUD
 mod detail_nav; // the per-environment Detail view
@@ -177,23 +177,6 @@ pub(crate) use tail::TailView;
 /// access; the registry is a `const` slice so the work is O(N) with N≈90.
 pub(crate) fn builtin_commands() -> Vec<&'static str> {
     crate::commands::all_names()
-}
-
-/// The App tab's discovery, per env, for the session; both maps are
-/// keyed by [`App::discovery_key`], (region, env): under a fan-out a
-/// same-named env in another region is another env, with its own
-/// resources. Cleared on a context switch.
-#[derive(Debug, Default)]
-pub(crate) struct AppTabSession {
-    /// What discovery found: the App tab of an env with no config shows
-    /// it, and the editor opens with it.
-    pub(crate) discovered:
-        std::collections::HashMap<(String, String), crate::app_discover::Discovered>,
-    /// The runs in flight, so one is not started twice, and when each
-    /// started: past [`app_tab_form::DISCOVERY_STALE`] it is treated as
-    /// lost (a result dropped by a context switch, a task that died)
-    /// rather than blocking the env's discovery for good.
-    pub(crate) discovering: std::collections::HashMap<(String, String), std::time::Instant>,
 }
 
 /// The whole TUI: fleet state, derived view, and every in-flight
@@ -568,7 +551,7 @@ pub struct App {
     /// hand edit shows without a restart; `None` when there was no file.
     pub(crate) config_seen: Option<crate::config::ConfigStamp>,
     /// The App tab's discovery, kept for the session.
-    pub(crate) app_tab_session: AppTabSession,
+    pub(crate) app_tab_discovery: app_tab_form::AppTabDiscovery,
     pub(crate) newly_red: HashSet<String>,
     /// Env names that appeared for the first time on the most recent
     /// refresh (weren't in `prev_health` last cycle). Used by the env
@@ -1474,7 +1457,7 @@ impl App {
             notify_bell: config.notify_bell,
             config_seen: crate::config::stamp_of(&crate::config::config_path()),
             config_file: Some(crate::config::config_path()),
-            app_tab_session: Default::default(),
+            app_tab_discovery: Default::default(),
             cfg: ResolvedConfig {
                 notify_webhook: config.notify_webhook.clone(),
                 safety_read_only: config.safety_read_only,
@@ -1781,7 +1764,7 @@ impl App {
             notify_bell: config.notify_bell,
             config_seen: None,
             config_file: None,
-            app_tab_session: Default::default(),
+            app_tab_discovery: Default::default(),
             cfg: ResolvedConfig {
                 notify_webhook: config.notify_webhook.clone(),
                 safety_read_only: config.safety_read_only,
