@@ -508,6 +508,13 @@ impl App {
                 }
             }
         }
+        // An env that left the fleet takes its alarms with it.
+        let current: std::collections::HashSet<&str> =
+            self.environments.iter().map(|e| e.name.as_str()).collect();
+        self.firing_alarms
+            .retain(|env, _| current.contains(env.as_str()));
+        self.firing_alarms_unknown
+            .retain(|env| current.contains(env.as_str()));
     }
 
     fn handle_env_instance_counts(

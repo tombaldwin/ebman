@@ -1118,6 +1118,16 @@ async fn firing_alarms_land_on_the_envs_of_the_region_they_came_from() {
     });
     assert!(!app.firing_alarms_unknown.contains("api-eu"));
     assert!(!app.firing_alarms.contains_key("api-eu"));
+
+    // An env that left the fleet does not keep its alarms.
+    app.firing_alarms.insert("gone".into(), vec!["x".into()]);
+    app.firing_alarms_unknown.insert("gone".into());
+    app.handle_msg(AppMsg::FiringAlarms {
+        gen: app.generation,
+        results: vec![("us-east-1".into(), Ok(vec![]))],
+    });
+    assert!(!app.firing_alarms.contains_key("gone"));
+    assert!(!app.firing_alarms_unknown.contains("gone"));
 }
 
 #[tokio::test]
