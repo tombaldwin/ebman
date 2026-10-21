@@ -65,6 +65,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- **`ebman.log` rotates.** Past 10 MB it moves to `ebman.log.1` at the
+  next start, three old files kept, still 0600. It grew without bound,
+  though the docs said it rotated.
 - **Alarms are listed ALARM first, then INSUFFICIENT_DATA, then OK, by
   name, everywhere.** `:alarms` and the MCP `why` tool listed them in
   API order.
@@ -81,6 +84,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   other. Such a write is now refused (audited as `ambiguous_env`) with
   the regions named and `:region` suggested, until writes carry the
   region they were aimed at.
+- **Two environments with the same name in two regions are two rows.**
+  Under `:region all`, DLQ depth, instance counts, health history (TREND),
+  the newly-Red marker and the red-transition audit line were kept by
+  name, so whichever region answered last decided both rows: a quiet
+  region could erase the other's backlog, and one going Red beside a
+  Green twin could be missed. They are kept by region and name.
+- **A throttled instance-count check keeps the last counts**, marked
+  `?`, instead of blanking the INST cell; an env that leaves the fleet
+  drops its DLQ depth, as it already did its alarms; and an older
+  refresh's late answer no longer overwrites a newer one.
+- **`:cols hide` accepts INST, REGION and COST.** Its list of columns
+  never learned them, so they could not be hidden.
+- **The App tab editor writes a value back the way it was read.** It
+  trimmed an alarm prefix and an error fingerprint the parser takes
+  literally, and quoted a value containing `"#` into a form that reads as
+  an inline comment. A namespace, instance dimension or log group is now
+  read trimmed, as the editor writes it, and a blank one is an error.
+- **The Metrics tab drops a superseded answer by request**, not by its
+  range: a range changed and changed back, or `^R` twice, could land an
+  older answer over a newer one and stop the loading indicator early.
+- **On a narrow terminal PLATFORM is dropped rather than
+  clipped.** With the version added it clipped to `↑ Node.js 2`, which
+  reads as another runtime; it now needs 18 columns, and the ↑ leads.
 - **`:config-diff-local` reads a saved config containing `K: {}`.** The
   old YAML parser rejected an inline empty mapping and failed the whole
   file; it now diffs as `{}`. A tagged value (`!tag value`) keeps its
