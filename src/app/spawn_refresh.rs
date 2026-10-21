@@ -1024,7 +1024,7 @@ impl App {
                 // An env that left the fleet takes its polled values
                 // with it, including when the fleet is now empty and no
                 // poll will run to say so.
-                let fleet: std::collections::HashSet<EnvKey> =
+                let fleet: std::collections::BTreeSet<EnvKey> =
                     self.environments.iter().map(|e| self.env_key(e)).collect();
                 self.caches.worker_dlq.prune_to(&fleet);
                 self.caches.env_instance_counts.prune_to(&fleet);
@@ -1138,7 +1138,7 @@ impl App {
                     }
                 }
 
-                let live: HashSet<EnvKey> =
+                let live: std::collections::BTreeSet<EnvKey> =
                     self.environments.iter().map(|e| self.env_key(e)).collect();
                 for e in &self.environments {
                     let buf = self.caches.history.entry(self.env_key(e)).or_default();

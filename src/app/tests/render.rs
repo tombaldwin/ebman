@@ -116,7 +116,7 @@ fn assign_app_colors_stable_first_appearance() {
 
 #[test]
 fn bucket_delta_only_envs_in_both() {
-    let mut prev = HashMap::new();
+    let mut prev = BTreeMap::new();
     prev.insert(home_key("a"), "Green".into());
     prev.insert(home_key("b"), "Red".into());
     prev.insert(home_key("c"), "Green".into()); // c disappears in next, so dropped from delta
@@ -138,7 +138,7 @@ fn bucket_delta_empty_prev_yields_no_deltas() {
     // Regression: when prev_health is cleared (e.g. on context switch),
     // the delta against the new env list should produce nothing. Otherwise
     // every env shows up as a transition.
-    let prev = HashMap::new();
+    let prev = BTreeMap::new();
     let next = vec![
         fake_env("a", "Ready", "Green", "v1"),
         fake_env("b", "Ready", "Red", "v1"),

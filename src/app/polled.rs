@@ -10,7 +10,7 @@
 //! entry and whichever region answered last decided both rows. One
 //! type, one reconcile, one prune, keyed by [`EnvKey`].
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 
 /// An environment as the fleet view knows it: its region and name. EB
 /// names are unique only within a region, and the multi-region fan-out
@@ -19,21 +19,15 @@ use std::collections::{HashMap, HashSet};
 /// No account: every per-env cache is emptied on a profile or account
 /// switch (`apply_rebuild`), so one account's envs never share a map
 /// with another's.
-// `Hash` by hand, not derived: the derive crashes the nightly the
-// candor lint is pinned to (internal compiler error "missing value for
-// assoc item in impl" at this derive, on Linux only, 2026-10-21). Hashes
-// exactly what the derive would.
+// No `Hash`: its maps are B-trees, keyed by the derived `Ord`. Hashing
+// it, derived or by hand, crashes the nightly the CI candor lint is
+// pinned to ("internal compiler error: missing value for assoc item in
+// impl", x86_64 Linux only, 2026-10-21); the same nightly on macOS and
+// stable do not.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct EnvKey {
     pub region: String,
     pub name: String,
-}
-
-impl std::hash::Hash for EnvKey {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.region.hash(state);
-        self.name.hash(state);
-    }
 }
 
 impl EnvKey {
@@ -69,9 +63,9 @@ impl EnvKey {
 ///   alert, and the UI says so.
 #[derive(Debug)]
 pub(crate) struct PolledByEnv<T> {
-    values: HashMap<EnvKey, T>,
-    stale: HashSet<EnvKey>,
-    absent: HashSet<EnvKey>,
+    values: BTreeMap<EnvKey, T>,
+    stale: BTreeSet<EnvKey>,
+    absent: BTreeSet<EnvKey>,
     /// The newest poll round applied. An older round's answer that
     /// arrives late is dropped, rather than overwriting a newer one.
     applied_round: u64,
@@ -80,9 +74,9 @@ pub(crate) struct PolledByEnv<T> {
 impl<T> Default for PolledByEnv<T> {
     fn default() -> Self {
         Self {
-            values: HashMap::new(),
-            stale: HashSet::new(),
-            absent: HashSet::new(),
+            values: BTreeMap::new(),
+            stale: BTreeSet::new(),
+            absent: BTreeSet::new(),
             applied_round: 0,
         }
     }
@@ -143,7 +137,7 @@ impl<T> PolledByEnv<T> {
     /// Forget every env not in `fleet`. An env that left the fleet
     /// takes its values with it; one recreated later under the same
     /// name starts clean.
-    pub(crate) fn prune_to(&mut self, fleet: &HashSet<EnvKey>) {
+    pub(crate) fn prune_to(&mut self, fleet: &BTreeSet<EnvKey>) {
         self.values.retain(|k, _| fleet.contains(k));
         self.stale.retain(|k| fleet.contains(k));
         self.absent.retain(|k| fleet.contains(k));
@@ -201,7 +195,7 @@ mod tests {
         p.set(gone.clone(), 2);
         p.reconcile(gone.clone(), Err(()));
         p.reconcile::<()>(key("r", "gone-absent"), Ok(None));
-        p.prune_to(&HashSet::from([kept.clone()]));
+        p.prune_to(&BTreeSet::from([kept.clone()]));
         assert_eq!(p.get(&kept), Some(&1));
         assert_eq!(p.get(&gone), None);
         assert!(!p.is_stale(&gone));

@@ -40,7 +40,7 @@
 )]
 
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque},
+    collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -2951,7 +2951,7 @@ fn palette_score(needle: &str, label: &str, detail: &str) -> Option<isize> {
 }
 
 fn bucket_delta<F>(
-    prev: &HashMap<EnvKey, String>,
+    prev: &BTreeMap<EnvKey, String>,
     next: &[Environment],
     key: impl Fn(&Environment) -> EnvKey,
     accessor: F,

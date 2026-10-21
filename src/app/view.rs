@@ -164,7 +164,7 @@ impl App {
                 self.caches.firing_alarms.is_stale(&k),
             )
         };
-        let alarm_rank: std::collections::HashMap<crate::app::EnvKey, (usize, bool)> = self
+        let alarm_rank: std::collections::BTreeMap<crate::app::EnvKey, (usize, bool)> = self
             .environments
             .iter()
             .map(|e| (crate::app::EnvKey::of(e, &home), alarms(e)))

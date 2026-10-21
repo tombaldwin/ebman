@@ -43,16 +43,16 @@ pub(crate) struct ContextCaches {
     /// check keeps the last counts, marked stale.
     pub(crate) env_instance_counts: PolledByEnv<crate::aws::EnvInstanceCounts>,
     /// The last `HISTORY_CAP` health readings per env, for TREND.
-    pub(crate) history: HashMap<EnvKey, VecDeque<String>>,
-    pub(crate) newly_red: HashSet<EnvKey>,
+    pub(crate) history: std::collections::BTreeMap<EnvKey, VecDeque<String>>,
+    pub(crate) newly_red: std::collections::BTreeSet<EnvKey>,
     /// Envs (region and name) that appeared for the first time on the most recent
     /// refresh (weren't in `prev_health` last cycle). Used by the env
     /// table to render a transient `+` marker on the NAME cell so a new
     /// env doesn't scroll past unnoticed. Cleared on context switch +
     /// rotated each refresh.
-    pub(crate) newly_added: HashSet<EnvKey>,
-    pub(crate) prev_health: HashMap<EnvKey, String>,
-    pub(crate) prev_status: HashMap<EnvKey, String>,
+    pub(crate) newly_added: std::collections::BTreeSet<EnvKey>,
+    pub(crate) prev_health: std::collections::BTreeMap<EnvKey, String>,
+    pub(crate) prev_status: std::collections::BTreeMap<EnvKey, String>,
     /// Delta in counts vs. the previous refresh, e.g. {"Red" → +1, "Yellow" → -1}.
     pub(crate) health_delta: Vec<(String, i32)>,
     pub(crate) status_delta: Vec<(String, i32)>,
@@ -63,11 +63,11 @@ pub(crate) struct ContextCaches {
     /// is fresh — saves ~one round-trip per repeated modal-open
     /// against the same env. Cleared on context switch alongside
     /// the other env-keyed state. 0.21 addition.
-    pub(crate) env_tag_cache: std::collections::HashMap<EnvKey, (Vec<String>, std::time::Instant)>,
+    pub(crate) env_tag_cache: std::collections::BTreeMap<EnvKey, (Vec<String>, std::time::Instant)>,
     /// Same shape as `env_tag_cache` but for the
     /// `fetch_env_instance_counts` healthy-count input that
     /// EBL012 reads. Independent TTL — same constant.
-    pub(crate) env_health_cache: std::collections::HashMap<EnvKey, (i64, std::time::Instant)>,
+    pub(crate) env_health_cache: std::collections::BTreeMap<EnvKey, (i64, std::time::Instant)>,
     /// Last-known region per environment name.
     ///
     /// `region_for_name` searches the live table first, but a write can

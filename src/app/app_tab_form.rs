@@ -681,13 +681,13 @@ impl App {
 pub(crate) struct AppTabDiscovery {
     /// What discovery found: the App tab of an env with no config shows
     /// it, and the editor opens with it.
-    pub(crate) discovered: std::collections::HashMap<EnvKey, crate::app_discover::Discovered>,
+    pub(crate) discovered: std::collections::BTreeMap<EnvKey, crate::app_discover::Discovered>,
     /// Each env's run, so one is not started twice: its ticket (only the
     /// latest run's answer ends it) and when it began, past
     /// [`DISCOVERY_STALE`] treated as lost (a result dropped by a
     /// context switch, a task that died) rather than blocking the env's
     /// discovery for good.
-    pub(crate) discovering: std::collections::HashMap<EnvKey, crate::app::Fetch<()>>,
+    pub(crate) discovering: std::collections::BTreeMap<EnvKey, crate::app::Fetch<()>>,
 }
 
 /// See [`App::app_tab_source`].
