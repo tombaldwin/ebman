@@ -156,7 +156,9 @@ pub async fn run(args: &[String]) -> Result<()> {
 
 /// One tab-separated row of the `ebman envs` text table. PLATFORM
 /// carries the platform version, as the TUI column does; ALARMS names
-/// the firing alarms, `-` for none and `?` when the check failed.
+/// the firing alarms, `-` for none and `?` when the check failed. The
+/// names are comma-joined for reading, and an alarm name may itself
+/// contain a comma: a script splits `--json`'s `firing_alarms` instead.
 pub(crate) fn envs_text_row(e: &aws::Environment, firing: Option<&FiringByEnv>) -> String {
     let platform = if e.platform_version.is_empty() {
         e.platform.clone()

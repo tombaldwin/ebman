@@ -41,6 +41,7 @@ function key (`f13`) is rejected rather than guessed at.
 These don't need a running TUI — they connect to AWS, do their thing, and exit. CI-friendly.
 
 ```bash
+ebman envs                                                                 # env table; ALARMS is comma-joined for reading (names may contain commas: split --json instead)
 ebman envs --json                                                          # print env list as JSON (incl. firing alarms)
 ebman action rebuild --env myenv --yes                                     # dispatch a rebuild
 ebman action rollout --version LABEL --env NAME --regions r1,r2,r3 --yes   # sequential cross-region deploy
