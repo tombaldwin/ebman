@@ -570,10 +570,17 @@ impl App {
         ticket: crate::app::Ticket,
         found: Discovered,
     ) {
-        // Only the latest run's answer ends the run: an older one may
-        // answer after the stale timeout let a newer one start.
-        if let Some(run) = self.caches.app_tab_discovery.discovering.get_mut(&key) {
-            run.settle_ticket(ticket, Ok(()));
+        // Only the latest run's answer counts: an older one may answer
+        // after the stale timeout let a newer one start, and must not
+        // overwrite what the newer one finds, nor fill the form.
+        let latest = self
+            .caches
+            .app_tab_discovery
+            .discovering
+            .get_mut(&key)
+            .is_some_and(|run| run.settle_ticket(ticket, Ok(())));
+        if !latest {
+            return;
         }
         // Another region's same-named env is not the one on screen: its
         // answer is cached for it, and fills nothing here.
