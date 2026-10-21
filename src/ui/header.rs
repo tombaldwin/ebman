@@ -346,7 +346,12 @@ pub(crate) fn estimated_info_row_width(app: &App) -> usize {
     let mut w = "Sort: ".chars().count() + sort_label.chars().count();
     w += sep_w + "Status: ".chars().count() + STATUS_SLOT;
     w += sep_w + "Envs: ".chars().count() + env_count.chars().count();
-    for (bucket, delta) in app.health_delta.iter().chain(app.status_delta.iter()) {
+    for (bucket, delta) in app
+        .caches
+        .health_delta
+        .iter()
+        .chain(app.caches.status_delta.iter())
+    {
         if *delta == 0 {
             continue;
         }
@@ -466,7 +471,12 @@ pub(crate) fn draw_header(f: &mut Frame, area: Rect, app: &App, merge_pills: boo
     line2.push(sep(&theme.chrome()));
     line2.extend(kv("Envs", &env_count, &theme.chrome()));
     // Health-bucket delta since the previous refresh, e.g. "▲1 Red ▼1 Yellow".
-    for (bucket, delta) in app.health_delta.iter().chain(app.status_delta.iter()) {
+    for (bucket, delta) in app
+        .caches
+        .health_delta
+        .iter()
+        .chain(app.caches.status_delta.iter())
+    {
         if *delta == 0 {
             continue;
         }
@@ -761,8 +771,8 @@ pub(crate) fn context_hint(app: &App) -> Option<String> {
     }
     // New envs landed on this refresh — point at them so the operator
     // sees the `+` marker isn't a glitch.
-    if !app.newly_added.is_empty() {
-        let n = app.newly_added.len();
+    if !app.caches.newly_added.is_empty() {
+        let n = app.caches.newly_added.len();
         let env_word = if n == 1 { "env" } else { "envs" };
         return Some(format!("{n} new {env_word} this refresh (marked +)"));
     }

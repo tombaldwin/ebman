@@ -2032,13 +2032,13 @@ fn apply_client_refresh_dispatches_an_identity_refetch() {
 
 /// Startup must not flag every environment as new.
 ///
-/// `if !self.prev_health.is_empty()` is what skips the first refresh —
+/// `if !self.caches.prev_health.is_empty()` is what skips the first refresh —
 /// deleting the `!` inverts it, so the very first listing marks the
 /// whole fleet `+` and nothing after that ever does.
 #[tokio::test]
 async fn the_first_refresh_flags_nothing_as_newly_added() {
     let mut app = test_app();
-    app.prev_health.clear();
+    app.caches.prev_health.clear();
     app.apply_refresh(
         app.fanout_epoch,
         Ok(vec![
@@ -2048,9 +2048,9 @@ async fn the_first_refresh_flags_nothing_as_newly_added() {
         Vec::new(),
     );
     assert!(
-        app.newly_added.is_empty(),
+        app.caches.newly_added.is_empty(),
         "the first listing is not two new environments: {:?}",
-        app.newly_added
+        app.caches.newly_added
     );
 
     // The SECOND refresh does flag a genuinely new one — without this
@@ -2065,7 +2065,7 @@ async fn the_first_refresh_flags_nothing_as_newly_added() {
         Vec::new(),
     );
     assert_eq!(
-        app.newly_added.iter().collect::<Vec<_>>(),
+        app.caches.newly_added.iter().collect::<Vec<_>>(),
         vec![&home_key("batch-prod")],
         "only the env that just appeared is new"
     );
@@ -2117,7 +2117,7 @@ async fn newly_red_marks_the_transition_not_the_state() {
         Vec::new(),
     );
     assert!(
-        app.newly_red.contains(&home_key("api-prod")),
+        app.caches.newly_red.contains(&home_key("api-prod")),
         "a red env on the first listing is news to the operator"
     );
 
@@ -2132,7 +2132,7 @@ async fn newly_red_marks_the_transition_not_the_state() {
         Vec::new(),
     );
     assert!(
-        !app.newly_red.contains(&home_key("api-prod")),
+        !app.caches.newly_red.contains(&home_key("api-prod")),
         "an env that was already red has not just gone red"
     );
 
@@ -2146,11 +2146,11 @@ async fn newly_red_marks_the_transition_not_the_state() {
         Vec::new(),
     );
     assert!(
-        app.newly_red.contains(&home_key("worker-prod")),
+        app.caches.newly_red.contains(&home_key("worker-prod")),
         "green → red is exactly what the alert is for"
     );
     assert!(
-        !app.newly_red.contains(&home_key("api-prod")),
+        !app.caches.newly_red.contains(&home_key("api-prod")),
         "and the one that was already red stays quiet"
     );
 
@@ -2163,7 +2163,10 @@ async fn newly_red_marks_the_transition_not_the_state() {
         ]),
         Vec::new(),
     );
-    assert!(app.newly_red.is_empty(), "a recovered fleet raises nothing");
+    assert!(
+        app.caches.newly_red.is_empty(),
+        "a recovered fleet raises nothing"
+    );
 }
 
 /// `Severe` counts as red. The predicate is
@@ -2180,7 +2183,7 @@ async fn severe_counts_as_red_and_so_does_any_casing() {
             Vec::new(),
         );
         assert!(
-            app.newly_red.contains(&home_key("api-prod")),
+            app.caches.newly_red.contains(&home_key("api-prod")),
             "{health:?} must raise a red alert"
         );
     }
@@ -2194,9 +2197,9 @@ async fn severe_counts_as_red_and_so_does_any_casing() {
             Vec::new(),
         );
         assert!(
-            app.newly_red.is_empty(),
+            app.caches.newly_red.is_empty(),
             "{health:?} is not a red alert: {:?}",
-            app.newly_red
+            app.caches.newly_red
         );
     }
 }
@@ -2289,6 +2292,7 @@ async fn the_health_history_is_capped_and_keeps_the_newest() {
         );
     }
     let buf = app
+        .caches
         .history
         .get(&home_key("api-prod"))
         .expect("history for the env");
@@ -2311,7 +2315,7 @@ async fn the_health_history_is_capped_and_keeps_the_newest() {
         Vec::new(),
     );
     assert!(
-        !app.history.contains_key(&home_key("api-prod")),
+        !app.caches.history.contains_key(&home_key("api-prod")),
         "history is dropped for an env no longer in the fleet"
     );
 }
@@ -2559,5 +2563,5 @@ async fn a_fleet_refresh_checks_for_firing_alarms() {
             break;
         }
     }
-    assert!(app.firing_alarms.is_stale(&home_key("api-prod")));
+    assert!(app.caches.firing_alarms.is_stale(&home_key("api-prod")));
 }

@@ -371,17 +371,17 @@ impl App {
                 // Preserve the previously-fetched LATEST values across
                 // refreshes so the column doesn't flicker to "—" every
                 // tick while the follow-up fan-out is in flight.
-                merge_app_latest_versions(&self.applications, &mut apps);
-                self.applications = apps;
+                merge_app_latest_versions(&self.caches.applications, &mut apps);
+                self.caches.applications = apps;
                 // Pinned-first sort runs every refresh so newly-arrived
                 // apps don't shuffle the pinned ones off the top row.
                 self.resort_applications();
-                if self.applications.is_empty() {
+                if self.caches.applications.is_empty() {
                     self.app_table_state.select(None);
                 } else if self
                     .app_table_state
                     .selected()
-                    .map(|s| s >= self.applications.len())
+                    .map(|s| s >= self.caches.applications.len())
                     .unwrap_or(true)
                 {
                     self.app_table_state.select(Some(0));
@@ -403,8 +403,8 @@ impl App {
     fn handle_solution_stacks(&mut self, result: Result<Vec<String>, String>) {
         match result {
             Ok(stacks) => {
-                self.latest_stacks = crate::aws::latest_stack_versions(&stacks);
-                self.latest_stacks_error = None;
+                self.caches.latest_stacks = crate::aws::latest_stack_versions(&stacks);
+                self.caches.latest_stacks_error = None;
                 self.view.invalidate();
                 // Refresh the derived stale-platform cache now that the
                 // catalogue is available — the env list itself is unchanged.
@@ -412,7 +412,7 @@ impl App {
             }
             Err(msg) => {
                 tracing::warn!(error = %msg, "solution stacks fetch failed");
-                self.latest_stacks_error = Some(msg);
+                self.caches.latest_stacks_error = Some(msg);
             }
         }
     }
@@ -429,7 +429,7 @@ impl App {
             .into_iter()
             .map(|(name, label, created)| (name, (label, created)))
             .collect();
-        for app in self.applications.iter_mut() {
+        for app in self.caches.applications.iter_mut() {
             if let Some((label, created)) = by_name.get(&app.name) {
                 app.latest_version_label = label.clone();
                 app.latest_version_created = *created;
@@ -442,7 +442,7 @@ impl App {
         round: u64,
         results: Vec<(EnvKey, Result<Option<i64>, String>)>,
     ) {
-        if !self.worker_dlq.accept_round(round) {
+        if !self.caches.worker_dlq.accept_round(round) {
             return;
         }
         // Per-env reconcile (NOT a clear-and-rebuild — that dropped a
@@ -454,7 +454,7 @@ impl App {
             // Logged when the check starts failing, not on every 15s
             // tick while it stays failed.
             if let Err(e) = &outcome {
-                if !self.worker_dlq.is_stale(&key) {
+                if !self.caches.worker_dlq.is_stale(&key) {
                     tracing::warn!(
                         env = %key.name,
                         region = %key.region,
@@ -463,7 +463,7 @@ impl App {
                     );
                 }
             }
-            self.worker_dlq.reconcile(key, outcome);
+            self.caches.worker_dlq.reconcile(key, outcome);
         }
         // Recompute alerts now that the cache is fresh — the count set
         // during apply_refresh used the *previous* tick's cache. Workers
@@ -476,7 +476,7 @@ impl App {
         round: u64,
         results: Vec<(String, Result<Vec<crate::aws::FiringAlarm>, String>)>,
     ) {
-        if !self.firing_alarms.accept_round(round) {
+        if !self.caches.firing_alarms.accept_round(round) {
             return;
         }
         for (region, outcome) in results {
@@ -496,7 +496,8 @@ impl App {
                             &key.name,
                             &firing,
                         );
-                        self.firing_alarms
+                        self.caches
+                            .firing_alarms
                             .reconcile::<()>(key, Ok((!names.is_empty()).then_some(names)));
                     }
                 }
@@ -504,7 +505,7 @@ impl App {
                 // count unknown. Logged when the region first fails,
                 // not on every 15s tick while it stays failed.
                 Err(e) => {
-                    if envs.iter().any(|k| !self.firing_alarms.is_stale(k)) {
+                    if envs.iter().any(|k| !self.caches.firing_alarms.is_stale(k)) {
                         tracing::warn!(
                             region = %region,
                             error = %e,
@@ -512,7 +513,7 @@ impl App {
                         );
                     }
                     for key in envs {
-                        self.firing_alarms.reconcile(key, Err(()));
+                        self.caches.firing_alarms.reconcile(key, Err(()));
                     }
                 }
             }
@@ -527,7 +528,7 @@ impl App {
             Result<Option<crate::aws::EnvInstanceCounts>, String>,
         )>,
     ) {
-        if !self.env_instance_counts.accept_round(round) {
+        if !self.caches.env_instance_counts.accept_round(round) {
             return;
         }
         // Per env, as the DLQ check: one env's throttle keeps its last
@@ -536,7 +537,7 @@ impl App {
             if let Err(e) = &outcome {
                 tracing::debug!(env = %key.name, error = %e, "instance count check failed");
             }
-            self.env_instance_counts.reconcile(key, outcome);
+            self.caches.env_instance_counts.reconcile(key, outcome);
         }
     }
 
@@ -983,10 +984,10 @@ impl App {
     ) {
         let now = std::time::Instant::now();
         if let Some(t) = tags {
-            self.env_tag_cache.insert(key.clone(), (t, now));
+            self.caches.env_tag_cache.insert(key.clone(), (t, now));
         }
         if let Some(h) = healthy {
-            self.env_health_cache.insert(key, (h, now));
+            self.caches.env_health_cache.insert(key, (h, now));
         }
     }
 

@@ -481,7 +481,7 @@ pub(super) fn draw_detail_health(
     if dlq_depth > 0 {
         // Last check failed → the depth is the last-known value, not
         // a live reading. Say so instead of presenting it as current.
-        let stale_suffix = if app.worker_dlq.is_stale(&app.env_key(env)) {
+        let stale_suffix = if app.caches.worker_dlq.is_stale(&app.env_key(env)) {
             " (stale)"
         } else {
             ""

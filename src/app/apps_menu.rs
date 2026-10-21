@@ -15,14 +15,14 @@ impl App {
             Scope::Apps => self
                 .app_table_state
                 .selected()
-                .and_then(|i| self.applications.get(i).map(|a| a.name.clone())),
+                .and_then(|i| self.caches.applications.get(i).map(|a| a.name.clone())),
             Scope::Envs => self.selected_env().map(|e| e.application.clone()),
         };
         let Some(app_name) = app_name_opt else {
             self.error_message = Some("no application selected".into());
             return;
         };
-        let Some(app) = self.applications.iter().find(|a| a.name == app_name) else {
+        let Some(app) = self.caches.applications.iter().find(|a| a.name == app_name) else {
             self.error_message = Some(format!(
                 "application '{app_name}' not in cache yet — refresh and retry"
             ));
@@ -105,7 +105,7 @@ impl App {
         let Some(idx) = self.app_table_state.selected() else {
             return;
         };
-        let Some(app_name) = self.applications.get(idx).map(|a| a.name.clone()) else {
+        let Some(app_name) = self.caches.applications.get(idx).map(|a| a.name.clone()) else {
             return;
         };
         let env_names: Vec<String> = self

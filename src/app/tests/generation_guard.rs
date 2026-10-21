@@ -75,7 +75,8 @@ fn a_result_from_a_superseded_context_is_dropped() {
         result: Ok(vec![mk_application("delivered")]),
     });
     assert_eq!(
-        app.applications
+        app.caches
+            .applications
             .iter()
             .map(|a| a.name.as_str())
             .collect::<Vec<_>>(),
@@ -92,7 +93,8 @@ fn a_result_from_a_superseded_context_is_dropped() {
         result: Ok(vec![mk_application("from-the-old-context")]),
     });
     assert_eq!(
-        app.applications
+        app.caches
+            .applications
             .iter()
             .map(|a| a.name.as_str())
             .collect::<Vec<_>>(),

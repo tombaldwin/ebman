@@ -916,19 +916,21 @@ async fn what_discovery_found_does_not_survive_a_context_switch() {
     // showing the first account's findings on it would be wrong.
     let mut app = test_app();
     let key = app.discovery_key("api-prod");
-    app.app_tab_discovery
+    app.caches
+        .app_tab_discovery
         .discovered
         .insert(key.clone(), Default::default());
-    app.app_tab_discovery
+    app.caches
+        .app_tab_discovery
         .discovering
         .insert(key.clone(), std::time::Instant::now());
     app.handle_msg(AppMsg::Rebuild {
         epoch: app.rebuild_epoch,
         result: Ok(Box::new(crate::aws::AwsClient::stub())),
     });
-    assert!(app.app_tab_discovery.discovered.is_empty());
+    assert!(app.caches.app_tab_discovery.discovered.is_empty());
     assert!(
-        app.app_tab_discovery.discovering.is_empty(),
+        app.caches.app_tab_discovery.discovering.is_empty(),
         "nor the in-flight marker, or it never reruns"
     );
 }
@@ -969,17 +971,23 @@ async fn discovery_for_a_same_named_env_in_another_region_is_not_this_ones() {
     );
     // And the spawn itself uses that key, not a name or the home region.
     app.spawn_app_discovery("api-prod".into());
-    let running: Vec<_> = app.app_tab_discovery.discovering.keys().cloned().collect();
+    let running: Vec<_> = app
+        .caches
+        .app_tab_discovery
+        .discovering
+        .keys()
+        .cloned()
+        .collect();
     assert_eq!(
         running,
         std::slice::from_ref(&key),
         "the run is tracked under eu-west-2's key"
     );
-    app.app_tab_discovery.discovering.clear();
+    app.caches.app_tab_discovery.discovering.clear();
 
     let mut found = crate::app_discover::Discovered::default();
     found.discovery.app_log = Some("var/log/app.log".into());
-    app.app_tab_discovery.discovered.insert(
+    app.caches.app_tab_discovery.discovered.insert(
         crate::app::DiscoveryKey {
             region: "us-east-1".into(),
             env: "api-prod".into(),
@@ -1104,12 +1112,12 @@ async fn firing_alarms_land_on_the_envs_of_the_region_they_came_from() {
             results,
         });
         assert_eq!(
-            app.firing_alarms.get(&eu_key("api-prod")),
+            app.caches.firing_alarms.get(&eu_key("api-prod")),
             Some(&vec!["eu-5xx".to_string()]),
             "eu_first={eu_first}"
         );
         assert_eq!(
-            app.firing_alarms.get(&home_key("api-prod")),
+            app.caches.firing_alarms.get(&home_key("api-prod")),
             None,
             "eu_first={eu_first}"
         );
@@ -1136,16 +1144,19 @@ async fn firing_alarms_land_on_the_envs_of_the_region_they_came_from() {
         ],
     });
     assert_eq!(
-        app.firing_alarms.get(&eu_key("api-prod")).map(Vec::len),
+        app.caches
+            .firing_alarms
+            .get(&eu_key("api-prod"))
+            .map(Vec::len),
         Some(1)
     );
-    assert!(app.firing_alarms.is_stale(&eu_key("api-prod")));
-    assert!(!app.firing_alarms.is_stale(&home_key("api-prod")));
+    assert!(app.caches.firing_alarms.is_stale(&eu_key("api-prod")));
+    assert!(!app.caches.firing_alarms.is_stale(&home_key("api-prod")));
 
     // Recovery clears the mark, and an alarm that stopped firing goes.
     app.handle_msg(ok(vec![]));
-    assert!(!app.firing_alarms.is_stale(&eu_key("api-prod")));
-    assert_eq!(app.firing_alarms.get(&eu_key("api-prod")), None);
+    assert!(!app.caches.firing_alarms.is_stale(&eu_key("api-prod")));
+    assert_eq!(app.caches.firing_alarms.get(&eu_key("api-prod")), None);
 }
 
 #[tokio::test]
@@ -1159,7 +1170,7 @@ async fn a_late_alarm_answer_from_an_older_refresh_is_dropped() {
     app.handle_msg(answer(2, vec![]));
     app.handle_msg(answer(1, vec![firing("old", "api-prod")]));
     assert_eq!(
-        app.firing_alarms.get(&eu_key("api-prod")),
+        app.caches.firing_alarms.get(&eu_key("api-prod")),
         None,
         "round 1 answered after round 2 and must not overwrite it"
     );
@@ -1200,10 +1211,13 @@ async fn a_failed_instance_count_keeps_the_last_counts_instead_of_blanking() {
     app.handle_msg(answer(Ok(Some(counts))));
     app.handle_msg(answer(Err("ThrottlingException: slow down".into())));
     assert_eq!(
-        app.env_instance_counts.get(&home_key("api-prod")),
+        app.caches.env_instance_counts.get(&home_key("api-prod")),
         Some(&counts)
     );
-    assert!(app.env_instance_counts.is_stale(&home_key("api-prod")));
+    assert!(app
+        .caches
+        .env_instance_counts
+        .is_stale(&home_key("api-prod")));
     // And the cell says the counts are the last known ones.
     app.rebuild_view();
     let frame = render(&mut app, 200, 20);
@@ -1215,9 +1229,11 @@ async fn a_refresh_forgets_polled_values_of_envs_that_left_even_an_emptied_fleet
     let mut app = test_app();
     app.environments = vec![mk_env("kept", "poly", "Worker", "Green")];
     for name in ["kept", "gone"] {
-        app.worker_dlq.set(home_key(name), 3);
-        app.firing_alarms.set(home_key(name), vec!["a".into()]);
-        app.env_instance_counts.set(
+        app.caches.worker_dlq.set(home_key(name), 3);
+        app.caches
+            .firing_alarms
+            .set(home_key(name), vec!["a".into()]);
+        app.caches.env_instance_counts.set(
             home_key(name),
             crate::aws::EnvInstanceCounts {
                 healthy: 1,
@@ -1230,16 +1246,24 @@ async fn a_refresh_forgets_polled_values_of_envs_that_left_even_an_emptied_fleet
         Ok(vec![mk_env("kept", "poly", "Worker", "Green")]),
         Vec::new(),
     );
-    assert!(app.worker_dlq.get(&home_key("kept")).is_some());
-    assert!(app.worker_dlq.get(&home_key("gone")).is_none());
-    assert!(app.firing_alarms.get(&home_key("gone")).is_none());
-    assert!(app.env_instance_counts.get(&home_key("gone")).is_none());
+    assert!(app.caches.worker_dlq.get(&home_key("kept")).is_some());
+    assert!(app.caches.worker_dlq.get(&home_key("gone")).is_none());
+    assert!(app.caches.firing_alarms.get(&home_key("gone")).is_none());
+    assert!(app
+        .caches
+        .env_instance_counts
+        .get(&home_key("gone"))
+        .is_none());
 
     // No envs left: no poll runs, and the values still go.
     app.apply_refresh(app.fanout_epoch, Ok(vec![]), Vec::new());
-    assert!(app.worker_dlq.get(&home_key("kept")).is_none());
-    assert!(app.firing_alarms.get(&home_key("kept")).is_none());
-    assert!(app.env_instance_counts.get(&home_key("kept")).is_none());
+    assert!(app.caches.worker_dlq.get(&home_key("kept")).is_none());
+    assert!(app.caches.firing_alarms.get(&home_key("kept")).is_none());
+    assert!(app
+        .caches
+        .env_instance_counts
+        .get(&home_key("kept"))
+        .is_none());
 }
 
 #[tokio::test]
@@ -1265,7 +1289,10 @@ async fn firing_alarms_use_the_envs_alarm_prefix() {
         results: vec![("us-east-1".into(), Ok(vec![by_name]))],
     });
     assert_eq!(
-        app.firing_alarms.get(&home_key("shop-prod")).map(Vec::len),
+        app.caches
+            .firing_alarms
+            .get(&home_key("shop-prod"))
+            .map(Vec::len),
         Some(1)
     );
 }
@@ -1274,7 +1301,8 @@ async fn firing_alarms_use_the_envs_alarm_prefix() {
 async fn the_table_marks_only_the_row_of_the_region_whose_alarm_fires() {
     let mut app = same_named_in_two_regions();
     app.multi_regions = vec!["us-east-1".into(), "eu-west-2".into()];
-    app.firing_alarms
+    app.caches
+        .firing_alarms
         .set(eu_key("api-prod"), vec!["eu-5xx".into()]);
     app.rebuild_view();
     let buf = render_buf(&mut app, 220, 20);
@@ -1308,13 +1336,14 @@ async fn a_same_named_env_going_red_beside_a_green_twin_is_flagged() {
     let mut app = test_app();
     app.apply_refresh(app.fanout_epoch, Ok(fleet("Green")), Vec::new());
     app.apply_refresh(app.fanout_epoch, Ok(fleet("Red")), Vec::new());
-    assert!(app.newly_red.contains(&eu_key("api-prod")));
-    assert!(!app.newly_red.contains(&home_key("api-prod")));
+    assert!(app.caches.newly_red.contains(&eu_key("api-prod")));
+    assert!(!app.caches.newly_red.contains(&home_key("api-prod")));
     // And on the next refresh, still Red, it is no longer NEW.
     app.apply_refresh(app.fanout_epoch, Ok(fleet("Red")), Vec::new());
-    assert!(!app.newly_red.contains(&eu_key("api-prod")));
+    assert!(!app.caches.newly_red.contains(&eu_key("api-prod")));
     let trend = |k| {
-        app.history
+        app.caches
+            .history
             .get(&k)
             .map(|h| h.iter().cloned().collect::<Vec<_>>())
     };

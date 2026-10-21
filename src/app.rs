@@ -142,6 +142,7 @@ mod tui_lint; // the snapshot and run shared by `:lint`, `:explain`, pre-deploy
 
 // Pure logic — no `App` receiver, no I/O, directly unit-testable.
 mod config_diff; // `:diff` option-setting comparison
+mod context_caches; // the fleet state a context switch forgets
 mod cost;
 mod costs; // instance pricing, fleet rollups
 mod deploy_math; // rolling-batch and unavailability arithmetic
@@ -155,6 +156,7 @@ mod text; // string, parse and format helpers
 mod types; // Focus / Overlay / Mode / SortKey / Picker / ...
 
 pub(crate) use config_diff::*;
+pub(crate) use context_caches::ContextCaches;
 pub(crate) use cost::*;
 pub(crate) use costs::Costs;
 pub(crate) use deploy_math::*;
@@ -190,7 +192,13 @@ pub(crate) fn builtin_commands() -> Vec<&'static str> {
 pub struct App {
     pub(crate) context: AwsContext,
     pub(crate) scope: Scope,
-    pub(crate) applications: Vec<Application>,
+    /// Everything ebman holds about the current context's fleet that a
+    /// context switch must forget: polled per-env values, health
+    /// history and transitions, lint-input caches, discovery, the
+    /// application and platform catalogues. `apply_rebuild` resets it
+    /// with one assignment, so a cache added here cannot be forgotten
+    /// there, which a list of hand-written `.clear()` calls allowed.
+    pub(crate) caches: ContextCaches,
     pub(crate) app_table_state: TableState,
     pub(crate) environments: Vec<Environment>,
     pub(crate) table_state: TableState,
@@ -218,8 +226,6 @@ pub struct App {
     pub(crate) picker: Option<Picker>,
     pub(crate) override_profile: Option<String>,
     pub(crate) override_region: Option<String>,
-    /// The last `HISTORY_CAP` health readings per env, for TREND.
-    pub(crate) history: HashMap<EnvKey, VecDeque<String>>,
     pub(crate) command_input: TextInput,
     pub(crate) completion: CompletionState,
     pub(crate) quickjump_input: TextInput,
@@ -246,23 +252,6 @@ pub struct App {
     pub(crate) help: HelpState,
     pub(crate) hover_row: Option<usize>,
     pub(crate) alerts: usize, // count of envs currently in Red, recomputed each refresh
-    /// DLQ depth (`Visible` messages) per Worker-tier env, from a
-    /// per-refresh fan-out of `describe_worker_queues`. Drives the
-    /// Red-alert count, the row tint and the `⚠N` chip. `absent` = the
-    /// worker has no DLQ; `stale` = the last check failed and the depth
-    /// is the last known one, so an AccessDenied or a throttle cannot
-    /// silently clear an alert.
-    pub(crate) worker_dlq: PolledByEnv<i64>,
-    /// The CloudWatch alarms in ALARM state per env, from a per-region
-    /// `DescribeAlarms` each refresh. Tints the row and marks STATUS:
-    /// EB health can be Green while an alarm fires. `stale` = the
-    /// region's last check failed; the table marks the count unknown
-    /// rather than letting a failure read as "no alarms".
-    pub(crate) firing_alarms: PolledByEnv<Vec<String>>,
-    /// Bumped once per fleet refresh and stamped on that refresh's
-    /// polls, so a slow answer from an older round cannot overwrite a
-    /// newer one (`PolledByEnv::accept_round`).
-    pub(crate) poll_round: u64,
     /// Monotonic counter of context-switch spawns (`:region`,
     /// `:profile`, `:account`). Stamped into `AppMsg::Rebuild` so a
     /// slow older switch losing the race to a newer one is dropped in
@@ -276,21 +265,6 @@ pub struct App {
     /// while one is already in flight and the mode change would
     /// otherwise not be picked up until the next 15s tick.
     pub(crate) fanout_epoch: u64,
-    /// Last-known region per environment name.
-    ///
-    /// `region_for_name` searches the live table first, but a write can
-    /// outlive its row: the confirm modal carries only a target NAME,
-    /// and there is an undo window between the operator confirming and
-    /// `tick_pending_dispatch` firing. A 15-second refresh landing in
-    /// that window — a terminated env, or a region whose fetch failed
-    /// under a fan-out — used to drop the answer, and the dispatch fell
-    /// back to the home region. Silently, which is the whole class this
-    /// release is named after.
-    ///
-    /// An environment cannot move between regions, so a remembered
-    /// answer can only go stale by the name being reused in a different
-    /// one. The live table always wins, and a context switch clears it.
-    pub(crate) env_regions: std::collections::HashMap<String, String>,
     /// When `aws` was built. The client cache's TTL only ever reached
     /// `list_environments_in_region`; everything else in the app goes
     /// through `self.aws`, which was replaced only by an explicit
@@ -306,18 +280,6 @@ pub struct App {
     /// Set while a background home-client refresh is in flight, so the
     /// 15-second tick can't stack them.
     pub(crate) aws_refresh_in_flight: bool,
-    /// Lazy cache for `spawn_confirm_lint`'s parallel tag fetch.
-    /// Populated opportunistically by every lint call site that fires
-    /// the inline `list_tags(env.arn)` fetch. TTL is `LINT_INPUT_CACHE_TTL`
-    /// (60s). Modal-open latency drops to `max(t_opts)` when cache
-    /// is fresh — saves ~one round-trip per repeated modal-open
-    /// against the same env. Cleared on context switch alongside
-    /// the other env-keyed state. 0.21 addition.
-    pub(crate) env_tag_cache: std::collections::HashMap<EnvKey, (Vec<String>, std::time::Instant)>,
-    /// Same shape as `env_tag_cache` but for the
-    /// `fetch_env_instance_counts` healthy-count input that
-    /// EBL012 reads. Independent TTL — same constant.
-    pub(crate) env_health_cache: std::collections::HashMap<EnvKey, (i64, std::time::Instant)>,
     /// Pre-deploy snapshots keyed by env name. Captured at deploy
     /// dispatch time so `:rollback-deploy ENV` (and the watchdog
     /// armed by `:deploy --auto-rollback Nm`) can redeploy whatever
@@ -389,14 +351,6 @@ pub struct App {
     /// AwsClient and may return empty or errored data; closing that gap
     /// is a separate piece of work (spawn-site gating).
     pub(crate) demo_mode: bool,
-    /// Per-env `(healthy, total)` instance counts, populated by
-    /// `spawn_env_instance_counts` after each refresh tick. Drives the
-    /// `INST` column on the main env table. No value = not checked, or
-    /// an env with nothing to count (terminal lifecycle states); both
-    /// render as `—`. `EnvInstanceCounts { 0, 0 }` is a real value
-    /// ("env reports no instances") and renders as `0/0`. A failed
-    /// check keeps the last counts, marked stale.
-    pub(crate) env_instance_counts: PolledByEnv<crate::aws::EnvInstanceCounts>,
     /// Per-env spend, whether the walk that produced it finished, when
     /// it landed, and whether Cost Explorer is opted in — one type, in
     /// `app/costs.rs`, because three of those must move together and
@@ -406,15 +360,6 @@ pub struct App {
     /// The last `:yank-cli` snippet, so a test can assert on what was
     /// copied without reaching into the system clipboard.
     pub(crate) last_yanked_cli: Option<String>,
-    /// `family_key → newest available version` from `ListAvailableSolutionStacks`,
-    /// built by `spawn_solution_stacks`. Drives the envs-table stale-platform
-    /// tint. Empty until the first fetch lands; cleared on context switch so a
-    /// new account/region rebuilds it.
-    pub(crate) latest_stacks: std::collections::HashMap<String, String>,
-    /// Why the last `latest_stacks` fetch failed, if it did. An empty
-    /// `latest_stacks` alone cannot say whether the list is still
-    /// loading or was denied, and lint's EBL008 gap should name which.
-    pub(crate) latest_stacks_error: Option<String>,
     pub(crate) frozen: bool, // when true, auto-refresh ticker is no-op
     /// `true` when ebman launched without a `state.toml` on disk —
     /// i.e. first-ever run on this machine. Renderer surfaces a
@@ -553,21 +498,6 @@ pub struct App {
     /// `config_file`'s stamp when its `app.` lines were last read, so a
     /// hand edit shows without a restart; `None` when there was no file.
     pub(crate) config_seen: Option<crate::config::ConfigStamp>,
-    /// The App tab's discovery, kept for the session.
-    pub(crate) app_tab_discovery: app_tab_form::AppTabDiscovery,
-    pub(crate) newly_red: HashSet<EnvKey>,
-    /// Env names that appeared for the first time on the most recent
-    /// refresh (weren't in `prev_health` last cycle). Used by the env
-    /// table to render a transient `+` marker on the NAME cell so a new
-    /// env doesn't scroll past unnoticed. Cleared on context switch +
-    /// rotated each refresh.
-    pub(crate) newly_added: HashSet<EnvKey>,
-    /// Delta in counts vs. the previous refresh, e.g. {"Red" → +1, "Yellow" → -1}.
-    pub(crate) health_delta: Vec<(String, i32)>,
-    pub(crate) status_delta: Vec<(String, i32)>,
-    prev_alerts: usize,
-    prev_health: HashMap<EnvKey, String>,
-    prev_status: HashMap<EnvKey, String>,
     pending_select: Option<String>,
     aws: Arc<AwsClient>,
     generation: u64,
@@ -1308,9 +1238,9 @@ impl App {
         let mut app = Self {
             context,
             scope: Scope::Envs,
-            applications: Vec::new(),
             app_table_state,
             environments: Vec::new(),
+            caches: ContextCaches::default(),
             table_state,
             table_area: Rect::default(),
             mode: Mode::Normal,
@@ -1332,7 +1262,6 @@ impl App {
             picker: None,
             override_profile,
             override_region,
-            history: HashMap::new(),
             command_input: TextInput::new(),
             completion: CompletionState::default(),
             quickjump_input: TextInput::new(),
@@ -1376,17 +1305,11 @@ impl App {
             },
             hover_row: None,
             alerts: 0,
-            worker_dlq: PolledByEnv::default(),
-            firing_alarms: PolledByEnv::default(),
-            poll_round: 0,
             rebuild_epoch: 0,
             fanout_epoch: 0,
             aws_built_at: Instant::now(),
-            env_regions: std::collections::HashMap::new(),
             detail_fetch_started: None,
             aws_refresh_in_flight: false,
-            env_tag_cache: std::collections::HashMap::new(),
-            env_health_cache: std::collections::HashMap::new(),
             // Restore persisted snapshots so a cross-session `:rollback`
             // / auto-rollback still has a target. Malformed lines are
             // silently skipped — better to drop one stale entry than
@@ -1426,15 +1349,12 @@ impl App {
             undo_history: std::collections::VecDeque::new(),
             promotion_history: Vec::new(),
             demo_mode: false,
-            env_instance_counts: PolledByEnv::default(),
             costs: {
                 let mut c = Costs::default();
                 c.set_enabled(persisted.cost_enabled.unwrap_or(false));
                 c
             },
             last_yanked_cli: None,
-            latest_stacks: std::collections::HashMap::new(),
-            latest_stacks_error: None,
             frozen: false,
             first_run_hint: !crate::state::file_exists(),
             current_overlay: None,
@@ -1479,7 +1399,6 @@ impl App {
             notify_bell: config.notify_bell,
             config_seen: crate::config::stamp_of(&config_file),
             config_file: Some(config_file),
-            app_tab_discovery: Default::default(),
             cfg: ResolvedConfig {
                 notify_webhook: config.notify_webhook.clone(),
                 safety_read_only: config.safety_read_only,
@@ -1501,13 +1420,6 @@ impl App {
                 accounts: config.accounts.clone(),
                 base_theme_name: config.theme.clone(),
             },
-            newly_red: HashSet::new(),
-            newly_added: HashSet::new(),
-            health_delta: Vec::new(),
-            status_delta: Vec::new(),
-            prev_alerts: 0,
-            prev_health: HashMap::new(),
-            prev_status: HashMap::new(),
             pending_select: persisted.selected_env,
             aws,
             generation: 0,
@@ -1647,9 +1559,9 @@ impl App {
         let mut app = Self {
             context,
             scope: Scope::Envs,
-            applications: Vec::new(),
             app_table_state,
             environments: Vec::new(),
+            caches: ContextCaches::default(),
             table_state,
             table_area: Rect::default(),
             mode: Mode::Normal,
@@ -1671,7 +1583,6 @@ impl App {
             picker: None,
             override_profile: None,
             override_region: None,
-            history: HashMap::new(),
             command_input: TextInput::new(),
             completion: CompletionState::default(),
             quickjump_input: TextInput::new(),
@@ -1712,17 +1623,11 @@ impl App {
             },
             hover_row: None,
             alerts: 0,
-            worker_dlq: PolledByEnv::default(),
-            firing_alarms: PolledByEnv::default(),
-            poll_round: 0,
             rebuild_epoch: 0,
             fanout_epoch: 0,
             aws_built_at: Instant::now(),
-            env_regions: std::collections::HashMap::new(),
             detail_fetch_started: None,
             aws_refresh_in_flight: false,
-            env_tag_cache: std::collections::HashMap::new(),
-            env_health_cache: std::collections::HashMap::new(),
             deploy_snapshots: std::collections::HashMap::new(),
             armed_watchdogs: std::collections::HashMap::new(),
             watching_deploys: std::collections::HashMap::new(),
@@ -1738,11 +1643,8 @@ impl App {
             undo_history: std::collections::VecDeque::new(),
             promotion_history: Vec::new(),
             demo_mode: false,
-            env_instance_counts: PolledByEnv::default(),
             costs: Costs::default(),
             last_yanked_cli: None,
-            latest_stacks: std::collections::HashMap::new(),
-            latest_stacks_error: None,
             frozen: false,
             first_run_hint: false,
             current_overlay: None,
@@ -1786,7 +1688,6 @@ impl App {
             notify_bell: config.notify_bell,
             config_seen: None,
             config_file: None,
-            app_tab_discovery: Default::default(),
             cfg: ResolvedConfig {
                 notify_webhook: config.notify_webhook.clone(),
                 safety_read_only: config.safety_read_only,
@@ -1808,13 +1709,6 @@ impl App {
                 accounts: config.accounts.clone(),
                 base_theme_name: config.theme.clone(),
             },
-            newly_red: HashSet::new(),
-            newly_added: HashSet::new(),
-            health_delta: Vec::new(),
-            status_delta: Vec::new(),
-            prev_alerts: 0,
-            prev_health: HashMap::new(),
-            prev_status: HashMap::new(),
             pending_select: None,
             aws,
             generation: 0,
@@ -3504,7 +3398,7 @@ impl App {
             .map(|e| self.region_for(e))
             // Then what we last saw. Covers the write whose row left
             // the table during its own undo window.
-            .or_else(|| self.env_regions.get(env_name).cloned())
+            .or_else(|| self.caches.env_regions.get(env_name).cloned())
             .unwrap_or_else(|| self.context.region.clone())
     }
 

@@ -41,7 +41,7 @@ impl App {
             self.status_message = Some("no app selected".into());
             return;
         };
-        let Some(name) = self.applications.get(idx).map(|a| a.name.clone()) else {
+        let Some(name) = self.caches.applications.get(idx).map(|a| a.name.clone()) else {
             return;
         };
         if self.pinned_apps.remove(&name) {
@@ -54,12 +54,12 @@ impl App {
         self.persist_state();
     }
 
-    /// Sort `self.applications` so pinned apps float to the top.
+    /// Sort `self.caches.applications` so pinned apps float to the top.
     /// Within each pinned / unpinned bucket, alphabetical by name to
     /// keep ordering stable.
     pub(crate) fn resort_applications(&mut self) {
         let pinned = self.pinned_apps.clone();
-        self.applications.sort_by(|a, b| {
+        self.caches.applications.sort_by(|a, b| {
             let a_pin = pinned.contains(&a.name);
             let b_pin = pinned.contains(&b.name);
             if a_pin != b_pin {
@@ -267,7 +267,7 @@ impl App {
         match self.scope {
             Scope::Envs => self.move_selection(delta),
             Scope::Apps => {
-                let n = self.applications.len();
+                let n = self.caches.applications.len();
                 if n == 0 {
                     self.app_table_state.select(None);
                     return;
@@ -283,7 +283,7 @@ impl App {
         match self.scope {
             Scope::Envs => self.select_first(),
             Scope::Apps => {
-                if !self.applications.is_empty() {
+                if !self.caches.applications.is_empty() {
                     self.app_table_state.select(Some(0));
                 }
             }
@@ -294,9 +294,9 @@ impl App {
         match self.scope {
             Scope::Envs => self.select_last(),
             Scope::Apps => {
-                if !self.applications.is_empty() {
+                if !self.caches.applications.is_empty() {
                     self.app_table_state
-                        .select(Some(self.applications.len() - 1));
+                        .select(Some(self.caches.applications.len() - 1));
                 }
             }
         }
@@ -306,7 +306,7 @@ impl App {
         let Some(idx) = self.app_table_state.selected() else {
             return;
         };
-        let Some(name) = self.applications.get(idx).map(|a| a.name.clone()) else {
+        let Some(name) = self.caches.applications.get(idx).map(|a| a.name.clone()) else {
             return;
         };
         self.view.set_filter(name.clone());
@@ -426,10 +426,10 @@ impl App {
         // up `env_name → newer version` instead of re-parsing per row per
         // frame. Empty while `latest_stacks` hasn't loaded yet.
         let mut stale_platforms: HashMap<String, String> = HashMap::new();
-        if !self.latest_stacks.is_empty() {
+        if !self.caches.latest_stacks.is_empty() {
             for e in &self.environments {
                 if let Some(newer) =
-                    crate::aws::newer_stack_version(&e.solution_stack, &self.latest_stacks)
+                    crate::aws::newer_stack_version(&e.solution_stack, &self.caches.latest_stacks)
                 {
                     stale_platforms.insert(e.name.clone(), newer);
                 }

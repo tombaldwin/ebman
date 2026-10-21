@@ -729,7 +729,7 @@ impl App {
                 // Apps-scope batch ops will fan across every
                 // env in every selected app.
                 if let Some(idx) = self.app_table_state.selected() {
-                    if let Some(name) = self.applications.get(idx).map(|a| a.name.clone()) {
+                    if let Some(name) = self.caches.applications.get(idx).map(|a| a.name.clone()) {
                         if !self.apps_selected.remove(&name) {
                             self.apps_selected.insert(name);
                         }

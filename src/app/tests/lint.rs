@@ -598,7 +598,8 @@ async fn the_lint_snapshot_reads_the_caches_as_lint_may_use_them() {
     let worker = mk_env("jobs", "poly", "Worker", "Green");
 
     // A failed platform fetch is named, not "not loaded".
-    app.latest_stacks_error = Some("ListAvailableSolutionStacks failed: AccessDenied".into());
+    app.caches.latest_stacks_error =
+        Some("ListAvailableSolutionStacks failed: AccessDenied".into());
     let snap = app.lint_snapshot(&worker);
     let Platforms::Unavailable(why) = &snap.platforms else {
         panic!("an empty cache is not a loaded list");
@@ -607,10 +608,10 @@ async fn the_lint_snapshot_reads_the_caches_as_lint_may_use_them() {
 
     // The cache is the home region's: a row in another region under a
     // fan-out is not judged against it.
-    app.latest_stacks = [("Java".to_string(), "4.1".to_string())]
+    app.caches.latest_stacks = [("Java".to_string(), "4.1".to_string())]
         .into_iter()
         .collect();
-    app.latest_stacks_error = None;
+    app.caches.latest_stacks_error = None;
     let mut abroad = mk_env("far", "poly", "WebServer", "Green");
     abroad.region = Some("eu-west-2".into());
     app.environments = vec![abroad.clone()];
@@ -641,7 +642,7 @@ async fn the_lint_snapshot_reads_the_caches_as_lint_may_use_them() {
     ));
 
     // A depth in hand is used — EBL011 fires on it...
-    app.worker_dlq.set(home_key("jobs"), 250);
+    app.caches.worker_dlq.set(home_key("jobs"), 250);
     let snap = app.lint_snapshot(&worker);
     let run = snap.finish(EnvLintInputs::bare(Vec::new()), &[]);
     assert!(
@@ -654,7 +655,7 @@ async fn the_lint_snapshot_reads_the_caches_as_lint_may_use_them() {
         .any(|w| w.starts_with("EBL011")));
 
     // ...but not once the last check failed: no verdict, and a gap.
-    app.worker_dlq.reconcile(home_key("jobs"), Err(()));
+    app.caches.worker_dlq.reconcile(home_key("jobs"), Err(()));
     let snap = app.lint_snapshot(&worker);
     assert!(matches!(snap.dlq, WorkerDlq::Unknown(_)));
     let run = snap.finish(EnvLintInputs::bare(Vec::new()), &[]);
@@ -679,22 +680,25 @@ async fn the_platform_fetch_error_is_cleared_by_a_success_and_a_context_switch()
         gen: app.generation,
         result: Err("ListAvailableSolutionStacks failed: AccessDenied".into()),
     });
-    assert!(app.latest_stacks_error.is_some());
+    assert!(app.caches.latest_stacks_error.is_some());
     app.handle_msg(AppMsg::SolutionStacks {
         gen: app.generation,
         result: Ok(vec![
             "64bit Amazon Linux 2023 v4.1.0 running Corretto 17".into()
         ]),
     });
-    assert!(app.latest_stacks_error.is_none(), "a success clears it");
+    assert!(
+        app.caches.latest_stacks_error.is_none(),
+        "a success clears it"
+    );
 
-    app.latest_stacks_error = Some("old account's failure".into());
+    app.caches.latest_stacks_error = Some("old account's failure".into());
     app.handle_msg(AppMsg::Rebuild {
         epoch: app.rebuild_epoch,
         result: Ok(Box::new(crate::aws::AwsClient::stub())),
     });
     assert!(
-        app.latest_stacks_error.is_none(),
+        app.caches.latest_stacks_error.is_none(),
         "a context switch clears it"
     );
 }

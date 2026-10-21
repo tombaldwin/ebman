@@ -33,6 +33,7 @@ pub(crate) fn draw_apps_table(f: &mut Frame, area: Rect, app: &mut App) {
 
     let now = chrono::Utc::now();
     let rows: Vec<Row> = app
+        .caches
         .applications
         .iter()
         .enumerate()
@@ -144,7 +145,7 @@ pub(crate) fn draw_apps_table(f: &mut Frame, area: Rect, app: &mut App) {
             }
         })
         .collect();
-    let title = format!("Applications  {}", app.applications.len());
+    let title = format!("Applications  {}", app.caches.applications.len());
     let widths = [
         Constraint::Percentage(20),
         Constraint::Length(5),      // ENVS
@@ -804,12 +805,12 @@ pub(crate) fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
                 // Transient "appeared on this refresh" marker. Stays only
                 // for the cycle in which the env was first seen, so it
                 // calls out new envs without sticking forever.
-                let added_marker = if app.newly_added.contains(&key) {
+                let added_marker = if app.caches.newly_added.contains(&key) {
                     "+ "
                 } else {
                     ""
                 };
-                let alert = if app.newly_red.contains(&key) {
+                let alert = if app.caches.newly_red.contains(&key) {
                     glyph(app.theme.icons, "▲ ", "! ")
                 } else {
                     ""
@@ -882,7 +883,7 @@ pub(crate) fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
                         Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
                     ),
                 ]));
-                let dlq_depth = app.worker_dlq.get(&key).copied().unwrap_or(0);
+                let dlq_depth = app.caches.worker_dlq.get(&key).copied().unwrap_or(0);
                 let cell_ctx = CellCtx {
                     theme: &theme,
                     e,
@@ -892,14 +893,14 @@ pub(crate) fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
                     now,
                     redact: app.view.redact,
                     dlq_depth,
-                    instance_counts: app.env_instance_counts.get(&key).copied(),
-                    instance_counts_stale: app.env_instance_counts.is_stale(&key),
-                    history: app.history.get(&key),
-                    newly_red: app.newly_red.contains(&key),
+                    instance_counts: app.caches.env_instance_counts.get(&key).copied(),
+                    instance_counts_stale: app.caches.env_instance_counts.is_stale(&key),
+                    history: app.caches.history.get(&key),
+                    newly_red: app.caches.newly_red.contains(&key),
                     stale_platform: app.view.stale_platforms().get(&e.name),
                     cost: app.costs.get(&e.name),
-                    firing_alarms: app.firing_alarms.get(&key).map_or(0, Vec::len),
-                    alarms_unknown: app.firing_alarms.is_stale(&key),
+                    firing_alarms: app.caches.firing_alarms.get(&key).map_or(0, Vec::len),
+                    alarms_unknown: app.caches.firing_alarms.is_stale(&key),
                 };
                 let cells: Vec<Cell> = columns
                     .iter()
@@ -916,7 +917,11 @@ pub(crate) fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
                 let dlq_red = e.tier.eq_ignore_ascii_case("Worker") && dlq_depth > 0;
                 // A firing CloudWatch alarm raises the row to at
                 // least yellow: EB health can stay Green through it.
-                let alarming = app.firing_alarms.get(&key).is_some_and(|a| !a.is_empty());
+                let alarming = app
+                    .caches
+                    .firing_alarms
+                    .get(&key)
+                    .is_some_and(|a| !a.is_empty());
                 let bg = if dlq_red
                     || e.health.eq_ignore_ascii_case("Red")
                     || e.health.eq_ignore_ascii_case("Severe")

@@ -235,7 +235,7 @@ pub(crate) fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
 /// non-trivial number of consecutive samples. Counts trailing samples in the
 /// env's history. Cheap; only invoked from the Detail header.
 pub(crate) fn health_recommendation(env: &crate::aws::Environment, app: &App) -> Option<String> {
-    let history = app.history.get(&app.env_key(env))?;
+    let history = app.caches.history.get(&app.env_key(env))?;
     if history.is_empty() {
         return None;
     }

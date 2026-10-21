@@ -44,7 +44,8 @@ impl App {
 
     /// `env`'s DLQ depth, 0 when unknown or none.
     pub(crate) fn dlq_depth(&self, env: &crate::aws::Environment) -> i64 {
-        self.worker_dlq
+        self.caches
+            .worker_dlq
             .get(&self.env_key(env))
             .copied()
             .unwrap_or(0)
@@ -343,7 +344,7 @@ impl App {
             self.status_message = Some("no application selected".into());
             return;
         };
-        let Some(name) = self.applications.get(idx).map(|a| a.name.clone()) else {
+        let Some(name) = self.caches.applications.get(idx).map(|a| a.name.clone()) else {
             return;
         };
         let region = self.context.region.clone();

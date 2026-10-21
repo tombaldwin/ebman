@@ -231,10 +231,10 @@ impl App {
                 self.current_overlay = Some(Overlay::History(self.format_message_log()));
             }
             "saved-configs" | "configs" => {
-                let items = collect_saved_configs(&self.applications);
+                let items = collect_saved_configs(&self.caches.applications);
                 if items.is_empty() {
                     self.current_overlay = Some(Overlay::SavedConfigs(format_saved_configs(
-                        &self.applications,
+                        &self.caches.applications,
                     )));
                 } else {
                     self.current_overlay = Some(Overlay::SavedConfigsInteractive {

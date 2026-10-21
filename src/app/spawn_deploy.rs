@@ -821,10 +821,12 @@ impl App {
         // its own tags and instances.
         let cache_key = self.env_key(&env);
         let cached_tags: Option<Vec<String>> = self
+            .caches
             .env_tag_cache
             .get(&cache_key)
             .and_then(|(v, t)| (now.duration_since(*t) < LINT_INPUT_CACHE_TTL).then(|| v.clone()));
         let cached_health: Option<i64> = self
+            .caches
             .env_health_cache
             .get(&cache_key)
             .and_then(|(v, t)| (now.duration_since(*t) < LINT_INPUT_CACHE_TTL).then_some(*v));

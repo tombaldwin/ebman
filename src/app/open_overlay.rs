@@ -104,8 +104,12 @@ impl App {
             .collect();
         let env_names: std::collections::BTreeSet<String> =
             self.environments.iter().map(|e| e.name.clone()).collect();
-        let app_names: std::collections::BTreeSet<String> =
-            self.applications.iter().map(|a| a.name.clone()).collect();
+        let app_names: std::collections::BTreeSet<String> = self
+            .caches
+            .applications
+            .iter()
+            .map(|a| a.name.clone())
+            .collect();
         // message_log entries are (timestamp, kind, text) tuples;
         // pull the text + a single-char severity prefix so the
         // operator can see whether each line was a status or an
@@ -139,7 +143,7 @@ impl App {
             recent_messages,
             recent_crash: crate::report_bug::latest_crash_log(),
             env_count: self.environments.len(),
-            app_count: self.applications.len(),
+            app_count: self.caches.applications.len(),
             multi_regions_count: self.multi_regions.len(),
             multi_account_enabled: !self.cfg.accounts.is_empty(),
         };

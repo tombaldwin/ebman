@@ -332,7 +332,7 @@ impl App {
         // Solution stacks change rarely (AWS releases platform versions
         // roughly monthly); fetch once per context and reuse. Cleared on a
         // context switch so a new account/region rebuilds it.
-        if self.latest_stacks.is_empty() {
+        if self.caches.latest_stacks.is_empty() {
             self.spawn_solution_stacks();
         }
     }
@@ -369,6 +369,7 @@ impl App {
         // so under a fan-out the same name exists once per region and
         // the home client can only answer for one of them.
         let names: Vec<(String, RegionClient)> = self
+            .caches
             .applications
             .iter()
             .map(|a| (a.name.clone(), self.client_for_app(&a.name)))
@@ -725,23 +726,19 @@ impl App {
                 self.aws_built_at = Instant::now();
                 self.maybe_apply_profile_theme();
                 self.environments.clear();
-                // The remembered regions belong to the OLD context: a
-                // same-named env in the new account or partition is a
-                // different environment entirely.
-                self.env_regions.clear();
-                // So is what discovery found for one: another account's
-                // `Shop-prod` has its own alarms, cache and log groups.
-                self.app_tab_discovery = Default::default();
+                // Everything held about the old context's fleet: polled
+                // values, history and transitions, lint-input caches,
+                // discovery, remembered regions, the application and
+                // platform catalogues. A same-named env in the new
+                // account is a different environment entirely, and a
+                // stale value would render as current until the first
+                // refresh. One assignment, so none can be missed.
+                self.caches = ContextCaches::default();
                 // Covers every view-cache input this block clears —
                 // `environments` here and `latest_stacks` below.
                 self.view.invalidate();
                 self.event_panel.events.clear();
                 self.event_panel.scroll = 0;
-                self.history.clear();
-                // Solution-stack catalogue is region-specific; drop it so the
-                // new context's `spawn_refresh` rebuilds it.
-                self.latest_stacks.clear();
-                self.latest_stacks_error = None;
                 // Overlays show data from the previous context (describe dump,
                 // alarms list, …); close them so the user doesn't act on stale info.
                 self.current_overlay = None;
@@ -757,17 +754,6 @@ impl App {
                 // account/region has its own rate limits.
                 self.throttle_until = None;
                 self.consecutive_throttles = 0;
-                // Diff state is keyed by env name. Switching accounts/regions may
-                // surface envs with overlapping names but unrelated history;
-                // clearing here prevents spurious "newly red" / status-delta noise
-                // on the first refresh in the new context.
-                self.prev_health.clear();
-                self.prev_status.clear();
-                self.prev_alerts = 0;
-                self.newly_red.clear();
-                self.newly_added.clear();
-                self.health_delta.clear();
-                self.status_delta.clear();
                 // Drop any auto-rollback watchdogs armed against the
                 // previous context. The deadline tokio tasks survive
                 // (no JoinHandle for cancellation), but their late
@@ -791,12 +777,6 @@ impl App {
                 // at envs that don't exist in the new context). Clear
                 // alongside undo_history.
                 self.promotion_history.clear();
-                // 0.21: lint-input caches are env-name keyed and
-                // context-scoped (instance IDs from health, tag keys
-                // are account/region-scoped). Same context-switch
-                // semantics as worker_dlq_depths above.
-                self.env_tag_cache.clear();
-                self.env_health_cache.clear();
                 // Pending actions reference env names from the
                 // previous context. Their spawned tasks (if any) are
                 // dropped at the generation guard in msg.rs, so the
@@ -849,12 +829,8 @@ impl App {
                 // DLQ state carries queue URLs from the old account
                 // (and `:help`'s topic inference reads it).
                 self.dlq = None;
-                // Per-env caches from the old context — stale numbers
-                // would render as current until the first refresh.
-                self.worker_dlq.clear();
-                self.firing_alarms.clear();
-                self.env_instance_counts.clear();
-                self.applications.clear();
+                // Spend belongs to the old account; the `:cost on`
+                // opt-in survives the switch.
                 self.costs.clear();
 
                 // Help's stash (pre_mode / pre_overlay) points at
@@ -939,33 +915,34 @@ impl App {
                 // Track newly-Red transitions for the anomaly highlight.
                 let is_red =
                     |h: &str| h.eq_ignore_ascii_case("Red") || h.eq_ignore_ascii_case("Severe");
-                self.newly_red.clear();
+                self.caches.newly_red.clear();
                 // Compute newly-added envs *before* swapping prev_health
                 // below — once we overwrite it, "previously unseen" is no
                 // longer derivable. Skip the first refresh (prev_health is
                 // empty then) so every env doesn't get flagged on startup.
-                self.newly_added.clear();
+                self.caches.newly_added.clear();
                 // By region and name: with `api-prod` in two regions, a
                 // name-keyed map held one reading for both, so one going
                 // Red beside a Green twin could be missed, and with it
                 // the red-transition audit line notifiers key off.
                 let home = self.context.region.clone();
                 let key = |e: &crate::aws::Environment| EnvKey::of(e, &home);
-                if !self.prev_health.is_empty() {
+                if !self.caches.prev_health.is_empty() {
                     for e in &envs {
-                        if !self.prev_health.contains_key(&key(e)) {
-                            self.newly_added.insert(key(e));
+                        if !self.caches.prev_health.contains_key(&key(e)) {
+                            self.caches.newly_added.insert(key(e));
                         }
                     }
                 }
                 for e in &envs {
                     let prev_red = self
+                        .caches
                         .prev_health
                         .get(&key(e))
                         .map(|h| is_red(h))
                         .unwrap_or(false);
                     if is_red(&e.health) && !prev_red {
-                        self.newly_red.insert(key(e));
+                        self.caches.newly_red.insert(key(e));
                         // The ROW's region, not the home one: under a
                         // multi-region fan-out the env that went red is
                         // usually elsewhere, and this line is what an
@@ -994,16 +971,16 @@ impl App {
                     }
                 }
                 // Compute health + status deltas before swapping prev maps.
-                self.health_delta =
-                    bucket_delta(&self.prev_health, &envs, key, |e| e.health.clone());
-                self.status_delta =
-                    bucket_delta(&self.prev_status, &envs, key, |e| e.status.clone());
+                self.caches.health_delta =
+                    bucket_delta(&self.caches.prev_health, &envs, key, |e| e.health.clone());
+                self.caches.status_delta =
+                    bucket_delta(&self.caches.prev_status, &envs, key, |e| e.status.clone());
 
-                self.prev_health = envs.iter().map(|e| (key(e), e.health.clone())).collect();
-                self.prev_status = envs.iter().map(|e| (key(e), e.status.clone())).collect();
+                self.caches.prev_health = envs.iter().map(|e| (key(e), e.health.clone())).collect();
+                self.caches.prev_status = envs.iter().map(|e| (key(e), e.status.clone())).collect();
 
                 let new_alerts = compute_red_alerts(&envs, |e| self.dlq_depth(e));
-                if should_ring(self.notify_bell, new_alerts, self.prev_alerts) {
+                if should_ring(self.notify_bell, new_alerts, self.caches.prev_alerts) {
                     // BEL — write to stderr and flush so the terminal rings
                     // immediately even though we're in the alt screen.
                     use std::io::Write;
@@ -1011,7 +988,7 @@ impl App {
                     let _ = err.write_all(b"\x07");
                     let _ = err.flush();
                 }
-                self.prev_alerts = new_alerts;
+                self.caches.prev_alerts = new_alerts;
                 self.alerts = new_alerts;
 
                 // Remember where each env lives before the rows can
@@ -1020,7 +997,7 @@ impl App {
                 // appearing is exactly the case this exists for.
                 for e in &envs {
                     if let Some(r) = e.region.as_ref().filter(|r| !r.is_empty()) {
-                        self.env_regions.insert(e.name.clone(), r.clone());
+                        self.caches.env_regions.insert(e.name.clone(), r.clone());
                     }
                 }
                 self.environments = envs;
@@ -1031,9 +1008,9 @@ impl App {
                 // poll will run to say so.
                 let fleet: std::collections::HashSet<EnvKey> =
                     self.environments.iter().map(|e| self.env_key(e)).collect();
-                self.worker_dlq.prune_to(&fleet);
-                self.env_instance_counts.prune_to(&fleet);
-                self.firing_alarms.prune_to(&fleet);
+                self.caches.worker_dlq.prune_to(&fleet);
+                self.caches.env_instance_counts.prune_to(&fleet);
+                self.caches.firing_alarms.prune_to(&fleet);
 
                 // Watchdog decision pass — single source of truth for
                 // auto-rollback outcomes. Every armed watchdog gets
@@ -1146,13 +1123,13 @@ impl App {
                 let live: HashSet<EnvKey> =
                     self.environments.iter().map(|e| self.env_key(e)).collect();
                 for e in &self.environments {
-                    let buf = self.history.entry(self.env_key(e)).or_default();
+                    let buf = self.caches.history.entry(self.env_key(e)).or_default();
                     buf.push_back(e.health.clone());
                     while buf.len() > HISTORY_CAP {
                         buf.pop_front();
                     }
                 }
-                self.history.retain(|k, _| live.contains(k));
+                self.caches.history.retain(|k, _| live.contains(k));
 
                 self.arm_loading_linger();
                 self.load_state = LoadState::Idle;
@@ -1230,8 +1207,8 @@ impl App {
                 self.reload_config_and_refetch();
                 // One round for this refresh's polls, so a slow answer
                 // from the previous one cannot land on top of them.
-                self.poll_round += 1;
-                let round = self.poll_round;
+                self.caches.poll_round += 1;
+                let round = self.caches.poll_round;
                 self.spawn_worker_queue_check(round);
                 // Same fan-out shape for the INST column: per-env
                 // `DescribeEnvironmentHealth` summarised down to

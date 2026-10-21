@@ -460,7 +460,7 @@ impl App {
             // result cached for the session would never see them.
             if trigger == RefreshTrigger::Asked {
                 let key = self.discovery_key(&env_name);
-                self.app_tab_discovery.discovered.remove(&key);
+                self.caches.app_tab_discovery.discovered.remove(&key);
             }
             if self.discovered_for(&env_name).is_none() {
                 self.spawn_app_discovery(env_name.clone());

@@ -668,7 +668,7 @@ async fn the_apps_scope_renders_its_own_table() {
     // A whole alternate table — `:apps` swaps it in for the env table.
     let mut app = test_app();
     app.environments = vec![mk_env("api-prod", "APPCANARY", "Web", "Green")];
-    app.applications = vec![crate::aws::Application {
+    app.caches.applications = vec![crate::aws::Application {
         description: "the one app".into(),
         version_count: 3,
         ..mk_application("APPCANARY")

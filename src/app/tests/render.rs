@@ -323,7 +323,7 @@ async fn render_main_table_includes_inst_column_header_and_data() {
         mk_env("api-staging", "poly", "Web", "Green"),
     ];
     // Seed counts: prod has 3/3 healthy, staging unknown (no entry).
-    app.env_instance_counts.set(
+    app.caches.env_instance_counts.set(
         home_key("api-prod"),
         crate::aws::EnvInstanceCounts {
             healthy: 3,
@@ -460,8 +460,8 @@ async fn ascii_icon_mode_renders_no_decorative_unicode() {
     app.rebuild_view();
     app.table_state.select(Some(0));
     // Header deltas render only when a bucket moved.
-    app.health_delta = vec![("Red".to_string(), 1)];
-    app.status_delta = vec![("Ready".to_string(), -1)];
+    app.caches.health_delta = vec![("Red".to_string(), 1)];
+    app.caches.status_delta = vec![("Ready".to_string(), -1)];
     // Every optional pill, so none of them is invisible to this check
     // the way the two watcher pills were.
     app.alerts = 2;
@@ -592,9 +592,11 @@ async fn a_green_env_with_a_firing_alarm_is_marked_and_tinted() {
     let mut unknown = mk_env("api-unknown", "poly", "Web", "Green");
     unknown.status = "Ready".into();
     app.environments = vec![calm, alarming, unknown];
-    app.firing_alarms
+    app.caches
+        .firing_alarms
         .set(home_key("api-alarm"), vec!["api-alarm-5xx".into()]);
-    app.firing_alarms
+    app.caches
+        .firing_alarms
         .reconcile(home_key("api-unknown"), Err(()));
     app.rebuild_view();
 
@@ -1332,7 +1334,7 @@ async fn an_env_that_just_went_red_is_marked_and_its_neighbours_are_not() {
         mk_env("api-prod", "poly", "Web", "Red"),
         mk_env("api-staging", "poly", "Web", "Red"),
     ];
-    app.newly_red.insert(home_key("api-prod"));
+    app.caches.newly_red.insert(home_key("api-prod"));
     app.rebuild_view();
     let buf = render_buf(&mut app, 200, 24);
     let row_text = |y: u16| {
@@ -1367,7 +1369,7 @@ async fn a_newly_discovered_env_is_marked_in_the_table() {
         mk_env("api-prod", "poly", "Web", "Green"),
         mk_env("api-new", "poly", "Web", "Green"),
     ];
-    app.newly_added.insert(home_key("api-new"));
+    app.caches.newly_added.insert(home_key("api-new"));
     app.rebuild_view();
     let buf = render_buf(&mut app, 200, 24);
     let row_text = |y: u16| {
@@ -2272,7 +2274,8 @@ async fn an_unconfigured_app_tab_shows_what_discovery_found() {
     press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
     press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
     assert!(
-        app.app_tab_discovery
+        app.caches
+            .app_tab_discovery
             .discovering
             .contains_key(&app.discovery_key("api-prod")),
         "opening the tab looks"
@@ -2295,6 +2298,7 @@ async fn an_unconfigured_app_tab_shows_what_discovery_found() {
         failed: vec![],
     };
     let started = *app
+        .caches
         .app_tab_discovery
         .discovering
         .get(&app.discovery_key("api-prod"))
@@ -2307,6 +2311,7 @@ async fn an_unconfigured_app_tab_shows_what_discovery_found() {
         found: Box::new(found),
     });
     assert!(!app
+        .caches
         .app_tab_discovery
         .discovering
         .contains_key(&app.discovery_key("api-prod")));
@@ -2351,7 +2356,8 @@ async fn an_unconfigured_app_tab_shows_what_discovery_found() {
     let form = app.form.as_ref().expect("editor open");
     assert_eq!(form.state, crate::form::FormState::Ready, "no waiting");
     assert!(
-        !app.app_tab_discovery
+        !app.caches
+            .app_tab_discovery
             .discovering
             .contains_key(&app.discovery_key("api-prod")),
         "not looked up again"
@@ -2421,10 +2427,13 @@ async fn a_worker_with_a_dlq_backlog_and_alarms_of_unknown_count_shows_both() {
     let mut wk = mk_env("wk-prod", "poly", "Worker", "Green");
     wk.status = "Ready".into();
     app.environments = vec![wk];
-    app.worker_dlq.set(home_key("wk-prod"), 3);
-    app.firing_alarms
+    app.caches.worker_dlq.set(home_key("wk-prod"), 3);
+    app.caches
+        .firing_alarms
         .set(home_key("wk-prod"), vec!["a".into(), "b".into()]);
-    app.firing_alarms.reconcile(home_key("wk-prod"), Err(()));
+    app.caches
+        .firing_alarms
+        .reconcile(home_key("wk-prod"), Err(()));
     app.rebuild_view();
     // 80 columns: the width the review measured the clipping at.
     let frame = render(&mut app, 80, 20);
@@ -2446,7 +2455,7 @@ async fn a_narrow_platform_column_keeps_the_newer_version_sign() {
     e.platform_version = "5.1.0".into();
     e.solution_stack = "64bit Amazon Linux 2023 v5.1.0 running Tomcat 9 Corretto 17".into();
     app.environments = vec![e];
-    app.latest_stacks = crate::aws::latest_stack_versions(&[
+    app.caches.latest_stacks = crate::aws::latest_stack_versions(&[
         "64bit Amazon Linux 2023 v5.4.0 running Tomcat 9 Corretto 17".to_string(),
     ]);
     app.view.invalidate();

@@ -487,7 +487,7 @@ async fn picker_filter_is_cursor_aware_via_shared_textinput() {
 async fn apps_scope_space_toggles_apps_selected() {
     let mut app = test_app();
     // Seed two apps + select Apps scope.
-    app.applications = vec![mk_application("billing"), mk_application("checkout")];
+    app.caches.applications = vec![mk_application("billing"), mk_application("checkout")];
     app.set_scope(Scope::Apps);
     app.app_table_state.select(Some(0));
     // First space adds; second space removes.
@@ -500,7 +500,7 @@ async fn apps_scope_space_toggles_apps_selected() {
 #[tokio::test]
 async fn apps_scope_star_pins_and_unpins_app() {
     let mut app = test_app();
-    app.applications = vec![mk_application("billing")];
+    app.caches.applications = vec![mk_application("billing")];
     app.set_scope(Scope::Apps);
     app.app_table_state.select(Some(0));
     assert!(!app.pinned_apps.contains("billing"));

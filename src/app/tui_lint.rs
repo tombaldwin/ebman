@@ -114,8 +114,8 @@ impl App {
             user_disables: self.cfg.lint_disable.clone(),
             required_tags: self.cfg.required_tags.clone(),
             platforms: platforms_from_cache(
-                &self.latest_stacks,
-                self.latest_stacks_error.as_deref(),
+                &self.caches.latest_stacks,
+                self.caches.latest_stacks_error.as_deref(),
                 &self.context.region,
                 // The row's own region, not a lookup by name: under a
                 // fan-out a same-named env in another region would
@@ -125,9 +125,9 @@ impl App {
             dlq: {
                 let key = self.env_key(env);
                 worker_dlq(
-                    self.worker_dlq.get(&key).copied(),
-                    self.worker_dlq.is_absent(&key),
-                    self.worker_dlq.is_stale(&key),
+                    self.caches.worker_dlq.get(&key).copied(),
+                    self.caches.worker_dlq.is_absent(&key),
+                    self.caches.worker_dlq.is_stale(&key),
                 )
             },
         }

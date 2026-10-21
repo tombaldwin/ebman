@@ -379,6 +379,7 @@ impl App {
         self.mode = Mode::Form;
         // Found already this session, and nothing failed: use it.
         if let Some(found) = self
+            .caches
             .app_tab_discovery
             .discovered
             .get(&self.discovery_key(&env))
@@ -411,7 +412,8 @@ impl App {
             return;
         }
         let started = std::time::Instant::now();
-        self.app_tab_discovery
+        self.caches
+            .app_tab_discovery
             .discovering
             .insert(key.clone(), started);
         let app_name = self.discovery_app_name(&key);
@@ -447,7 +449,8 @@ impl App {
     /// Whether `env`'s discovery is running, and not so long that its
     /// result must have been lost.
     pub(crate) fn discovery_running(&self, env: &str) -> bool {
-        self.app_tab_discovery
+        self.caches
+            .app_tab_discovery
             .discovering
             .get(&self.discovery_key(env))
             .is_some_and(|t| t.elapsed() < DISCOVERY_STALE)
@@ -471,7 +474,8 @@ impl App {
 
     /// What discovery found for `env` this session, if anything.
     pub(crate) fn discovered_for(&self, env: &str) -> Option<&Discovered> {
-        self.app_tab_discovery
+        self.caches
+            .app_tab_discovery
             .discovered
             .get(&self.discovery_key(env))
     }
@@ -522,15 +526,18 @@ impl App {
         started: std::time::Instant,
         found: Discovered,
     ) {
-        if self.app_tab_discovery.discovering.get(&key) == Some(&started) {
-            self.app_tab_discovery.discovering.remove(&key);
+        if self.caches.app_tab_discovery.discovering.get(&key) == Some(&started) {
+            self.caches.app_tab_discovery.discovering.remove(&key);
         }
         // Another region's same-named env is not the one on screen: its
         // answer is cached for it, and fills nothing here.
         let current = key == self.discovery_key(&key.env);
         let env_name = key.env.clone();
         if !self.demo_mode {
-            self.app_tab_discovery.discovered.insert(key, found.clone());
+            self.caches
+                .app_tab_discovery
+                .discovered
+                .insert(key, found.clone());
         }
         if !current {
             return;

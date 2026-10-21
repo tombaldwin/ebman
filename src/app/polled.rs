@@ -131,14 +131,6 @@ impl<T> PolledByEnv<T> {
         self.stale.retain(|k| fleet.contains(k));
         self.absent.retain(|k| fleet.contains(k));
     }
-
-    /// Everything, for a context switch. The round counter stays: a
-    /// round from before the switch is dropped by `generation` anyway.
-    pub(crate) fn clear(&mut self) {
-        self.values.clear();
-        self.stale.clear();
-        self.absent.clear();
-    }
 }
 
 #[cfg(test)]
@@ -209,18 +201,5 @@ mod tests {
             "the same round's other answers still apply"
         );
         assert!(p.accept_round(3));
-    }
-
-    #[test]
-    fn clear_empties_everything() {
-        let mut p = PolledByEnv::default();
-        let k = key("r", "a");
-        p.set(k.clone(), 1);
-        p.reconcile(k.clone(), Err(()));
-        p.reconcile::<()>(key("r", "b"), Ok(None));
-        p.clear();
-        assert_eq!(p.get(&k), None);
-        assert!(!p.is_stale(&k));
-        assert!(!p.is_absent(&key("r", "b")));
     }
 }

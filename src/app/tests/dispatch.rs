@@ -2755,7 +2755,7 @@ async fn an_alarm_op_reports_the_operation_it_performed() {
 
 /// The Apps table's selection is clamped when the list shrinks.
 ///
-/// `s >= self.applications.len()` is the out-of-bounds test — index
+/// `s >= self.caches.applications.len()` is the out-of-bounds test — index
 /// `len` is already past the end. `<` there leaves the selection
 /// pointing past the list after a refresh drops an application.
 #[tokio::test]
