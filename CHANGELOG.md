@@ -14,9 +14,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   env was opened. Each refresh now asks every region the fleet spans
   for its firing alarms (one `DescribeAlarms`, filtered by CloudWatch)
   and assigns them by the same rule as the Health and App tabs
-  (`alarm_dimensions`, `app.ENV.alarm_prefix`). The STATUS cell gains
-  ` ⚑N` (`A` with `icons = "ascii"`) and the row is tinted at least
-  yellow. A failed check keeps the last known count and shows `?`
+  (`alarm_dimensions`, `app.ENV.alarm_prefix`). A new ALARM column
+  shows `⚑N` (`A` with `icons = "ascii"`), is never dropped on a narrow
+  terminal, and the row is tinted at least yellow. A failed check keeps the last known count and shows `?`
   rather than reading as no alarms. It does not ring the bell.
   `ebman envs` (an ALARMS column; `-` none, `?` unknown) and its
   `--json`, and so MCP `list_environments`, carry the same as

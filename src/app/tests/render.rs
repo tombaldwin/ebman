@@ -2412,3 +2412,26 @@ async fn every_table_column_but_name_can_be_hidden_and_hiding_removes_it() {
     app.execute_command("cols hide NAME");
     assert!(!app.view.hidden_cols.contains("NAME"));
 }
+
+#[tokio::test]
+async fn a_worker_with_a_dlq_backlog_and_alarms_of_unknown_count_shows_both() {
+    // In STATUS the alarm marker followed the DLQ chip and clipped: the
+    // `?` of a failed check went first, then the whole marker.
+    let mut app = test_app();
+    let mut wk = mk_env("wk-prod", "poly", "Worker", "Green");
+    wk.status = "Ready".into();
+    app.environments = vec![wk];
+    app.worker_dlq.set(home_key("wk-prod"), 3);
+    app.firing_alarms
+        .set(home_key("wk-prod"), vec!["a".into(), "b".into()]);
+    app.firing_alarms.reconcile(home_key("wk-prod"), Err(()));
+    app.rebuild_view();
+    // 80 columns: the width the review measured the clipping at.
+    let frame = render(&mut app, 80, 20);
+    let row = frame
+        .lines()
+        .find(|l| l.contains("wk-prod") && l.contains("Ready"))
+        .unwrap_or_else(|| panic!("row:\n{frame}"));
+    assert!(row.contains("⚠3"), "{row}");
+    assert!(row.contains("⚑2?"), "{row}");
+}

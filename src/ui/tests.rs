@@ -99,12 +99,12 @@ fn alarm_marker_says_count_unknown_or_nothing() {
     use super::alarm_marker;
     let u = IconStyle::Unicode;
     assert_eq!(alarm_marker(0, false, u), None);
-    assert_eq!(alarm_marker(2, false, u).as_deref(), Some(" ⚑2"));
-    assert_eq!(alarm_marker(2, true, u).as_deref(), Some(" ⚑2?"));
-    assert_eq!(alarm_marker(0, true, u).as_deref(), Some(" ⚑?"));
+    assert_eq!(alarm_marker(2, false, u).as_deref(), Some("⚑2"));
+    assert_eq!(alarm_marker(2, true, u).as_deref(), Some("⚑2?"));
+    assert_eq!(alarm_marker(0, true, u).as_deref(), Some("⚑?"));
     assert_eq!(
         alarm_marker(1, false, IconStyle::Ascii).as_deref(),
-        Some(" A1")
+        Some("A1")
     );
 }
 
@@ -1448,6 +1448,7 @@ fn dropping_sheds_the_least_useful_column_first_and_never_the_identifier() {
             ("APPLICATION", SortKey::App),
             ("TIER", SortKey::App),
             ("STATUS", SortKey::Status),
+            ("ALARM", SortKey::Health),
             ("HEALTH", SortKey::Health),
             ("INST", SortKey::Health),
             ("TREND", SortKey::Health),
@@ -1481,7 +1482,7 @@ fn dropping_sheds_the_least_useful_column_first_and_never_the_identifier() {
     // columns that identify a row and its health are still there.
     let mut cols = full();
     drop_columns_to_fit(&mut cols, 10);
-    for keep in ["NAME", "HEALTH", "STATUS", "VERSION", "AGE"] {
+    for keep in ["NAME", "HEALTH", "STATUS", "ALARM", "VERSION", "AGE"] {
         assert!(
             cols.iter().any(|(l, _)| *l == keep),
             "{keep} must never be dropped; left with {cols:?}"
@@ -1814,6 +1815,7 @@ fn the_name_floor_survives_the_spacing_at_eighty_columns() {
         ("APPLICATION", SortKey::App),
         ("TIER", SortKey::App),
         ("STATUS", SortKey::Status),
+        ("ALARM", SortKey::Health),
         ("HEALTH", SortKey::Health),
         ("INST", SortKey::Health),
         ("TREND", SortKey::Health),
@@ -1860,6 +1862,7 @@ fn every_column_has_its_own_documented_minimum_width() {
         ("APPLICATION", 11),
         ("TIER", 11),
         ("STATUS", 10),
+        ("ALARM", 5),
         ("HEALTH", 3),
         ("INST", 7),
         ("TREND", 12),
@@ -1919,7 +1922,9 @@ fn only_the_variable_width_columns_grow() {
         assert_eq!(column_grow_weight(label), *want, "{label} weight changed");
     }
     // The fixed ones must stay at zero.
-    for label in ["TIER", "STATUS", "HEALTH", "INST", "TREND", "AGE", "COST"] {
+    for label in [
+        "TIER", "STATUS", "ALARM", "HEALTH", "INST", "TREND", "AGE", "COST",
+    ] {
         assert_eq!(
             column_grow_weight(label),
             0,

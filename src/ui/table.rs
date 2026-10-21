@@ -213,6 +213,7 @@ pub(crate) fn visible_columns(
         ("APPLICATION", SortKey::App),
         ("TIER", SortKey::App),
         ("STATUS", SortKey::Status),
+        ("ALARM", SortKey::Health),
         ("HEALTH", SortKey::Health),
         ("INST", SortKey::Health),
         ("TREND", SortKey::Health),
@@ -270,6 +271,10 @@ pub(crate) fn column_min_width(label: &str) -> u16 {
         "APPLICATION" => 11,
         "TIER" => 11,
         "STATUS" => 10,
+        // `⚑12?`: a count of firing alarms and the unknown mark. Its
+        // own column because the marker clipped inside STATUS, and the
+        // `?` that says "the check failed" was the part that went.
+        "ALARM" => 5,
         "HEALTH" => 3,
         "INST" => 7,
         "TREND" => 12,
@@ -294,8 +299,9 @@ pub(crate) fn column_min_width(label: &str) -> u16 {
 /// to "is this env behind its siblings?" and has no other place on
 /// the fleet view.
 ///
-/// NAME, HEALTH, STATUS, VERSION and AGE are deliberately absent: they
-/// are never dropped.
+/// NAME, HEALTH, STATUS, ALARM, VERSION and AGE are deliberately
+/// absent: they are never dropped. ALARM is the only fleet-view sign of
+/// a CloudWatch alarm that EB health does not reflect.
 const DROP_ORDER: &[&str] = &["TREND", "CNAME", "TIER", "PLATFORM", "INST", "APPLICATION"];
 
 /// Drop optional columns until the remaining minimums fit `available`.
@@ -508,22 +514,25 @@ pub(crate) fn env_cell<'a>(label: &str, ctx: &CellCtx<'a>) -> Cell<'a> {
                         .add_modifier(Modifier::BOLD),
                 ));
             }
-            // Firing CloudWatch alarms: ` ⚑N`, after the DLQ marker
-            // (which outranks it). `?` when the region's alarm check
-            // failed: a failure must not read as "no alarms".
-            if let Some(text) = alarm_marker(ctx.firing_alarms, ctx.alarms_unknown, theme.icons) {
+            Cell::from(Line::from(spans))
+        }
+        // Firing CloudWatch alarms: `⚑N`, `?` when the region's alarm
+        // check failed (a failure must not read as "no alarms"), blank
+        // when the env is known to be quiet.
+        "ALARM" => match alarm_marker(ctx.firing_alarms, ctx.alarms_unknown, theme.icons) {
+            Some(text) => {
                 let fg = if ctx.firing_alarms > 0 {
                     theme.health_yellow
                 } else {
                     theme.muted
                 };
-                spans.push(Span::styled(
+                Cell::from(Span::styled(
                     text,
                     Style::default().fg(fg).add_modifier(Modifier::BOLD),
-                ));
+                ))
             }
-            Cell::from(Line::from(spans))
-        }
+            None => Cell::from(""),
+        },
         "HEALTH" => Cell::from(health_dot(&e.health, theme)),
         "INST" => {
             // `healthy/total` if the per-env counts have
@@ -1358,16 +1367,16 @@ pub(crate) fn format_instance_counts(
     (text, color)
 }
 
-/// The STATUS cell's alarm marker: ` ⚑N` for N firing alarms, ` ⚑N?`
-/// when that count is the last known one, ` ⚑?` when none was known and
-/// the check failed, and nothing when the env is known to be quiet.
+/// The ALARM cell: `⚑N` for N firing alarms, `⚑N?` when that count is
+/// the last known one, `⚑?` when none was known and the check failed,
+/// and nothing when the env is known to be quiet.
 pub(crate) fn alarm_marker(firing: usize, unknown: bool, icons: IconStyle) -> Option<String> {
     let flag = glyph(icons, "⚑", "A");
     match (firing, unknown) {
         (0, false) => None,
-        (0, true) => Some(format!(" {flag}?")),
-        (n, false) => Some(format!(" {flag}{n}")),
-        (n, true) => Some(format!(" {flag}{n}?")),
+        (0, true) => Some(format!("{flag}?")),
+        (n, false) => Some(format!("{flag}{n}")),
+        (n, true) => Some(format!("{flag}{n}?")),
     }
 }
 
