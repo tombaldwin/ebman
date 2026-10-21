@@ -1825,7 +1825,7 @@ impl Server {
                 (envs, firing)
             }
         };
-        Ok(crate::cli::envs::render_envs_json(&envs, firing.as_ref()))
+        crate::cli::envs::render_envs_json(&envs, firing.as_ref()).map_err(|e| e.to_string())
     }
 
     async fn tool_list_versions(&self, args: &Value) -> Result<String, String> {

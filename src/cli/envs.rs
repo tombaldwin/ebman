@@ -53,10 +53,15 @@ pub(crate) async fn fetch_firing_by_env(
 ///
 /// `firing` is `None` when the alarm check failed: every env's
 /// `firing_alarms` is then `null`, where `[]` would claim it is quiet.
-pub(crate) fn render_envs_json(envs: &[aws::Environment], firing: Option<&FiringByEnv>) -> String {
+pub(crate) fn render_envs_json(
+    envs: &[aws::Environment],
+    firing: Option<&FiringByEnv>,
+) -> serde_json::Result<String> {
     let rows: Vec<EnvRow<'_>> = envs.iter().map(|e| EnvRow::of(e, firing)).collect();
-    // Serialising borrowed strings and options cannot fail.
-    serde_json::to_string(&rows).unwrap_or_else(|_| "[]".into())
+    // Borrowed strings and options do not fail to serialise; if that
+    // ever changed, falling back to `[]` would read as an empty fleet,
+    // so the error goes to the caller.
+    serde_json::to_string(&rows)
 }
 
 /// One env in the `envs --json` / `list_environments` schema, in its
@@ -181,7 +186,7 @@ pub(crate) async fn envs_with(
         }
     };
     if json {
-        writeln!(out, "{}", render_envs_json(&envs, firing.as_ref()))?;
+        writeln!(out, "{}", render_envs_json(&envs, firing.as_ref())?)?;
     } else {
         writeln!(
             out,
@@ -251,7 +256,7 @@ mod envs_json_tests {
     /// live one.
     #[test]
     fn the_env_json_carries_tier_and_the_update_timestamp() {
-        let json = render_envs_json(&[env()], Some(&FiringByEnv::new()));
+        let json = render_envs_json(&[env()], Some(&FiringByEnv::new())).unwrap();
         assert!(
             json.contains("\"tier\":\"Worker\""),
             "a worker env must say so rather than leaving it to the name: {json}"
@@ -281,16 +286,18 @@ mod envs_json_tests {
         let mut e = env();
         e.platform_version = "4.1.0".into();
         let firing = FiringByEnv::from([("poly-prod-wk".to_string(), vec!["a\"b".to_string()])]);
-        let json = render_envs_json(&[e.clone()], Some(&firing));
+        let json = render_envs_json(&[e.clone()], Some(&firing)).unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
         assert_eq!(v[0]["platform_version"], "4.1.0");
         assert_eq!(v[0]["firing_alarms"], serde_json::json!(["a\"b"]));
         // Quiet is `[]`; a failed check is `null`, not `[]`.
-        let v: serde_json::Value =
-            serde_json::from_str(&render_envs_json(&[e.clone()], Some(&FiringByEnv::new())))
-                .unwrap();
+        let v: serde_json::Value = serde_json::from_str(
+            &render_envs_json(&[e.clone()], Some(&FiringByEnv::new())).unwrap(),
+        )
+        .unwrap();
         assert_eq!(v[0]["firing_alarms"], serde_json::json!([]));
-        let v: serde_json::Value = serde_json::from_str(&render_envs_json(&[e], None)).unwrap();
+        let v: serde_json::Value =
+            serde_json::from_str(&render_envs_json(&[e], None).unwrap()).unwrap();
         assert!(v[0]["firing_alarms"].is_null());
     }
 
@@ -351,7 +358,7 @@ mod envs_json_tests {
         let mut e = env();
         e.updated = None;
         e.region = None;
-        let json = render_envs_json(&[e], Some(&FiringByEnv::new()));
+        let json = render_envs_json(&[e], Some(&FiringByEnv::new())).unwrap();
         assert!(json.contains("\"updated\":null"), "{json}");
         assert!(json.contains("\"region\":null"), "{json}");
         assert!(
