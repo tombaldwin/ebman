@@ -2531,3 +2531,30 @@ fn the_update_recheck_interval_is_six_hours() {
         "an interval outside an hour-to-a-day is a bug whichever way it went"
     );
 }
+
+#[tokio::test]
+async fn a_fleet_refresh_checks_for_firing_alarms() {
+    // The table reads `firing_alarms`; this pins that a refresh asks.
+    // The stub client has no credentials, so the check fails at once,
+    // without reaching AWS, and the failure is itself the evidence.
+    let mut app = test_app();
+    app.apply_refresh(
+        app.fanout_epoch,
+        Ok(vec![mk_env("api-prod", "poly", "Web", "Green")]),
+        Vec::new(),
+    );
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let msg = tokio::time::timeout_at(deadline, app.msg_rx.recv())
+            .await
+            .expect("an alarm check within 10s")
+            .expect("a message");
+        if let AppMsg::FiringAlarms { results, .. } = &msg {
+            let regions: Vec<&str> = results.iter().map(|(r, _)| r.as_str()).collect();
+            assert_eq!(regions, vec!["us-east-1"]);
+            app.handle_msg(msg);
+            break;
+        }
+    }
+    assert!(app.firing_alarms_unknown.contains("api-prod"));
+}

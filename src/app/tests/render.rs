@@ -581,6 +581,53 @@ async fn the_platform_column_shows_the_platform_version() {
 }
 
 #[tokio::test]
+async fn a_green_env_with_a_firing_alarm_is_marked_and_tinted() {
+    // EB health stays Green while a CloudWatch alarm fires; the fleet
+    // view said nothing about it.
+    let mut app = test_app();
+    let mut calm = mk_env("api-calm", "poly", "Web", "Green");
+    calm.status = "Ready".into();
+    let mut alarming = mk_env("api-alarm", "poly", "Web", "Green");
+    alarming.status = "Ready".into();
+    let mut unknown = mk_env("api-unknown", "poly", "Web", "Green");
+    unknown.status = "Ready".into();
+    app.environments = vec![calm, alarming, unknown];
+    app.firing_alarms
+        .insert("api-alarm".into(), vec!["api-alarm-5xx".into()]);
+    app.firing_alarms_unknown.insert("api-unknown".into());
+    app.rebuild_view();
+
+    let buf = render_buf(&mut app, 200, 20);
+    let row_text =
+        |y: u16| -> String { (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect() };
+    let calm_row = find_row(&buf, "api-calm").expect("calm row");
+    let alarm_row = find_row(&buf, "api-alarm").expect("alarm row");
+    let unknown_row = find_row(&buf, "api-unknown").expect("unknown row");
+
+    assert!(
+        row_text(alarm_row).contains("⚑1"),
+        "{}",
+        row_text(alarm_row)
+    );
+    assert!(
+        row_text(unknown_row).contains("⚑?"),
+        "{}",
+        row_text(unknown_row)
+    );
+    assert!(!row_text(calm_row).contains('⚑'), "{}", row_text(calm_row));
+
+    // The NAME cell, away from the marker: the row tint, not the glyph.
+    let x = (0..buf.area.width)
+        .find(|&x| buf[(x, alarm_row)].symbol() == "a")
+        .expect("name cell");
+    assert_eq!(buf[(x, alarm_row)].bg, app.theme.row_yellow_bg);
+    let x = (0..buf.area.width)
+        .find(|&x| buf[(x, calm_row)].symbol() == "a")
+        .expect("name cell");
+    assert_ne!(buf[(x, calm_row)].bg, app.theme.row_yellow_bg);
+}
+
+#[tokio::test]
 async fn a_red_env_gets_a_red_status_pill_in_the_table() {
     // `status_alert()` has unit tests; nothing checked that the TABLE
     // uses its result. Forcing `StatusAlert::None` at the call site —

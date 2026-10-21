@@ -422,6 +422,11 @@ pub(crate) struct CellCtx<'a> {
     pub newly_red: bool,
     pub stale_platform: Option<&'a String>,
     pub cost: Option<f64>,
+    /// CloudWatch alarms in ALARM state for this env.
+    pub firing_alarms: usize,
+    /// The last alarm check for this env's region failed:
+    /// `firing_alarms` is the last known count, not a current one.
+    pub alarms_unknown: bool,
     /// Pre-built: NAME carries the pin star, multi-select tick,
     /// newly-added marker and drift glyph — assembled once per row,
     /// not once per column.
@@ -473,20 +478,31 @@ pub(crate) fn env_cell<'a>(label: &str, ctx: &CellCtx<'a>) -> Cell<'a> {
             // the health colour so the column matches
             // reality. Updating / Terminating are kept as
             // their own distinctive pills.
-            let alert = status_alert(&e.health, dlq);
+            let alert = status_alert(&e.health, dlq, ctx.firing_alarms);
+            let mut spans = vec![status_pill_for(&e.status, theme, alert)];
             if dlq > 0 {
-                Cell::from(Line::from(vec![
-                    status_pill_for(&e.status, theme, alert),
-                    Span::styled(
-                        format!(" {}{dlq}", warn_glyph(theme.icons).trim_end()),
-                        Style::default()
-                            .fg(theme.health_red)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                ]))
-            } else {
-                Cell::from(status_pill_for(&e.status, theme, alert))
+                spans.push(Span::styled(
+                    format!(" {}{dlq}", warn_glyph(theme.icons).trim_end()),
+                    Style::default()
+                        .fg(theme.health_red)
+                        .add_modifier(Modifier::BOLD),
+                ));
             }
+            // Firing CloudWatch alarms: ` ⚑N`, after the DLQ marker
+            // (which outranks it). `?` when the region's alarm check
+            // failed: a failure must not read as "no alarms".
+            if let Some(text) = alarm_marker(ctx.firing_alarms, ctx.alarms_unknown, theme.icons) {
+                let fg = if ctx.firing_alarms > 0 {
+                    theme.health_yellow
+                } else {
+                    theme.muted
+                };
+                spans.push(Span::styled(
+                    text,
+                    Style::default().fg(fg).add_modifier(Modifier::BOLD),
+                ));
+            }
+            Cell::from(Line::from(spans))
         }
         "HEALTH" => Cell::from(health_dot(&e.health, theme)),
         "INST" => {
@@ -842,6 +858,8 @@ pub(crate) fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
                     newly_red: app.newly_red.contains(&e.name),
                     stale_platform: app.view.stale_platforms().get(&e.name),
                     cost: app.costs.get(&e.name),
+                    firing_alarms: app.firing_alarms.get(&e.name).map_or(0, Vec::len),
+                    alarms_unknown: app.firing_alarms_unknown.contains(&e.name),
                 };
                 let cells: Vec<Cell> = columns
                     .iter()
@@ -857,12 +875,18 @@ pub(crate) fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
                 // EB health check doesn't model.
                 let dlq_red = e.tier.eq_ignore_ascii_case("Worker")
                     && app.worker_dlq_depths.get(&e.name).copied().unwrap_or(0) > 0;
+                // A firing CloudWatch alarm raises the row to at
+                // least yellow: EB health can stay Green through it.
+                let alarming = app
+                    .firing_alarms
+                    .get(&e.name)
+                    .is_some_and(|a| !a.is_empty());
                 let bg = if dlq_red
                     || e.health.eq_ignore_ascii_case("Red")
                     || e.health.eq_ignore_ascii_case("Severe")
                 {
                     Some(theme.row_red_bg)
-                } else if e.health.eq_ignore_ascii_case("Yellow") {
+                } else if e.health.eq_ignore_ascii_case("Yellow") || alarming {
                     Some(theme.row_yellow_bg)
                 } else if is_hover {
                     Some(theme.row_hover_bg)
@@ -1309,15 +1333,30 @@ pub(crate) fn format_instance_counts(
     (text, color)
 }
 
+/// The STATUS cell's alarm marker: ` ⚑N` for N firing alarms, ` ⚑N?`
+/// when that count is the last known one, ` ⚑?` when none was known and
+/// the check failed, and nothing when the env is known to be quiet.
+pub(crate) fn alarm_marker(firing: usize, unknown: bool, icons: IconStyle) -> Option<String> {
+    let flag = glyph(icons, "⚑", "A");
+    match (firing, unknown) {
+        (0, false) => None,
+        (0, true) => Some(format!(" {flag}?")),
+        (n, false) => Some(format!(" {flag}{n}")),
+        (n, true) => Some(format!(" {flag}{n}?")),
+    }
+}
+
 /// Pure classifier: what alert tier the `Ready` pill should render in
-/// for an env with the given health string + worker-DLQ depth.
-pub(crate) fn status_alert(health: &str, dlq: i64) -> StatusAlert {
+/// for an env with the given health string, worker-DLQ depth and
+/// count of firing CloudWatch alarms.
+pub(crate) fn status_alert(health: &str, dlq: i64, firing_alarms: usize) -> StatusAlert {
     if health.eq_ignore_ascii_case("Red") || health.eq_ignore_ascii_case("Severe") {
         StatusAlert::Red
     } else if health.eq_ignore_ascii_case("Yellow")
         || health.eq_ignore_ascii_case("Warning")
         || health.eq_ignore_ascii_case("Degraded")
         || dlq > 0
+        || firing_alarms > 0
     {
         StatusAlert::Yellow
     } else {

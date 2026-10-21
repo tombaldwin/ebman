@@ -261,6 +261,15 @@ pub struct App {
     /// "not checked yet", and lint could not tell a rule with nothing
     /// to check from one that had no input. Cleared with the depths.
     pub(crate) worker_dlq_absent: std::collections::HashSet<String>,
+    /// The CloudWatch alarms in ALARM state for each env, by name, from
+    /// a per-region `DescribeAlarms` each refresh. An env with none has
+    /// no entry. Tints the row and marks STATUS: EB health can be Green
+    /// while an alarm fires, and the fleet view used to say nothing.
+    pub(crate) firing_alarms: std::collections::HashMap<String, Vec<String>>,
+    /// Envs whose region's last alarm check FAILED. Their
+    /// `firing_alarms` entry is the last known, kept; the table marks
+    /// them unknown rather than letting a failure read as "no alarms".
+    pub(crate) firing_alarms_unknown: std::collections::HashSet<String>,
     /// Monotonic counter of context-switch spawns (`:region`,
     /// `:profile`, `:account`). Stamped into `AppMsg::Rebuild` so a
     /// slow older switch losing the race to a newer one is dropped in
@@ -627,6 +636,13 @@ pub(crate) enum AppMsg {
         /// failed — the handler keeps the previous depth so an
         /// AccessDenied/throttle can't silently clear an alert.
         results: Vec<(String, Result<Option<i64>, String>)>,
+    },
+    /// Alarms in ALARM state, one outcome per region, fanned out after
+    /// `Refresh` lands via `spawn_firing_alarms`. `Err` keeps that
+    /// region's envs at their last known count, marked unknown.
+    FiringAlarms {
+        gen: u64,
+        results: Vec<(String, Result<Vec<crate::aws::FiringAlarm>, String>)>,
     },
     /// Per-env `(healthy, total)` instance counts, fanned out after
     /// `Refresh` lands via `spawn_env_instance_counts`. Failed envs are
@@ -1358,6 +1374,8 @@ impl App {
             hover_row: None,
             alerts: 0,
             worker_dlq_depths: std::collections::HashMap::new(),
+            firing_alarms: std::collections::HashMap::new(),
+            firing_alarms_unknown: std::collections::HashSet::new(),
             worker_dlq_stale: std::collections::HashSet::new(),
             worker_dlq_absent: std::collections::HashSet::new(),
             rebuild_epoch: 0,
@@ -1694,6 +1712,8 @@ impl App {
             hover_row: None,
             alerts: 0,
             worker_dlq_depths: std::collections::HashMap::new(),
+            firing_alarms: std::collections::HashMap::new(),
+            firing_alarms_unknown: std::collections::HashSet::new(),
             worker_dlq_stale: std::collections::HashSet::new(),
             worker_dlq_absent: std::collections::HashSet::new(),
             rebuild_epoch: 0,

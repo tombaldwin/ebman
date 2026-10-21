@@ -1058,3 +1058,88 @@ async fn a_discovery_is_for_the_envs_own_region_whichever_row_is_first() {
         );
     }
 }
+
+fn firing(name: &str, env: &str) -> crate::aws::FiringAlarm {
+    crate::aws::FiringAlarm {
+        name: name.into(),
+        dimensions: vec![("EnvironmentName".into(), env.into())],
+    }
+}
+
+#[tokio::test]
+async fn firing_alarms_land_on_the_envs_of_the_region_they_came_from() {
+    // Two same-named envs in two regions: an alarm in eu-west-2 is the
+    // eu-west-2 env's, and must not mark the home one.
+    let mut app = test_app();
+    let home = mk_env("api-prod", "poly", "Web", "Green");
+    let mut away = mk_env("api-eu", "poly", "Web", "Green");
+    away.region = Some("eu-west-2".into());
+    app.environments = vec![home, away];
+    app.rebuild_view();
+
+    app.handle_msg(AppMsg::FiringAlarms {
+        gen: app.generation,
+        results: vec![
+            ("us-east-1".into(), Ok(vec![])),
+            (
+                "eu-west-2".into(),
+                Ok(vec![
+                    firing("eu-5xx", "api-eu"),
+                    // Dimensioned by the HOME env's name, but fetched
+                    // from eu-west-2: not the home env's alarm.
+                    firing("stray", "api-prod"),
+                ]),
+            ),
+        ],
+    });
+    assert_eq!(
+        app.firing_alarms.get("api-eu"),
+        Some(&vec!["eu-5xx".to_string()])
+    );
+    assert!(!app.firing_alarms.contains_key("api-prod"));
+
+    // A failed region keeps its envs' last known alarms, marked
+    // unknown; the other region is untouched.
+    app.handle_msg(AppMsg::FiringAlarms {
+        gen: app.generation,
+        results: vec![
+            ("us-east-1".into(), Ok(vec![])),
+            ("eu-west-2".into(), Err("AccessDenied".into())),
+        ],
+    });
+    assert_eq!(app.firing_alarms.get("api-eu").map(Vec::len), Some(1));
+    assert!(app.firing_alarms_unknown.contains("api-eu"));
+    assert!(!app.firing_alarms_unknown.contains("api-prod"));
+
+    // Recovery clears the mark, and an alarm that stopped firing goes.
+    app.handle_msg(AppMsg::FiringAlarms {
+        gen: app.generation,
+        results: vec![("eu-west-2".into(), Ok(vec![]))],
+    });
+    assert!(!app.firing_alarms_unknown.contains("api-eu"));
+    assert!(!app.firing_alarms.contains_key("api-eu"));
+}
+
+#[tokio::test]
+async fn firing_alarms_use_the_envs_alarm_prefix() {
+    // The same `alarm_match_for` as the Health and App tabs, so an
+    // alarm the App tab lists by prefix is on the fleet view too.
+    let mut app = test_app();
+    app.environments = vec![mk_env("shop-prod", "poly", "Web", "Green")];
+    app.rebuild_view();
+    let mut tabs = app.cfg.app_tabs.clone();
+    tabs.envs
+        .entry("shop-prod".into())
+        .or_default()
+        .alarm_prefix = Some("shop-prod-".into());
+    app.set_app_tabs(tabs);
+    let by_name = crate::aws::FiringAlarm {
+        name: "shop-prod-db-cpu".into(),
+        dimensions: vec![("DBInstanceIdentifier".into(), "db".into())],
+    };
+    app.handle_msg(AppMsg::FiringAlarms {
+        gen: app.generation,
+        results: vec![("us-east-1".into(), Ok(vec![by_name]))],
+    });
+    assert_eq!(app.firing_alarms.get("shop-prod").map(Vec::len), Some(1));
+}

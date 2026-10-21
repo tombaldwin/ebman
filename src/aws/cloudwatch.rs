@@ -12,6 +12,15 @@ pub(crate) struct CwAlarm {
     pub namespace: String,
 }
 
+/// An alarm in ALARM state, as the fleet view needs it: enough to
+/// decide which environment it belongs to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct FiringAlarm {
+    pub name: String,
+    /// `(name, value)` pairs.
+    pub dimensions: Vec<(String, String)>,
+}
+
 /// Page budget for the App tab editor's discovery lookups: 40 pages of
 /// `ListMetrics` is 20,000 metrics, and every lookup is filtered by
 /// CloudWatch to one env's or one resource kind's metrics.
@@ -145,6 +154,45 @@ impl AwsClient {
             .collect();
         sort_alarms(&mut out);
         Ok(out)
+    }
+
+    /// Every alarm in this region currently in ALARM state, with its
+    /// dimensions, for the fleet view to assign to environments by the
+    /// same [`crate::app_tab::AlarmMatch`] the Health and App tabs use.
+    /// Filtered by CloudWatch, so a quiet account is one small page.
+    pub(crate) async fn list_firing_alarms(&self) -> Result<Vec<FiringAlarm>> {
+        use aws_sdk_cloudwatch::types::StateValue;
+        let this = self;
+        let raw = super::paginate_capped(
+            "DescribeAlarms",
+            super::SCAN_PAGES,
+            move |token| async move {
+                let resp = this
+                    .cw
+                    .describe_alarms()
+                    .state_value(StateValue::Alarm)
+                    .max_records(100)
+                    .set_next_token(token)
+                    .send()
+                    .await
+                    .aws_ctx("DescribeAlarms failed")?;
+                Ok((resp.metric_alarms.unwrap_or_default(), resp.next_token))
+            },
+        )
+        .await?
+        .complete("DescribeAlarms")?;
+        Ok(raw
+            .into_iter()
+            .map(|a| FiringAlarm {
+                dimensions: a
+                    .dimensions
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter_map(|d| Some((d.name?, d.value?)))
+                    .collect(),
+                name: a.alarm_name.unwrap_or_default(),
+            })
+            .collect())
     }
 
     /// Create or update a CloudWatch metric alarm in the

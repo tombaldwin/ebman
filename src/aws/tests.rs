@@ -3807,6 +3807,43 @@ async fn alarm_dimension_names_are_configurable() {
     assert_eq!(names, vec!["canonical", "operator-spelling"]);
 }
 
+#[tokio::test]
+async fn the_fleet_alarm_check_asks_only_for_firing_alarms() {
+    // One call per region per refresh: filtered by CloudWatch, so a
+    // quiet account is one small page rather than every alarm it has.
+    use aws_sdk_cloudwatch::operation::describe_alarms::DescribeAlarmsOutput;
+    use aws_sdk_cloudwatch::types::{Dimension, MetricAlarm, StateValue};
+    let rule = mock!(aws_sdk_cloudwatch::Client::describe_alarms)
+        .match_requests(|req| req.state_value() == Some(&StateValue::Alarm))
+        .then_output(|| {
+            DescribeAlarmsOutput::builder()
+                .metric_alarms(
+                    MetricAlarm::builder()
+                        .alarm_name("shop-prod-5xx")
+                        .dimensions(
+                            Dimension::builder()
+                                .name("EnvironmentName")
+                                .value("shop-prod")
+                                .build(),
+                        )
+                        .build(),
+                )
+                .build()
+        });
+    let client = client_with_cw(mock_client!(aws_sdk_cloudwatch, [&rule]));
+    let firing = client
+        .list_firing_alarms()
+        .await
+        .expect("matched the ALARM filter");
+    assert_eq!(
+        firing,
+        vec![FiringAlarm {
+            name: "shop-prod-5xx".into(),
+            dimensions: vec![("EnvironmentName".into(), "shop-prod".into())],
+        }]
+    );
+}
+
 fn by_dimensions(names: &[&str]) -> crate::app_tab::AlarmMatch {
     crate::app_tab::AlarmMatch {
         dimension_names: names.iter().map(|n| n.to_string()).collect(),

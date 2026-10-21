@@ -455,6 +455,46 @@ impl App {
         });
     }
 
+    /// One `DescribeAlarms` (ALARM state only) per region the fleet
+    /// spans: alarms are region-scoped, so the home region's say
+    /// nothing about another region's rows. Assignment to envs happens
+    /// on arrival, in `handle_firing_alarms`, with the config then
+    /// current.
+    pub(crate) fn spawn_firing_alarms(&self) {
+        let tx = self.msg_tx.clone();
+        let gen = self.generation;
+        let regions: std::collections::BTreeSet<String> = self
+            .environments
+            .iter()
+            .map(|e| self.region_for(e))
+            .collect();
+        if regions.is_empty() {
+            return;
+        }
+        let targets: Vec<(String, RegionClient)> = regions
+            .into_iter()
+            .map(|r| {
+                let client = self.client_for_region(&r);
+                (r, client)
+            })
+            .collect();
+        tokio::spawn(async move {
+            use futures::future::join_all;
+            let futs = targets.into_iter().map(|(region, client)| async move {
+                let outcome = match client.resolve().await {
+                    Ok(aws) => aws
+                        .list_firing_alarms()
+                        .await
+                        .map_err(|e| flatten_err("list_firing_alarms", e)),
+                    Err(e) => Err(flatten_err("cached_client", e)),
+                };
+                (region, outcome)
+            });
+            let results = join_all(futs).await;
+            let _ = tx.send(AppMsg::FiringAlarms { gen, results });
+        });
+    }
+
     /// Fan `DescribeEnvironmentHealth` across every env on each refresh
     /// tick to populate the `INST` column. Skips Terminated / Terminating
     /// envs (EB returns AccessDenied-ish errors for them) and silently
@@ -820,6 +860,8 @@ impl App {
                 self.worker_dlq_depths.clear();
                 self.worker_dlq_stale.clear();
                 self.worker_dlq_absent.clear();
+                self.firing_alarms.clear();
+                self.firing_alarms_unknown.clear();
                 self.env_instance_counts.clear();
                 self.applications.clear();
                 self.costs.clear();
@@ -1189,6 +1231,9 @@ impl App {
                 // `(healthy, total)`. Cache rebuilt from results in
                 // `handle_env_instance_counts`.
                 self.spawn_env_instance_counts();
+                // Alarms firing per env, one `DescribeAlarms` per
+                // region. Lands as `AppMsg::FiringAlarms`.
+                self.spawn_firing_alarms();
             }
             Err(msg) => {
                 tracing::error!(error = %msg, "refresh failed");

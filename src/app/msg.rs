@@ -28,6 +28,7 @@ impl AppMsg {
             | SolutionStacks { gen, .. }
             | AppLatestVersions { gen, .. }
             | WorkerQueueCheck { gen, .. }
+            | FiringAlarms { gen, .. }
             | EnvInstanceCountsCheck { gen, .. }
             | Events { gen, .. }
             | DetailEvents { gen, .. }
@@ -110,6 +111,7 @@ impl App {
             AppMsg::SolutionStacks { result, .. } => self.handle_solution_stacks(result),
             AppMsg::AppLatestVersions { results, .. } => self.handle_app_latest_versions(results),
             AppMsg::WorkerQueueCheck { results, .. } => self.handle_worker_queue_check(results),
+            AppMsg::FiringAlarms { results, .. } => self.handle_firing_alarms(results),
             AppMsg::EnvInstanceCountsCheck { results, .. } => {
                 self.handle_env_instance_counts(results)
             }
@@ -467,6 +469,45 @@ impl App {
         // during apply_refresh used the *previous* tick's cache. Workers
         // newly above DLQ=0 join the alert pill on the next draw.
         self.alerts = compute_red_alerts(&self.environments, &self.worker_dlq_depths);
+    }
+
+    fn handle_firing_alarms(
+        &mut self,
+        results: Vec<(String, Result<Vec<crate::aws::FiringAlarm>, String>)>,
+    ) {
+        for (region, outcome) in results {
+            let envs: Vec<String> = self
+                .environments
+                .iter()
+                .filter(|e| self.region_for(e) == region)
+                .map(|e| e.name.clone())
+                .collect();
+            match outcome {
+                Ok(firing) => {
+                    for env in envs {
+                        let names =
+                            crate::app_tab::firing_for(&self.alarm_match_for(&env), &env, &firing);
+                        self.firing_alarms_unknown.remove(&env);
+                        if names.is_empty() {
+                            self.firing_alarms.remove(&env);
+                        } else {
+                            self.firing_alarms.insert(env, names);
+                        }
+                    }
+                }
+                // Same reconcile as the DLQ check: a failure keeps the
+                // last known alarms rather than clearing them, and says
+                // the count is unknown.
+                Err(e) => {
+                    tracing::warn!(
+                        region = %region,
+                        error = %e,
+                        "firing-alarm check failed — keeping previous alarms (marked unknown)"
+                    );
+                    self.firing_alarms_unknown.extend(envs);
+                }
+            }
+        }
     }
 
     fn handle_env_instance_counts(

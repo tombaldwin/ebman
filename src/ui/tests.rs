@@ -72,22 +72,40 @@ fn render_detail_keystrip_carries_tab_name_and_global_keys() {
 #[test]
 fn status_alert_tiers_by_health_and_dlq() {
     // Red / Severe → red, regardless of DLQ.
-    assert_eq!(status_alert("Red", 0), StatusAlert::Red);
-    assert_eq!(status_alert("Severe", 0), StatusAlert::Red);
-    assert_eq!(status_alert("severe", 99), StatusAlert::Red);
+    assert_eq!(status_alert("Red", 0, 0), StatusAlert::Red);
+    assert_eq!(status_alert("Severe", 0, 0), StatusAlert::Red);
+    assert_eq!(status_alert("severe", 99, 0), StatusAlert::Red);
     // Yellow band → yellow.
-    assert_eq!(status_alert("Yellow", 0), StatusAlert::Yellow);
-    assert_eq!(status_alert("Warning", 0), StatusAlert::Yellow);
-    assert_eq!(status_alert("Degraded", 0), StatusAlert::Yellow);
+    assert_eq!(status_alert("Yellow", 0, 0), StatusAlert::Yellow);
+    assert_eq!(status_alert("Warning", 0, 0), StatusAlert::Yellow);
+    assert_eq!(status_alert("Degraded", 0, 0), StatusAlert::Yellow);
     // Green env with worker DLQ items → yellow (warning, not alarm).
-    assert_eq!(status_alert("Green", 1), StatusAlert::Yellow);
-    assert_eq!(status_alert("Ok", 50), StatusAlert::Yellow);
+    assert_eq!(status_alert("Green", 1, 0), StatusAlert::Yellow);
+    assert_eq!(status_alert("Ok", 50, 0), StatusAlert::Yellow);
     // Healthy env, no DLQ → no alert tier.
-    assert_eq!(status_alert("Green", 0), StatusAlert::None);
-    assert_eq!(status_alert("Ok", 0), StatusAlert::None);
-    assert_eq!(status_alert("", 0), StatusAlert::None);
+    assert_eq!(status_alert("Green", 0, 0), StatusAlert::None);
+    assert_eq!(status_alert("Ok", 0, 0), StatusAlert::None);
+    assert_eq!(status_alert("", 0, 0), StatusAlert::None);
     // Red health *with* DLQ stays Red (Red wins over Yellow).
-    assert_eq!(status_alert("Red", 200), StatusAlert::Red);
+    assert_eq!(status_alert("Red", 200, 0), StatusAlert::Red);
+    // A firing CloudWatch alarm raises a Green env to yellow, and
+    // never lowers a Red one.
+    assert_eq!(status_alert("Green", 0, 1), StatusAlert::Yellow);
+    assert_eq!(status_alert("Red", 0, 3), StatusAlert::Red);
+}
+
+#[test]
+fn alarm_marker_says_count_unknown_or_nothing() {
+    use super::alarm_marker;
+    let u = IconStyle::Unicode;
+    assert_eq!(alarm_marker(0, false, u), None);
+    assert_eq!(alarm_marker(2, false, u).as_deref(), Some(" ⚑2"));
+    assert_eq!(alarm_marker(2, true, u).as_deref(), Some(" ⚑2?"));
+    assert_eq!(alarm_marker(0, true, u).as_deref(), Some(" ⚑?"));
+    assert_eq!(
+        alarm_marker(1, false, IconStyle::Ascii).as_deref(),
+        Some(" A1")
+    );
 }
 
 #[test]
