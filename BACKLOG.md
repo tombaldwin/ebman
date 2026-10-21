@@ -80,11 +80,11 @@ Tier definitions:
   region seen, the fallback for a write whose row left the table) moves
   in the same pass; the fleet-view caches already moved to `EnvKey`.
   **Plan (2026-10-21, seven slices):** 1 results carry the dispatch
-  region (done, ed40cde); 2 the confirm modal routes by its recorded
-  region (done, 8bacf9f); 3 batch writes by `EnvKey` (`multi_selected`
-  is name-keyed, so two same-named rows select as one); 4 the deploy
-  lifecycle by key (snapshots, both watchdog maps, `AutoRollbackCheck`,
-  the disarm loop, `state.toml` with a legacy skip); 5 DLQ and undo by
+  region (done, 3c1db24); 2 the confirm modal routes by its recorded
+  region (done, c7498b6); 3 batch writes by `EnvKey` (done, 1d116a3);
+  4 the deploy lifecycle by key (done, 84125e3: snapshots, both
+  watchdog maps, `AutoRollbackCheck`, both disarm passes, `state.toml`
+  as `REGION/NAME` with name-only entries dropped); 5 DLQ and undo by
   key; 6 `NAME@REGION` for the few commands that type a name
   (`:promote-env`, `:swap`, `:rds-detach`, `:rollout --env`, the read
   commands, completion), a bare name only when unique; 7 remove
@@ -93,11 +93,13 @@ Tier definitions:
   Done so far: the ambiguous-name refusal counts every source the router
   uses, a rollout (which names its regions) is exempt from it, and a
   confirm modal records its row's region and refuses a dispatch that
-  resolves elsewhere. Still by name: batch writes, the auto-rollback,
-  `dlq_client`, `spawn_events`, `:alarms`, and the confirm modal's lint
-  fetch (`spawn_confirm_lint` fetches by name and caches by `EnvKey`);
-  and `costs`, `stale_platforms`, `multi_selected`, `watching_deploys`,
-  `armed_watchdogs`, `deploy_snapshots` are keyed by name. Anything that
+  resolves elsewhere. Still by name: `dlq_client`, `spawn_events`,
+  `:alarms`, and the confirm modal's lint fetch (`spawn_confirm_lint`
+  fetches by name and caches by `EnvKey`); and `costs` and
+  `stale_platforms` are keyed by name. Slices 2-4 route by key but are
+  not yet observable against same-named twins: the ambiguous-name
+  refusal stops those writes first, so their guards against reverting
+  to by-name routing land with slice 7. Anything that
   stores an `EnvKey` outside `ContextCaches` must be cleared in
   `apply_rebuild` itself: the key carries no account.
 
