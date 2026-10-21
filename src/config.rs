@@ -465,6 +465,14 @@ pub(crate) fn parse_alarm_dimensions(value: &str) -> Vec<String> {
 ///
 /// Each end is stripped on its own, so an unclosed `"dark` still reads
 /// as `dark`, as it always has.
+/// The value a config line holds, as the parser reads it: what follows
+/// the first `=`, trimmed, then unquoted. The App tab's editor checks a
+/// line it writes reads back through this, so the two cannot disagree.
+pub(crate) fn line_value(line: &str) -> Option<String> {
+    let (_, raw) = line.trim().split_once('=')?;
+    Some(unquote(raw.trim()).to_string())
+}
+
 fn unquote(raw: &str) -> &str {
     let s = raw.strip_prefix('"').unwrap_or(raw);
     s.strip_suffix('"').unwrap_or(s)

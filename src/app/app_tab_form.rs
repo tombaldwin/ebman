@@ -353,14 +353,16 @@ fn app_line(env: &str, field: &str, v: &str) -> String {
             .iter()
             .all(|e| e.line.is_none())
     };
-    if clean(&quoted) {
+    // Read back through the parser's own value reading: a form is
+    // written only if it gives back exactly `v`. Bare, a value is read
+    // trimmed and unquoted, so ` a"#` would save as `a"#` and `x"#"` as
+    // `x"#`.
+    let reads_back = |l: &str| crate::config::line_value(l).as_deref() == Some(v);
+    if clean(&quoted) && reads_back(&quoted) {
         return quoted;
     }
-    // Bare, a value is read trimmed and a leading quote opens a quoted
-    // one: written so, ` a"#` would save as `a"#`. Only a value that
-    // reads back as itself may go bare.
     let bare = format!("app.{env}.{field} = {v}");
-    if v.trim() == v && !v.starts_with('"') && clean(&bare) {
+    if clean(&bare) && reads_back(&bare) {
         bare
     } else {
         quoted
@@ -840,12 +842,14 @@ mod tests {
     /// the parser's reason, not saved changed.
     #[test]
     fn a_value_no_form_can_write_back_is_refused_not_changed() {
-        let spec = crate::app_tab::AppTabSpec {
-            alarm_prefix: Some(" a\"#".into()),
-            ..Default::default()
-        };
-        let result = lines_from_fields("e", &fields(Some(&spec)));
-        assert!(result.is_err(), "{result:?}");
+        for value in [" a\"#", "x\"#\""] {
+            let spec = crate::app_tab::AppTabSpec {
+                alarm_prefix: Some(value.into()),
+                ..Default::default()
+            };
+            let result = lines_from_fields("e", &fields(Some(&spec)));
+            assert!(result.is_err(), "{value:?}: {result:?}");
+        }
     }
 
     #[test]
