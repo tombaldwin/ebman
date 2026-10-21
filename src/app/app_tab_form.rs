@@ -276,13 +276,22 @@ pub(crate) fn lines_from_fields(
         fields
             .iter()
             .find(|f| f.key == key)
-            .map(|f| f.value.trim().to_string())
+            .map(|f| {
+                // The parser takes these two literally, spaces included
+                // (a regex's, or an alarm name's), so trimming here
+                // would write back something that means something else.
+                if matches!(key, "alarm_prefix" | "error_fingerprint") {
+                    f.value.clone()
+                } else {
+                    f.value.trim().to_string()
+                }
+            })
             .unwrap_or_default()
     };
     let mut lines = Vec::new();
     let mut line = |field: &str, v: &str| {
         if !v.is_empty() {
-            lines.push(format!("app.{env}.{field} = \"{v}\""));
+            lines.push(app_line(env, field, v));
         }
     };
     line("namespace", &value("namespace"));
@@ -324,6 +333,34 @@ pub(crate) fn lines_from_fields(
         Ok(lines)
     } else {
         Err(errors)
+    }
+}
+
+/// One `app.ENV.FIELD` line for `v`, quoted unless quoting would be
+/// misread. The format has no escapes, so a value holding `"#` reads, in
+/// quotes, as a value and an inline comment; written bare it reads back
+/// as itself. Whichever form the parser reads cleanly is the one
+/// written; if neither does, the quoted one, and the parser's error is
+/// what the save reports.
+fn app_line(env: &str, field: &str, v: &str) -> String {
+    let quoted = format!("app.{env}.{field} = \"{v}\"");
+    // The line's own errors: a metric line alone always lacks a
+    // namespace, which says nothing about how the line was written.
+    let clean = |l: &str| {
+        crate::config::parse(l)
+            .app_tabs
+            .errors
+            .iter()
+            .all(|e| e.line.is_none())
+    };
+    if clean(&quoted) {
+        return quoted;
+    }
+    let bare = format!("app.{env}.{field} = {v}");
+    if clean(&bare) {
+        bare
+    } else {
+        quoted
     }
 }
 
@@ -761,6 +798,32 @@ mod tests {
             rds.option_annotations.as_deref(),
             Some(&[String::new(), "named by env var DB_HOST".to_string()][..])
         );
+    }
+
+    /// Found by `config::app_line_properties`: the editor trimmed an
+    /// alarm prefix and a fingerprint the parser takes literally, and
+    /// quoted a value holding `"#`, which then read as a comment.
+    #[test]
+    fn the_editor_writes_literal_values_back_as_they_parsed() {
+        for text in [
+            "app.e.alarm_prefix = \" \"\n",
+            "app.e.alarm_prefix = \"shop prod \"\n",
+            "app.e.error_fingerprint = \" (?<fp>x) \"\n",
+            "app.e.rds = =\"#\n",
+        ] {
+            let spec = crate::config::parse(text)
+                .app_tabs
+                .envs
+                .remove("e")
+                .unwrap_or_else(|| panic!("{text}"));
+            let lines = lines_from_fields("e", &fields(Some(&spec))).expect(text);
+            let back: String = lines.iter().map(|l| format!("{l}\n")).collect();
+            assert_eq!(
+                crate::config::parse(&back).app_tabs.envs.get("e"),
+                Some(&spec),
+                "{text} -> {back}"
+            );
+        }
     }
 
     #[test]
