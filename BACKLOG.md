@@ -86,16 +86,20 @@ Tier definitions:
   watchdog maps, `AutoRollbackCheck`, both disarm passes, `state.toml`
   as `REGION/NAME` with name-only entries dropped); 5 DLQ and undo by
   key (done, 0f756a6: the DLQ viewer and `:why` record their region,
-  undo entries carry an `EnvKey`); 6 `NAME@REGION` for the few commands that type a name
-  (`:promote-env`, `:swap`, `:rds-detach`, `:rollout --env`, the read
-  commands, completion), a bare name only when unique; 7 remove
+  undo entries carry an `EnvKey`); 6 `NAME@REGION` (done, 1185bf6:
+  `:promote-env`, `:diff`, `:config-diff` resolve through
+  `env_ref::resolve_env_ref`; `:swap` and its picker stay in the row's
+  region; `:why` and `:ssm-run` take their row. `:rds-detach`'s name is
+  a confirmation of the selected row and `:rollout --env` names its
+  regions, so neither changed; there is no env-name completion); 7 remove
   `client_for_env` / `region_for_name` / `env_regions` and both
   stopgaps, with a guard. Safety pins stay name-keyed.
   Done so far: the ambiguous-name refusal counts every source the router
   uses, a rollout (which names its regions) is exempt from it, and a
   confirm modal records its row's region and refuses a dispatch that
-  resolves elsewhere. Still by name: `:why` at open (it then keeps that
-  region), the form submit path, `spawn_events`, `:alarms`, and the confirm modal's lint fetch (`spawn_confirm_lint`
+  resolves elsewhere. Still by name: ~17 sites that hold a row and
+  rebuild its client with `client_for_env(&env.name)` (slice 7 deletes
+  that function, so the compiler lists them), the form submit path, `spawn_events`, `:alarms`, and the confirm modal's lint fetch (`spawn_confirm_lint`
   fetches by name and caches by `EnvKey`); and `costs` and
   `stale_platforms` are keyed by name. Slices 2-5 route by key but are
   not yet observable against same-named twins: the ambiguous-name
