@@ -110,7 +110,7 @@ impl AwsClient {
     pub(crate) async fn list_alarms_for_env(
         &self,
         env_name: &str,
-        matching: &crate::app_tab::AlarmMatch,
+        matching: &crate::alarms::AlarmMatch,
     ) -> Result<Vec<CwAlarm>> {
         let this = self;
         let raw = super::paginate_capped(
@@ -158,7 +158,7 @@ impl AwsClient {
 
     /// Every alarm in this region currently in ALARM state, with its
     /// dimensions, for the fleet view to assign to environments by the
-    /// same [`crate::app_tab::AlarmMatch`] the Health and App tabs use.
+    /// same [`crate::alarms::AlarmMatch`] the Health and App tabs use.
     /// Filtered by CloudWatch, so a quiet account is one small page.
     pub(crate) async fn list_firing_alarms(&self) -> Result<Vec<FiringAlarm>> {
         use aws_sdk_cloudwatch::types::StateValue;

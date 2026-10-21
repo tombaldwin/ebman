@@ -3844,8 +3844,8 @@ async fn the_fleet_alarm_check_asks_only_for_firing_alarms() {
     );
 }
 
-fn by_dimensions(names: &[&str]) -> crate::app_tab::AlarmMatch {
-    crate::app_tab::AlarmMatch {
+fn by_dimensions(names: &[&str]) -> crate::alarms::AlarmMatch {
+    crate::alarms::AlarmMatch {
         dimension_names: names.iter().map(|n| n.to_string()).collect(),
         name_prefix: None,
         shadowed_by: Vec::new(),
@@ -3902,7 +3902,7 @@ async fn an_alarm_prefix_adds_alarms_by_name_and_all_come_back_firing_first() {
                 .build()
         })
     };
-    let names = |matching: crate::app_tab::AlarmMatch| {
+    let names = |matching: crate::alarms::AlarmMatch| {
         let rule = make();
         let client = client_with_cw(mock_client!(aws_sdk_cloudwatch, [&rule]));
         async move {
@@ -3940,15 +3940,15 @@ async fn an_alarm_prefix_adds_alarms_by_name_and_all_come_back_firing_first() {
 fn the_alarm_match_takes_each_envs_own_prefix() {
     let cfg = crate::config::parse("app.a.alarm_prefix = \"A-\"\napp.b.namespace = \"N\"\n");
     let dims = ["EnvironmentName".to_string()];
-    let a = crate::app_tab::AlarmMatch::for_env(&dims, &cfg.app_tabs, "a", ["a", "b"]);
+    let a = crate::alarms::AlarmMatch::for_env(&dims, &cfg.app_tabs, "a", ["a", "b"]);
     assert_eq!(a.name_prefix.as_deref(), Some("A-"));
     assert_eq!(a.dimension_names, dims);
     assert_eq!(
-        crate::app_tab::AlarmMatch::for_env(&dims, &cfg.app_tabs, "b", ["a", "b"]).name_prefix,
+        crate::alarms::AlarmMatch::for_env(&dims, &cfg.app_tabs, "b", ["a", "b"]).name_prefix,
         None
     );
     assert_eq!(
-        crate::app_tab::AlarmMatch::for_env(&dims, &cfg.app_tabs, "c", ["a", "b"]).name_prefix,
+        crate::alarms::AlarmMatch::for_env(&dims, &cfg.app_tabs, "c", ["a", "b"]).name_prefix,
         None
     );
 }
@@ -3959,7 +3959,7 @@ fn a_prefix_gives_way_to_a_longer_env_name_it_also_covers() {
     // are the worker's: the prefix must not take them.
     let cfg = crate::config::parse("app.Shop-prod.alarm_prefix = \"Shop-prod-\"\n");
     let dims = ["EnvironmentName".to_string()];
-    let m = crate::app_tab::AlarmMatch::for_env(
+    let m = crate::alarms::AlarmMatch::for_env(
         &dims,
         &cfg.app_tabs,
         "Shop-prod",

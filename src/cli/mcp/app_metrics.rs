@@ -107,7 +107,7 @@ impl Server {
                 } else {
                     Vec::new()
                 };
-                let matching = crate::app_tab::AlarmMatch::for_env(
+                let matching = crate::alarms::AlarmMatch::for_env(
                     &live.alarm_dimensions,
                     tabs,
                     &env,

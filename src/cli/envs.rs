@@ -21,13 +21,13 @@ pub(crate) fn firing_by_env(
 ) -> FiringByEnv {
     envs.iter()
         .filter_map(|e| {
-            let matching = crate::app_tab::AlarmMatch::for_env(
+            let matching = crate::alarms::AlarmMatch::for_env(
                 dimension_names,
                 app_tabs,
                 &e.name,
                 envs.iter().map(|o| o.name.as_str()),
             );
-            let names = crate::app_tab::firing_for(&matching, &e.name, firing);
+            let names = crate::alarms::firing_for(&matching, &e.name, firing);
             (!names.is_empty()).then(|| (e.name.clone(), names))
         })
         .collect()

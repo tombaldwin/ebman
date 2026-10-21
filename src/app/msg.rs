@@ -480,7 +480,7 @@ impl App {
             match outcome {
                 Ok(firing) => {
                     for key in envs {
-                        let names = crate::app_tab::firing_for(
+                        let names = crate::alarms::firing_for(
                             &self.alarm_match_for(&key.name),
                             &key.name,
                             &firing,

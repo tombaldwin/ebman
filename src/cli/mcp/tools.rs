@@ -1537,7 +1537,7 @@ impl Server {
             client
                 .list_alarms_for_env(
                     &env_name,
-                    &crate::app_tab::AlarmMatch::for_env(
+                    &crate::alarms::AlarmMatch::for_env(
                         &live.alarm_dimensions,
                         &live.app_tabs,
                         &env_name,

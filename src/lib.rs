@@ -74,6 +74,7 @@
 // narrows the class rather than closing it.
 #![warn(missing_docs)]
 
+pub(crate) mod alarms;
 pub mod app;
 pub(crate) mod app_discover;
 pub(crate) mod app_tab;
