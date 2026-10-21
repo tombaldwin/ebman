@@ -31,8 +31,11 @@ impl App {
     /// exist. One accessor because three sites needed this and two of
     /// them got it ad-hoc.
     pub(crate) fn region_for(&self, env: &crate::aws::Environment) -> String {
+        // An empty region (a client that resolved none) is the home one,
+        // as `EnvKey::of` and the remembered regions read it.
         env.region
             .clone()
+            .filter(|r| !r.is_empty())
             .unwrap_or_else(|| self.context.region.clone())
     }
 

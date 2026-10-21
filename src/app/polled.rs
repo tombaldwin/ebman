@@ -39,7 +39,10 @@ impl EnvKey {
     /// because it may borrow only fields of the App, not all of it.
     pub(crate) fn of(env: &crate::aws::Environment, home_region: &str) -> Self {
         Self::new(
-            env.region.as_deref().unwrap_or(home_region),
+            env.region
+                .as_deref()
+                .filter(|r| !r.is_empty())
+                .unwrap_or(home_region),
             env.name.clone(),
         )
     }

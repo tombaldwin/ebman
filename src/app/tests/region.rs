@@ -1454,3 +1454,18 @@ async fn the_cursor_stays_on_its_env_when_the_rows_re_sort() {
     app.apply_refresh(app.fanout_epoch, Ok(listing), Vec::new());
     assert_eq!(on(&app).as_deref(), Some("b"));
 }
+
+#[tokio::test]
+async fn an_empty_region_is_the_home_region_everywhere() {
+    // A row stamped `Some("")` (a client that resolved no region) read as
+    // region "" in one place and home in another, so a confirm modal's
+    // region could disagree with the dispatch's for no reason.
+    let app = test_app();
+    let mut e = mk_env("api-prod", "poly", "Web", "Green");
+    e.region = Some(String::new());
+    assert_eq!(app.region_for(&e), "us-east-1");
+    assert_eq!(
+        crate::app::EnvKey::of(&e, "us-east-1"),
+        home_key("api-prod")
+    );
+}
