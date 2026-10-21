@@ -65,8 +65,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
-- **`ebman.log` rotates.** Past 10 MB it moves to `ebman.log.1` at the
-  next start, three old files kept, still 0600. It grew without bound,
+- **`ebman.log` rotates at startup.** Past 10 MB it moves to
+  `ebman.log.1` when ebman next starts, three old files kept, still
+  0600; a long-running process grows it until then. It grew without bound,
   though the docs said it rotated.
 - **Alarms are listed ALARM first, then INSUFFICIENT_DATA, then OK, by
   name, everywhere.** `:alarms` and the MCP `why` tool listed them in
