@@ -465,6 +465,27 @@ impl App {
             .store(filtered, display, app_colors, stale_platforms);
     }
 
+    /// The selected env's key, for re-selecting it after the rows move.
+    pub(crate) fn selected_key(&self) -> Option<EnvKey> {
+        self.selected_env().map(|e| self.env_key(e))
+    }
+
+    /// Put the cursor back on `key`'s row, wherever a re-sort moved it.
+    /// The cursor is a display index, so without this a reorder left it
+    /// on whichever env took the old row: the next `r` or `:deploy`
+    /// opened on that one. Matched by region and name, so a same-named
+    /// env elsewhere is not picked. False when the env is gone.
+    pub(crate) fn select_key(&mut self, key: &EnvKey) -> bool {
+        let pos = self.view.display().iter().position(|r| match r {
+            DisplayRow::Env(i) => self.env_at(*i).is_some_and(|e| &self.env_key(e) == key),
+            DisplayRow::Separator => false,
+        });
+        if let Some(p) = pos {
+            self.table_state.select(Some(p));
+        }
+        pos.is_some()
+    }
+
     pub(crate) fn restore_or_clamp_selection(&mut self) {
         if self.view.display().is_empty() {
             self.table_state.select(None);

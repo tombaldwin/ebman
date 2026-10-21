@@ -509,8 +509,12 @@ impl App {
         }
         // They land after the refresh that sorted the table.
         if self.view.sort_key() == SortKey::Alarms {
+            let follow = self.selected_key();
             self.resort_envs();
             self.rebuild_view();
+            if let Some(key) = follow {
+                self.select_key(&key);
+            }
         }
     }
 

@@ -923,6 +923,9 @@ impl App {
         }
         match result {
             Ok(envs) => {
+                // The env under the cursor, to keep it there when the
+                // new listing sorts differently.
+                let follow = self.selected_key();
                 // Track newly-Red transitions for the anomaly highlight.
                 let is_red =
                     |h: &str| h.eq_ignore_ascii_case("Red") || h.eq_ignore_ascii_case("Severe");
@@ -1213,6 +1216,9 @@ impl App {
                 // semantics again.
                 self.status_message_pinned = false;
                 self.restore_or_clamp_selection();
+                if let Some(key) = follow {
+                    self.select_key(&key);
+                }
                 // A hand edit to the alarm config reaches the fleet view
                 // on this refresh: the polls below are matched under it.
                 self.reload_config_and_refetch();

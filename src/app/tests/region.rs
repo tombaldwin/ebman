@@ -1409,3 +1409,48 @@ async fn the_alarm_column_is_the_alarm_sort_and_wears_its_marker() {
         "{header}"
     );
 }
+
+#[tokio::test]
+async fn the_cursor_stays_on_its_env_when_the_rows_re_sort() {
+    // The cursor is a row index: when alarms or a new listing reorder
+    // the table, it stayed on the row and so moved to another env.
+    let mut app = test_app();
+    app.environments = vec![
+        mk_env("a", "poly", "Web", "Green"),
+        mk_env("b", "poly", "Web", "Green"),
+        mk_env("c", "poly", "Web", "Green"),
+    ];
+    app.set_sort(SortKey::Alarms, true);
+    app.rebuild_view();
+    let on = |app: &App| app.selected_env().map(|e| e.name.clone());
+    let row_of = |app: &App, name: &str| {
+        app.view
+            .display()
+            .iter()
+            .position(|r| matches!(r, DisplayRow::Env(i) if app.environments[*i].name == name))
+            .unwrap()
+    };
+    app.table_state.select(Some(row_of(&app, "b")));
+    app.handle_msg(AppMsg::FiringAlarms {
+        gen: app.generation,
+        round: 1,
+        results: vec![("us-east-1".into(), Ok(vec![firing("x", "a")]))],
+    });
+    // Descending: c, b, a by name before; a has the alarm now, so a, c,
+    // b, and b's row moved.
+    assert_eq!(app.environments[0].name, "a", "re-sorted");
+    assert_eq!(row_of(&app, "b"), 2);
+    assert_eq!(on(&app).as_deref(), Some("b"), "the cursor followed b");
+
+    // A refresh that sorts differently: by health, b goes Red.
+    app.set_sort(SortKey::Health, false);
+    app.rebuild_view();
+    app.table_state.select(Some(row_of(&app, "b")));
+    let listing = vec![
+        mk_env("a", "poly", "Web", "Green"),
+        mk_env("b", "poly", "Web", "Red"),
+        mk_env("c", "poly", "Web", "Green"),
+    ];
+    app.apply_refresh(app.fanout_epoch, Ok(listing), Vec::new());
+    assert_eq!(on(&app).as_deref(), Some("b"));
+}
