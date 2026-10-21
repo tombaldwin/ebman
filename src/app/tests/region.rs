@@ -938,9 +938,9 @@ async fn discovery_for_a_same_named_env_in_another_region_is_not_this_ones() {
     // Under a fan-out `api-prod` in us-east-1 and `api-prod` in
     // eu-west-2 are two envs with their own databases, caches and logs.
     let mut app = test_app();
-    let mut home = mk_env("api-prod", "poly", "Web", "Green");
+    let mut home = mk_env("api-prod", "home-app", "Web", "Green");
     home.region = Some("us-east-1".into());
-    let mut away = mk_env("api-prod", "poly", "Web", "Green");
+    let mut away = mk_env("api-prod", "away-app", "Web", "Green");
     away.region = Some("eu-west-2".into());
     app.environments = vec![home, away];
     app.rebuild_view();
@@ -1010,6 +1010,51 @@ async fn discovery_for_a_same_named_env_in_another_region_is_not_this_ones() {
             app.form.as_ref().map(|f| f.state.clone()) == loading(),
             still_loading,
             "{region}"
+        );
+    }
+}
+
+/// The discovery key and the application it looks in are the env's own
+/// region's, whichever of two same-named rows comes first: each order
+/// is the one a lookup by name alone gets right by accident.
+#[tokio::test]
+async fn a_discovery_is_for_the_envs_own_region_whichever_row_is_first() {
+    for away_first in [false, true] {
+        let mut app = test_app();
+        let mut home = mk_env("api-prod", "home-app", "Web", "Green");
+        home.region = Some("us-east-1".into());
+        let mut away = mk_env("api-prod", "away-app", "Web", "Green");
+        away.region = Some("eu-west-2".into());
+        app.environments = if away_first {
+            vec![away, home]
+        } else {
+            vec![home, away]
+        };
+        app.rebuild_view();
+        let away_row = (0..app.display_rows().len())
+            .find(|&row| {
+                app.table_state.select(Some(row));
+                app.selected_env()
+                    .is_some_and(|e| e.region.as_deref() == Some("eu-west-2"))
+            })
+            .expect("the eu-west-2 row");
+        app.table_state.select(Some(away_row));
+        app.open_detail();
+        let key = app.discovery_key("api-prod");
+        assert_eq!(key.region, "eu-west-2", "away first: {away_first}");
+        assert_eq!(
+            app.discovery_app_name(&key),
+            "away-app",
+            "away first: {away_first}"
+        );
+        let home_key = crate::app::DiscoveryKey {
+            region: "us-east-1".into(),
+            env: "api-prod".into(),
+        };
+        assert_eq!(
+            app.discovery_app_name(&home_key),
+            "home-app",
+            "away first: {away_first}"
         );
     }
 }

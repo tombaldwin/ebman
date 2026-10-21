@@ -414,20 +414,7 @@ impl App {
         self.app_tab_discovery
             .discovering
             .insert(key.clone(), started);
-        // The Detail view's own env: by name alone, a same-named env in
-        // another region of a fan-out could name another application.
-        let app_name = self
-            .detail
-            .as_ref()
-            .filter(|d| d.env_name == env)
-            .map(|d| d.env_snapshot.application.clone())
-            .or_else(|| {
-                self.environments
-                    .iter()
-                    .find(|e| e.name == env)
-                    .map(|e| e.application.clone())
-            })
-            .unwrap_or_default();
+        let app_name = self.discovery_app_name(&key);
         let fleet: Vec<String> = self.environments.iter().map(|e| e.name.clone()).collect();
         let dimension_names = crate::app_discover::env_dimension_names(
             &self.cfg.alarm_dimensions,
@@ -504,6 +491,24 @@ impl App {
             region,
             env: env.to_string(),
         }
+    }
+
+    /// The EB application of the env `key` names, for its env variables:
+    /// the Detail view's own env by its snapshot, any other by the row
+    /// in `key`'s region. By name alone, a same-named env in another
+    /// region of a fan-out could name another application.
+    pub(crate) fn discovery_app_name(&self, key: &DiscoveryKey) -> String {
+        self.detail
+            .as_ref()
+            .filter(|d| d.env_name == key.env && self.region_for(&d.env_snapshot) == key.region)
+            .map(|d| d.env_snapshot.application.clone())
+            .or_else(|| {
+                self.environments
+                    .iter()
+                    .find(|e| e.name == key.env && self.region_for(e) == key.region)
+                    .map(|e| e.application.clone())
+            })
+            .unwrap_or_default()
     }
 
     /// The client discovery for `key` runs on: the key's region, so the
