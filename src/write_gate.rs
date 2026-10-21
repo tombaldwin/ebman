@@ -151,9 +151,11 @@ impl Refusal {
             Refusal::AccountPinned { profile } => {
                 format!("clear safety.accounts.{profile}.read_only in config.toml")
             }
-            Refusal::AmbiguousEnv { .. } => {
-                "narrow the fleet to the home region (:region off)".into()
-            }
+            Refusal::AmbiguousEnv { regions, .. } => format!(
+                "narrow the fleet to one region: :region off for the home region, or \
+                 :region {} for that one",
+                regions.first().map(String::as_str).unwrap_or("REGION")
+            ),
             Refusal::RegionMoved { .. } => "open the action again on the row you meant".into(),
         }
     }
