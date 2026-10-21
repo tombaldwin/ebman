@@ -61,24 +61,50 @@ fn parse_versions_args(args: &[String]) -> Result<VersionsArgs, String> {
 
 /// `ebman versions` — list an application's versions.
 ///
-/// Exit 2 on a usage error.
+/// Exit 2 on a usage error. The thin shell over [`versions_with`].
 pub async fn run(args: &[String]) -> Result<()> {
-    let VersionsArgs { env_name, json } = match parse_versions_args(args) {
+    let args = match parse_versions_args(args) {
         Ok(parsed) => parsed,
         Err(msg) => {
             eprintln!("{msg}");
             std::process::exit(2);
         }
     };
-
     let aws_client = aws::AwsClient::with(None, None).await?;
+    let code = versions_with(
+        &aws_client,
+        &args,
+        &mut std::io::stdout().lock(),
+        &mut std::io::stderr().lock(),
+    )
+    .await?;
+    if code != 0 {
+        std::process::exit(code);
+    }
+    Ok(())
+}
+
+/// The body of `ebman versions`, against any client and writers.
+/// Returns the exit status: 2 when the env is not in the current
+/// context (a usage error, per the module's charter); an AWS failure
+/// is the `Err`, which `main` exits 1 on.
+async fn versions_with(
+    aws_client: &aws::AwsClient,
+    args: &VersionsArgs,
+    out: &mut dyn std::io::Write,
+    err: &mut dyn std::io::Write,
+) -> Result<i32> {
+    let VersionsArgs { env_name, json } = args;
     let envs = aws_client
         .list_environments()
         .await
         .map_err(|e| color_eyre::eyre::eyre!("list_environments: {e}"))?;
-    let Some(env) = envs.iter().find(|e| e.name == env_name) else {
-        eprintln!("ebman versions: env '{env_name}' not found in current context");
-        std::process::exit(2);
+    let Some(env) = envs.iter().find(|e| &e.name == env_name) else {
+        writeln!(
+            err,
+            "ebman versions: env '{env_name}' not found in current context"
+        )?;
+        return Ok(2);
     };
     let app_name = env.application.clone();
     let deployed_label = env.version_label.clone();
@@ -87,7 +113,7 @@ pub async fn run(args: &[String]) -> Result<()> {
         .await
         .map_err(|e| color_eyre::eyre::eyre!("list_application_versions: {e}"))?;
 
-    if json {
+    if *json {
         // Hand-rolled JSON to match the project's no-serde_json
         // convention. Schema: array of {label, deployed, created, description}.
         let entries: Vec<String> = versions
@@ -109,19 +135,20 @@ pub async fn run(args: &[String]) -> Result<()> {
                 )
             })
             .collect();
-        println!("[{}]", entries.join(","));
+        writeln!(out, "[{}]", entries.join(","))?;
     } else {
-        println!("LABEL\tDEPLOYED\tCREATED\tDESCRIPTION");
+        writeln!(out, "LABEL\tDEPLOYED\tCREATED\tDESCRIPTION")?;
         for v in &versions {
             let created_iso = v.created.map(|d| d.to_rfc3339()).unwrap_or_default();
             let marker = if v.label == deployed_label { "*" } else { "" };
-            println!(
+            writeln!(
+                out,
                 "{}\t{}\t{}\t{}",
                 v.label, marker, created_iso, v.description
-            );
+            )?;
         }
     }
-    Ok(())
+    Ok(0)
 }
 
 #[cfg(test)]
@@ -171,5 +198,100 @@ mod tests {
         assert!(err.contains("--env expects"), "got: {err}");
         let err = parse_versions_args(&argv(&["versions", "--env", "--json"])).unwrap_err();
         assert!(err.contains("got flag"), "got: {err}");
+    }
+}
+
+/// `ebman versions` driven against a mocked SDK: the deployed marker,
+/// and the exit-2 path for an env that is not there.
+#[cfg(test)]
+mod run_tests {
+    use super::*;
+
+    fn client() -> aws::AwsClient {
+        use aws_sdk_elasticbeanstalk::operation::describe_application_versions::DescribeApplicationVersionsOutput;
+        use aws_sdk_elasticbeanstalk::operation::describe_environments::DescribeEnvironmentsOutput;
+        use aws_sdk_elasticbeanstalk::types::{
+            ApplicationVersionDescription, EnvironmentDescription,
+        };
+        let listing =
+            aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::describe_environments)
+                .then_output(|| {
+                    DescribeEnvironmentsOutput::builder()
+                        .environments(
+                            EnvironmentDescription::builder()
+                                .environment_name("shop-prod")
+                                .application_name("shop")
+                                .version_label("build-2")
+                                .build(),
+                        )
+                        .build()
+                });
+        let versions = aws_smithy_mocks::mock!(
+            aws_sdk_elasticbeanstalk::Client::describe_application_versions
+        )
+        .then_output(|| {
+            let v = |label: &str| {
+                ApplicationVersionDescription::builder()
+                    .version_label(label)
+                    .build()
+            };
+            DescribeApplicationVersionsOutput::builder()
+                .application_versions(v("build-2"))
+                .application_versions(v("build-1"))
+                .build()
+        });
+        let sdk = aws_config::SdkConfig::builder()
+            .region(aws_config::Region::new("us-east-1"))
+            .behavior_version(aws_config::BehaviorVersion::latest())
+            .build();
+        aws::AwsClient::for_tests(
+            aws_smithy_mocks::mock_client!(
+                aws_sdk_elasticbeanstalk,
+                aws_smithy_mocks::RuleMode::MatchAny,
+                [&listing, &versions]
+            ),
+            aws_sdk_sqs::Client::new(&sdk),
+            aws_sdk_cloudwatch::Client::new(&sdk),
+            aws_sdk_cloudwatchlogs::Client::new(&sdk),
+            aws_sdk_s3::Client::new(&sdk),
+            aws_sdk_ec2::Client::new(&sdk),
+        )
+    }
+
+    async fn run(env: &str) -> (i32, String, String) {
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let args = VersionsArgs {
+            env_name: env.into(),
+            json: false,
+        };
+        let code = versions_with(&client(), &args, &mut out, &mut err)
+            .await
+            .expect("no AWS failure");
+        (
+            code,
+            String::from_utf8(out).unwrap(),
+            String::from_utf8(err).unwrap(),
+        )
+    }
+
+    #[tokio::test]
+    async fn the_deployed_version_is_marked() {
+        let (code, out, _) = run("shop-prod").await;
+        assert_eq!(code, 0);
+        let marked: Vec<&str> = out
+            .lines()
+            .skip(1)
+            .filter(|l| l.split('\t').nth(1) == Some("*"))
+            .collect();
+        assert_eq!(marked.len(), 1, "{out}");
+        assert!(marked[0].starts_with("build-2\t"), "{out}");
+    }
+
+    #[tokio::test]
+    async fn an_env_not_in_the_context_exits_2_and_says_so() {
+        let (code, out, err) = run("nope").await;
+        assert_eq!(code, 2);
+        assert!(out.is_empty(), "{out}");
+        assert!(err.contains("env 'nope' not found"), "{err}");
     }
 }

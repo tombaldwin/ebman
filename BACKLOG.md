@@ -38,6 +38,19 @@ Tier definitions:
 
 #### Refactors and test hygiene
 
+- [ ] **The rest of the CLI behind a testable body** *(architecture; found 2026-10-21)*
+
+  `ebman envs` and `ebman versions` are now a thin `run` (parse, build
+  the client, exit) over a body that takes the client and the output
+  writers, driven in tests with a mocked SDK. `action`, `drift`,
+  `explain`, `lint`, `audit` and `ctl` still build their clients inside
+  (one per region for the fan-outs) and print and `process::exit`
+  directly: about 150 prints and 70 exits, so their exit-code matrices
+  are checked by hand against the docs at each release. They need a
+  client factory (region → client) rather than a client, and `lint`'s
+  output is PLAN item 2's typed-report question, so it waits on that
+  ruling.
+
 - [ ] **Writes carry the region they were aimed at** *(architecture — needs a design note; found 2026-10-21)*
 
   Every per-env client and audit line resolves its environment by

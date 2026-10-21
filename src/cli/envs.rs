@@ -115,41 +115,80 @@ impl<'a> EnvRow<'a> {
 
 /// `ebman envs` — list environments, optionally as JSON.
 ///
-/// Exit 2 on a usage error.
+/// Exit 2 on a usage error. The thin shell over [`envs_with`]: parse,
+/// build the real client and config, write to the real stdout/stderr.
 pub async fn run(args: &[String]) -> Result<()> {
+    let json = match parse_envs_args(args) {
+        Ok(json) => json,
+        Err(msg) => {
+            eprintln!("{msg}");
+            std::process::exit(2);
+        }
+    };
+    let aws = aws::AwsClient::with(None, None).await?;
+    let cfg = crate::config::load();
+    envs_with(
+        &aws,
+        json,
+        &crate::config::LiveConfig::of(&cfg),
+        &mut std::io::stdout().lock(),
+        &mut std::io::stderr().lock(),
+    )
+    .await
+}
+
+/// `--json`, or the usage error (exit 2) for anything else. Unknown
+/// flags are rejected like every other subcommand: `--jsn` used to
+/// print the text table and exit 0.
+fn parse_envs_args(args: &[String]) -> std::result::Result<bool, String> {
     let mut json = false;
-    // Reject unknown flags like every other subcommand — `--jsn`
-    // used to silently print the text table, exit 0.
     for arg in args.iter().skip(1) {
         match arg.as_str() {
             "--json" => json = true,
             other => {
-                eprintln!("ebman envs: unknown flag '{other}' (usage: ebman envs [--json])");
-                std::process::exit(2);
+                return Err(format!(
+                    "ebman envs: unknown flag '{other}' (usage: ebman envs [--json])"
+                ))
             }
         }
     }
-    let aws = aws::AwsClient::with(None, None).await?;
+    Ok(json)
+}
+
+/// The body of `ebman envs`, against any client and any writers, so a
+/// test drives it with a mocked SDK and reads what it printed.
+pub(crate) async fn envs_with(
+    aws: &aws::AwsClient,
+    json: bool,
+    live: &crate::config::LiveConfig,
+    out: &mut dyn std::io::Write,
+    err: &mut dyn std::io::Write,
+) -> Result<()> {
     let envs = aws
         .list_environments()
         .await
         .map_err(|e| color_eyre::eyre::eyre!("list_environments: {e}"))?;
-    let cfg = crate::config::load();
-    let firing = match fetch_firing_by_env(&aws, &envs, &cfg.alarm_dimensions, &cfg.app_tabs).await
+    let firing = match fetch_firing_by_env(aws, &envs, &live.alarm_dimensions, &live.app_tabs).await
     {
         Ok(f) => Some(f),
         // The listing stands; the alarms are unknown, and say so.
         Err(e) => {
-            eprintln!("warning: could not check for firing alarms ({e}); shown as unknown");
+            writeln!(
+                err,
+                "warning: could not check for firing alarms ({e}); shown as unknown"
+            )?;
             None
         }
     };
     if json {
-        println!("{}", render_envs_json(&envs, firing.as_ref()));
+        writeln!(out, "{}", render_envs_json(&envs, firing.as_ref()))?;
     } else {
-        println!("NAME\tAPPLICATION\tSTATUS\tHEALTH\tPLATFORM\tCNAME\tVERSION\tALARMS");
+        writeln!(
+            out,
+            "NAME\tAPPLICATION\tSTATUS\tHEALTH\tPLATFORM\tCNAME\tVERSION\tALARMS"
+        )?;
         for e in &envs {
-            println!("{}", envs_text_row(e, firing.as_ref()));
+            writeln!(out, "{}", envs_text_row(e, firing.as_ref()))?;
         }
     }
     Ok(())
@@ -319,5 +358,123 @@ mod envs_json_tests {
             !json.contains("None"),
             "a Rust Option must never be rendered by Debug into JSON: {json}"
         );
+    }
+}
+
+/// `ebman envs` driven end to end against a mocked SDK: what it prints
+/// to stdout and stderr, which nothing tested while `run` built its own
+/// client and wrote straight to the terminal.
+#[cfg(test)]
+mod run_tests {
+    use super::*;
+    use aws_sdk_cloudwatch::operation::describe_alarms::{
+        DescribeAlarmsError, DescribeAlarmsOutput,
+    };
+    use aws_sdk_cloudwatch::types::{Dimension, MetricAlarm};
+
+    fn client(alarms: aws_smithy_mocks::Rule) -> aws::AwsClient {
+        use aws_sdk_elasticbeanstalk::operation::describe_environments::DescribeEnvironmentsOutput;
+        use aws_sdk_elasticbeanstalk::types::EnvironmentDescription;
+        let listing =
+            aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::describe_environments)
+                .then_output(|| {
+                    DescribeEnvironmentsOutput::builder()
+                        .environments(
+                            EnvironmentDescription::builder()
+                                .environment_name("shop-prod")
+                                .application_name("shop")
+                                .solution_stack_name(
+                                    "64bit Amazon Linux 2023 v6.1.0 running Node.js 20",
+                                )
+                                .build(),
+                        )
+                        .build()
+                });
+        let sdk = aws_config::SdkConfig::builder()
+            .region(aws_config::Region::new("us-east-1"))
+            .behavior_version(aws_config::BehaviorVersion::latest())
+            .build();
+        aws::AwsClient::for_tests(
+            aws_smithy_mocks::mock_client!(aws_sdk_elasticbeanstalk, [&listing]),
+            aws_sdk_sqs::Client::new(&sdk),
+            aws_smithy_mocks::mock_client!(aws_sdk_cloudwatch, [&alarms]),
+            aws_sdk_cloudwatchlogs::Client::new(&sdk),
+            aws_sdk_s3::Client::new(&sdk),
+            aws_sdk_ec2::Client::new(&sdk),
+        )
+    }
+
+    fn firing() -> aws_smithy_mocks::Rule {
+        aws_smithy_mocks::mock!(aws_sdk_cloudwatch::Client::describe_alarms).then_output(|| {
+            DescribeAlarmsOutput::builder()
+                .metric_alarms(
+                    MetricAlarm::builder()
+                        .alarm_name("shop-prod-5xx")
+                        .dimensions(
+                            Dimension::builder()
+                                .name("EnvironmentName")
+                                .value("shop-prod")
+                                .build(),
+                        )
+                        .build(),
+                )
+                .build()
+        })
+    }
+
+    fn refused() -> aws_smithy_mocks::Rule {
+        aws_smithy_mocks::mock!(aws_sdk_cloudwatch::Client::describe_alarms).then_error(|| {
+            DescribeAlarmsError::generic(
+                aws_smithy_types::error::ErrorMetadata::builder()
+                    .code("AccessDenied")
+                    .message("not authorized")
+                    .build(),
+            )
+        })
+    }
+
+    async fn run(rule: aws_smithy_mocks::Rule, json: bool) -> (String, String) {
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let live = crate::config::LiveConfig::of(&crate::config::Config::default());
+        envs_with(&client(rule), json, &live, &mut out, &mut err)
+            .await
+            .expect("lists");
+        (
+            String::from_utf8(out).unwrap(),
+            String::from_utf8(err).unwrap(),
+        )
+    }
+
+    #[tokio::test]
+    async fn the_table_names_the_firing_alarms_and_the_platform_version() {
+        let (out, err) = run(firing(), false).await;
+        let row = out.lines().nth(1).expect("one env row");
+        let cols: Vec<&str> = row.split('\t').collect();
+        assert_eq!(cols[0], "shop-prod");
+        assert_eq!(cols[4], "Node.js 20 6.1.0");
+        assert_eq!(cols[7], "shop-prod-5xx");
+        assert!(err.is_empty(), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_failed_alarm_check_is_unknown_on_stdout_and_said_on_stderr() {
+        let (out, err) = run(refused(), false).await;
+        let row = out.lines().nth(1).expect("the listing stands");
+        assert_eq!(row.split('\t').nth(7), Some("?"));
+        assert!(err.contains("could not check for firing alarms"), "{err}");
+
+        let (out, _) = run(refused(), true).await;
+        let v: serde_json::Value = serde_json::from_str(out.trim()).expect("valid JSON");
+        assert!(v[0]["firing_alarms"].is_null(), "{v}");
+    }
+
+    #[test]
+    fn an_unknown_flag_is_a_usage_error() {
+        let args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(parse_envs_args(&args(&["envs"])), Ok(false));
+        assert_eq!(parse_envs_args(&args(&["envs", "--json"])), Ok(true));
+        assert!(parse_envs_args(&args(&["envs", "--jsn"]))
+            .unwrap_err()
+            .contains("unknown flag '--jsn'"));
     }
 }
