@@ -795,7 +795,13 @@ mod protected_names {
     /// and say which entry without naming it.
     #[test]
     fn the_commit_hooks_agree_with_the_guard_and_never_print_a_name() {
-        if !std::path::Path::new(".githooks/commit-msg").exists() {
+        // The hooks run inside a git checkout (they find their helper
+        // through `git rev-parse`); `cargo mutants` tests a copy with no
+        // `.git`, where they cannot run at all, as the other git guards
+        // skip.
+        if !std::path::Path::new(".githooks/commit-msg").exists()
+            || super::tracked_files().is_none()
+        {
             return;
         }
         let dir = std::env::temp_dir().join(format!("ebman-test-{}-hooks", std::process::id()));
