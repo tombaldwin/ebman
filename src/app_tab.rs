@@ -187,7 +187,20 @@ impl AppTabs {
             return Err(format!("app..{field} has an empty environment name"));
         }
         let key = format!("app.{env}.{field}");
+        // An identifier (a namespace, a dimension name, a log group)
+        // cannot start or end with a space, so one that does is the
+        // space trimmed, as the App tab's editor writes it: kept
+        // literally, `" "` read as a log group and the editor dropped
+        // it. An alarm prefix is taken as written.
         let required = |what: &str| -> Result<String, String> {
+            let value = value.trim();
+            if value.is_empty() {
+                Err(format!("{key} is empty (expected {what})"))
+            } else {
+                Ok(value.to_string())
+            }
+        };
+        let literal = |what: &str| -> Result<String, String> {
             if value.is_empty() {
                 Err(format!("{key} is empty (expected {what})"))
             } else {
@@ -203,7 +216,7 @@ impl AppTabs {
             "instance_dimension" => spec.instance_dimension = Some(required("a dimension name")?),
             "rds" => spec.rds = required_list(&key, value, "DB instance identifiers")?,
             "elasticache" => spec.elasticache = required_list(&key, value, "cache cluster ids")?,
-            "alarm_prefix" => spec.alarm_prefix = Some(required("an alarm name prefix")?),
+            "alarm_prefix" => spec.alarm_prefix = Some(literal("an alarm name prefix")?),
             "log_group" => spec.log_group = Some(required("a log group")?),
             "error_fingerprint" => {
                 check_fingerprint(&key, value)?;
@@ -1001,6 +1014,27 @@ pub(crate) fn top_errors_from(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An identifier is read trimmed, as the editor writes it; a padded
+    /// or blank one was kept as written, and the editor then dropped or
+    /// changed it. An alarm prefix is taken literally.
+    #[test]
+    fn identifiers_are_trimmed_and_an_alarm_prefix_is_not() {
+        let spec = parse(&[
+            ("e.namespace", " Shop "),
+            ("e.log_group", " var/log/app.log"),
+            ("e.instance_dimension", "InstanceId "),
+            ("e.alarm_prefix", "shop prod "),
+        ])
+        .envs
+        .remove("e")
+        .unwrap();
+        assert_eq!(spec.namespace.as_deref(), Some("Shop"));
+        assert_eq!(spec.log_group.as_deref(), Some("var/log/app.log"));
+        assert_eq!(spec.instance_dimension.as_deref(), Some("InstanceId"));
+        assert_eq!(spec.alarm_prefix.as_deref(), Some("shop prod "));
+        assert!(one_error(&[("e.log_group", " ")]).contains("is empty"));
+    }
 
     fn parse(lines: &[(&str, &str)]) -> AppTabs {
         let mut tabs = AppTabs::default();
