@@ -930,15 +930,7 @@ impl App {
         // The env is resolved by name again here, after the undo window.
         // Where that now lands is not where the operator confirmed it:
         // refuse rather than write to whichever env the name finds now.
-        let now = self.region_for_name(&modal.target_env);
-        if now != modal.target_region {
-            self.error_message = Some(format!(
-                "{} not dispatched: {} was in {} when confirmed and resolves to {} now",
-                modal.action.label(),
-                modal.target_env,
-                modal.target_region,
-                now
-            ));
+        if self.deny_region_moved(&modal) {
             return;
         }
         // For Deploy actions: snapshot the env's pre-deploy version

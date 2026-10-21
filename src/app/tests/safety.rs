@@ -2012,7 +2012,7 @@ async fn a_confirmed_write_whose_env_resolves_to_another_region_by_dispatch_is_r
     app.spawn_action(modal);
     let err = app.error_message.as_deref().unwrap_or_default();
     assert!(
-        err.contains("not dispatched") && err.contains("eu-west-2") && err.contains("us-east-1"),
+        err.contains("when confirmed") && err.contains("eu-west-2") && err.contains("us-east-1"),
         "{err}"
     );
     assert!(app.pending_actions.is_empty());
@@ -2026,7 +2026,7 @@ async fn a_confirmed_write_whose_env_resolves_to_another_region_by_dispatch_is_r
         !app.error_message
             .as_deref()
             .unwrap_or_default()
-            .contains("not dispatched"),
+            .contains("when confirmed"),
         "{:?}",
         app.error_message
     );
@@ -2103,5 +2103,28 @@ async fn region_off_after_region_all_makes_a_once_twinned_name_writable_again() 
         !app.deny_write("api-prod", "restart"),
         "{:?}",
         app.error_message
+    );
+}
+
+#[tokio::test]
+async fn a_write_refused_for_a_moved_region_is_audited_like_any_refusal() {
+    let env_name = "region-moved-audit-probe-env";
+    let path = crate::util::cache_dir().join("audit.log");
+    let before = std::fs::read_to_string(&path).unwrap_or_default();
+    let mut app = test_app();
+    app.environments = vec![mk_env(env_name, "poly", "Web", "Green")];
+    app.rebuild_view();
+    let mut modal = mk_modal(Action::RestartAppServer, env_name);
+    modal.target_region = "eu-west-2".into();
+    app.spawn_action(modal);
+    let after = std::fs::read_to_string(&path).unwrap_or_default();
+    let delta = after.strip_prefix(&before).expect("append-only");
+    let line = delta
+        .lines()
+        .find(|l| l.contains(env_name))
+        .unwrap_or_else(|| panic!("no audit line: {delta}"));
+    assert!(
+        line.contains("stage=refused") && line.contains("rule=region_moved"),
+        "{line}"
     );
 }

@@ -68,6 +68,13 @@ pub(crate) enum Refusal {
         env: String,
         regions: Vec<String>,
     },
+    /// A confirmed write whose env, resolved by name again at dispatch,
+    /// is no longer in the region it was confirmed in. TUI only.
+    RegionMoved {
+        env: String,
+        confirmed: String,
+        now: String,
+    },
 }
 
 impl Refusal {
@@ -85,6 +92,7 @@ impl Refusal {
             Refusal::EnvPinned { .. } => "env_pinned",
             Refusal::AccountPinned { .. } => "account_pinned",
             Refusal::AmbiguousEnv { .. } => "ambiguous_env",
+            Refusal::RegionMoved { .. } => "region_moved",
         }
     }
 
@@ -106,6 +114,7 @@ impl Refusal {
             Refusal::EnvPinned { .. } => true,
             Refusal::AccountPinned { .. } => true,
             Refusal::AmbiguousEnv { .. } => true,
+            Refusal::RegionMoved { .. } => true,
         }
     }
 
@@ -145,6 +154,7 @@ impl Refusal {
             Refusal::AmbiguousEnv { .. } => {
                 "narrow the fleet to the home region (:region off)".into()
             }
+            Refusal::RegionMoved { .. } => "open the action again on the row you meant".into(),
         }
     }
 }

@@ -224,6 +224,11 @@ pub(crate) fn write_refusal_unaudited(
         }
         // The CLI writes in one region, so `decide` cannot produce this
         // here; worded anyway rather than left to a wildcard.
+        // TUI only, like the arm below: the CLI confirms nothing it
+        // later re-resolves.
+        crate::write_gate::Refusal::RegionMoved { confirmed, now, .. } => {
+            format!("refusing {env} — confirmed in {confirmed}, resolves to {now}")
+        }
         crate::write_gate::Refusal::AmbiguousEnv { regions, .. } => {
             format!(
                 "refusing {env} — the name is in more than one region ({})",

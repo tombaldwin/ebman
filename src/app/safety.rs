@@ -114,6 +114,28 @@ impl App {
         self.deny_with(env_name, verb, audit_action, refusal)
     }
 
+    /// Refuse a confirmed write whose env, resolved by name again now,
+    /// is not in the region it was confirmed in: a listing that dropped
+    /// one region and brought back another inside the undo window would
+    /// otherwise send it to the other env. Audited like every refusal.
+    pub(crate) fn deny_region_moved(&mut self, modal: &crate::mode_action::ConfirmModal) -> bool {
+        let now = self.region_for_name(&modal.target_env);
+        if now == modal.target_region {
+            return false;
+        }
+        let refusal = crate::write_gate::Refusal::RegionMoved {
+            env: modal.target_env.clone(),
+            confirmed: modal.target_region.clone(),
+            now,
+        };
+        self.deny_with(
+            &modal.target_env,
+            modal.action.label(),
+            &modal.action.audit_label(),
+            Some(refusal),
+        )
+    }
+
     /// [`deny_write`](Self::deny_write) for a write that names its region
     /// explicitly rather than routing by name: a `:rollout`, which builds
     /// a client per region it was given. The ambiguous-name rung is about
@@ -368,6 +390,11 @@ impl App {
             crate::write_gate::Refusal::AccountPinned { profile } => {
                 format!("read-only mode (account pinned via safety.accounts.{profile})")
             }
+            crate::write_gate::Refusal::RegionMoved {
+                env,
+                confirmed,
+                now,
+            } => format!("{env} was in {confirmed} when confirmed and resolves to {now} now"),
             crate::write_gate::Refusal::AmbiguousEnv { env, regions } => format!(
                 "{env} is in {} regions ({}), and a write cannot yet tell them \
                  apart — :region off to work in the home region only",
