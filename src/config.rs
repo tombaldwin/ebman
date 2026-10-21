@@ -469,8 +469,18 @@ pub(crate) fn parse_alarm_dimensions(value: &str) -> Vec<String> {
 /// the first `=`, trimmed, then unquoted. The App tab's editor checks a
 /// line it writes reads back through this, so the two cannot disagree.
 pub(crate) fn line_value(line: &str) -> Option<String> {
-    let (_, raw) = line.trim().split_once('=')?;
-    Some(unquote(raw.trim()).to_string())
+    line_parts(line).map(|(_, _, value)| value)
+}
+
+/// A config line's key, raw value and value, as `parse` reads every
+/// line: split at the first `=`, both sides trimmed, the value unquoted
+/// (the raw one kept for the inline-comment check). One function so the
+/// editor's read-back (`line_value`) is the parser's reading, not a copy
+/// of it.
+fn line_parts(line: &str) -> Option<(&str, &str, String)> {
+    let (key, raw) = line.trim().split_once('=')?;
+    let raw = raw.trim();
+    Some((key.trim(), raw, unquote(raw).to_string()))
 }
 
 fn unquote(raw: &str) -> &str {
@@ -527,12 +537,9 @@ pub(crate) fn parse(text: &str) -> Config {
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
-        let Some((key, raw_val)) = line.split_once('=') else {
+        let Some((key, raw, value)) = line_parts(line) else {
             continue;
         };
-        let key = key.trim();
-        let raw = raw_val.trim();
-        let value = unquote(raw).to_string();
         match key {
             "refresh_interval_secs" => {
                 if let Ok(n) = value.parse::<u64>() {
