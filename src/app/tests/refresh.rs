@@ -2066,7 +2066,7 @@ async fn the_first_refresh_flags_nothing_as_newly_added() {
     );
     assert_eq!(
         app.newly_added.iter().collect::<Vec<_>>(),
-        vec!["batch-prod"],
+        vec![&home_key("batch-prod")],
         "only the env that just appeared is new"
     );
 }
@@ -2117,7 +2117,7 @@ async fn newly_red_marks_the_transition_not_the_state() {
         Vec::new(),
     );
     assert!(
-        app.newly_red.contains("api-prod"),
+        app.newly_red.contains(&home_key("api-prod")),
         "a red env on the first listing is news to the operator"
     );
 
@@ -2132,7 +2132,7 @@ async fn newly_red_marks_the_transition_not_the_state() {
         Vec::new(),
     );
     assert!(
-        !app.newly_red.contains("api-prod"),
+        !app.newly_red.contains(&home_key("api-prod")),
         "an env that was already red has not just gone red"
     );
 
@@ -2146,11 +2146,11 @@ async fn newly_red_marks_the_transition_not_the_state() {
         Vec::new(),
     );
     assert!(
-        app.newly_red.contains("worker-prod"),
+        app.newly_red.contains(&home_key("worker-prod")),
         "green → red is exactly what the alert is for"
     );
     assert!(
-        !app.newly_red.contains("api-prod"),
+        !app.newly_red.contains(&home_key("api-prod")),
         "and the one that was already red stays quiet"
     );
 
@@ -2180,7 +2180,7 @@ async fn severe_counts_as_red_and_so_does_any_casing() {
             Vec::new(),
         );
         assert!(
-            app.newly_red.contains("api-prod"),
+            app.newly_red.contains(&home_key("api-prod")),
             "{health:?} must raise a red alert"
         );
     }
@@ -2288,7 +2288,10 @@ async fn the_health_history_is_capped_and_keeps_the_newest() {
             Vec::new(),
         );
     }
-    let buf = app.history.get("api-prod").expect("history for the env");
+    let buf = app
+        .history
+        .get(&home_key("api-prod"))
+        .expect("history for the env");
     assert_eq!(buf.len(), cap, "the buffer is capped at HISTORY_CAP");
     assert_eq!(
         buf.back().map(String::as_str),
@@ -2308,7 +2311,7 @@ async fn the_health_history_is_capped_and_keeps_the_newest() {
         Vec::new(),
     );
     assert!(
-        !app.history.contains_key("api-prod"),
+        !app.history.contains_key(&home_key("api-prod")),
         "history is dropped for an env no longer in the fleet"
     );
 }

@@ -218,7 +218,8 @@ pub struct App {
     pub(crate) picker: Option<Picker>,
     pub(crate) override_profile: Option<String>,
     pub(crate) override_region: Option<String>,
-    pub(crate) history: HashMap<String, VecDeque<String>>,
+    /// The last `HISTORY_CAP` health readings per env, for TREND.
+    pub(crate) history: HashMap<EnvKey, VecDeque<String>>,
     pub(crate) command_input: TextInput,
     pub(crate) completion: CompletionState,
     pub(crate) quickjump_input: TextInput,
@@ -312,11 +313,11 @@ pub struct App {
     /// is fresh — saves ~one round-trip per repeated modal-open
     /// against the same env. Cleared on context switch alongside
     /// the other env-keyed state. 0.21 addition.
-    pub(crate) env_tag_cache: std::collections::HashMap<String, (Vec<String>, std::time::Instant)>,
+    pub(crate) env_tag_cache: std::collections::HashMap<EnvKey, (Vec<String>, std::time::Instant)>,
     /// Same shape as `env_tag_cache` but for the
     /// `fetch_env_instance_counts` healthy-count input that
     /// EBL012 reads. Independent TTL — same constant.
-    pub(crate) env_health_cache: std::collections::HashMap<String, (i64, std::time::Instant)>,
+    pub(crate) env_health_cache: std::collections::HashMap<EnvKey, (i64, std::time::Instant)>,
     /// Pre-deploy snapshots keyed by env name. Captured at deploy
     /// dispatch time so `:rollback-deploy ENV` (and the watchdog
     /// armed by `:deploy --auto-rollback Nm`) can redeploy whatever
@@ -554,19 +555,19 @@ pub struct App {
     pub(crate) config_seen: Option<crate::config::ConfigStamp>,
     /// The App tab's discovery, kept for the session.
     pub(crate) app_tab_discovery: app_tab_form::AppTabDiscovery,
-    pub(crate) newly_red: HashSet<String>,
+    pub(crate) newly_red: HashSet<EnvKey>,
     /// Env names that appeared for the first time on the most recent
     /// refresh (weren't in `prev_health` last cycle). Used by the env
     /// table to render a transient `+` marker on the NAME cell so a new
     /// env doesn't scroll past unnoticed. Cleared on context switch +
     /// rotated each refresh.
-    pub(crate) newly_added: HashSet<String>,
+    pub(crate) newly_added: HashSet<EnvKey>,
     /// Delta in counts vs. the previous refresh, e.g. {"Red" → +1, "Yellow" → -1}.
     pub(crate) health_delta: Vec<(String, i32)>,
     pub(crate) status_delta: Vec<(String, i32)>,
     prev_alerts: usize,
-    prev_health: HashMap<String, String>,
-    prev_status: HashMap<String, String>,
+    prev_health: HashMap<EnvKey, String>,
+    prev_status: HashMap<EnvKey, String>,
     pending_select: Option<String>,
     aws: Arc<AwsClient>,
     generation: u64,
@@ -963,7 +964,7 @@ pub(crate) enum AppMsg {
     /// the NEXT modal-open against the same env hits cache.
     LintInputsCached {
         gen: u64,
-        env_name: String,
+        key: EnvKey,
         tags: Option<Vec<String>>,
         healthy: Option<i64>,
     },
@@ -3052,8 +3053,9 @@ fn palette_score(needle: &str, label: &str, detail: &str) -> Option<isize> {
 }
 
 fn bucket_delta<F>(
-    prev: &HashMap<String, String>,
+    prev: &HashMap<EnvKey, String>,
     next: &[Environment],
+    key: impl Fn(&Environment) -> EnvKey,
     accessor: F,
 ) -> Vec<(String, i32)>
 where
@@ -3067,7 +3069,7 @@ where
     let mut prev_counts: BTreeMap<String, i32> = BTreeMap::new();
     let mut next_counts: BTreeMap<String, i32> = BTreeMap::new();
     for e in next {
-        if let Some(prev_bucket) = prev.get(&e.name) {
+        if let Some(prev_bucket) = prev.get(&key(e)) {
             *prev_counts.entry(prev_bucket.clone()).or_insert(0) += 1;
             *next_counts.entry(accessor(e)).or_insert(0) += 1;
         }

@@ -233,11 +233,8 @@ impl App {
                 ..
             } => self.handle_confirm_modal_lint(env_name, issues, not_run),
             AppMsg::LintInputsCached {
-                env_name,
-                tags,
-                healthy,
-                ..
-            } => self.handle_lint_inputs_cached(env_name, tags, healthy),
+                key, tags, healthy, ..
+            } => self.handle_lint_inputs_cached(key, tags, healthy),
             AppMsg::RolloutPreflight { region, result, .. } => {
                 self.handle_rollout_preflight(region, result)
             }
@@ -980,16 +977,16 @@ impl App {
     /// to re-store) or the fetch failed.
     fn handle_lint_inputs_cached(
         &mut self,
-        env_name: String,
+        key: EnvKey,
         tags: Option<Vec<String>>,
         healthy: Option<i64>,
     ) {
         let now = std::time::Instant::now();
         if let Some(t) = tags {
-            self.env_tag_cache.insert(env_name.clone(), (t, now));
+            self.env_tag_cache.insert(key.clone(), (t, now));
         }
         if let Some(h) = healthy {
-            self.env_health_cache.insert(env_name, (h, now));
+            self.env_health_cache.insert(key, (h, now));
         }
     }
 

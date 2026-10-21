@@ -117,15 +117,15 @@ fn assign_app_colors_stable_first_appearance() {
 #[test]
 fn bucket_delta_only_envs_in_both() {
     let mut prev = HashMap::new();
-    prev.insert("a".into(), "Green".into());
-    prev.insert("b".into(), "Red".into());
-    prev.insert("c".into(), "Green".into()); // c disappears in next, so dropped from delta
+    prev.insert(home_key("a"), "Green".into());
+    prev.insert(home_key("b"), "Red".into());
+    prev.insert(home_key("c"), "Green".into()); // c disappears in next, so dropped from delta
     let next = vec![
         fake_env("a", "Ready", "Yellow", "v1"), // Green → Yellow: −1 Green, +1 Yellow
         fake_env("b", "Ready", "Red", "v1"),    // Red → Red: no change
         fake_env("d", "Ready", "Green", "v1"),  // new env: ignored (no prev state)
     ];
-    let delta = bucket_delta(&prev, &next, |e| e.health.clone());
+    let delta = bucket_delta(&prev, &next, |e| home_key(&e.name), |e| e.health.clone());
     let map: BTreeMap<String, i32> = delta.into_iter().collect();
     // Only env `a` transitions: −1 Green, +1 Yellow. b unchanged; c disappeared (ignored); d is new (ignored).
     assert_eq!(map.get("Green").copied(), Some(-1));
@@ -143,7 +143,7 @@ fn bucket_delta_empty_prev_yields_no_deltas() {
         fake_env("a", "Ready", "Green", "v1"),
         fake_env("b", "Ready", "Red", "v1"),
     ];
-    let delta = bucket_delta(&prev, &next, |e| e.health.clone());
+    let delta = bucket_delta(&prev, &next, |e| home_key(&e.name), |e| e.health.clone());
     assert!(
         delta.is_empty(),
         "expected no deltas with empty prev, got {delta:?}"
@@ -1332,7 +1332,7 @@ async fn an_env_that_just_went_red_is_marked_and_its_neighbours_are_not() {
         mk_env("api-prod", "poly", "Web", "Red"),
         mk_env("api-staging", "poly", "Web", "Red"),
     ];
-    app.newly_red.insert("api-prod".to_string());
+    app.newly_red.insert(home_key("api-prod"));
     app.rebuild_view();
     let buf = render_buf(&mut app, 200, 24);
     let row_text = |y: u16| {
@@ -1367,7 +1367,7 @@ async fn a_newly_discovered_env_is_marked_in_the_table() {
         mk_env("api-prod", "poly", "Web", "Green"),
         mk_env("api-new", "poly", "Web", "Green"),
     ];
-    app.newly_added.insert("api-new".to_string());
+    app.newly_added.insert(home_key("api-new"));
     app.rebuild_view();
     let buf = render_buf(&mut app, 200, 24);
     let row_text = |y: u16| {

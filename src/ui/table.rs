@@ -774,6 +774,9 @@ pub(crate) fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
                 let Some(e) = app.environments.get(*i) else {
                     return Row::new(Vec::<Cell>::new());
                 };
+                // The per-env caches are keyed by region and name: a
+                // same-named env in another region is another row.
+                let key = crate::app::EnvKey::of(e, &app.context.region);
                 let color = app_colors
                     .get(&e.application)
                     .copied()
@@ -801,12 +804,12 @@ pub(crate) fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
                 // Transient "appeared on this refresh" marker. Stays only
                 // for the cycle in which the env was first seen, so it
                 // calls out new envs without sticking forever.
-                let added_marker = if app.newly_added.contains(&e.name) {
+                let added_marker = if app.newly_added.contains(&key) {
                     "+ "
                 } else {
                     ""
                 };
-                let alert = if app.newly_red.contains(&e.name) {
+                let alert = if app.newly_red.contains(&key) {
                     glyph(app.theme.icons, "▲ ", "! ")
                 } else {
                     ""
@@ -879,9 +882,6 @@ pub(crate) fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
                         Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
                     ),
                 ]));
-                // The per-env poll caches are keyed by region and name:
-                // a same-named env in another region is another row.
-                let key = crate::app::EnvKey::of(e, &app.context.region);
                 let dlq_depth = app.worker_dlq.get(&key).copied().unwrap_or(0);
                 let cell_ctx = CellCtx {
                     theme: &theme,
@@ -894,8 +894,8 @@ pub(crate) fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
                     dlq_depth,
                     instance_counts: app.env_instance_counts.get(&key).copied(),
                     instance_counts_stale: app.env_instance_counts.is_stale(&key),
-                    history: app.history.get(&e.name),
-                    newly_red: app.newly_red.contains(&e.name),
+                    history: app.history.get(&key),
+                    newly_red: app.newly_red.contains(&key),
                     stale_platform: app.view.stale_platforms().get(&e.name),
                     cost: app.costs.get(&e.name),
                     firing_alarms: app.firing_alarms.get(&key).map_or(0, Vec::len),

@@ -817,15 +817,18 @@ impl App {
         // inputs are cached (typical for repeated modal-opens
         // against the same env).
         let now = std::time::Instant::now();
+        // The row's region with its name: a same-named env elsewhere has
+        // its own tags and instances.
+        let cache_key = self.env_key(&env);
         let cached_tags: Option<Vec<String>> = self
             .env_tag_cache
-            .get(&env.name)
+            .get(&cache_key)
             .and_then(|(v, t)| (now.duration_since(*t) < LINT_INPUT_CACHE_TTL).then(|| v.clone()));
         let cached_health: Option<i64> = self
             .env_health_cache
-            .get(&env.name)
+            .get(&cache_key)
             .and_then(|(v, t)| (now.duration_since(*t) < LINT_INPUT_CACHE_TTL).then_some(*v));
-        let cache_env_name = env.name.clone();
+
         tokio::spawn(async move {
             let disabled = snap.disabled();
             // The confirm modal's lint pane is advisory — an
@@ -892,7 +895,7 @@ impl App {
             if !tags_was_cached || !health_was_cached {
                 let _ = tx.send(AppMsg::LintInputsCached {
                     gen,
-                    env_name: cache_env_name,
+                    key: cache_key,
                     tags: if tags_was_cached {
                         None
                     } else {

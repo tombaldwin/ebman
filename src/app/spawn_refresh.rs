@@ -945,21 +945,27 @@ impl App {
                 // longer derivable. Skip the first refresh (prev_health is
                 // empty then) so every env doesn't get flagged on startup.
                 self.newly_added.clear();
+                // By region and name: with `api-prod` in two regions, a
+                // name-keyed map held one reading for both, so one going
+                // Red beside a Green twin could be missed, and with it
+                // the red-transition audit line notifiers key off.
+                let home = self.context.region.clone();
+                let key = |e: &crate::aws::Environment| EnvKey::of(e, &home);
                 if !self.prev_health.is_empty() {
                     for e in &envs {
-                        if !self.prev_health.contains_key(&e.name) {
-                            self.newly_added.insert(e.name.clone());
+                        if !self.prev_health.contains_key(&key(e)) {
+                            self.newly_added.insert(key(e));
                         }
                     }
                 }
                 for e in &envs {
                     let prev_red = self
                         .prev_health
-                        .get(&e.name)
+                        .get(&key(e))
                         .map(|h| is_red(h))
                         .unwrap_or(false);
                     if is_red(&e.health) && !prev_red {
-                        self.newly_red.insert(e.name.clone());
+                        self.newly_red.insert(key(e));
                         // The ROW's region, not the home one: under a
                         // multi-region fan-out the env that went red is
                         // usually elsewhere, and this line is what an
@@ -988,17 +994,13 @@ impl App {
                     }
                 }
                 // Compute health + status deltas before swapping prev maps.
-                self.health_delta = bucket_delta(&self.prev_health, &envs, |e| e.health.clone());
-                self.status_delta = bucket_delta(&self.prev_status, &envs, |e| e.status.clone());
+                self.health_delta =
+                    bucket_delta(&self.prev_health, &envs, key, |e| e.health.clone());
+                self.status_delta =
+                    bucket_delta(&self.prev_status, &envs, key, |e| e.status.clone());
 
-                self.prev_health = envs
-                    .iter()
-                    .map(|e| (e.name.clone(), e.health.clone()))
-                    .collect();
-                self.prev_status = envs
-                    .iter()
-                    .map(|e| (e.name.clone(), e.status.clone()))
-                    .collect();
+                self.prev_health = envs.iter().map(|e| (key(e), e.health.clone())).collect();
+                self.prev_status = envs.iter().map(|e| (key(e), e.status.clone())).collect();
 
                 let new_alerts = compute_red_alerts(&envs, |e| self.dlq_depth(e));
                 if should_ring(self.notify_bell, new_alerts, self.prev_alerts) {
@@ -1141,10 +1143,10 @@ impl App {
                     }
                 }
 
-                let live: HashSet<String> =
-                    self.environments.iter().map(|e| e.name.clone()).collect();
+                let live: HashSet<EnvKey> =
+                    self.environments.iter().map(|e| self.env_key(e)).collect();
                 for e in &self.environments {
-                    let buf = self.history.entry(e.name.clone()).or_default();
+                    let buf = self.history.entry(self.env_key(e)).or_default();
                     buf.push_back(e.health.clone());
                     while buf.len() > HISTORY_CAP {
                         buf.pop_front();

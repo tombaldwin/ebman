@@ -53,10 +53,9 @@ Tier definitions:
   watchdogs and deploy snapshots, `multi_selected`, the Detail and DLQ
   targets, and `ActionResult`. Reads by name (`:why`, `:alarms`,
   Detail's own fetches use the snapshot already) have the same shape
-  and can show the other region's data. The fleet-view caches still
-  keyed by name (`history`, `newly_red`, `newly_added`, `prev_health`,
-  `prev_status`, `env_tag_cache`, `env_health_cache`, `env_regions`)
-  move in the same pass.
+  and can show the other region's data. `env_regions` (name → last
+  region seen, the fallback for a write whose row left the table) moves
+  in the same pass; the fleet-view caches already moved to `EnvKey`.
 
 - [ ] **One way to drop a superseded answer: tickets for the Metrics tab
   and discovery.** The App tab's series, its top errors and the Detail

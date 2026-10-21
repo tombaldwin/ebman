@@ -1292,3 +1292,38 @@ async fn the_table_marks_only_the_row_of_the_region_whose_alarm_fires() {
         "the marker is on the eu-west-2 row only: {rows:?}"
     );
 }
+
+#[tokio::test]
+async fn a_same_named_env_going_red_beside_a_green_twin_is_flagged() {
+    // Keyed by name, the previous-health map held one reading for both
+    // `api-prod`s, so whichever came last decided whether the other's
+    // transition to Red was new. And TREND merged their histories.
+    let fleet = |eu_health: &str| {
+        let home = mk_env("api-prod", "poly", "Web", "Green");
+        let mut away = mk_env("api-prod", "poly", "Web", eu_health);
+        away.region = Some("eu-west-2".into());
+        // The Red one first: a name-keyed map ends on the Green twin.
+        vec![away, home]
+    };
+    let mut app = test_app();
+    app.apply_refresh(app.fanout_epoch, Ok(fleet("Green")), Vec::new());
+    app.apply_refresh(app.fanout_epoch, Ok(fleet("Red")), Vec::new());
+    assert!(app.newly_red.contains(&eu_key("api-prod")));
+    assert!(!app.newly_red.contains(&home_key("api-prod")));
+    // And on the next refresh, still Red, it is no longer NEW.
+    app.apply_refresh(app.fanout_epoch, Ok(fleet("Red")), Vec::new());
+    assert!(!app.newly_red.contains(&eu_key("api-prod")));
+    let trend = |k| {
+        app.history
+            .get(&k)
+            .map(|h| h.iter().cloned().collect::<Vec<_>>())
+    };
+    assert_eq!(
+        trend(eu_key("api-prod")),
+        Some(vec!["Green".into(), "Red".into(), "Red".into()])
+    );
+    assert_eq!(
+        trend(home_key("api-prod")),
+        Some(vec!["Green".into(), "Green".into(), "Green".into()])
+    );
+}
