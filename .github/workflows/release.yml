@@ -144,6 +144,24 @@ jobs:
           cp README.md LICENSE-MIT LICENSE-APACHE "$stage/"
           tar -czf "$stage.tar.gz" "$stage"
           shasum -a 256 "$stage.tar.gz" | tee "$stage.tar.gz.sha256"
+      - name: Smoke-test the staged binary
+        # The artifact itself, unpacked from the tarball about to be
+        # uploaded: the release build (LTO, panic=abort, this target)
+        # is not what CI tested, and nothing ran it before it shipped.
+        run: |
+          set -euo pipefail
+          stage="ebman-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          check=$(mktemp -d)
+          tar -xzf "$stage.tar.gz" -C "$check"
+          bin="$check/$stage/ebman"
+          # x86_64-apple-darwin is built on an arm64 runner; it runs
+          # under Rosetta where that is installed, and is skipped, said
+          # out loud, where it is not.
+          if ! "$bin" --version >/dev/null 2>&1; then
+            echo "::warning::cannot execute the ${{ matrix.target }} binary on this runner; smoke test skipped"
+            exit 0
+          fi
+          scripts/smoke.sh "$bin" "${GITHUB_REF_NAME#v}"
       - name: Upload as workflow artifact
         uses: actions/upload-artifact@v7
         with:

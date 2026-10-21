@@ -41,6 +41,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Build
         run: cargo build --locked --all-targets
+      # The binary itself, offline: version, help, completions, and an
+      # MCP session against the demo fleet. release.yml runs the same on
+      # each release artifact; here a break shows before a tag.
+      - name: Smoke-test the binary
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
+          scripts/smoke.sh target/debug/ebman "$version"
       - name: Test
         run: cargo test --locked --all-targets
       # `--all-targets` silently SKIPS doctests. Both current ones are
