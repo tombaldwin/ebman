@@ -82,17 +82,21 @@ pub(super) fn draw_detail_app(
 /// group's name, a CloudWatch note) becomes `?`: ascii mode is for
 /// terminals that cannot draw it.
 fn asciify(s: &str) -> String {
-    use unicode_width::UnicodeWidthChar;
+    use unicode_segmentation::UnicodeSegmentation;
+    use unicode_width::UnicodeWidthStr;
     let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '—' => out.push('-'),
-            '…' => out.push('.'),
-            '·' => out.push('|'),
-            c if c.is_ascii() => out.push(c),
-            // As many cells as it took: a combining mark takes none, a
-            // CJK character two.
-            c => out.push_str(&"?".repeat(c.width().unwrap_or(0))),
+    // By grapheme, not char: an emoji joined by ZWJ, one with a variation
+    // selector, a flag pair, each draws as one cluster whose width is not
+    // the sum of its chars'.
+    for g in s.graphemes(true) {
+        match g {
+            "—" => out.push('-'),
+            "…" => out.push('.'),
+            "·" => out.push('|'),
+            g if g.is_ascii() => out.push_str(g),
+            // As many cells as it takes: an e with a combining accent one,
+            // a CJK character two.
+            g => out.push_str(&"?".repeat(g.width())),
         }
     }
     out
@@ -852,7 +856,16 @@ mod tests {
         // One sample at a time, so a cell gained in one cannot cancel a
         // cell lost in another: a precomposed é, an arrow, an e with a
         // combining acute (zero cells for the mark), a CJK character (two).
-        for s in ["loading… — a · b", "é→", "e\u{301}", "日"] {
+        // And clusters: a ZWJ family, a heart with VS16, a flag pair.
+        for s in [
+            "loading… — a · b",
+            "é→",
+            "e\u{301}",
+            "日",
+            "👨\u{200d}👩\u{200d}👧",
+            "❤\u{fe0f}",
+            "🇬🇧",
+        ] {
             let a = asciify(s);
             assert!(a.is_ascii(), "{a}");
             assert_eq!(
