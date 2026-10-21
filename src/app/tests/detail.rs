@@ -3598,6 +3598,13 @@ mod lifecycle_model {
             .expect("runtime");
         rt.block_on(async move {
             let mut app = detail_on("api-prod");
+            // Every fetch goes through the home stub client, which fails
+            // at identity resolution with no IO; a row in another region
+            // would build a real client config (reading ~/.aws).
+            assert!(
+                app.detail.as_ref().unwrap().env_snapshot.region.is_none(),
+                "the model's env must be in the home region"
+            );
             app.set_app_tabs(config(0));
             let mut held: Vec<AppMsg> = Vec::new();
             collect(&mut app, &mut held).await;
