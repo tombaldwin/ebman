@@ -829,16 +829,16 @@ impl App {
         }
         match kind {
             PendingDispatchKind::Single { modal } => self.spawn_action(modal),
-            PendingDispatchKind::BatchAction { action, env_names } => {
-                for env in env_names {
+            PendingDispatchKind::BatchAction { action, envs } => {
+                for env in envs {
                     self.spawn_batch_action(action, env);
                 }
             }
             PendingDispatchKind::BatchDeploy {
-                env_names,
+                envs,
                 version_label,
             } => {
-                for env in env_names {
+                for env in envs {
                     self.spawn_batch_deploy(env, version_label.clone());
                 }
             }
@@ -852,12 +852,12 @@ impl App {
                 }
             }
             PendingDispatchKind::BatchSetOption {
-                env_names,
+                envs,
                 namespace,
                 option_name,
                 value,
             } => {
-                for env in env_names {
+                for env in envs {
                     self.spawn_batch_set_option(
                         env,
                         namespace.clone(),

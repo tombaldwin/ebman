@@ -235,9 +235,11 @@ pub struct App {
     pub(crate) quickjump_input: TextInput,
     pub(crate) extra_regions: Vec<String>,
     pub(crate) event_panel: EventPanel,
-    /// Env names the user has marked for batch action via `space`. Cleared on
-    /// Esc, on context switch, and after a successful batch dispatch.
-    pub(crate) multi_selected: BTreeSet<String>,
+    /// The envs (region and name) marked for batch action via `space`.
+    /// Cleared on Esc, on context switch, and after a batch dispatch. By
+    /// name, two same-named rows in two regions marked as one, and the
+    /// batch reached whichever the name found first.
+    pub(crate) multi_selected: BTreeSet<EnvKey>,
     /// Apps-scope multi-selection (parallel to `multi_selected`).
     /// `space` in Apps scope toggles an app in/out. Doesn't persist
     /// across sessions — selection is operator-intent for a single
@@ -3126,13 +3128,10 @@ pub(crate) enum PendingDispatchKind {
     Single { modal: ConfirmModal },
     /// `:batch-rebuild` / `:batch-restart` — one [`Action`] applied
     /// to every env in the captured set.
-    BatchAction {
-        action: Action,
-        env_names: Vec<String>,
-    },
+    BatchAction { action: Action, envs: Vec<EnvKey> },
     /// `:batch-deploy LABEL` — same version label fanned out.
     BatchDeploy {
-        env_names: Vec<String>,
+        envs: Vec<EnvKey>,
         version_label: String,
     },
     /// `:batch-tag KEY VALUE` (`value = Some`) / `:batch-untag KEY`
@@ -3140,13 +3139,13 @@ pub(crate) enum PendingDispatchKind {
     /// mid-window refresh that drops an env's ARN can't break the
     /// fan-out.
     BatchTag {
-        envs_with_arns: Vec<(String, String)>,
+        envs_with_arns: Vec<(EnvKey, String)>,
         key: String,
         value: Option<String>,
     },
     /// `:batch-set-option NAMESPACE NAME VALUE`.
     BatchSetOption {
-        env_names: Vec<String>,
+        envs: Vec<EnvKey>,
         namespace: String,
         option_name: String,
         value: String,

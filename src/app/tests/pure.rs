@@ -773,7 +773,7 @@ async fn batch_set_option_skips_envs_no_longer_in_view() {
     app.rebuild_view();
     // Dispatch against an env that's NOT in self.environments.
     app.spawn_batch_set_option(
-        "vanished".into(),
+        home_key("vanished"),
         "aws:elasticbeanstalk:application".into(),
         "Application Healthcheck URL".into(),
         "/healthz".into(),
@@ -1021,8 +1021,8 @@ async fn batch_action_routes_through_cancel_window() {
         mk_env("prod-web", "poly", "Web", "Green"),
         mk_env("staging-web", "poly", "Web", "Green"),
     ];
-    app.multi_selected.insert("prod-web".into());
-    app.multi_selected.insert("staging-web".into());
+    app.multi_selected.insert(home_key("prod-web"));
+    app.multi_selected.insert(home_key("staging-web"));
     app.cmd_batch_action(Action::Rebuild);
     // Multi-select cleared; dispatch queued with a 5s deadline.
     assert!(
@@ -1034,9 +1034,9 @@ async fn batch_action_routes_through_cancel_window() {
         .as_ref()
         .expect("batch action should queue a pending dispatch");
     match &pd.kind {
-        PendingDispatchKind::BatchAction { action, env_names } => {
+        PendingDispatchKind::BatchAction { action, envs } => {
             assert_eq!(*action, Action::Rebuild);
-            assert_eq!(env_names.len(), 2);
+            assert_eq!(envs.len(), 2);
         }
         other => panic!(
             "expected BatchAction variant; got {other:?}",

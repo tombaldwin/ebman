@@ -709,8 +709,9 @@ impl App {
             }
             KeyCode::Char(' ') if self.scope == Scope::Envs => {
                 if let Some(env) = self.selected_env().cloned() {
-                    if !self.multi_selected.remove(&env.name) {
-                        self.multi_selected.insert(env.name);
+                    let key = self.env_key(&env);
+                    if !self.multi_selected.remove(&key) {
+                        self.multi_selected.insert(key);
                     }
                     let n = self.multi_selected.len();
                     self.status_message = if n == 0 {

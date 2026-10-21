@@ -571,8 +571,8 @@ async fn cmd_batch_action_refuses_pinned_env_and_keeps_selection() {
     // the locked env and retry).
     let mut app = test_app();
     app.cfg.safety_envs.insert("prod-web".into(), true);
-    app.multi_selected.insert("prod-web".into());
-    app.multi_selected.insert("staging-web".into());
+    app.multi_selected.insert(home_key("prod-web"));
+    app.multi_selected.insert(home_key("staging-web"));
     app.cmd_batch_action(crate::app::Action::Rebuild);
     assert!(app.error_message.is_some());
     assert_eq!(

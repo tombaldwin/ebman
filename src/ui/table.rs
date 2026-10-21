@@ -802,7 +802,7 @@ pub(crate) fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
                 } else {
                     ""
                 };
-                let checked = if app.multi_selected.contains(&e.name) {
+                let checked = if app.multi_selected.contains(&key) {
                     glyph(app.theme.icons, "✓ ", "x ")
                 } else {
                     ""

@@ -173,6 +173,14 @@ impl App {
             Some(it) => *it,
             None => return,
         };
+        // The app's envs as keys: under a fan-out the same application,
+        // and the same env names, exist once per region.
+        let env_keys: std::collections::BTreeSet<EnvKey> = self
+            .environments
+            .iter()
+            .filter(|e| e.application == app_name && env_names.contains(&e.name))
+            .map(|e| self.env_key(e))
+            .collect();
         match item {
             AppsActionItem::Drill => {
                 self.view.set_filter(app_name.clone());
@@ -181,18 +189,18 @@ impl App {
                 self.status_message = Some(format!("filtered envs to application '{app_name}'"));
             }
             AppsActionItem::BatchRebuild => {
-                self.multi_selected = env_names.into_iter().collect();
+                self.multi_selected = env_keys.clone();
                 self.cmd_batch_action(Action::Rebuild);
             }
             AppsActionItem::BatchRestart => {
-                self.multi_selected = env_names.into_iter().collect();
+                self.multi_selected = env_keys.clone();
                 self.cmd_batch_action(Action::RestartAppServer);
             }
             AppsActionItem::BatchDeploy => {
                 // Seed the multi-select then drop into command mode
                 // with `:batch-deploy ` so the operator types the
                 // version label and Enter dispatches.
-                self.multi_selected = env_names.into_iter().collect();
+                self.multi_selected = env_keys.clone();
                 self.mode = Mode::Command;
                 self.command_input = "batch-deploy ".into();
                 self.status_message = Some("type a version label and press enter".into());

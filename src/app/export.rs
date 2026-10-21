@@ -45,6 +45,11 @@ impl App {
         crate::app::EnvKey::of(env, &self.context.region)
     }
 
+    /// The table's row for `key`, if it is still there.
+    pub(crate) fn env_by_key(&self, key: &crate::app::EnvKey) -> Option<&crate::aws::Environment> {
+        self.environments.iter().find(|e| &self.env_key(e) == key)
+    }
+
     /// `env`'s DLQ depth, 0 when unknown or none.
     pub(crate) fn dlq_depth(&self, env: &crate::aws::Environment) -> i64 {
         self.caches

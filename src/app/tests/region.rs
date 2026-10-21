@@ -37,7 +37,7 @@ async fn batch_action_undo_cancels_whole_fanout() {
         mk_env("e3", "poly", "Web", "Green"),
     ];
     for name in ["e1", "e2", "e3"] {
-        app.multi_selected.insert(name.into());
+        app.multi_selected.insert(home_key(name));
     }
     app.cmd_batch_action(Action::RestartAppServer);
     assert!(app.pending_dispatch.is_some());
@@ -1495,4 +1495,64 @@ async fn a_confirmed_write_is_sent_to_the_region_its_modal_recorded() {
     let (region, client) = app.dispatch_client(&modal);
     assert_eq!(region, "eu-west-2");
     assert_eq!(client.region_for_tests(), "eu-west-2");
+}
+
+#[tokio::test]
+async fn same_named_rows_in_two_regions_select_as_two() {
+    // By name, `space` on the second `api-prod` un-marked the first.
+    let mut app = same_named_in_two_regions();
+    for row in 0..2 {
+        app.table_state.select(Some(row));
+        press(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
+    }
+    assert_eq!(app.multi_selected.len(), 2, "{:?}", app.multi_selected);
+    assert!(app.multi_selected.contains(&eu_key("api-prod")));
+    assert!(app.multi_selected.contains(&home_key("api-prod")));
+}
+
+#[tokio::test]
+async fn a_queued_batch_carries_each_rows_own_region() {
+    let mut app = test_app();
+    let home = mk_env("api-a", "poly", "Web", "Green");
+    let mut away = mk_env("api-b", "poly", "Web", "Green");
+    away.region = Some("eu-west-2".into());
+    app.environments = vec![home, away];
+    app.rebuild_view();
+    app.multi_selected = [home_key("api-a"), eu_key("api-b")].into_iter().collect();
+    app.cmd_batch_action(Action::RestartAppServer);
+    let Some(PendingDispatch {
+        kind: PendingDispatchKind::BatchAction { envs, .. },
+        ..
+    }) = app.pending_dispatch.as_ref()
+    else {
+        panic!("not queued: {:?}", app.error_message);
+    };
+    assert!(envs.contains(&eu_key("api-b")), "{envs:?}");
+    assert!(envs.contains(&home_key("api-a")), "{envs:?}");
+}
+
+#[tokio::test]
+async fn an_applications_batch_marks_its_env_in_every_region() {
+    // Under a fan-out an application, and its env names, exist once per
+    // region; the batch is over every one of them.
+    let mut app = same_named_in_two_regions();
+    app.current_overlay = Some(crate::app::Overlay::AppsActionMenu {
+        app_name: "poly".into(),
+        env_names: vec!["api-prod".into()],
+        cursor: crate::app::APPS_ACTION_ITEMS
+            .iter()
+            .position(|i| matches!(i, crate::app::AppsActionItem::BatchDeploy))
+            .unwrap(),
+    });
+    app.handle_apps_action_menu_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(
+        app.multi_selected.contains(&home_key("api-prod")),
+        "{:?}",
+        app.multi_selected
+    );
+    assert!(
+        app.multi_selected.contains(&eu_key("api-prod")),
+        "{:?}",
+        app.multi_selected
+    );
 }

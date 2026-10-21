@@ -14,14 +14,15 @@
 //! `spawn_why_red.rs` extraction; pure relocation, no behaviour change.
 
 use super::{build_undo_entry, flatten_err, write_audit_entry, Action, App, AppMsg};
+use crate::app::EnvKey;
 
 impl App {
     /// Fire a single non-destructive action for batch mode. Unlike
     /// `spawn_action` this doesn't need a `ConfirmModal` — the user already
     /// opted in by typing `:batch-…`. Only Rebuild and RestartAppServer are
     /// allowed; destructive actions still require per-env strict confirm.
-    pub(super) fn spawn_batch_action(&mut self, action: Action, env: String) {
-        let region = self.region_for_name(&env);
+    pub(super) fn spawn_batch_action(&mut self, action: Action, target: EnvKey) {
+        let EnvKey { region, name: env } = target;
         write_audit_entry(
             self.context.account_id.as_deref(),
             self.context.profile.as_deref(),
@@ -59,8 +60,8 @@ impl App {
     /// Per-env deploy dispatch for `:batch-deploy`. Shares the pending
     /// pill + audit + `ActionResult` plumbing with the existing single-env
     /// `:deploy` path via `Action::Deploy`.
-    pub(super) fn spawn_batch_deploy(&mut self, env: String, label: String) {
-        let region = self.region_for_name(&env);
+    pub(super) fn spawn_batch_deploy(&mut self, target: EnvKey, label: String) {
+        let EnvKey { region, name: env } = target;
         let client = self.client_for_region(&region);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
@@ -98,12 +99,13 @@ impl App {
     /// log can distinguish tag from untag.
     pub(super) fn spawn_batch_tag(
         &mut self,
-        env: String,
+        target: EnvKey,
         arn: String,
         key: String,
         value: Option<String>,
     ) {
-        let client = self.client_for_env(&env);
+        let EnvKey { region, name: env } = target;
+        let client = self.client_for_region(&region);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let is_add = value.is_some();
@@ -112,7 +114,7 @@ impl App {
             Some(v) => crate::audit::append_action_dispatched(
                 self.context.account_id.as_deref(),
                 self.context.profile.as_deref(),
-                &self.region_for_name(&env),
+                &region,
                 "Tag",
                 &env,
                 &[("key", &key), ("value", v)],
@@ -120,7 +122,7 @@ impl App {
             None => crate::audit::append_action_dispatched(
                 self.context.account_id.as_deref(),
                 self.context.profile.as_deref(),
-                &self.region_for_name(&env),
+                &region,
                 "Untag",
                 &env,
                 &[("key", &key)],
@@ -161,7 +163,7 @@ impl App {
     /// parameterised parallel.
     pub(super) fn spawn_batch_set_option(
         &mut self,
-        env: String,
+        target: EnvKey,
         namespace: String,
         name: String,
         value: String,
@@ -171,29 +173,25 @@ impl App {
         // capture. If the env vanished mid-batch (context switch /
         // termination race), we skip the dispatch with an audit
         // line rather than firing a write against a stale name.
-        let Some(app_name) = self
-            .environments
-            .iter()
-            .find(|e| e.name == env)
-            .map(|e| e.application.clone())
-        else {
+        let Some(app_name) = self.env_by_key(&target).map(|e| e.application.clone()) else {
             crate::audit::append_action_skipped(
                 self.context.account_id.as_deref(),
                 self.context.profile.as_deref(),
-                &self.region_for_name(&env),
+                &target.region,
                 crate::verb::Verb::SetOption.audit_label(),
-                &env,
+                &target.name,
                 "env not in current view",
             );
             return;
         };
-        let client = self.client_for_env(&env);
+        let EnvKey { region, name: env } = target;
+        let client = self.client_for_region(&region);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         crate::audit::append_action_dispatched(
             self.context.account_id.as_deref(),
             self.context.profile.as_deref(),
-            &self.region_for_name(&env),
+            &region,
             crate::verb::Verb::SetOption.audit_label(),
             &env,
             &[("ns", &namespace), ("name", &name), ("value", &value)],

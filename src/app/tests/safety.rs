@@ -542,7 +542,7 @@ async fn every_batch_write_is_refused_in_read_only_mode() {
     for cmd in BATCH_WRITE_COMMANDS {
         let mut app = read_only_app_with_env();
         // Bulk ops act on the space-multi-selected set.
-        app.multi_selected = ["api-prod".to_string()].into_iter().collect();
+        app.multi_selected = [home_key("api-prod")].into_iter().collect();
         app.execute_command(cmd);
         let err = app.error_message.as_deref().unwrap_or_default();
         assert!(
@@ -568,7 +568,7 @@ async fn every_batch_write_is_refused_when_one_member_is_pinned() {
         app.read_only = false;
         // Only ONE of the two is pinned.
         app.cfg.safety_envs.insert("api-prod".into(), true);
-        app.multi_selected = ["api-prod".to_string(), "api-staging".to_string()]
+        app.multi_selected = [home_key("api-prod"), home_key("api-staging")]
             .into_iter()
             .collect();
         app.execute_command(cmd);
@@ -1871,7 +1871,7 @@ async fn every_write_to_a_name_in_two_regions_is_refused() {
     }
     for cmd in BATCH_WRITE_COMMANDS {
         let mut app = app_with_api_prod_in_two_regions();
-        app.multi_selected = ["api-prod".to_string()].into_iter().collect();
+        app.multi_selected = [home_key("api-prod")].into_iter().collect();
         app.execute_command(cmd);
         let err = app.error_message.as_deref().unwrap_or_default();
         assert!(

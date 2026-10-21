@@ -459,7 +459,7 @@ async fn ascii_icon_mode_renders_no_decorative_unicode() {
     app.frozen = true;
     app.first_run_hint = true;
     app.pinned.insert("api-prod".to_string());
-    app.multi_selected.insert("api-prod".to_string());
+    app.multi_selected.insert(home_key("api-prod"));
     app.incident = Some(crate::app::Incident {
         headline: "checkout 5xx".into(),
         started_at: chrono::Utc::now(),
@@ -1164,8 +1164,8 @@ async fn the_multi_select_pill_counts_the_selection() {
         mk_env("api-prod", "poly", "Web", "Green"),
         mk_env("api-staging", "poly", "Web", "Green"),
     ];
-    app.multi_selected.insert("api-prod".to_string());
-    app.multi_selected.insert("api-staging".to_string());
+    app.multi_selected.insert(home_key("api-prod"));
+    app.multi_selected.insert(home_key("api-staging"));
     app.rebuild_view();
     let frame = render(&mut app, 160, 24);
     assert!(

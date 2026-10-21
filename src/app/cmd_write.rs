@@ -9,7 +9,7 @@
 //! Second slice of the `execute_command` split — follows the same
 //! parent-module-visibility pattern as `app::cmd_overlay`.
 
-use super::{parse_tag_args, Action, App, PendingDispatchKind};
+use super::{parse_tag_args, Action, App, EnvKey, PendingDispatchKind};
 
 impl App {
     /// `:batch-rebuild` / `:batch-restart`. Routes through the 5s
@@ -21,19 +21,20 @@ impl App {
             self.error_message = Some("no envs selected — press space to mark envs first".into());
             return;
         }
-        let env_names: Vec<String> = self.multi_selected.iter().cloned().collect();
+        let envs: Vec<EnvKey> = self.multi_selected.iter().cloned().collect();
         // Per-env safety gate: refuse if ANY selected env is pinned
         // read-only (global / demo / freeze / safety.envs / accounts).
-        if self.deny_write_batch(&env_names, "batch action") {
+        // Pins are by name, so the gate is too.
+        if self.deny_write_batch(&names_of(&envs), "batch action") {
             return;
         }
-        let n = env_names.len();
+        let n = envs.len();
         let label = format!("Batch {}", action.label().to_lowercase());
         let target = format!("{n} env(s)");
         self.queue_batch_dispatch(
             label,
             target,
-            PendingDispatchKind::BatchAction { action, env_names },
+            PendingDispatchKind::BatchAction { action, envs },
         );
         self.multi_selected.clear();
     }
@@ -52,20 +53,15 @@ impl App {
             self.error_message = Some("usage: :batch-deploy LABEL".into());
             return;
         };
-        let env_names: Vec<String> = self.multi_selected.iter().cloned().collect();
+        let envs: Vec<EnvKey> = self.multi_selected.iter().cloned().collect();
         // Per-env safety gate before the app-span check — a pinned env
         // should refuse regardless of whether the selection is valid.
-        if self.deny_write_batch(&env_names, "batch-deploy") {
+        if self.deny_write_batch(&names_of(&envs), "batch-deploy") {
             return;
         }
-        let apps: std::collections::BTreeSet<String> = env_names
+        let apps: std::collections::BTreeSet<String> = envs
             .iter()
-            .filter_map(|n| {
-                self.environments
-                    .iter()
-                    .find(|e| &e.name == n)
-                    .map(|e| e.application.clone())
-            })
+            .filter_map(|k| self.env_by_key(k).map(|e| e.application.clone()))
             .collect();
         if apps.len() > 1 {
             self.error_message = Some(format!(
@@ -75,13 +71,13 @@ impl App {
             ));
             return;
         }
-        let n = env_names.len();
+        let n = envs.len();
         let target = format!("{n} env(s)");
         self.queue_batch_dispatch(
             format!("Batch deploy {version_label}"),
             target,
             PendingDispatchKind::BatchDeploy {
-                env_names,
+                envs,
                 version_label,
             },
         );
@@ -99,8 +95,8 @@ impl App {
         }
         {
             // Per-env safety gate before arg parsing + ARN resolution.
-            let names: Vec<String> = self.multi_selected.iter().cloned().collect();
-            if self.deny_write_batch(&names, "batch tag/untag") {
+            let keys: Vec<EnvKey> = self.multi_selected.iter().cloned().collect();
+            if self.deny_write_batch(&names_of(&keys), "batch tag/untag") {
                 return;
             }
         }
@@ -117,18 +113,13 @@ impl App {
             };
             (k, None)
         };
-        let names: Vec<String> = self.multi_selected.iter().cloned().collect();
-        let mut envs_with_arns: Vec<(String, String)> = Vec::new();
-        let mut missing_arn: Vec<String> = Vec::new();
-        for name in &names {
-            let arn = self
-                .environments
-                .iter()
-                .find(|e| &e.name == name)
-                .and_then(|e| e.arn.clone());
-            match arn {
-                Some(arn) => envs_with_arns.push((name.clone(), arn)),
-                None => missing_arn.push(name.clone()),
+        let keys: Vec<EnvKey> = self.multi_selected.iter().cloned().collect();
+        let mut envs_with_arns: Vec<(EnvKey, String)> = Vec::new();
+        let mut missing_arn: Vec<EnvKey> = Vec::new();
+        for key in &keys {
+            match self.env_by_key(key).and_then(|e| e.arn.clone()) {
+                Some(arn) => envs_with_arns.push((key.clone(), arn)),
+                None => missing_arn.push(key.clone()),
             }
         }
         if envs_with_arns.is_empty() {
@@ -173,17 +164,17 @@ impl App {
         let namespace = rest[0].to_string();
         let option_name = rest[1].to_string();
         let value = rest[2..].join(" ");
-        let env_names: Vec<String> = self.multi_selected.iter().cloned().collect();
+        let envs: Vec<EnvKey> = self.multi_selected.iter().cloned().collect();
         // Per-env safety gate: refuse if any selected env is pinned.
-        if self.deny_write_batch(&env_names, "batch-set-option") {
+        if self.deny_write_batch(&names_of(&envs), "batch-set-option") {
             return;
         }
-        let n = env_names.len();
+        let n = envs.len();
         self.queue_batch_dispatch(
             format!("Batch set-option {namespace}.{option_name}={value}"),
             format!("{n} env(s)"),
             PendingDispatchKind::BatchSetOption {
-                env_names,
+                envs,
                 namespace,
                 option_name,
                 value,
@@ -191,4 +182,9 @@ impl App {
         );
         self.multi_selected.clear();
     }
+}
+
+/// The names of `envs`, for the safety gate: pins are by name.
+fn names_of(envs: &[EnvKey]) -> Vec<String> {
+    envs.iter().map(|k| k.name.clone()).collect()
 }

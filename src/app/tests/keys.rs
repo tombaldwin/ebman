@@ -320,7 +320,7 @@ async fn space_toggles_multi_select_and_esc_clears_it() {
     // Cursor on row 0 by default. Space adds it to multi-select.
     press(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
     assert_eq!(app.multi_selected.len(), 1);
-    assert!(app.multi_selected.contains("api-prod"));
+    assert!(app.multi_selected.contains(&home_key("api-prod")));
     // Second space toggles the same row off.
     press(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
     assert!(app.multi_selected.is_empty());
