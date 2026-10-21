@@ -3442,3 +3442,220 @@ async fn an_alarm_dimensions_edit_drops_the_alarms_fetched_under_the_old_ones() 
     );
     assert!(app.detail.as_ref().unwrap().cw_alarms.ready().is_none());
 }
+
+/// A model test of the Detail view's request lifecycle: random tab
+/// switches, range changes, `^R`, auto-refresh ticks and config edits,
+/// with every answer held and delivered in a random order, the way slow
+/// and fast calls interleave. Eleven fixes this cycle were in this
+/// class, each pinned by one hand-written ordering.
+///
+/// Checked at every delivery: an answer that is not the latest
+/// request's changes nothing it reaches (the latest one settles, and
+/// one that leaves a fetch in flight leaves it unchanged). And at the
+/// end, once every answer has landed, no fetch is still loading.
+mod lifecycle_model {
+    use super::*;
+    use proptest::prelude::*;
+
+    #[derive(Debug, Clone)]
+    enum Op {
+        Tab(DetailTab),
+        Range(bool),
+        Refresh,
+        Tick,
+        Edit(u8),
+        Deliver(usize),
+        Collect,
+    }
+
+    fn op() -> impl Strategy<Value = Op> {
+        prop_oneof![
+            prop_oneof![
+                Just(DetailTab::Metrics),
+                Just(DetailTab::App),
+                Just(DetailTab::Health),
+            ]
+            .prop_map(Op::Tab),
+            any::<bool>().prop_map(Op::Range),
+            Just(Op::Refresh),
+            Just(Op::Tick),
+            (0u8..4).prop_map(Op::Edit),
+            (0usize..8).prop_map(Op::Deliver),
+            Just(Op::Collect),
+        ]
+    }
+
+    /// The App tab's config, in four versions that differ in what each
+    /// fetch reads: the series, the alarm prefix, the queried log group.
+    fn config(n: u8) -> crate::app_tab::AppTabs {
+        let extra = match n {
+            0 => "",
+            1 => "app.api-prod.alarm_prefix = \"api-\"\n",
+            2 => "app.api-prod.metric.heap = \"heap|Maximum\"\n",
+            _ => "app.api-prod.log_group = \"var/log/app.log\"\n",
+        };
+        crate::config::parse(&format!(
+            "app.api-prod.namespace = \"N\"\napp.api-prod.metric.users = \"users|Sum\"\n{extra}"
+        ))
+        .app_tabs
+    }
+
+    /// Which fetch an answer is for, its ticket, and a snapshot of
+    /// everything that answer may touch.
+    fn reach(app: &App, msg: &AppMsg) -> Option<(&'static str, String, bool)> {
+        let d = app.detail.as_ref()?;
+        Some(match msg {
+            AppMsg::DetailMetrics { ticket, .. } => (
+                "metrics",
+                format!("{:?}{:?}{:?}", d.metrics_request, d.metrics, d.error),
+                d.metrics_request.ticket_in_flight() == Some(*ticket),
+            ),
+            AppMsg::DetailAppMetrics { ticket, .. } => (
+                "app",
+                format!("{:?}", d.app_tab.metrics),
+                d.app_tab.metrics.ticket_in_flight() == Some(*ticket),
+            ),
+            AppMsg::DetailAlarms { ticket, .. } => (
+                "alarms",
+                format!("{:?}", d.cw_alarms),
+                d.cw_alarms.ticket_in_flight() == Some(*ticket),
+            ),
+            AppMsg::DetailTopErrors { ticket, .. } => (
+                "top errors",
+                format!("{:?}", d.app_tab.top_errors),
+                d.app_tab.top_errors.ticket_in_flight() == Some(*ticket),
+            ),
+            AppMsg::DetailRecentVersions { ticket, .. } => (
+                "versions",
+                format!("{:?}", d.recent_versions),
+                d.recent_versions.ticket_in_flight() == Some(*ticket),
+            ),
+            _ => return None,
+        })
+    }
+
+    fn snapshot(app: &App, what: &str) -> String {
+        let d = app.detail.as_ref().expect("detail open");
+        match what {
+            "metrics" => format!("{:?}{:?}{:?}", d.metrics_request, d.metrics, d.error),
+            "app" => format!("{:?}", d.app_tab.metrics),
+            "alarms" => format!("{:?}", d.cw_alarms),
+            "top errors" => format!("{:?}", d.app_tab.top_errors),
+            _ => format!("{:?}", d.recent_versions),
+        }
+    }
+
+    fn in_flight(app: &App) -> Vec<&'static str> {
+        let d = app.detail.as_ref().expect("detail open");
+        [
+            ("metrics", d.metrics_request.in_flight()),
+            ("app", d.app_tab.metrics.in_flight()),
+            ("alarms", d.cw_alarms.in_flight()),
+            ("top errors", d.app_tab.top_errors.in_flight()),
+            ("versions", d.recent_versions.in_flight()),
+        ]
+        .into_iter()
+        .filter_map(|(n, f)| f.then_some(n))
+        .collect()
+    }
+
+    /// Let the spawned fetches run (the stub client answers each at once,
+    /// with an error) and hold what they send.
+    async fn collect(app: &mut App, held: &mut Vec<AppMsg>) {
+        for _ in 0..40 {
+            tokio::task::yield_now().await;
+            while let Ok(m) = app.msg_rx.try_recv() {
+                held.push(m);
+            }
+        }
+    }
+
+    /// Deliver one held answer, checking it against the request it
+    /// claims to answer.
+    fn deliver(app: &mut App, msg: AppMsg) -> Result<(), TestCaseError> {
+        let Some((what, before, latest)) = reach(app, &msg) else {
+            app.handle_msg(msg);
+            return Ok(());
+        };
+        app.handle_msg(msg);
+        // The latest request's answer settles it, which the end-of-run
+        // check pins. One for a superseded request must change nothing.
+        if !latest {
+            prop_assert_eq!(
+                snapshot(app, what),
+                before,
+                "a superseded {} answer changed what it reached",
+                what
+            );
+        }
+        Ok(())
+    }
+
+    fn run(ops: Vec<Op>, order: Vec<usize>) -> Result<(), TestCaseError> {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        rt.block_on(async move {
+            let mut app = detail_on("api-prod");
+            app.set_app_tabs(config(0));
+            let mut held: Vec<AppMsg> = Vec::new();
+            collect(&mut app, &mut held).await;
+            for op in ops {
+                match op {
+                    Op::Tab(tab) => {
+                        focus_tab(&mut app, tab);
+                        app.detail_refresh_on_open();
+                    }
+                    Op::Range(wider) => app.cycle_metrics_range(if wider { 1 } else { -1 }),
+                    Op::Refresh => app.detail_refresh_active_tab(),
+                    Op::Tick => app.detail_refresh_on_tick(),
+                    Op::Edit(n) => {
+                        app.set_app_tabs(config(n));
+                        app.refetch_what_an_edit_emptied();
+                    }
+                    Op::Deliver(i) => {
+                        if !held.is_empty() {
+                            let msg = held.remove(i % held.len());
+                            deliver(&mut app, msg)?;
+                        }
+                    }
+                    Op::Collect => collect(&mut app, &mut held).await,
+                }
+            }
+            // Everything still out lands, in a random order, and so does
+            // whatever those answers start, until nothing more comes.
+            let mut order = order.into_iter().cycle();
+            for _ in 0..20 {
+                collect(&mut app, &mut held).await;
+                if held.is_empty() {
+                    break;
+                }
+                while !held.is_empty() {
+                    let i = order.next().unwrap_or(0) % held.len();
+                    let msg = held.remove(i);
+                    deliver(&mut app, msg)?;
+                }
+            }
+            prop_assert!(held.is_empty(), "answers kept coming");
+            prop_assert_eq!(
+                in_flight(&app),
+                Vec::<&str>::new(),
+                "still loading once all answered"
+            );
+            Ok(())
+        })
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+
+        #[test]
+        fn every_request_settles_once_and_only_the_latest_lands(
+            ops in proptest::collection::vec(op(), 1..30),
+            order in proptest::collection::vec(0usize..16, 1..8),
+        ) {
+            run(ops, order)?;
+        }
+    }
+}
