@@ -118,6 +118,47 @@ pub(crate) fn find_in_production(needle: &str) -> Vec<String> {
     hits
 }
 
+/// A file's production code as statements a guard can match whole: its
+/// production half (test modules excised), line comments stripped, and
+/// each line that starts with `.` joined to the one before. rustfmt
+/// splits a long method chain one call per line, so a guard matching
+/// `cfg.app_tabs.envs.insert(` line by line misses
+/// `self\n.cfg\n.app_tabs\n.envs\n.insert(`, a shape production already
+/// uses. Joined, both read the same.
+pub(crate) fn statements_of(src: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for line in production_half(src).lines() {
+        let code = strip_line_comment(line).trim();
+        if code.is_empty() {
+            continue;
+        }
+        match out.last_mut() {
+            Some(prev) if code.starts_with('.') => prev.push_str(code),
+            _ => out.push(code.to_string()),
+        }
+    }
+    out
+}
+
+/// Every production statement (see [`statements_of`]) that `hit`
+/// accepts, as `path: statement`. For a guard whose needle can be split
+/// across lines; [`find_in_production`] reports line numbers, which a
+/// joined statement no longer has.
+pub(crate) fn production_statements_where(hit: impl Fn(&str) -> bool) -> Vec<String> {
+    let mut out = Vec::new();
+    for (path, text) in source_files() {
+        if is_test_path(&path) {
+            continue;
+        }
+        for st in statements_of(&text) {
+            if hit(&st) {
+                out.push(format!("{path}: {st}"));
+            }
+        }
+    }
+    out
+}
+
 /// The production half of ONE source file, located by path suffix from
 /// the crate root.
 ///
@@ -975,6 +1016,33 @@ mod production_source_tests {
 }
 
 #[cfg(test)]
+mod statements_of_tests {
+    use super::statements_of;
+
+    #[test]
+    fn a_split_chain_is_one_statement_and_test_modules_and_comments_are_not_read() {
+        let src = "fn f(app: &mut App) {\n    app\n        .cfg // the config\n        .app_tabs\n        .envs\n        .insert(k, v);\n    let x = 1;\n}\n\n#[cfg(test)]\nmod tests {\n    fn t() { app.cfg.app_tabs.envs.insert(k, v); }\n}\n";
+        let st = statements_of(src);
+        assert!(
+            st.contains(&"app.cfg.app_tabs.envs.insert(k, v);".to_string()),
+            "{st:#?}"
+        );
+        assert!(
+            st.contains(&"let x = 1;".to_string()),
+            "a statement after a chain stays its own"
+        );
+        assert_eq!(
+            st.iter().filter(|s| s.contains("insert(")).count(),
+            1,
+            "the test module's insert is not production: {st:#?}"
+        );
+        assert!(
+            !st.iter().any(|s| s.contains("the config")),
+            "comments are stripped"
+        );
+    }
+}
+
 mod production_half_tests {
 
     /// An OUT-OF-LINE test module declaration has no body here, so

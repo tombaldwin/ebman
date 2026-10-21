@@ -3123,24 +3123,6 @@ async fn an_emptied_app_tab_on_screen_is_fetched_again() {
     assert_eq!(fetched(&mut app), (false, false), "not on screen");
 }
 
-/// Production code lines (test modules excised, line comments stripped)
-/// that `hit` accepts, as `path: line`.
-fn production_lines_where(hit: impl Fn(&str) -> bool) -> Vec<String> {
-    let mut out = Vec::new();
-    for (path, text) in super::scan::source_files() {
-        if super::scan::is_test_path(&path) {
-            continue;
-        }
-        for line in super::scan::production_half(&text).lines() {
-            let code = super::scan::strip_line_comment(line);
-            if hit(code) {
-                out.push(format!("{path}: {}", code.trim()));
-            }
-        }
-    }
-    out
-}
-
 /// The App's `app.` config is changed only through `set_app_tabs`,
 /// which drops what was fetched under the old config: any other write
 /// (an assignment, an insert or remove on its envs, a mutable borrow, a
@@ -3160,7 +3142,7 @@ fn app_config_is_replaced_only_through_set_app_tabs() {
         "self.cfg = ",
         "app.cfg = ",
     ];
-    let writes = production_lines_where(|code| {
+    let writes = super::scan::production_statements_where(|code| {
         code.contains("cfg") && WRITES.iter().any(|w| code.contains(w))
     });
     // config.rs builds a `Config` (its parser, and the save that keeps
@@ -3212,15 +3194,26 @@ async fn an_envs_app_tab_comes_from_config_then_a_preview_then_nothing() {
     assert_eq!(configured.spec().map(|s| s.rds), Some(vec![]));
 
     // However the config is reached (`tabs.envs`, `app.cfg.app_tabs.envs`).
-    let asked = production_lines_where(|code| {
+    // Also the branching shapes: `match … .envs.get(..)`, `if let Some(_)
+    // = … .envs.get(..)`, `matches!(… .envs.get(..), …)`. The one such
+    // statement allowed is app_tab_source's own match.
+    let asked = super::scan::production_statements_where(|code| {
         code.contains(".envs.contains_key(")
             || (code.contains(".envs.get(")
-                && (code.contains(".is_some()") || code.contains(".is_none()")))
+                && (code.contains(".is_some()")
+                    || code.contains(".is_none()")
+                    || code.contains("match ")
+                    || code.contains("if let Some(")
+                    || code.contains("matches!(")))
     });
-    assert!(asked.is_empty(), "{asked:#?}: ask app_tab_source");
+    assert_eq!(asked.len(), 1, "{asked:#?}: ask app_tab_source");
+    assert!(
+        asked[0].starts_with("src/app/app_tab_form.rs: match self.cfg.app_tabs.envs.get(env)"),
+        "{asked:#?}"
+    );
     // A preview is made from what discovery found only by AppTabSource,
     // however it is imported: every use but the definition is there.
-    let previewed = production_lines_where(|code| code.contains("preview_spec"));
+    let previewed = super::scan::production_statements_where(|code| code.contains("preview_spec"));
     let uses: Vec<&String> = previewed
         .iter()
         .filter(|l| !l.contains("fn preview_spec("))
