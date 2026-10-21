@@ -2483,12 +2483,23 @@ mod app_line_properties {
 
     /// One `app.` line for `env`, in the shapes people write.
     fn app_line(env: &'static str) -> impl Strategy<Value = String> {
-        (field(), value(), 0..4usize).prop_map(move |(f, v, shape)| match shape {
+        (field(), value(), 0..8usize).prop_map(move |(f, v, shape)| match shape {
             0 => format!("app.{env}.{f} = \"{v}\""),
             1 => format!("app.{env}.{f}=\"{v}\""),
             2 => format!("  app. {env}.{f} = \"{v}\"  "),
+            // Inline comments, the shape two fixes this cycle were about.
+            3 => format!("app.{env}.{f} = \"{v}\" # a note"),
+            4 => format!("app.{env}.{f}=\"{v}\"#note"),
+            5 => format!("app.{env}.{f}\t=\t\"{v}\""),
+            6 => format!("App.{env}.{f} = \"{v}\""),
             _ => format!("app.{env}.{f} = {v}"),
         })
+    }
+
+    /// An `app.` line as the App tab's editor writes one: what a
+    /// replacement carries. The hostile shapes are the file around it.
+    fn written_line(env: &'static str) -> impl Strategy<Value = String> {
+        (field(), value()).prop_map(move |(f, v)| format!("app.{env}.{f} = \"{v}\""))
     }
 
     /// A line of a config file: other envs' `app.` lines, comments,
@@ -2528,7 +2539,7 @@ mod app_line_properties {
         #[test]
         fn replacing_an_envs_lines_touches_nothing_else(
             (lines, crlf) in file(),
-            new in proptest::collection::vec(app_line("e"), 0..6),
+            new in proptest::collection::vec(written_line("e"), 0..6),
         ) {
             let text = join(&lines, crlf);
             let out = replace_app_lines(&text, "e", &new);
