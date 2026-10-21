@@ -278,11 +278,10 @@ impl App {
             .as_ref()
             .map(|d| d.metrics_range_secs)
             .unwrap_or(3600);
-        let ticket = self
-            .detail
-            .as_mut()
-            .map(|d| d.app_tab.metrics.begin())
-            .unwrap_or_default();
+        // No Detail view: nothing would take the answer.
+        let Some(ticket) = self.detail.as_mut().map(|d| d.app_tab.metrics.begin()) else {
+            return;
+        };
         // No config: preview what discovery found evidence for, if any.
         let spec = self.app_tab_source(&env_name).spec();
         // In demo mode: the configured rows, empty, so the tab still

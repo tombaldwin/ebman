@@ -1099,7 +1099,9 @@ pub(crate) struct Fetch<T> {
 /// view closed and reopened on the same env has a new `Fetch`, and a
 /// per-instance count would hand its first request the same ticket as
 /// the old view's, whose answer may still be coming.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// No `Default`: only `begin` makes one, so no ticket can match a
+/// `Fetch` that has issued none.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Ticket(u64);
 
 impl Ticket {

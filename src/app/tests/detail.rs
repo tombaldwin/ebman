@@ -2939,6 +2939,11 @@ fn only_the_latest_tickets_answer_settles_a_fetch() {
     assert!(f.ready().is_none());
 
     let mut reopened: crate::app::Fetch<u32> = Default::default();
+    assert!(
+        !reopened.settle_ticket(second, Ok(8)),
+        "a fresh Fetch takes no ticket"
+    );
+    assert!(reopened.ready().is_none());
     let fresh = reopened.begin();
     assert!(
         !reopened.settle_ticket(second, Ok(9)),
@@ -3091,4 +3096,14 @@ async fn an_envs_app_tab_comes_from_config_then_a_preview_then_nothing() {
         previewed[0].starts_with("src/app/app_tab_form.rs:"),
         "{previewed:?}"
     );
+}
+
+/// With no Detail view there is no Fetch to take the answer, so no
+/// fetch is started and nothing is sent.
+#[tokio::test]
+async fn the_app_tab_fetch_needs_a_detail_view() {
+    let mut app = test_app();
+    app.demo_mode = true;
+    app.spawn_detail_app("api-prod".into());
+    assert!(app.msg_rx.try_recv().is_err());
 }
