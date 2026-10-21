@@ -368,7 +368,10 @@ impl App {
             env_name: env.clone(),
             banner: format!(
                 "app.{env}.* in {}; finding what this env uses…",
-                self.config_file.display()
+                self.config_file
+                    .as_deref()
+                    .unwrap_or(std::path::Path::new("config.toml"))
+                    .display()
             ),
             scroll: 0,
         };
@@ -575,7 +578,11 @@ impl App {
                 return;
             }
         };
-        let written = match crate::config::save_app_lines(&self.config_file, &env, &lines) {
+        let Some(path) = self.config_file.clone() else {
+            form.banner = "not saved: this session reads no config file".into();
+            return;
+        };
+        let written = match crate::config::save_app_lines(&path, &env, &lines) {
             Ok(written) => written,
             Err(e) => {
                 form.banner = format!("not saved: {e}");

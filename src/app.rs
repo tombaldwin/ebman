@@ -559,15 +559,14 @@ pub struct App {
     pub(crate) notify_bell: bool,
     /// Config-derived values resolved at startup — see ResolvedConfig.
     pub(crate) cfg: ResolvedConfig,
-    /// `config.toml`'s modification time when its `app.` lines were last
-    /// read, so the App tab can pick up hand edits without a restart.
-    /// `None` when this App's config did not come from the file (tests),
-    /// which is never re-read; `Some(None)` when there was no file.
-    pub(crate) config_seen: Option<Option<crate::config::ConfigStamp>>,
-    /// The file the `app.` lines are read from and the App tab's editor
-    /// saves to: `config.toml`, or a test's own file so the real reload
-    /// and save paths can be driven without the shared test config dir.
-    pub(crate) config_file: std::path::PathBuf,
+    /// The config file this App re-reads its `app.` lines from and saves
+    /// to (the App tab's editor, `:settings`): `config.toml` when running.
+    /// `None` for a test App, which reads no file and refuses to save; a
+    /// test that drives those paths gives it a file of its own.
+    pub(crate) config_file: Option<std::path::PathBuf>,
+    /// `config_file`'s stamp when its `app.` lines were last read, so a
+    /// hand edit shows without a restart; `None` when there was no file.
+    pub(crate) config_seen: Option<crate::config::ConfigStamp>,
     /// The App tab's discovery, kept for the session.
     pub(crate) app_tab_session: AppTabSession,
     pub(crate) newly_red: HashSet<String>,
@@ -1473,8 +1472,8 @@ impl App {
             shell_return_mode: Mode::Normal,
             last_rendered_buffer: None,
             notify_bell: config.notify_bell,
-            config_seen: Some(crate::config::config_stamp()),
-            config_file: crate::config::config_path(),
+            config_seen: crate::config::stamp_of(&crate::config::config_path()),
+            config_file: Some(crate::config::config_path()),
             app_tab_session: Default::default(),
             cfg: ResolvedConfig {
                 notify_webhook: config.notify_webhook.clone(),
@@ -1781,7 +1780,7 @@ impl App {
             last_rendered_buffer: None,
             notify_bell: config.notify_bell,
             config_seen: None,
-            config_file: crate::config::config_path(),
+            config_file: None,
             app_tab_session: Default::default(),
             cfg: ResolvedConfig {
                 notify_webhook: config.notify_webhook.clone(),

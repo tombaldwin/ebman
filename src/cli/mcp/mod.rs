@@ -879,7 +879,7 @@ pub(crate) struct Server {
     /// server runs, often through the TUI's App tab editor, and a server
     /// that kept its startup copy answered for config that was gone.
     /// `None` (demo, tests) uses `safety_cfg`'s.
-    app_tabs_file: Option<std::path::PathBuf>,
+    config_file: Option<std::path::PathBuf>,
     /// Two-phase write state: the single pending-plan slot (spec:
     /// writes are serialized server-wide).
     writes: tokio::sync::Mutex<writes::WriteState>,
@@ -966,7 +966,7 @@ impl Server {
             crate::config::load()
         };
         let mut s = Self::with_config(demo, no_redact, scope, safety_cfg);
-        s.app_tabs_file = (!demo).then(crate::config::config_path);
+        s.config_file = (!demo).then(crate::config::config_path);
         s
     }
 
@@ -974,21 +974,18 @@ impl Server {
     /// the startup copy when it cannot be read, or when this server
     /// reads no file (demo, tests).
     pub(crate) fn app_tabs(&self) -> crate::app_tab::AppTabs {
-        let Some(path) = &self.app_tabs_file else {
+        let Some(path) = &self.config_file else {
             return self.safety_cfg.app_tabs.clone();
         };
-        match std::fs::read_to_string(path) {
-            Ok(text) => crate::config::parse(&text).app_tabs,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Default::default(),
-            Err(_) => self.safety_cfg.app_tabs.clone(),
-        }
+        crate::config::app_tabs_from_read(std::fs::read_to_string(path))
+            .unwrap_or_else(|| self.safety_cfg.app_tabs.clone())
     }
 
     /// Read the `app.` lines from `path` on each call, as a real server
     /// reads `config.toml`.
     #[cfg(test)]
     pub(crate) fn reading_app_tabs_from(mut self, path: &std::path::Path) -> Self {
-        self.app_tabs_file = Some(path.to_path_buf());
+        self.config_file = Some(path.to_path_buf());
         self
     }
 
@@ -1005,7 +1002,7 @@ impl Server {
             redact: !no_redact,
             write_scope: scope,
             safety_cfg,
-            app_tabs_file: None,
+            config_file: None,
             writes: tokio::sync::Mutex::new(writes::WriteState::default()),
             outbound: std::sync::Mutex::new(None),
             pending_asks: std::sync::Mutex::new(std::collections::HashMap::new()),

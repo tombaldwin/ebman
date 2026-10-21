@@ -717,9 +717,9 @@ mod tests {
     #[test]
     fn a_real_server_reads_config_toml_and_a_demo_one_does_not() {
         let real = Server::with_scope(false, false, WriteScope::None);
-        assert_eq!(real.app_tabs_file, Some(crate::config::config_path()));
+        assert_eq!(real.config_file, Some(crate::config::config_path()));
         let demo = Server::with_scope(true, false, WriteScope::None);
-        assert_eq!(demo.app_tabs_file, None, "hermetic");
+        assert_eq!(demo.config_file, None, "hermetic");
     }
 
     #[tokio::test]

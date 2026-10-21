@@ -314,29 +314,24 @@ impl App {
         }
     }
 
-    /// Re-read the `app.` lines when `config.toml` changed since they
+    /// Re-read the `app.` lines when the config file changed since they
     /// were last read, so a hand edit shows on the next App tab refresh
-    /// rather than after a restart. `read` is the file read, taken as a
-    /// parameter so the decision is testable without the shared test
-    /// config dir. Returns whether anything was re-read.
-    pub(crate) fn reload_app_tabs_if_changed(
-        &mut self,
-        stamp: Option<crate::config::ConfigStamp>,
-        read: impl FnOnce() -> std::io::Result<String>,
-    ) -> bool {
-        let Some(seen) = self.config_seen else {
+    /// rather than after a restart. Called wherever app. config is about
+    /// to be used: any Detail refresh, the App tab's editor, `:alarms`,
+    /// `:why`. Returns whether anything was re-read.
+    pub(crate) fn reload_app_tabs_if_changed(&mut self) -> bool {
+        let Some(path) = self.config_file.clone() else {
             return false;
         };
-        if seen == stamp {
+        let stamp = crate::config::stamp_of(&path);
+        if stamp == self.config_seen {
             return false;
         }
-        let tabs = match read() {
-            Ok(text) => crate::config::parse(&text).app_tabs,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Default::default(),
-            // Unreadable: keep what we have, and try again next time.
-            Err(_) => return false,
+        // Unreadable: keep what we have, and try again next time.
+        let Some(tabs) = crate::config::app_tabs_from_read(std::fs::read_to_string(&path)) else {
+            return false;
         };
-        self.config_seen = Some(stamp);
+        self.config_seen = stamp;
         self.set_app_tabs(tabs);
         true
     }
@@ -385,12 +380,12 @@ impl App {
         }
     }
 
-    /// [`reload_app_tabs_from_disk`](Self::reload_app_tabs_from_disk)
+    /// [`reload_app_tabs_if_changed`](Self::reload_app_tabs_if_changed)
     /// outside a Detail refresh (the editor, `:alarms`, `:why`): when the
     /// reload emptied the App tab on screen, fetch it again, or it would
     /// stay empty until the next refresh. A refresh fetches it anyway.
     pub(crate) fn reload_app_tabs_and_refetch(&mut self) {
-        self.reload_app_tabs_from_disk();
+        self.reload_app_tabs_if_changed();
         self.refetch_app_tab_if_emptied();
     }
 
@@ -415,16 +410,6 @@ impl App {
             // this fetch rather than an older one.
             self.detail_fetch_started = Some(std::time::Instant::now());
         }
-    }
-
-    /// [`reload_app_tabs_if_changed`](Self::reload_app_tabs_if_changed)
-    /// against the real file. Called wherever app. config is about to be
-    /// used: any Detail refresh, the App tab's editor, `:alarms`, `:why`.
-    fn reload_app_tabs_from_disk(&mut self) {
-        let path = self.config_file.clone();
-        self.reload_app_tabs_if_changed(crate::config::stamp_of(&path), || {
-            std::fs::read_to_string(&path)
-        });
     }
 
     /// The App tab's part of a refresh: its instance rows and alarm line
@@ -499,7 +484,7 @@ impl App {
         // resets the fetches the edit changed (`set_app_tabs`), and a
         // refresh the guard then skipped would start none to replace
         // them, leaving the tab blank until the next one.
-        self.reload_app_tabs_from_disk();
+        self.reload_app_tabs_if_changed();
         match tab {
             // Health tab is a rollup — refresh events (for the recent-
             // events list) and queues (for worker DLQ depth shown

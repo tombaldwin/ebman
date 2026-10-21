@@ -2456,57 +2456,58 @@ async fn a_partial_metrics_result_draws_and_reports_its_failure() {
     assert_eq!(e.message, "custom metrics: AccessDenied");
 }
 
-/// A hand edit to `config.toml` reaches the App tab on its next
-/// refresh, without a restart; an App whose config did not come from
-/// the file (tests) is never re-read.
+/// A hand edit to the config file reaches the App tab on its next
+/// refresh, without a restart; an unreadable file keeps what was read
+/// and is tried again; a deleted one is no config; and an App with no
+/// config file (a test App) never reads one.
 #[tokio::test]
 async fn app_lines_are_re_read_when_the_file_changed() {
-    use std::time::{Duration, SystemTime};
-    let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1000);
-    let t0 = (at, 100);
-    // The same second, a different size: an edit, not the same file.
-    let t1 = (at, 130);
     let mut app = test_app();
-    let edited = || Ok("app.e.namespace = \"New\"\n".to_string());
-
-    assert!(
-        !app.reload_app_tabs_if_changed(Some(t1), edited),
-        "not from a file"
-    );
+    assert!(!app.reload_app_tabs_if_changed(), "no config file");
     assert!(app.cfg.app_tabs.envs.is_empty());
 
-    app.config_seen = Some(Some(t0));
-    assert!(
-        !app.reload_app_tabs_if_changed(Some(t0), edited),
-        "unchanged"
-    );
-    assert!(app.reload_app_tabs_if_changed(Some(t1), edited), "changed");
-    assert_eq!(app.cfg.app_tabs.envs["e"].namespace.as_deref(), Some("New"));
-    assert_eq!(app.config_seen, Some(Some(t1)));
+    let path = own_config_file(&mut app, "re-read", "app.e.namespace = \"First\"\n");
+    let namespace = |app: &App| {
+        app.cfg
+            .app_tabs
+            .envs
+            .get("e")
+            .and_then(|s| s.namespace.clone())
+    };
+    assert!(app.reload_app_tabs_if_changed(), "first read");
+    assert_eq!(namespace(&app).as_deref(), Some("First"));
+    assert!(!app.reload_app_tabs_if_changed(), "unchanged");
 
-    // Unreadable: kept, and tried again next time.
-    let denied = || Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
-    assert!(!app.reload_app_tabs_if_changed(Some(t0), denied));
-    assert_eq!(app.cfg.app_tabs.envs["e"].namespace.as_deref(), Some("New"));
-    assert_eq!(
-        app.config_seen,
-        Some(Some(t1)),
-        "a failed read records nothing"
-    );
+    // A different size: an edit even within the same mtime tick.
+    std::fs::write(&path, "app.e.namespace = \"Edited\"\n").unwrap();
+    assert!(app.reload_app_tabs_if_changed(), "changed");
+    assert_eq!(namespace(&app).as_deref(), Some("Edited"));
+    assert_eq!(app.config_seen, crate::config::stamp_of(&path));
+
+    // Unreadable (a directory where the file was): kept, and the stamp
+    // not recorded, so it is tried again.
+    std::fs::remove_file(&path).unwrap();
+    std::fs::create_dir(&path).unwrap();
+    let seen = app.config_seen;
+    assert!(!app.reload_app_tabs_if_changed());
+    assert_eq!(namespace(&app).as_deref(), Some("Edited"));
+    assert_eq!(app.config_seen, seen, "a failed read records nothing");
 
     // Deleted: nothing configured.
-    let gone = || Err(std::io::Error::from(std::io::ErrorKind::NotFound));
-    assert!(app.reload_app_tabs_if_changed(None, gone));
+    std::fs::remove_dir(&path).unwrap();
+    assert!(app.reload_app_tabs_if_changed());
     assert!(app.cfg.app_tabs.envs.is_empty());
 
     // An edit to the env on screen drops its rows fetched under the old
     // config (`set_app_tabs`), rather than leaving them beside the new.
     let mut app = detail_on("e");
-    app.config_seen = Some(Some(t0));
+    let path = own_config_file(&mut app, "re-read-detail", "app.e.namespace = \"First\"\n");
+    app.reload_app_tabs_if_changed();
     let d = app.detail.as_mut().unwrap();
     let t = d.app_tab.metrics.begin();
     d.app_tab.metrics.settle_ticket(t, Ok(Default::default()));
-    assert!(app.reload_app_tabs_if_changed(Some(t1), edited));
+    std::fs::write(&path, "app.e.namespace = \"Edited\"\n").unwrap();
+    assert!(app.reload_app_tabs_if_changed());
     assert!(app
         .detail
         .as_ref()
@@ -2526,8 +2527,8 @@ fn own_config_file(app: &mut App, test: &str, text: &str) -> std::path::PathBuf 
     std::fs::create_dir_all(&dir).expect("temp dir");
     let path = dir.join("config.toml");
     std::fs::write(&path, text).expect("write");
-    app.config_file = path.clone();
-    app.config_seen = Some(None);
+    app.config_file = Some(path.clone());
+    app.config_seen = None;
     path
 }
 
@@ -2729,7 +2730,7 @@ async fn saving_the_app_tab_writes_then_applies() {
     );
     assert_eq!(
         app.config_seen,
-        Some(crate::config::stamp_of(&path)),
+        crate::config::stamp_of(&path),
         "the file as written is the one seen"
     );
     let mut refetched = false;
@@ -2740,7 +2741,7 @@ async fn saving_the_app_tab_writes_then_applies() {
 
     // A write that fails applies nothing: under a regular file, no
     // directory can be made and nothing written.
-    app.config_file = path.join("config.toml");
+    app.config_file = Some(path.join("config.toml"));
     press(&mut app, KeyCode::Char('e'), KeyModifiers::NONE);
     while let Ok(msg) = app.msg_rx.try_recv() {
         app.handle_msg(msg);
@@ -3172,4 +3173,31 @@ async fn the_app_tab_fetch_needs_a_detail_view() {
     app.demo_mode = true;
     app.spawn_detail_app("api-prod".into());
     assert!(app.msg_rx.try_recv().is_err());
+}
+
+/// `:settings` saves to this App's config file, not to a path of its
+/// own; and an App with none refuses rather than writing somewhere.
+#[tokio::test]
+async fn settings_save_to_the_apps_config_file() {
+    let mut app = test_app();
+    let path = own_config_file(&mut app, "settings-save", "app.e.namespace = \"Kept\"\n");
+    app.open_settings_form();
+    press(&mut app, KeyCode::Char('s'), KeyModifiers::CONTROL);
+    let text = std::fs::read_to_string(&path).unwrap();
+    // Rewritten by the save (the settings beside the line), not left as
+    // the one line written above, and the file's app. line kept.
+    assert_ne!(text, "app.e.namespace = \"Kept\"\n", "written there");
+    assert!(text.contains("app.e.namespace = \"Kept\""), "{text}");
+    assert!(app.error_message.is_none(), "{:?}", app.error_message);
+
+    let mut app = test_app();
+    app.open_settings_form();
+    press(&mut app, KeyCode::Char('s'), KeyModifiers::CONTROL);
+    assert!(
+        app.error_message
+            .as_deref()
+            .is_some_and(|e| e.contains("settings not saved")),
+        "{:?}",
+        app.error_message
+    );
 }

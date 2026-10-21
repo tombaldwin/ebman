@@ -774,12 +774,6 @@ pub(crate) fn parse(text: &str) -> Config {
 /// times misses an edit made in the same second as the last read.
 pub(crate) type ConfigStamp = (std::time::SystemTime, u64);
 
-/// `config.toml`'s [`ConfigStamp`], or `None` when there is no file (or
-/// its metadata cannot be read).
-pub(crate) fn config_stamp() -> Option<ConfigStamp> {
-    stamp_of(&config_path())
-}
-
 /// `path`'s [`ConfigStamp`], or `None` when it is absent or unreadable.
 pub(crate) fn stamp_of(path: &std::path::Path) -> Option<ConfigStamp> {
     let m = std::fs::metadata(path).ok()?;
@@ -794,12 +788,23 @@ pub(crate) fn config_path() -> PathBuf {
 /// over-writes the user's existing file. Used by the `:settings` form.
 /// Atomic — writes to a sibling `.tmp` and renames into place so a
 /// crash mid-write can't truncate `config.toml`.
-pub(crate) fn save(cfg: &Config) -> std::io::Result<()> {
-    let path = config_path();
-    let existing = std::fs::read_to_string(&path);
-    refuse_to_clobber_unreadable(existing.as_ref().map(|_| ()).map_err(clone_io_error), &path)?;
+pub(crate) fn save(path: &std::path::Path, cfg: &Config) -> std::io::Result<()> {
+    let existing = std::fs::read_to_string(path);
+    refuse_to_clobber_unreadable(existing.as_ref().map(|_| ()).map_err(clone_io_error), path)?;
     let body = body_for_save(cfg, existing.ok().as_deref());
-    crate::util::write_atomic(&path, &body)
+    crate::util::write_atomic(path, &body)
+}
+
+/// The `app.` config a read of the config file gives: what it parses
+/// to; none when there is no file; `None` (keep what you have, and try
+/// again later) when it cannot be read. The TUI's reload and the MCP
+/// server's per-call read both decide by this.
+pub(crate) fn app_tabs_from_read(read: std::io::Result<String>) -> Option<crate::app_tab::AppTabs> {
+    match read {
+        Ok(text) => Some(parse(&text).app_tabs),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(Default::default()),
+        Err(_) => None,
+    }
 }
 
 fn clone_io_error(e: &std::io::Error) -> std::io::Error {
@@ -1136,6 +1141,25 @@ pub(crate) fn parse_profile_themes(raw: &str) -> std::collections::HashMap<Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What a read of the config file means for the `app.` lines, for
+    /// the TUI's reload and the MCP server alike.
+    #[test]
+    fn a_read_of_the_config_file_gives_its_app_lines_none_or_keep() {
+        let read = |r| app_tabs_from_read(r).map(|t| t.envs.len());
+        assert_eq!(read(Ok("app.e.namespace = \"N\"\n".into())), Some(1));
+        let err = |kind| Err(std::io::Error::from(kind));
+        assert_eq!(
+            read(err(std::io::ErrorKind::NotFound)),
+            Some(0),
+            "no file: no config"
+        );
+        assert_eq!(
+            read(err(std::io::ErrorKind::PermissionDenied)),
+            None,
+            "unreadable: keep"
+        );
+    }
 
     #[test]
     fn parse_overrides_defaults() {
@@ -2208,40 +2232,31 @@ explain.max_tokens = 512
         }
     }
 
-    /// The guard must be WIRED, not merely present.
-    ///
-    /// `save` writes to the shared test config dir, so driving it for
-    /// real would race every other test that calls `load()`. This pins
-    /// the call instead: the previous version of this work tested the
-    /// helper alone, and the suite stayed green with the call removed
-    /// from `save` entirely.
+    /// The guard must be WIRED, not merely present: `save` refuses to
+    /// replace a file it cannot read, and writes the `app.` lines the
+    /// file has now rather than the startup copy. Driven against a
+    /// file of the test's own, now that `save` takes its path.
     #[test]
-    fn save_calls_the_clobber_guard() {
-        let src = std::fs::read_to_string("src/config.rs").expect("read own source");
-        let body = src
-            .split("pub(crate) fn save(cfg: &Config)")
-            .nth(1)
-            .expect("save is defined here")
-            .split("\n}")
-            .next()
-            .expect("save has a body");
-        assert!(
-            body.contains("refuse_to_clobber_unreadable("),
-            "save() must consult the guard before write_atomic, or an \
-             unreadable config.toml is replaced by one with no pins: {body}"
-        );
-        // Canary: the extraction must actually be finding `save`'s body
-        // and not an empty string, which would pass any `contains`.
-        assert!(
-            body.contains("write_atomic"),
-            "the body extraction is not finding save(): {body}"
-        );
-        // And builds what it writes with the disk's app. lines, which
-        // only `body_for_save` does; `serialize` alone reverts them.
-        assert!(
-            body.contains("body_for_save(") && !body.contains("serialize("),
-            "save() must write through body_for_save"
-        );
+    fn save_keeps_an_unreadable_file_and_the_files_app_lines() {
+        let dir =
+            std::env::temp_dir().join(format!("ebman-test-{}-config-save", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        let _ = std::fs::remove_dir(&path);
+
+        // The startup copy has no app. lines; the file has one since.
+        std::fs::write(&path, "app.e.namespace = \"OnDisk\"\n").unwrap();
+        save(&path, &Config::default()).expect("saves");
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("app.e.namespace = \"OnDisk\""), "{text}");
+
+        // Unreadable (a directory where the file is): refused, untouched.
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        let e = save(&path, &Config::default()).expect_err("refused");
+        assert!(e.to_string().contains("refusing to"), "{e}");
+        assert!(path.is_dir());
+        std::fs::remove_dir(&path).unwrap();
     }
 
     /// Each rule in `parse_alarm_dimensions` cost something to learn, so

@@ -381,9 +381,15 @@ impl App {
         };
         let snapshot = self.current_config_snapshot();
         let updated = form.apply_to_config(&snapshot);
-        match crate::config::save(&updated) {
+        let Some(path) = self.config_file.clone() else {
+            self.error_message =
+                Some("settings not saved: this session reads no config file".into());
+            self.form = None;
+            self.mode = Mode::Normal;
+            return;
+        };
+        match crate::config::save(&path, &updated) {
             Ok(()) => {
-                let path = crate::config::config_path();
                 self.apply_config_live(&updated);
                 self.pin_status(format!("settings saved → {}", path.display()));
             }
