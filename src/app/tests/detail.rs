@@ -2563,13 +2563,36 @@ async fn the_app_tab_refresh_re_reads_its_config() {
     app.detail_refresh_active_tab();
     assert_eq!(namespace(&app).as_deref(), Some("Hand"));
 
+    // Each of the other readers re-reads, and the App tab on screen,
+    // emptied by the edit, is fetched again rather than left blank.
+    let settle = |app: &mut App| {
+        let m = &mut app.detail.as_mut().unwrap().app_tab.metrics;
+        let t = m.begin();
+        m.settle_ticket(t, Ok(Default::default()));
+    };
+    let refetched = |app: &App| app.detail.as_ref().unwrap().app_tab.metrics.in_flight();
+
+    settle(&mut app);
     std::fs::write(&path, "app.api-prod.namespace = \"Alarms\"\n").unwrap();
     app.spawn_alarms_fetch("api-prod".into());
     assert_eq!(namespace(&app).as_deref(), Some("Alarms"), ":alarms");
+    assert!(refetched(&app), ":alarms refetched the tab");
 
+    settle(&mut app);
     std::fs::write(&path, "app.api-prod.namespace = \"Why\"\n").unwrap();
     app.open_why_red("api-prod".into(), "poly".into());
     assert_eq!(namespace(&app).as_deref(), Some("Why"), ":why");
+    assert!(refetched(&app), ":why refetched the tab");
+
+    app.current_overlay = None;
+    app.mode = Mode::Detail;
+    settle(&mut app);
+    app.demo_mode = true;
+    std::fs::write(&path, "app.api-prod.namespace = \"Editor\"\n").unwrap();
+    press(&mut app, KeyCode::Char('e'), KeyModifiers::NONE);
+    assert!(app.form.is_some(), "the editor");
+    assert_eq!(namespace(&app).as_deref(), Some("Editor"), "e");
+    assert!(refetched(&app), "e refetched the tab");
 }
 
 /// `e` opens the App tab's editor on the App tab and nowhere else; Esc
