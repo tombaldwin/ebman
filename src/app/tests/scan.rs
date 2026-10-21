@@ -1043,6 +1043,7 @@ mod statements_of_tests {
     }
 }
 
+#[cfg(test)]
 mod production_half_tests {
 
     /// An OUT-OF-LINE test module declaration has no body here, so
