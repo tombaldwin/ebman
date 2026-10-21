@@ -1226,6 +1226,7 @@ impl App {
         // only when the higher-precedence `.ebman/` file doesn't.
         // Most EB CLI users already maintain this file, so reading
         // it avoids forcing a duplicate `.ebman/` entry.
+        let config_file = crate::config::config_path();
         let eb_cli = crate::eb_cli::load_from_cwd();
         let eb_cli_profile = eb_cli.as_ref().and_then(|c| c.profile.clone());
         let eb_cli_region = eb_cli.as_ref().and_then(|c| c.region.clone());
@@ -1457,8 +1458,8 @@ impl App {
             shell_return_mode: Mode::Normal,
             last_rendered_buffer: None,
             notify_bell: config.notify_bell,
-            config_seen: crate::config::stamp_of(&crate::config::config_path()),
-            config_file: Some(crate::config::config_path()),
+            config_seen: crate::config::stamp_of(&config_file),
+            config_file: Some(config_file),
             app_tab_discovery: Default::default(),
             cfg: ResolvedConfig {
                 notify_webhook: config.notify_webhook.clone(),

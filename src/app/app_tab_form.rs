@@ -366,13 +366,13 @@ impl App {
             submit: crate::form::FormSubmit::AppTab,
             summary: "App tab config".into(),
             env_name: env.clone(),
-            banner: format!(
-                "app.{env}.* in {}; finding what this env uses…",
-                self.config_file
-                    .as_deref()
-                    .unwrap_or(std::path::Path::new("config.toml"))
-                    .display()
-            ),
+            banner: match &self.config_file {
+                Some(path) => format!(
+                    "app.{env}.* in {}; finding what this env uses…",
+                    path.display()
+                ),
+                None => format!("app.{env}.*; finding what this env uses…"),
+            },
             scroll: 0,
         };
         self.form = Some(form);
