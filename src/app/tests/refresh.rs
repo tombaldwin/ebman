@@ -2566,51 +2566,29 @@ async fn a_fleet_refresh_checks_for_firing_alarms() {
     assert!(app.caches.firing_alarms.is_stale(&home_key("api-prod")));
 }
 
-/// A spawned task's log lines carry its span: which call, which region,
-/// which generation. Before the spans, `flatten_err`'s error chain was
-/// logged from inside the task with nothing tying it to the dispatch.
-#[tokio::test]
-async fn a_spawned_calls_log_lines_say_which_call_region_and_generation() {
-    #[derive(Clone, Default)]
-    struct Buf(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
-    impl std::io::Write for Buf {
-        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
-            self.0.lock().unwrap().extend_from_slice(b);
-            Ok(b.len())
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-    let buf = Buf::default();
-    let sink = buf.clone();
-    let subscriber = tracing_subscriber::fmt()
-        .with_writer(move || sink.clone())
-        .with_ansi(false)
-        .finish();
-    // The test runtime is single-threaded, so the task is polled on this
-    // thread and sees this subscriber.
-    let _guard = tracing::subscriber::set_default(subscriber);
-
-    let mut app = test_app();
-    app.spawn_aws_in(
-        app.client_for_region("us-east-1"),
-        "describe_something",
-        |_aws| async { Err::<(), _>(color_eyre::eyre::eyre!("AccessDenied: no")) },
-        |gen, _result| AppMsg::Identity {
-            gen,
-            result: Err("x".into()),
-        },
-    );
-    tokio::time::timeout(std::time::Duration::from_secs(5), app.msg_rx.recv())
-        .await
-        .expect("answered")
-        .expect("a message");
-    let log = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
+/// A spawned task's log lines carry its span: which call (or poll and
+/// target), which region, which generation. Before the spans,
+/// `flatten_err`'s error chain was logged from inside the task with
+/// nothing tying it to the dispatch.
+///
+/// A source check, not a captured log: capturing one under `cargo test`
+/// raced `tracing`'s process-wide callsite state against the other test
+/// threads and failed six runs in ten, which is worse than no test.
+#[test]
+fn the_spawn_helpers_and_the_fleet_polls_log_inside_a_span() {
+    let src = include_str!("../spawn_refresh.rs");
+    let code = super::scan::statements_of(src).join("\n");
+    let aws_spans = code
+        .matches("tracing::info_span!(\"aws\", op = op_name, region = ")
+        .count();
+    assert_eq!(aws_spans, 2, "spawn_aws and spawn_aws_in");
     assert!(
-        log.contains("op=\"describe_something\"")
-            && log.contains("region=us-east-1")
-            && log.contains("gen=0"),
-        "{log}"
+        code.contains("tracing::info_span!(\"poll\", poll, target = ?key, region = "),
+        "fan_out's per-target span"
+    );
+    assert_eq!(
+        code.matches("tracing::Instrument::instrument(").count(),
+        3,
+        "each span is attached to its task"
     );
 }
