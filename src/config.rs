@@ -478,8 +478,17 @@ fn app_value_problem(raw: &str) -> Option<&'static str> {
     const COMMENT: &str = "looks like it carries an inline # comment, which is not \
                            supported: put the comment on its own line";
     let Some(inner) = raw.strip_prefix('"') else {
-        // Unquoted: `Shop # prod` would apply as `Shop # prod`.
-        return raw.contains(" #").then_some(COMMENT);
+        // Unquoted: `Shop # prod` (or `Shop\t# prod`) would apply as
+        // written, comment and all. A `#` that is part of the value is
+        // kept by quoting it, so the message says so.
+        let chars: Vec<char> = raw.chars().collect();
+        let commented = chars
+            .windows(2)
+            .any(|w| w[0].is_whitespace() && w[1] == '#');
+        return commented.then_some(
+            "looks like it carries an inline # comment, which is not supported: \
+             put the comment on its own line, or quote the value if the # is part of it",
+        );
     };
     if !inner.ends_with('"') {
         return Some(if inner.contains('"') {
@@ -491,11 +500,13 @@ fn app_value_problem(raw: &str) -> Option<&'static str> {
     }
     // `"Shop" # the "prod"` ends in a quote too, so look for a quote
     // that closes a value and is followed by `#`. Not one written `\"`:
-    // that is part of the value (`href=\"#…\"`).
+    // that is part of the value (`href=\"#…\"`). A quote after an even
+    // run of backslashes (`\\"`) is not escaped: the backslashes are.
     let chars: Vec<char> = inner.chars().collect();
     let closes_then_comment = (0..chars.len()).any(|i| {
+        let backslashes = chars[..i].iter().rev().take_while(|c| **c == '\\').count();
         chars[i] == '"'
-            && (i == 0 || chars[i - 1] != '\\')
+            && backslashes % 2 == 0
             && chars[i + 1..].iter().find(|c| !c.is_whitespace()) == Some(&'#')
     });
     closes_then_comment.then_some(COMMENT)
@@ -1488,7 +1499,11 @@ accounts.staging.external_id = "abc-xyz"
             (r#""Shop" # the "prod""#, Some("looks like it carries")),
             (r##""Shop"# the "prod""##, Some("looks like it carries")),
             (r#""Shop"#, Some("no closing one")),
-            ("Shop # prod", Some("looks like it carries")),
+            ("Shop # prod", Some("or quote the value")),
+            ("Shop\t# prod", Some("or quote the value")),
+            ("ERROR#(?<fp>x)", None),
+            // An escaped backslash, then the closing quote, then a comment.
+            (r#""Shop\\" # the "prod""#, Some("looks like it carries")),
             // A quote written \" is the value's, not a closing one.
             (r##""href=\"#(?<fp>\w+)\"""##, None),
             (r#""Shop""#, None),
