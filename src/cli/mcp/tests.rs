@@ -510,6 +510,23 @@ async fn demo_e2e_list_environments_and_lint() {
         "demo fleet non-empty"
     );
     assert!(parsed[0]["name"].is_string() && parsed[0]["health"].is_string());
+    // The demo fleet's alarm is on its env, the others are quiet,
+    // and each env carries its platform version.
+    let by_name = |n: &str| {
+        parsed
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["name"] == n)
+            .unwrap_or_else(|| panic!("{n} in the demo fleet"))
+            .clone()
+    };
+    assert_eq!(
+        by_name("poly-staging-worker")["firing_alarms"],
+        json!(["poly-staging-worker-queue-age"])
+    );
+    assert_eq!(by_name("poly-prod-api")["firing_alarms"], json!([]));
+    assert_eq!(by_name("poly-prod-api")["platform_version"], "6.1.0");
 
     // Demo lint finds the planted EBL014 (NetworkOut trigger on a
     // scaling ASG) — a demo lint that finds nothing demonstrates
@@ -1223,6 +1240,72 @@ mod orchestration {
             aws_sdk_s3::Client::new(&cfg),
             aws_sdk_ec2::Client::new(&cfg),
         )
+    }
+
+    /// `list_environments` carries each env's firing alarms, and a
+    /// failed alarm check reads as unknown (`null`), never as `[]`.
+    #[tokio::test]
+    async fn list_environments_names_firing_alarms_or_says_it_could_not() {
+        use aws_sdk_cloudwatch::operation::describe_alarms::DescribeAlarmsOutput;
+        use aws_sdk_cloudwatch::types::{Dimension, MetricAlarm};
+        let server_with = |cw_rule: aws_smithy_mocks::Rule| {
+            let listing = env_listing();
+            let eb = aws_smithy_mocks::mock_client!(aws_sdk_elasticbeanstalk, [&listing]);
+            let cw = aws_smithy_mocks::mock_client!(aws_sdk_cloudwatch, [&cw_rule]);
+            let sdk = aws_config::SdkConfig::builder()
+                .region(aws_config::Region::new("us-west-1"))
+                .behavior_version(aws_config::BehaviorVersion::latest())
+                .build();
+            let client = crate::aws::AwsClient::for_tests(
+                eb,
+                SqsClient::new(&sdk),
+                cw,
+                aws_sdk_cloudwatchlogs::Client::new(&sdk),
+                aws_sdk_s3::Client::new(&sdk),
+                aws_sdk_ec2::Client::new(&sdk),
+            );
+            Server::with_injected_client(WriteScope::None, Default::default(), client)
+        };
+        let firing = aws_smithy_mocks::mock!(aws_sdk_cloudwatch::Client::describe_alarms)
+            .then_output(|| {
+                DescribeAlarmsOutput::builder()
+                    .metric_alarms(
+                        MetricAlarm::builder()
+                            .alarm_name("poly-prod-wk-age")
+                            .dimensions(
+                                Dimension::builder()
+                                    .name("EnvironmentName")
+                                    .value("poly-prod-wk")
+                                    .build(),
+                            )
+                            .build(),
+                    )
+                    .build()
+            });
+        let out = server_with(firing)
+            .call_tool("list_environments", &json!({}))
+            .await
+            .expect("lists");
+        let v: Value = serde_json::from_str(&out).expect("valid JSON");
+        assert_eq!(v[0]["firing_alarms"], json!(["poly-prod-wk-age"]), "{v}");
+
+        // The alarm call is refused.
+        let refused = aws_smithy_mocks::mock!(aws_sdk_cloudwatch::Client::describe_alarms)
+            .then_error(|| {
+                aws_sdk_cloudwatch::operation::describe_alarms::DescribeAlarmsError::generic(
+                    aws_smithy_types::error::ErrorMetadata::builder()
+                        .code("AccessDenied")
+                        .message("not authorized")
+                        .build(),
+                )
+            });
+        let out = server_with(refused)
+            .call_tool("list_environments", &json!({}))
+            .await
+            .expect("the listing stands without the alarms");
+        let v: Value = serde_json::from_str(&out).expect("valid JSON");
+        assert_eq!(v[0]["name"], "poly-prod-wk");
+        assert!(v[0]["firing_alarms"].is_null(), "{v}");
     }
 
     fn env_listing() -> aws_smithy_mocks::Rule {

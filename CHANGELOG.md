@@ -18,9 +18,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   ` ⚑N` (`A` with `icons = "ascii"`) and the row is tinted at least
   yellow. A failed check keeps the last known count and shows `?`
   rather than reading as no alarms. It does not ring the bell.
+  `ebman envs` (an ALARMS column; `-` none, `?` unknown) and its
+  `--json`, and so MCP `list_environments`, carry the same as
+  `firing_alarms`: the names, or `null` when the check failed. A
+  failed check leaves the listing and its exit status alone, with a
+  warning on stderr.
 - **The PLATFORM column shows EB's platform version** after the
   family (`Node.js 20 6.1.0`), from the solution stack or a custom
-  platform's ARN. On a narrow terminal it now outlasts TIER.
+  platform's ARN. On a narrow terminal it now outlasts TIER. `ebman
+  envs` shows it the same way, and its `--json` (and MCP
+  `list_environments`) adds `platform_version`.
 - **An App tab in the Detail view: your own metrics, per environment.**
   Name a CloudWatch namespace and metrics under `app.ENV.*` in
   `config.toml` and the tab shows each as a row: latest value, unit, a

@@ -187,7 +187,7 @@ fn read_tool_table() -> Value {
     json!([
         {
             "name": "list_environments",
-            "description": "List Elastic Beanstalk environments (name, application, tier, status, health, platform, cname, version_label, updated, region). Same schema as `ebman envs --json`.",
+            "description": "List Elastic Beanstalk environments (name, application, tier, status, health, platform, platform_version, cname, version_label, updated, region, firing_alarms). Same schema as `ebman envs --json`. `firing_alarms` names the CloudWatch alarms in ALARM state that belong to the env (by `EnvironmentName` dimension, or `alarm_dimensions`, plus `app.ENV.alarm_prefix`); EB health can be Green while one fires. CAVEATS: `firing_alarms` is null when the alarm check failed, which is NOT the same as `[]`. EB's own auto-scaling alarms are not counted.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -820,10 +820,7 @@ impl Server {
 
     pub(super) async fn call_tool(&self, name: &str, args: &Value) -> Result<String, String> {
         match name {
-            "list_environments" => {
-                let envs = self.fetch_envs(args).await?;
-                Ok(crate::cli::envs::render_envs_json(&envs))
-            }
+            "list_environments" => self.tool_list_environments(args).await,
             "worker_queues" => self.tool_worker_queues(args).await,
             "recent_logs" => self.tool_recent_logs(args).await,
             "why" => self.tool_why(args).await,
@@ -1792,6 +1789,33 @@ impl Server {
             }
         };
         Ok(render_events_json(&events))
+    }
+
+    /// The env list with each env's firing alarms. A failed alarm
+    /// check leaves the list standing with `firing_alarms: null`.
+    async fn tool_list_environments(&self, args: &Value) -> Result<String, String> {
+        let envs = self.fetch_envs(args).await?;
+        let firing = match self.backend {
+            Backend::Demo => Some(demo_fixture::firing_alarms()),
+            Backend::Aws => {
+                let client = self.client(args).await?;
+                match crate::cli::envs::fetch_firing_by_env(
+                    &client,
+                    &envs,
+                    &self.safety_cfg.alarm_dimensions,
+                    &self.app_tabs(),
+                )
+                .await
+                {
+                    Ok(f) => Some(f),
+                    Err(e) => {
+                        tracing::warn!(error = %e, "list_environments: alarm check failed");
+                        None
+                    }
+                }
+            }
+        };
+        Ok(crate::cli::envs::render_envs_json(&envs, firing.as_ref()))
     }
 
     async fn tool_list_versions(&self, args: &Value) -> Result<String, String> {

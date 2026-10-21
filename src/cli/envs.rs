@@ -7,10 +7,54 @@ use color_eyre::eyre::Result;
 use crate::aws;
 use crate::cli::cli_esc;
 
+/// Firing CloudWatch alarms by env name. An env with none has no entry.
+pub(crate) type FiringByEnv = std::collections::HashMap<String, Vec<String>>;
+
+/// Assign the region's `firing` alarms to `envs` by the rule every
+/// surface uses (`alarm_dimensions`, `app.ENV.alarm_prefix`), with
+/// `envs` as the fleet a prefix gives way to.
+pub(crate) fn firing_by_env(
+    envs: &[aws::Environment],
+    firing: &[aws::FiringAlarm],
+    dimension_names: &[String],
+    app_tabs: &crate::app_tab::AppTabs,
+) -> FiringByEnv {
+    envs.iter()
+        .filter_map(|e| {
+            let matching = crate::app_tab::AlarmMatch::for_env(
+                dimension_names,
+                app_tabs,
+                &e.name,
+                envs.iter().map(|o| o.name.as_str()),
+            );
+            let names = crate::app_tab::firing_for(&matching, &e.name, firing);
+            (!names.is_empty()).then(|| (e.name.clone(), names))
+        })
+        .collect()
+}
+
+/// The firing alarms for `envs`, all in `client`'s region. `Err` is a
+/// failed check, which callers must show as unknown, never as none.
+pub(crate) async fn fetch_firing_by_env(
+    client: &aws::AwsClient,
+    envs: &[aws::Environment],
+    dimension_names: &[String],
+    app_tabs: &crate::app_tab::AppTabs,
+) -> Result<FiringByEnv, String> {
+    let firing = client
+        .list_firing_alarms()
+        .await
+        .map_err(|e| format!("DescribeAlarms: {e}"))?;
+    Ok(firing_by_env(envs, &firing, dimension_names, app_tabs))
+}
+
 /// The flat, stable `envs --json` schema — shared verbatim by the
 /// MCP `list_environments` tool so agent-facing and script-facing
 /// shapes can't drift apart.
-pub(crate) fn render_envs_json(envs: &[aws::Environment]) -> String {
+///
+/// `firing` is `None` when the alarm check failed: every env's
+/// `firing_alarms` is then `null`, where `[]` would claim it is quiet.
+pub(crate) fn render_envs_json(envs: &[aws::Environment], firing: Option<&FiringByEnv>) -> String {
     let entries: Vec<String> = envs
         .iter()
         .map(|e| {
@@ -33,18 +77,35 @@ pub(crate) fn render_envs_json(envs: &[aws::Environment]) -> String {
                 Some(r) => format!("\"{}\"", cli_esc(r)),
                 None => "null".to_string(),
             };
+            let firing_alarms = match firing {
+                None => "null".to_string(),
+                Some(map) => format!(
+                    "[{}]",
+                    map.get(&e.name)
+                        .map(|names| {
+                            names
+                                .iter()
+                                .map(|n| format!("\"{}\"", cli_esc(n)))
+                                .collect::<Vec<_>>()
+                                .join(",")
+                        })
+                        .unwrap_or_default()
+                ),
+            };
             format!(
-                "{{\"name\":\"{}\",\"application\":\"{}\",\"tier\":\"{}\",\"status\":\"{}\",\"health\":\"{}\",\"platform\":\"{}\",\"cname\":\"{}\",\"version_label\":\"{}\",\"updated\":{},\"region\":{}}}",
+                "{{\"name\":\"{}\",\"application\":\"{}\",\"tier\":\"{}\",\"status\":\"{}\",\"health\":\"{}\",\"platform\":\"{}\",\"platform_version\":\"{}\",\"cname\":\"{}\",\"version_label\":\"{}\",\"updated\":{},\"region\":{},\"firing_alarms\":{}}}",
                 cli_esc(&e.name),
                 cli_esc(&e.application),
                 cli_esc(&e.tier),
                 cli_esc(&e.status),
                 cli_esc(&e.health),
                 cli_esc(&e.platform),
+                cli_esc(&e.platform_version),
                 cli_esc(&e.cname),
                 cli_esc(&e.version_label),
                 updated,
                 region,
+                firing_alarms,
             )
         })
         .collect();
@@ -72,23 +133,52 @@ pub async fn run(args: &[String]) -> Result<()> {
         .list_environments()
         .await
         .map_err(|e| color_eyre::eyre::eyre!("list_environments: {e}"))?;
+    let cfg = crate::config::load();
+    let firing = match fetch_firing_by_env(&aws, &envs, &cfg.alarm_dimensions, &cfg.app_tabs).await
+    {
+        Ok(f) => Some(f),
+        // The listing stands; the alarms are unknown, and say so.
+        Err(e) => {
+            eprintln!("warning: could not check for firing alarms ({e}); shown as unknown");
+            None
+        }
+    };
     if json {
-        println!("{}", render_envs_json(&envs));
+        println!("{}", render_envs_json(&envs, firing.as_ref()));
     } else {
-        println!("NAME\tAPPLICATION\tSTATUS\tHEALTH\tPLATFORM\tCNAME\tVERSION");
+        println!("NAME\tAPPLICATION\tSTATUS\tHEALTH\tPLATFORM\tCNAME\tVERSION\tALARMS");
         for e in &envs {
-            println!(
-                "{}\t{}\t{}\t{}\t{}\t{}\t{}",
-                e.name, e.application, e.status, e.health, e.platform, e.cname, e.version_label
-            );
+            println!("{}", envs_text_row(e, firing.as_ref()));
         }
     }
     Ok(())
 }
 
+/// One tab-separated row of the `ebman envs` text table. PLATFORM
+/// carries the platform version, as the TUI column does; ALARMS names
+/// the firing alarms, `-` for none and `?` when the check failed.
+pub(crate) fn envs_text_row(e: &aws::Environment, firing: Option<&FiringByEnv>) -> String {
+    let platform = if e.platform_version.is_empty() {
+        e.platform.clone()
+    } else {
+        format!("{} {}", e.platform, e.platform_version)
+    };
+    let alarms = match firing {
+        None => "?".to_string(),
+        Some(map) => map
+            .get(&e.name)
+            .map(|names| names.join(","))
+            .unwrap_or_else(|| "-".to_string()),
+    };
+    format!(
+        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+        e.name, e.application, e.status, e.health, platform, e.cname, e.version_label, alarms
+    )
+}
+
 #[cfg(test)]
 mod envs_json_tests {
-    use super::render_envs_json;
+    use super::*;
     use crate::aws::Environment;
 
     fn env() -> Environment {
@@ -119,7 +209,7 @@ mod envs_json_tests {
     /// live one.
     #[test]
     fn the_env_json_carries_tier_and_the_update_timestamp() {
-        let json = render_envs_json(&[env()]);
+        let json = render_envs_json(&[env()], Some(&FiringByEnv::new()));
         assert!(
             json.contains("\"tier\":\"Worker\""),
             "a worker env must say so rather than leaving it to the name: {json}"
@@ -144,6 +234,74 @@ mod envs_json_tests {
         }
     }
 
+    #[test]
+    fn the_env_json_carries_platform_version_and_firing_alarms() {
+        let mut e = env();
+        e.platform_version = "4.1.0".into();
+        let firing = FiringByEnv::from([("poly-prod-wk".to_string(), vec!["a\"b".to_string()])]);
+        let json = render_envs_json(&[e.clone()], Some(&firing));
+        let v: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+        assert_eq!(v[0]["platform_version"], "4.1.0");
+        assert_eq!(v[0]["firing_alarms"], serde_json::json!(["a\"b"]));
+        // Quiet is `[]`; a failed check is `null`, not `[]`.
+        let v: serde_json::Value =
+            serde_json::from_str(&render_envs_json(&[e.clone()], Some(&FiringByEnv::new())))
+                .unwrap();
+        assert_eq!(v[0]["firing_alarms"], serde_json::json!([]));
+        let v: serde_json::Value = serde_json::from_str(&render_envs_json(&[e], None)).unwrap();
+        assert!(v[0]["firing_alarms"].is_null());
+    }
+
+    #[test]
+    fn the_text_row_carries_platform_version_and_alarms() {
+        let mut e = env();
+        e.platform_version = "4.1.0".into();
+        let firing =
+            FiringByEnv::from([("poly-prod-wk".to_string(), vec!["x".into(), "y".into()])]);
+        let row = envs_text_row(&e, Some(&firing));
+        let cols: Vec<&str> = row.split('\t').collect();
+        assert_eq!(cols[4], "Java 17 4.1.0");
+        assert_eq!(cols[7], "x,y");
+        assert_eq!(
+            envs_text_row(&e, Some(&FiringByEnv::new()))
+                .split('\t')
+                .nth(7),
+            Some("-")
+        );
+        assert_eq!(envs_text_row(&e, None).split('\t').nth(7), Some("?"));
+        e.platform_version.clear();
+        assert_eq!(envs_text_row(&e, None).split('\t').nth(4), Some("Java 17"));
+    }
+
+    #[test]
+    fn firing_by_env_keeps_a_longer_named_envs_alarms_out_of_a_prefix() {
+        let mk = |name: &str| Environment {
+            name: name.into(),
+            ..env()
+        };
+        let envs = [mk("shop-prod"), mk("shop-prod-wk")];
+        let mut tabs = crate::app_tab::AppTabs::default();
+        tabs.envs
+            .entry("shop-prod".into())
+            .or_default()
+            .alarm_prefix = Some("shop-prod-".into());
+        let alarm = |name: &str, dim: (&str, &str)| crate::aws::FiringAlarm {
+            name: name.into(),
+            dimensions: vec![(dim.0.into(), dim.1.into())],
+        };
+        let firing = [
+            alarm("shop-prod-db", ("DBInstanceIdentifier", "db")),
+            alarm("shop-prod-wk-age", ("QueueName", "q")),
+            alarm("wk-dim", ("EnvironmentName", "shop-prod-wk")),
+        ];
+        let got = firing_by_env(&envs, &firing, &["EnvironmentName".into()], &tabs);
+        assert_eq!(
+            got.get("shop-prod"),
+            Some(&vec!["shop-prod-db".to_string()])
+        );
+        assert_eq!(got.get("shop-prod-wk"), Some(&vec!["wk-dim".to_string()]));
+    }
+
     /// Absent optionals must be JSON `null`, not the string "None" and
     /// not an empty string that reads as a real value.
     #[test]
@@ -151,7 +309,7 @@ mod envs_json_tests {
         let mut e = env();
         e.updated = None;
         e.region = None;
-        let json = render_envs_json(&[e]);
+        let json = render_envs_json(&[e], Some(&FiringByEnv::new()));
         assert!(json.contains("\"updated\":null"), "{json}");
         assert!(json.contains("\"region\":null"), "{json}");
         assert!(
