@@ -211,6 +211,7 @@ impl App {
                             ..Default::default()
                         },
                         action: Action::SwapCnames,
+                        target_region: self.region_for_name(&source),
                         target_env: source,
                         typed: TextInput::new(),
                         kind: ConfirmKind::YesNo,
@@ -385,6 +386,7 @@ impl App {
                     params: ParameterisedAction::default(),
                     action,
                     target_env: env.name.clone(),
+                    target_region: self.region_for(&env),
                     typed: TextInput::new(),
                     kind: ConfirmKind::TypeName,
                     dryrun: None,
@@ -456,6 +458,7 @@ impl App {
                     params: ParameterisedAction::default(),
                     action,
                     target_env: env.name.clone(),
+                    target_region: self.region_for(&env),
                     typed: TextInput::new(),
                     kind: ConfirmKind::YesNo,
                     dryrun: None,
@@ -596,6 +599,7 @@ impl App {
             params,
             action,
             target_env: env.name.clone(),
+            target_region: self.region_for(&env),
             typed: TextInput::new(),
             kind: ConfirmKind::YesNo,
             dryrun: None,
@@ -921,6 +925,20 @@ impl App {
                 .read_only_reason(&modal.target_env)
                 .unwrap_or_else(|| "read-only mode".into());
             self.error_message = Some(format!("{reason} — {} disabled", modal.action.label()));
+            return;
+        }
+        // The env is resolved by name again here, after the undo window.
+        // Where that now lands is not where the operator confirmed it:
+        // refuse rather than write to whichever env the name finds now.
+        let now = self.region_for_name(&modal.target_env);
+        if now != modal.target_region {
+            self.error_message = Some(format!(
+                "{} not dispatched: {} was in {} when confirmed and resolves to {} now",
+                modal.action.label(),
+                modal.target_env,
+                modal.target_region,
+                now
+            ));
             return;
         }
         // For Deploy actions: snapshot the env's pre-deploy version

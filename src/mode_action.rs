@@ -354,6 +354,11 @@ pub(crate) enum RolloutState {
 pub(crate) struct ConfirmModal {
     pub action: Action,
     pub target_env: String,
+    /// The region `target_env` was in when the operator confirmed. The
+    /// dispatch resolves the env by name again, after the undo window;
+    /// if that lands somewhere else (a listing that dropped one region
+    /// and brought back another), it is refused rather than sent there.
+    pub target_region: String,
     pub typed: TextInput,
     pub kind: ConfirmKind,
     /// The action-gated payload — which version to deploy, which

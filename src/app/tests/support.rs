@@ -222,6 +222,7 @@ pub(super) fn mk_modal(action: Action, env: &str) -> ConfirmModal {
     ConfirmModal {
         action,
         target_env: env.into(),
+        target_region: "us-east-1".into(),
         params: ParameterisedAction::default(),
         typed: TextInput::new(),
         kind: ConfirmKind::YesNo,

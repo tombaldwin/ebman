@@ -1999,3 +1999,86 @@ fn both_rollout_gates_skip_only_the_ambiguous_name_rung() {
         );
     }
 }
+
+#[tokio::test]
+async fn a_confirmed_write_whose_env_resolves_to_another_region_by_dispatch_is_refused() {
+    // Confirmed against eu-west-2's `api-prod` while us-east-1's listing
+    // was failing; by dispatch the listings have flipped and the name
+    // resolves to us-east-1's. The write must not follow it there.
+    let mut app = read_only_app_with_env();
+    app.read_only = false;
+    let mut modal = mk_modal(Action::RestartAppServer, "api-prod");
+    modal.target_region = "eu-west-2".into();
+    app.spawn_action(modal);
+    let err = app.error_message.as_deref().unwrap_or_default();
+    assert!(
+        err.contains("not dispatched") && err.contains("eu-west-2") && err.contains("us-east-1"),
+        "{err}"
+    );
+    assert!(app.pending_actions.is_empty());
+
+    // Where it was confirmed is where it resolves: dispatched (as far as
+    // the gate goes; the stub client fails the call itself).
+    let mut app = read_only_app_with_env();
+    app.read_only = false;
+    app.spawn_action(mk_modal(Action::RestartAppServer, "api-prod"));
+    assert!(
+        !app.error_message
+            .as_deref()
+            .unwrap_or_default()
+            .contains("not dispatched"),
+        "{:?}",
+        app.error_message
+    );
+}
+
+#[tokio::test]
+async fn a_confirm_modal_records_the_region_of_the_row_it_was_opened_on() {
+    // The dispatch refuses when the name resolves elsewhere by then, so
+    // the modal must carry the ROW's region, not the home one: with the
+    // home region a write to any away row would be refused, and a write
+    // that moved would not be noticed.
+    for cmd in ["restart", "terminate", "deploy build-1", "swap other-env"] {
+        let mut app = test_app();
+        let mut away = mk_env("api-eu", "poly", "Web", "Green");
+        away.region = Some("eu-west-2".into());
+        let mut other = mk_env("other-env", "poly", "Web", "Green");
+        other.region = Some("eu-west-2".into());
+        app.environments = vec![away, other];
+        app.rebuild_view();
+        let row = app
+            .view
+            .filtered()
+            .iter()
+            .position(|&i| app.environments[i].name == "api-eu")
+            .unwrap();
+        app.table_state.select(Some(row));
+        app.execute_command(cmd);
+        match app.action_flow.as_ref() {
+            Some(ActionFlow::Confirm(modal)) => {
+                assert_eq!(modal.target_region, "eu-west-2", ":{cmd}")
+            }
+            _ => panic!(":{cmd} opened no confirm modal: {:?}", app.error_message),
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_swap_picked_from_the_action_menu_records_the_sources_region() {
+    let mut app = test_app();
+    let env = |name: &str| {
+        let mut e = mk_env(name, "shop", "WebServer", "Green");
+        e.region = Some("eu-west-2".into());
+        e
+    };
+    app.environments = vec![env("blue"), env("green")];
+    app.rebuild_view();
+    app.table_state.select(Some(0));
+    assert!(app.open_action_menu());
+    app.advance_action_flow(crate::app::Action::SwapCnames);
+    press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    match app.action_flow.as_ref() {
+        Some(ActionFlow::Confirm(modal)) => assert_eq!(modal.target_region, "eu-west-2"),
+        _ => panic!("no confirm modal: {:?}", app.error_message),
+    }
+}
