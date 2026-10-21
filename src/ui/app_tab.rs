@@ -923,24 +923,7 @@ mod tests {
     }
 
     fn discovered() -> crate::app_discover::Discovered {
-        crate::app_discover::Discovered {
-            discovery: crate::app_discover::Discovery {
-                log_groups: vec!["var/log/eb-engine.log".into(), "var/log/app.log".into()],
-                app_log: Some("var/log/app.log".into()),
-                alarm_prefix: Some(("Shop-prod-".into(), 3)),
-                rds_options: vec!["other-db".into(), "shop-db".into()],
-                rds_found: vec![],
-                cache_options: vec!["sessions-001".into()],
-                cache_found: vec![("sessions-001".into(), "REDIS".into())],
-                app_metrics: Some(crate::app_discover::AppMetricsFound {
-                    namespace: "Shop".into(),
-                    dimension: ("Environment".into(), "Shop-prod".into()),
-                    instance_dimension: Some("InstanceId".into()),
-                    names: vec!["usersActive".into(), "heap.used".into(), "heap_used".into()],
-                }),
-            },
-            failed: vec![],
-        }
+        crate::app_discover::sample()
     }
 
     #[test]

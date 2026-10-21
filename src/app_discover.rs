@@ -343,29 +343,36 @@ pub(crate) fn env_dimension_names(
     names
 }
 
+/// A discovery with something in most fields, for tests here and in
+/// the editor and the renderer.
+#[cfg(test)]
+pub(crate) fn sample() -> Discovered {
+    Discovered {
+        discovery: Discovery {
+            log_groups: vec!["var/log/eb-engine.log".into(), "var/log/app.log".into()],
+            app_log: Some("var/log/app.log".into()),
+            alarm_prefix: Some(("Shop-prod-".into(), 3)),
+            rds_options: vec!["other-db".into(), "shop-db".into()],
+            rds_found: vec![],
+            cache_options: vec!["sessions-001".into()],
+            cache_found: vec![("sessions-001".into(), "REDIS".into())],
+            app_metrics: Some(AppMetricsFound {
+                namespace: "Shop".into(),
+                dimension: ("Environment".into(), "Shop-prod".into()),
+                instance_dimension: Some("InstanceId".into()),
+                names: vec!["usersActive".into(), "heap.used".into(), "heap_used".into()],
+            }),
+        },
+        failed: vec![],
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn discovered() -> Discovered {
-        Discovered {
-            discovery: Discovery {
-                log_groups: vec!["var/log/eb-engine.log".into(), "var/log/app.log".into()],
-                app_log: Some("var/log/app.log".into()),
-                alarm_prefix: Some(("Shop-prod-".into(), 3)),
-                rds_options: vec!["other-db".into(), "shop-db".into()],
-                rds_found: vec![],
-                cache_options: vec!["sessions-001".into()],
-                cache_found: vec![("sessions-001".into(), "REDIS".into())],
-                app_metrics: Some(AppMetricsFound {
-                    namespace: "Shop".into(),
-                    dimension: ("Environment".into(), "Shop-prod".into()),
-                    instance_dimension: Some("InstanceId".into()),
-                    names: vec!["usersActive".into(), "heap.used".into(), "heap_used".into()],
-                }),
-            },
-            failed: vec![],
-        }
+        sample()
     }
 
     #[test]

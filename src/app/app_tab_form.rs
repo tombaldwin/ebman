@@ -666,31 +666,13 @@ pub(crate) const DISCOVERY_STALE: std::time::Duration = std::time::Duration::fro
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app_discover::{AppMetricsFound, Discovery};
 
     fn value<'a>(fields: &'a [FormField], key: &str) -> &'a str {
         &fields.iter().find(|f| f.key == key).unwrap().value
     }
 
     fn found() -> Discovered {
-        Discovered {
-            discovery: Discovery {
-                log_groups: vec!["var/log/eb-engine.log".into(), "var/log/app.log".into()],
-                app_log: Some("var/log/app.log".into()),
-                alarm_prefix: Some(("Shop-prod-".into(), 3)),
-                rds_options: vec!["other-db".into(), "shop-db".into()],
-                rds_found: vec![],
-                cache_options: vec!["sessions-001".into()],
-                cache_found: vec![("sessions-001".into(), "REDIS".into())],
-                app_metrics: Some(AppMetricsFound {
-                    namespace: "Shop".into(),
-                    dimension: ("Environment".into(), "Shop-prod".into()),
-                    instance_dimension: Some("InstanceId".into()),
-                    names: vec!["usersActive".into(), "heap.used".into(), "heap_used".into()],
-                }),
-            },
-            failed: vec![],
-        }
+        crate::app_discover::sample()
     }
 
     #[test]
