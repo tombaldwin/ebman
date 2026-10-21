@@ -350,6 +350,15 @@ pub(crate) enum RolloutState {
     Done,
 }
 
+impl ConfirmModal {
+    /// The environment this write is aimed at: the row's region and name
+    /// as they were when the modal opened. The dispatch is sent there,
+    /// not to wherever the name resolves by then.
+    pub(crate) fn target(&self) -> crate::app::EnvKey {
+        crate::app::EnvKey::new(self.target_region.clone(), self.target_env.clone())
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct ConfirmModal {
     pub action: Action,

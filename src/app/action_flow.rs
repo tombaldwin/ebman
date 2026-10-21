@@ -902,6 +902,15 @@ impl App {
         self.status_message = Some(msg);
     }
 
+    /// Where a confirmed write goes: the region the modal recorded when it
+    /// opened on the row (`ConfirmModal::target`), not the name resolved
+    /// again after the undo window.
+    pub(crate) fn dispatch_client(&self, modal: &ConfirmModal) -> (String, RegionClient) {
+        let target = modal.target();
+        let client = self.client_for_region(&target.region);
+        (target.region, client)
+    }
+
     pub(crate) fn spawn_action(&mut self, modal: ConfirmModal) {
         // `--demo` mode runs against a synthetic fleet on a fake
         // AwsClient. Destructive dispatch against that client would
@@ -1046,8 +1055,7 @@ impl App {
         // per-region copies has — dispatched a destructive action
         // against the wrong environment. The audit line takes the same
         // region so the journal names where the write actually went.
-        let region = self.region_for_name(&modal.target_env);
-        let client = self.client_for_region(&region);
+        let (region, client) = self.dispatch_client(&modal);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let action = modal.action;

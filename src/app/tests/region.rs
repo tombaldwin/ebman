@@ -1473,3 +1473,26 @@ async fn an_empty_region_is_the_home_region_everywhere() {
         home_key("api-prod")
     );
 }
+
+#[tokio::test]
+async fn a_confirmed_write_is_sent_to_the_region_its_modal_recorded() {
+    // Not to wherever the name resolves when the undo window ends: the
+    // row the operator confirmed on is the target.
+    let mut app = test_app();
+    let mut eu = mk_env("api-prod", "poly", "Web", "Green");
+    eu.region = Some("eu-west-2".into());
+    app.environments = vec![eu];
+    app.rebuild_view();
+    let mut modal = mk_modal(crate::app::Action::RestartAppServer, "api-prod");
+    modal.target_region = "eu-west-2".into();
+    assert_eq!(
+        modal.target(),
+        crate::app::EnvKey::new("eu-west-2", "api-prod")
+    );
+    // The table now names the env at home (eu-west-2's listing failed):
+    // the client is still eu-west-2's.
+    app.environments[0].region = None;
+    let (region, client) = app.dispatch_client(&modal);
+    assert_eq!(region, "eu-west-2");
+    assert_eq!(client.region_for_tests(), "eu-west-2");
+}
