@@ -2677,7 +2677,7 @@ async fn the_app_tab_editor_opens_fills_and_refuses_bad_entries() {
         gen: app.generation,
         region: app.discovery_key("other").region,
         env_name: "other".into(),
-        started: std::time::Instant::now(),
+        ticket: discovery_ticket(&app, "other"),
         found: Box::new(found.clone()),
     });
     assert_eq!(
@@ -2688,7 +2688,7 @@ async fn the_app_tab_editor_opens_fills_and_refuses_bad_entries() {
         gen: app.generation,
         region: app.discovery_key("api-prod").region,
         env_name: "api-prod".into(),
-        started: std::time::Instant::now(),
+        ticket: discovery_ticket(&app, "api-prod"),
         found: Box::new(found),
     });
     let form = app.form.as_ref().unwrap();
@@ -2880,10 +2880,15 @@ async fn discovery_is_reused_on_open_rerun_on_ctrl_r_and_never_wedged() {
     let long_ago = std::time::Instant::now()
         .checked_sub(std::time::Duration::from_secs(120))
         .expect("clock past two minutes");
-    app.caches
+    let key = app.discovery_key("api-prod");
+    let run = app
+        .caches
         .app_tab_discovery
         .discovering
-        .insert(app.discovery_key("api-prod"), long_ago);
+        .entry(key)
+        .or_default();
+    let _ = run.begin();
+    run.backdate(long_ago);
     assert!(!app.discovery_running("api-prod"), "lost, not running");
     settle(&mut app);
     app.detail_refresh_active_tab();
@@ -2955,39 +2960,26 @@ async fn demo_mode_does_not_pass_off_an_empty_discovery() {
 #[tokio::test]
 async fn only_the_latest_discoverys_answer_clears_its_marker() {
     let mut app = test_app();
-    let newer = std::time::Instant::now();
-    let older = newer - std::time::Duration::from_secs(90);
-    app.caches
-        .app_tab_discovery
-        .discovering
-        .insert(app.discovery_key("api-prod"), newer);
-    app.handle_msg(AppMsg::AppTabDiscovered {
-        gen: app.generation,
-        region: app.discovery_key("api-prod").region,
-        env_name: "api-prod".into(),
-        started: older,
-        found: Box::default(),
-    });
-    assert_eq!(
-        app.caches
-            .app_tab_discovery
-            .discovering
-            .get(&app.discovery_key("api-prod")),
-        Some(&newer),
-        "still running"
-    );
-    app.handle_msg(AppMsg::AppTabDiscovered {
-        gen: app.generation,
-        region: app.discovery_key("api-prod").region,
-        env_name: "api-prod".into(),
-        started: newer,
-        found: Box::default(),
-    });
-    assert!(!app
+    let key = app.discovery_key("api-prod");
+    let run = app
         .caches
         .app_tab_discovery
         .discovering
-        .contains_key(&app.discovery_key("api-prod")));
+        .entry(key)
+        .or_default();
+    let older = run.begin();
+    let newer = run.begin();
+    let answer = |ticket| AppMsg::AppTabDiscovered {
+        gen: 0,
+        region: "us-east-1".into(),
+        env_name: "api-prod".into(),
+        ticket,
+        found: Box::default(),
+    };
+    app.handle_msg(answer(older));
+    assert!(app.discovery_running("api-prod"), "still running");
+    app.handle_msg(answer(newer));
+    assert!(!app.discovery_running("api-prod"));
 }
 
 /// A ticket settles only the latest request's answer; `reset` drops

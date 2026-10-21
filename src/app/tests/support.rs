@@ -453,3 +453,14 @@ pub(super) fn mk_application(name: &str) -> crate::aws::Application {
 pub(super) fn home_key(name: &str) -> crate::app::EnvKey {
     crate::app::EnvKey::new("us-east-1", name)
 }
+
+/// The ticket of `env`'s discovery run in flight, or, with none, a fresh
+/// one that answers no run: what an `AppTabDiscovered` in a test carries.
+pub(super) fn discovery_ticket(app: &App, env: &str) -> crate::app::Ticket {
+    app.caches
+        .app_tab_discovery
+        .discovering
+        .get(&app.discovery_key(env))
+        .and_then(crate::app::Fetch::ticket_in_flight)
+        .unwrap_or_else(|| crate::app::Fetch::<()>::default().begin())
+}

@@ -4839,3 +4839,17 @@ review.
   modules used `serde_yml`; only two did (saved configs, EB CLI config),
   the other three were comments. The RUSTSEC-2025-0068 waiver went with
   it, and three rustls-webpki waivers nothing matched any more.
+
+## Retired 2026-10-21 (quality review)
+
+- [x] **One way to drop a superseded answer: tickets for the Metrics tab
+  and discovery.** The App tab's series, its top errors and the Detail
+  alarms settle through `Fetch::settle_ticket`, and `Fetch` records when
+  a request began. The Metrics tab still drops by range
+  (`is_current_metrics_range`, with `loading_metrics` a bare bool), and
+  discovery tracks a run by its own `started` stamp in
+  `AppTabDiscovery::discovering` and `AppMsg::AppTabDiscovered`. So
+  `cycle_metrics_range`'s comment has to explain two schemes. Moving the
+  Metrics tab onto `Fetch<Vec<MetricSeries>>` with a ticket is the
+  larger half. *App tab re-review, 2026-10-21.*
+  **Done 2026-10-21:** the Metrics tab settles through `metrics_request: Fetch<()>` and discovery through a `Fetch<()>` per env (its key is now `EnvKey`); both drop an older answer by ticket.

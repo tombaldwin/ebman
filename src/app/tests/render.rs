@@ -2273,13 +2273,7 @@ async fn an_unconfigured_app_tab_shows_what_discovery_found() {
     app.rebuild_view();
     press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
     press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
-    assert!(
-        app.caches
-            .app_tab_discovery
-            .discovering
-            .contains_key(&app.discovery_key("api-prod")),
-        "opening the tab looks"
-    );
+    assert!(app.discovery_running("api-prod"), "opening the tab looks");
     let text = render(&mut app, 160, 34);
     assert!(
         text.contains("e set up"),
@@ -2297,24 +2291,15 @@ async fn an_unconfigured_app_tab_shows_what_discovery_found() {
         },
         failed: vec![],
     };
-    let started = *app
-        .caches
-        .app_tab_discovery
-        .discovering
-        .get(&app.discovery_key("api-prod"))
-        .expect("running");
+    assert!(app.discovery_running("api-prod"), "running");
     app.handle_msg(AppMsg::AppTabDiscovered {
         gen: app.generation,
         region: app.discovery_key("api-prod").region,
         env_name: "api-prod".into(),
-        started,
+        ticket: discovery_ticket(&app, "api-prod"),
         found: Box::new(found),
     });
-    assert!(!app
-        .caches
-        .app_tab_discovery
-        .discovering
-        .contains_key(&app.discovery_key("api-prod")));
+    assert!(!app.discovery_running("api-prod"));
     // The preview is a real fetch (the stub fails it); with nothing to
     // preview the tab would settle empty without calling AWS.
     let msg = tokio::time::timeout(std::time::Duration::from_secs(10), async {
@@ -2355,13 +2340,7 @@ async fn an_unconfigured_app_tab_shows_what_discovery_found() {
     press(&mut app, KeyCode::Char('e'), KeyModifiers::NONE);
     let form = app.form.as_ref().expect("editor open");
     assert_eq!(form.state, crate::form::FormState::Ready, "no waiting");
-    assert!(
-        !app.caches
-            .app_tab_discovery
-            .discovering
-            .contains_key(&app.discovery_key("api-prod")),
-        "not looked up again"
-    );
+    assert!(!app.discovery_running("api-prod"), "not looked up again");
     let cache = form.fields.iter().find(|f| f.key == "elasticache").unwrap();
     assert_eq!(cache.value, "sessions-001");
 }

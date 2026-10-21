@@ -920,10 +920,13 @@ async fn what_discovery_found_does_not_survive_a_context_switch() {
         .app_tab_discovery
         .discovered
         .insert(key.clone(), Default::default());
-    app.caches
+    let _ = app
+        .caches
         .app_tab_discovery
         .discovering
-        .insert(key.clone(), std::time::Instant::now());
+        .entry(key.clone())
+        .or_default()
+        .begin();
     app.handle_msg(AppMsg::Rebuild {
         epoch: app.rebuild_epoch,
         result: Ok(Box::new(crate::aws::AwsClient::stub())),
@@ -957,10 +960,7 @@ async fn discovery_for_a_same_named_env_in_another_region_is_not_this_ones() {
     app.open_detail();
     assert_eq!(
         app.discovery_key("api-prod"),
-        crate::app::DiscoveryKey {
-            region: "eu-west-2".into(),
-            env: "api-prod".into(),
-        },
+        crate::app::EnvKey::new("eu-west-2", "api-prod"),
         "Detail's env, by its own region, not the first row of that name"
     );
     let key = app.discovery_key("api-prod");
@@ -987,13 +987,10 @@ async fn discovery_for_a_same_named_env_in_another_region_is_not_this_ones() {
 
     let mut found = crate::app_discover::Discovered::default();
     found.discovery.app_log = Some("var/log/app.log".into());
-    app.caches.app_tab_discovery.discovered.insert(
-        crate::app::DiscoveryKey {
-            region: "us-east-1".into(),
-            env: "api-prod".into(),
-        },
-        found,
-    );
+    app.caches
+        .app_tab_discovery
+        .discovered
+        .insert(crate::app::EnvKey::new("us-east-1", "api-prod"), found);
     assert!(
         app.discovered_for("api-prod").is_none(),
         "us-east-1's findings are not shown on eu-west-2's env"
@@ -1011,7 +1008,7 @@ async fn discovery_for_a_same_named_env_in_another_region_is_not_this_ones() {
             gen: app.generation,
             region: region.into(),
             env_name: "api-prod".into(),
-            started: std::time::Instant::now(),
+            ticket: discovery_ticket(&app, "api-prod"),
             found: Box::default(),
         });
         assert_eq!(
@@ -1055,10 +1052,7 @@ async fn a_discovery_is_for_the_envs_own_region_whichever_row_is_first() {
             "away-app",
             "away first: {away_first}"
         );
-        let home_key = crate::app::DiscoveryKey {
-            region: "us-east-1".into(),
-            env: "api-prod".into(),
-        };
+        let home_key = crate::app::EnvKey::new("us-east-1", "api-prod");
         assert_eq!(
             app.discovery_app_name(&home_key),
             "home-app",

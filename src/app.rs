@@ -116,7 +116,7 @@ mod cmd_write; // bulk writes: batch-action, batch-deploy
 // Interactive surfaces.
 mod action_flow; // action menu -> confirm -> undo window -> dispatch
 mod app_tab_form; // the App tab's editor + discovery
-pub(crate) use app_tab_form::{AppTabSource, DiscoveryKey};
+pub(crate) use app_tab_form::AppTabSource;
 mod apps_menu; // the Applications scope's menu + info overlay
 mod config_edit; // Detail's Config tab editor + template CRUD
 mod detail_nav; // the per-environment Detail view
@@ -641,10 +641,10 @@ pub(crate) enum AppMsg {
         /// The region the lookups ran in: with `env_name`, the cache key.
         region: String,
         env_name: String,
-        /// When the run started: only the latest run's answer clears the
-        /// in-flight marker (an older one may answer after the stale
-        /// timeout let a newer one start).
-        started: std::time::Instant,
+        /// The run it answers: only the latest run's answer ends it (an
+        /// older one may answer after the stale timeout let a newer one
+        /// start).
+        ticket: crate::app::Ticket,
         found: Box<crate::app_discover::Discovered>,
     },
     /// The App tab's top errors for one env.

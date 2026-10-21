@@ -399,11 +399,18 @@ impl App {
         if self.demo_mode {
             // Not cached: demo mode found nothing because it looked at
             // nothing, and the tab should keep saying what to configure.
+            let ticket = self
+                .caches
+                .app_tab_discovery
+                .discovering
+                .entry(key.clone())
+                .or_default()
+                .begin();
             let _ = self.msg_tx.send(AppMsg::AppTabDiscovered {
                 gen: self.generation,
                 region: key.region,
                 env_name: env,
-                started: std::time::Instant::now(),
+                ticket,
                 found: Box::default(),
             });
             return;
@@ -411,11 +418,13 @@ impl App {
         if self.discovery_running(&env) {
             return;
         }
-        let started = std::time::Instant::now();
-        self.caches
+        let ticket = self
+            .caches
             .app_tab_discovery
             .discovering
-            .insert(key.clone(), started);
+            .entry(key.clone())
+            .or_default()
+            .begin();
         let app_name = self.discovery_app_name(&key);
         let fleet: Vec<String> = self.environments.iter().map(|e| e.name.clone()).collect();
         let dimension_names = crate::app_discover::env_dimension_names(
@@ -440,7 +449,7 @@ impl App {
                 gen,
                 region,
                 env_name: env,
-                started,
+                ticket,
                 found: Box::new(found),
             });
         });
@@ -453,6 +462,7 @@ impl App {
             .app_tab_discovery
             .discovering
             .get(&self.discovery_key(env))
+            .and_then(crate::app::Fetch::in_flight_since)
             .is_some_and(|t| t.elapsed() < DISCOVERY_STALE)
     }
 
@@ -483,32 +493,29 @@ impl App {
     /// The discovery caches' key for `env`: (region, env). The Detail
     /// view's own env by its snapshot's region (it may have left the
     /// list), any other by its row's.
-    pub(super) fn discovery_key(&self, env: &str) -> DiscoveryKey {
+    pub(super) fn discovery_key(&self, env: &str) -> EnvKey {
         let region = self
             .detail
             .as_ref()
             .filter(|d| d.env_name == env)
             .map(|d| self.region_for(&d.env_snapshot))
             .unwrap_or_else(|| self.region_for_name(env));
-        DiscoveryKey {
-            region,
-            env: env.to_string(),
-        }
+        EnvKey::new(region, env)
     }
 
     /// The EB application of the env `key` names, for its env variables:
     /// the Detail view's own env by its snapshot, any other by the row
     /// in `key`'s region. By name alone, a same-named env in another
     /// region of a fan-out could name another application.
-    pub(super) fn discovery_app_name(&self, key: &DiscoveryKey) -> String {
+    pub(super) fn discovery_app_name(&self, key: &EnvKey) -> String {
         self.detail
             .as_ref()
-            .filter(|d| d.env_name == key.env && self.region_for(&d.env_snapshot) == key.region)
+            .filter(|d| d.env_name == key.name && self.region_for(&d.env_snapshot) == key.region)
             .map(|d| d.env_snapshot.application.clone())
             .or_else(|| {
                 self.environments
                     .iter()
-                    .find(|e| e.name == key.env && self.region_for(e) == key.region)
+                    .find(|e| e.name == key.name && self.region_for(e) == key.region)
                     .map(|e| e.application.clone())
             })
             .unwrap_or_default()
@@ -516,23 +523,25 @@ impl App {
 
     /// The client discovery for `key` runs on: the key's region, so the
     /// lookups and the cache entry they fill agree.
-    pub(super) fn discovery_client(&self, key: &DiscoveryKey) -> RegionClient {
+    pub(super) fn discovery_client(&self, key: &EnvKey) -> RegionClient {
         self.client_for_region(&key.region)
     }
 
     pub(super) fn handle_app_tab_discovered(
         &mut self,
-        key: DiscoveryKey,
-        started: std::time::Instant,
+        key: EnvKey,
+        ticket: crate::app::Ticket,
         found: Discovered,
     ) {
-        if self.caches.app_tab_discovery.discovering.get(&key) == Some(&started) {
-            self.caches.app_tab_discovery.discovering.remove(&key);
+        // Only the latest run's answer ends the run: an older one may
+        // answer after the stale timeout let a newer one start.
+        if let Some(run) = self.caches.app_tab_discovery.discovering.get_mut(&key) {
+            run.settle_ticket(ticket, Ok(()));
         }
         // Another region's same-named env is not the one on screen: its
         // answer is cached for it, and fills nothing here.
-        let current = key == self.discovery_key(&key.env);
-        let env_name = key.env.clone();
+        let current = key == self.discovery_key(&key.name);
+        let env_name = key.name.clone();
         if !self.demo_mode {
             self.caches
                 .app_tab_discovery
@@ -623,21 +632,13 @@ impl App {
 pub(crate) struct AppTabDiscovery {
     /// What discovery found: the App tab of an env with no config shows
     /// it, and the editor opens with it.
-    pub(crate) discovered: std::collections::HashMap<DiscoveryKey, crate::app_discover::Discovered>,
-    /// The runs in flight, so one is not started twice, and when each
-    /// started: past [`DISCOVERY_STALE`] it is treated as
-    /// lost (a result dropped by a context switch, a task that died)
-    /// rather than blocking the env's discovery for good.
-    pub(crate) discovering: std::collections::HashMap<DiscoveryKey, std::time::Instant>,
-}
-
-/// Which env a discovery is for: under a fan-out a same-named env in
-/// another region is another env, with its own resources. Made by
-/// [`App::discovery_key`].
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) struct DiscoveryKey {
-    pub(crate) region: String,
-    pub(crate) env: String,
+    pub(crate) discovered: std::collections::HashMap<EnvKey, crate::app_discover::Discovered>,
+    /// Each env's run, so one is not started twice: its ticket (only the
+    /// latest run's answer ends it) and when it began, past
+    /// [`DISCOVERY_STALE`] treated as lost (a result dropped by a
+    /// context switch, a task that died) rather than blocking the env's
+    /// discovery for good.
+    pub(crate) discovering: std::collections::HashMap<EnvKey, crate::app::Fetch<()>>,
 }
 
 /// See [`App::app_tab_source`].

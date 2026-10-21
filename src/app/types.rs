@@ -1185,6 +1185,13 @@ impl<T> Fetch<T> {
         !self.in_flight && self.settled.is_none()
     }
 
+    /// The ticket of the request in flight, for a test standing in for
+    /// its answer.
+    #[cfg(test)]
+    pub(crate) fn ticket_in_flight(&self) -> Option<Ticket> {
+        self.in_flight.then_some(Ticket(self.issued))
+    }
+
     /// Make the request in flight look as if it began at `at`.
     #[cfg(test)]
     pub(crate) fn backdate(&mut self, at: std::time::Instant) {
