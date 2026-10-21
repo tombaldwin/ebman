@@ -79,6 +79,17 @@ Tier definitions:
   and can show the other region's data. `env_regions` (name → last
   region seen, the fallback for a write whose row left the table) moves
   in the same pass; the fleet-view caches already moved to `EnvKey`.
+  **Plan (2026-10-21, seven slices):** 1 results carry the dispatch
+  region (done, ed40cde); 2 the confirm modal routes by its recorded
+  region (done, 8bacf9f); 3 batch writes by `EnvKey` (`multi_selected`
+  is name-keyed, so two same-named rows select as one); 4 the deploy
+  lifecycle by key (snapshots, both watchdog maps, `AutoRollbackCheck`,
+  the disarm loop, `state.toml` with a legacy skip); 5 DLQ and undo by
+  key; 6 `NAME@REGION` for the few commands that type a name
+  (`:promote-env`, `:swap`, `:rds-detach`, `:rollout --env`, the read
+  commands, completion), a bare name only when unique; 7 remove
+  `client_for_env` / `region_for_name` / `env_regions` and both
+  stopgaps, with a guard. Safety pins stay name-keyed.
   Done so far: the ambiguous-name refusal counts every source the router
   uses, a rollout (which names its regions) is exempt from it, and a
   confirm modal records its row's region and refuses a dispatch that
