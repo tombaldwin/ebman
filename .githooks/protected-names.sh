@@ -17,7 +17,9 @@ protected_names_file() {
     echo "$top/.protected-names"
     return
   fi
-  common=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return
+  # `|| return 0`: on a git without --path-format (before 2.31) this
+  # must not fail the caller, which would drop the env-var names too.
+  common=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 0
   if [ -f "$common/../.protected-names" ]; then
     echo "$common/../.protected-names"
   fi
@@ -25,7 +27,7 @@ protected_names_file() {
 
 protected_names() {
   {
-    file=$(protected_names_file)
+    file=$(protected_names_file || true)
     [ -n "$file" ] && cat "$file"
     printf '%s\n' "${EBMAN_PROTECTED_NAMES:-}"
   } | grep -v '^[[:space:]]*#' | tr ',' '\n' \
@@ -40,8 +42,13 @@ check_protected_names() {
   file=$2
   names=$(protected_names) || return 2
   if [ -z "$names" ]; then
-    # Not an error (a contributor has no list), but never silent: a
+    # Not an error for a contributor with no list, but never silent: a
     # check that ran on nothing must not read as a check that passed.
+    # In CI it is an error, as in the cargo test guard.
+    if [ -n "${CI:-}" ]; then
+      echo "::error::protected-names: no list in CI (set the EBMAN_PROTECTED_NAMES secret): $what NOT checked" >&2
+      return 1
+    fi
     echo "protected-names: no list (.protected-names or EBMAN_PROTECTED_NAMES): $what NOT checked" >&2
     return 0
   fi

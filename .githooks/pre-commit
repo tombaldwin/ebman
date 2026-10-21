@@ -24,7 +24,8 @@ set -e
 . "$(git rev-parse --show-toplevel)/.githooks/protected-names.sh"
 staged=$(mktemp)
 {
-  git diff --cached --name-only --diff-filter=ACRM
+  # quotePath off: a non-ASCII path would otherwise be octal escapes.
+  git -c core.quotePath=false diff --cached --name-only --diff-filter=ACRM
   git diff --cached -U0 --no-color | grep '^+' | grep -v '^+++' || true
 } > "$staged"
 if check_protected_names "a staged path or line" "$staged"; then status=0; else status=$?; fi

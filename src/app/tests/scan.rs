@@ -799,7 +799,30 @@ mod protected_names {
             return;
         }
         let dir = std::env::temp_dir().join(format!("ebman-test-{}-hooks", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
+        // Removed however the test ends, a failed assertion included.
+        struct Cleanup(std::path::PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let _cleanup = Cleanup(dir.clone());
+        // Every git and hook child: none of this repository's state (a
+        // test run from inside a git hook inherits GIT_DIR and the
+        // index), and none of the developer's git config (a global
+        // `commit.gpgsign` would call gpg, a global hooks path would run
+        // their hooks).
+        let isolated = |program: &str| {
+            let mut cmd = std::process::Command::new(program);
+            cmd.env_remove("GIT_DIR")
+                .env_remove("GIT_INDEX_FILE")
+                .env_remove("GIT_WORK_TREE")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_NOSYSTEM", "1");
+            cmd
+        };
         let fixture = "# made up\nZorblax, quuxcorp";
         let names = parse_protected_names(fixture).unwrap();
         for (message, named) in [
@@ -809,7 +832,7 @@ mod protected_names {
         ] {
             let path = dir.join("msg");
             std::fs::write(&path, message).unwrap();
-            let out = std::process::Command::new("bash")
+            let out = isolated("bash")
                 .arg(".githooks/commit-msg")
                 .arg(&path)
                 .env("EBMAN_PROTECTED_NAMES", fixture)
@@ -839,12 +862,9 @@ mod protected_names {
         // Not this repository's: a test run from inside a git hook would
         // otherwise inherit GIT_DIR and act on it.
         let git_in = |dir: &std::path::Path, args: &[&str]| {
-            std::process::Command::new("git")
+            isolated("git")
                 .args(args)
                 .current_dir(dir)
-                .env_remove("GIT_DIR")
-                .env_remove("GIT_INDEX_FILE")
-                .env_remove("GIT_WORK_TREE")
                 .output()
                 .expect("git")
         };
@@ -852,7 +872,7 @@ mod protected_names {
         assert!(git(&["init", "-q"]).status.success());
         std::fs::write(repo.join("zorblax-notes.txt"), "nothing to see\n").unwrap();
         assert!(git(&["add", "zorblax-notes.txt"]).status.success());
-        let out = std::process::Command::new("bash")
+        let out = isolated("bash")
             .arg(".githooks/pre-commit")
             .current_dir(&repo)
             .env("EBMAN_PROTECTED_NAMES", fixture)
@@ -869,7 +889,14 @@ mod protected_names {
         // A linked worktree has no copy of the gitignored list: the
         // hooks there read the main checkout's, rather than passing on
         // an empty one.
-        let identity = ["-c", "user.name=t", "-c", "user.email=t@example.invalid"];
+        let identity = [
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+        ];
         let commit = [&identity[..], &["commit", "-q", "--no-verify", "-m", "x"]].concat();
         assert!(git(&commit).status.success());
         std::fs::write(repo.join(".protected-names"), "zorblax\n").unwrap();
@@ -884,7 +911,7 @@ mod protected_names {
         }
         let msg = dir.join("linked-msg");
         std::fs::write(&msg, "fix the zorblax fleet").unwrap();
-        let out = std::process::Command::new("bash")
+        let out = isolated("bash")
             .arg(".githooks/commit-msg")
             .arg(&msg)
             .current_dir(&tree)
@@ -908,7 +935,7 @@ mod protected_names {
         // A name too short to scan for is refused, as by the parser.
         let path = dir.join("msg");
         std::fs::write(&path, "anything").unwrap();
-        let out = std::process::Command::new("bash")
+        let out = isolated("bash")
             .arg(".githooks/commit-msg")
             .arg(&path)
             .env("EBMAN_PROTECTED_NAMES", "abc")
