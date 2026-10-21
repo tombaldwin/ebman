@@ -181,6 +181,23 @@ pub(crate) fn draw_apps_table(f: &mut Frame, area: Rect, app: &mut App) {
 /// decided from four inputs and nothing else. It was 43 lines inside a
 /// 695-line `draw_table`, which meant the only way to check "does
 /// `:cols hide NAME` actually do nothing" was to render a frame.
+/// Every column the env table can show, in display order: what
+/// `:cols hide` / `:cols show` accept. Derived from
+/// [`visible_columns`] with every optional column switched on, so a new
+/// column cannot be added to the table and forgotten here — that is how
+/// INST, REGION and COST came to be unhideable.
+pub(crate) fn every_env_column() -> Vec<&'static str> {
+    visible_columns(
+        &["any-region".to_string()],
+        true,
+        &std::collections::BTreeSet::new(),
+        false,
+    )
+    .into_iter()
+    .map(|(label, _)| label)
+    .collect()
+}
+
 pub(crate) fn visible_columns(
     multi_regions: &[String],
     cost_enabled: bool,

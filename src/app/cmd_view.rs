@@ -15,21 +15,10 @@ impl App {
     /// columns of the env table are visible. NAME stays unhideable —
     /// the table is unusable without it.
     pub(crate) fn cmd_cols(&mut self, rest: &[&str]) {
-        const KNOWN: &[&str] = &[
-            "NAME",
-            "APPLICATION",
-            "TIER",
-            "STATUS",
-            "HEALTH",
-            "TREND",
-            "PLATFORM",
-            "VERSION",
-            "CNAME",
-            "AGE",
-        ];
+        let known = crate::ui::every_env_column();
         match rest.first().copied() {
             None | Some("list") => {
-                let listing: Vec<String> = KNOWN
+                let listing: Vec<String> = known
                     .iter()
                     .map(|c| {
                         if self.view.hidden_cols.contains(*c) {
@@ -46,7 +35,7 @@ impl App {
                     let upper = name.to_uppercase();
                     if upper == "NAME" {
                         self.error_message = Some("NAME cannot be hidden".into());
-                    } else if !KNOWN.contains(&upper.as_str()) {
+                    } else if !known.contains(&upper.as_str()) {
                         self.error_message = Some(format!("unknown column '{name}'"));
                     } else {
                         self.view.hidden_cols.insert(upper.clone());

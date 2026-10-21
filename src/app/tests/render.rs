@@ -2382,3 +2382,33 @@ async fn top_errors_not_yet_queried_says_how_to_run_it() {
         assert_eq!(text.contains(hint), shown, "{config}\n{text}");
     }
 }
+
+#[tokio::test]
+async fn every_table_column_but_name_can_be_hidden_and_hiding_removes_it() {
+    // `:cols` kept its own list, which never learned INST, REGION or
+    // COST: `:cols hide INST` said "unknown column".
+    let mut app = test_app();
+    app.multi_regions = vec!["us-east-1".into(), "eu-west-2".into()];
+    app.costs.set_enabled(true);
+    app.environments = vec![mk_env("api-prod", "poly", "Web", "Green")];
+    app.rebuild_view();
+    for column in ["INST", "REGION", "COST", "TREND", "CNAME"] {
+        app.execute_command(&format!("cols hide {column}"));
+        assert!(
+            app.view.hidden_cols.contains(column),
+            "{column}: {:?} / {:?}",
+            app.error_message,
+            app.status_message
+        );
+    }
+    let frame = render(&mut app, 220, 20);
+    let header = frame
+        .lines()
+        .find(|l| l.contains("NAME") && l.contains("STATUS"))
+        .expect("table header");
+    for gone in ["INST", "REGION", "COST", "TREND", "CNAME"] {
+        assert!(!header.contains(gone), "{gone} still shown: {header}");
+    }
+    app.execute_command("cols hide NAME");
+    assert!(!app.view.hidden_cols.contains("NAME"));
+}
