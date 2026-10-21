@@ -452,10 +452,12 @@ impl App {
         // quotes don't break the line shape.
         let audit_cmd = command.replace('"', "'");
         let instances_str = instances.len().to_string();
+        // One region for the command and both audit lines.
+        let audit_region = self.region_for_name(&env_name);
         crate::audit::append_action_dispatched(
             self.context.account_id.as_deref(),
             self.context.profile.as_deref(),
-            &self.region_for_name(&env_name),
+            &audit_region,
             // Use the Debug-format name (`SsmRun`) for audit consistency
             // with cancel_pending_dispatch's UNDONE line and with every
             // other Action variant (`Rebuild`, `Terminate`, …). Pre-
@@ -467,7 +469,7 @@ impl App {
             env_name.as_str(),
             &[("instances", &instances_str), ("cmd", &audit_cmd)],
         );
-        let client = self.client_for_env(&env_name);
+        let client = self.client_for_region(&audit_region);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let command_for_render = command.clone();
@@ -475,7 +477,6 @@ impl App {
         // Snapshot context for the completion-stage audit line.
         let audit_account = self.context.account_id.clone();
         let audit_profile = self.context.profile.clone();
-        let audit_region = self.context.region.clone();
         let audit_env = env_name.clone();
         let audit_cmd_for_outcome = audit_cmd.clone();
         self.status_message = Some(format!("running `{command}` on {n} instance(s)…"));

@@ -1501,3 +1501,50 @@ mod production_half_tests {
         }
     }
 }
+
+/// `src` split into its functions, as (name, body), each body running to
+/// the next `fn` header. A closure stays in the function that spawns it,
+/// which is the point: a task's audit line belongs with the dispatch
+/// that launched it. A nested `fn` starts a new body; nothing here has
+/// one where it matters.
+pub(crate) fn fn_bodies(src: &str) -> Vec<(String, String)> {
+    fn fn_name(line: &str) -> Option<&str> {
+        let mut rest = line.trim_start();
+        for prefix in ["pub(crate) ", "pub(super) ", "pub "] {
+            rest = rest.strip_prefix(prefix).unwrap_or(rest);
+        }
+        rest = rest.strip_prefix("async ").unwrap_or(rest);
+        let rest = rest.strip_prefix("fn ")?;
+        let end = rest.find(|c: char| !(c.is_alphanumeric() || c == '_'))?;
+        (end > 0).then(|| &rest[..end])
+    }
+    let mut out: Vec<(String, String)> = Vec::new();
+    for line in src.lines() {
+        let code = strip_line_comment(line);
+        if let Some(name) = fn_name(code) {
+            out.push((name.to_string(), String::new()));
+        }
+        if let Some((_, body)) = out.last_mut() {
+            body.push_str(code);
+            body.push('\n');
+        }
+    }
+    out
+}
+
+#[test]
+fn fn_bodies_splits_at_each_header_and_keeps_closures() {
+    let src = "\
+use x;
+pub(crate) fn one(&self) {
+    tokio::spawn(async move { audit(&region) });
+}
+    pub(super) async fn two_x() {} // fn three() in a comment
+fn three<T>() {}
+";
+    let bodies = fn_bodies(src);
+    let names: Vec<&str> = bodies.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(names, ["one", "two_x", "three"]);
+    assert!(bodies[0].1.contains("audit(&region)"), "{:?}", bodies[0]);
+    assert!(!bodies[1].1.contains("three"), "comments are stripped");
+}

@@ -85,6 +85,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- **`:set-option`-style writes and `:ssm-run` audit their completion in
+  the row's region.** Under `:region all` their dispatch line and the
+  write itself used the row's region, but the completion line named the
+  home one, so the pair read as an action that started in one region
+  and finished in another.
 - **A write to an environment whose name is in two regions is refused.**
   Under `:region all`, writes found their environment by name and took
   the first match, so with `api-prod` in two regions a restart, a

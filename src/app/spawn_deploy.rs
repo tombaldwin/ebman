@@ -31,10 +31,13 @@ impl App {
             return;
         }
         let env_name = env.name.clone();
+        // One region for the write, the undo read and both audit lines:
+        // the selected row's.
+        let region = self.region_for(&env);
         crate::audit::append_action_dispatched(
             self.context.account_id.as_deref(),
             self.context.profile.as_deref(),
-            &self.region_for_name(&env_name),
+            &region,
             crate::verb::Verb::SetOption.audit_label(),
             env_name.as_str(),
             &[("summary", summary.as_str())],
@@ -44,14 +47,13 @@ impl App {
         // header (`⏳ N`) is the truth-source for in-flight work, and a
         // status_message ack would just race with whatever the operator
         // last set there. Completion fires a Success / Error toast.
-        let client = self.client_for_env(&env_name);
+        let client = self.client_for_region(&region);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let env_for_msg = env_name.clone();
         let summary_for_msg = summary.clone();
         let account = self.context.account_id.clone();
         let profile = self.context.profile.clone();
-        let region = self.context.region.clone();
         // Capture inputs for the optional :undo round-trip — the
         // option-settings fetch happens BEFORE the write so we can
         // record the prior state and offer a clean reverse-action.

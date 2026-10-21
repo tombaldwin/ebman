@@ -1667,3 +1667,36 @@ async fn abort_rollback_by_name_clears_it_in_every_region() {
     app.cmd_abort_rollback(&["api-prod"]);
     assert!(app.armed_watchdogs.is_empty(), "{:?}", app.armed_watchdogs);
 }
+
+#[test]
+fn no_function_mixes_the_home_region_with_a_rows() {
+    // A function that resolves a row's region for its client or its
+    // dispatch line, and binds the home region for anything else, is the
+    // shape that sent `:set-option` and `:ssm-run` completion lines to
+    // the home region while their dispatch lines and the write itself
+    // named the row's. Resolve the region once and use it throughout.
+    const PER_ROW: &[&str] = &[
+        "region_for_name(",
+        "region_for(",
+        "region_for_app(",
+        "client_for_env(",
+        "client_for_app(",
+        "current_env_client(",
+    ];
+    let mut hits = Vec::new();
+    for (path, text) in super::scan::source_files() {
+        if super::scan::is_test_path(&path) || !path.contains("src/app") {
+            continue;
+        }
+        for (name, body) in super::scan::fn_bodies(&super::scan::production_half(&text)) {
+            let home = body.contains("= self.context.region.clone();");
+            if home && PER_ROW.iter().any(|p| body.contains(p)) {
+                hits.push(format!("{path}: fn {name}"));
+            }
+        }
+    }
+    assert!(
+        hits.is_empty(),
+        "home and per-row regions mixed in: {hits:#?}"
+    );
+}
