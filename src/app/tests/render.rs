@@ -1916,16 +1916,18 @@ async fn the_app_tab_draws_series_thresholds_and_config_errors() {
         metric_name: String::new(),
         namespace: String::new(),
     };
-    d.app_tab.top_errors.settle(Ok(crate::app_tab::TopErrors {
-        log_group: "/aws/elasticbeanstalk/api-prod/var/log/app.log".into(),
-        rows: vec![("PoolTimeoutException".into(), 12), ("NPE".into(), 4)],
-        more: (6, 9),
-        truncated: false,
-        unmatched: 3,
-        records_scanned: 900,
-        fetched_at: chrono::Utc::now(),
-    }));
-    d.cw_alarms.settle(Ok(vec![
+    d.app_tab
+        .top_errors
+        .settle_now(Ok(crate::app_tab::TopErrors {
+            log_group: "/aws/elasticbeanstalk/api-prod/var/log/app.log".into(),
+            rows: vec![("PoolTimeoutException".into(), 12), ("NPE".into(), 4)],
+            more: (6, 9),
+            truncated: false,
+            unmatched: 3,
+            records_scanned: 900,
+            fetched_at: chrono::Utc::now(),
+        }));
+    d.cw_alarms.settle_now(Ok(vec![
         alarm("api-prod-5xx", "ALARM"),
         alarm("api-prod-cpu", "OK"),
         alarm("api-prod-lag", "OK"),
@@ -1946,7 +1948,7 @@ async fn the_app_tab_draws_series_thresholds_and_config_errors() {
             cpu_pct: Some(41.0),
         }),
     }];
-    d.app_tab.metrics.settle(Ok(AppMetrics {
+    d.app_tab.metrics.settle_now(Ok(AppMetrics {
         series: vec![
             AppSeries {
                 label: "users".into(),
@@ -2155,19 +2157,19 @@ async fn the_app_tab_is_ascii_in_ascii_mode() {
 
     // First load: the loading lines.
     let d = app.detail.as_mut().unwrap();
-    d.app_tab.metrics.begin();
-    d.cw_alarms.begin();
-    d.app_tab.top_errors.begin();
+    let _ = d.app_tab.metrics.begin();
+    let _ = d.cw_alarms.begin();
+    let _ = d.app_tab.top_errors.begin();
     check(&mut app, "first load");
 
     // Settled: a missing value, alarms of every state, a sparkline.
     let d = app.detail.as_mut().unwrap();
-    d.cw_alarms.settle(Ok(vec![
+    d.cw_alarms.settle_now(Ok(vec![
         alarm("a", "ALARM"),
         alarm("b", "INSUFFICIENT_DATA"),
         alarm("c", "OK"),
     ]));
-    d.app_tab.metrics.settle(Ok(AppMetrics {
+    d.app_tab.metrics.settle_now(Ok(AppMetrics {
         series: vec![
             AppSeries {
                 label: "users".into(),

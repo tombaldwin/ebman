@@ -1127,7 +1127,10 @@ impl<T> Default for Fetch<T> {
 
 impl<T> Fetch<T> {
     /// Mark a request as started. Deliberately does NOT clear a previous
-    /// result: the panel keeps showing it until the new one lands.
+    /// result: the panel keeps showing it until the new one lands. Its
+    /// answer settles only through [`settle_ticket`](Self::settle_ticket)
+    /// with the ticket returned here.
+    #[must_use = "the answer settles only with this ticket"]
     pub(crate) fn begin(&mut self) -> Ticket {
         self.in_flight = true;
         self.issued = Ticket::next();
@@ -1156,12 +1159,19 @@ impl<T> Fetch<T> {
         self.issued = Ticket::next();
     }
 
-    /// Record a result and clear the in-flight flag together, which is
-    /// the pairing that used to be two statements in every message
-    /// handler.
-    pub(crate) fn settle(&mut self, result: Result<T, String>) {
+    /// Record a result and clear the in-flight flag together. Private:
+    /// every answer goes through `settle_ticket`, so none can skip the
+    /// check that it is the latest request's.
+    fn settle(&mut self, result: Result<T, String>) {
         self.settled = Some(result);
         self.in_flight = false;
+    }
+
+    /// Begin and answer at once: a test seeding a panel's value.
+    #[cfg(test)]
+    pub(crate) fn settle_now(&mut self, result: Result<T, String>) {
+        let ticket = self.begin();
+        self.settle_ticket(ticket, result);
     }
 
     /// When the request in flight began; `None` with none in flight.

@@ -291,8 +291,11 @@ impl App {
                 ..
             } => self.handle_costs_fetched(account, region, result),
             AppMsg::DetailRecentVersions {
-                env_name, result, ..
-            } => self.handle_detail_recent_versions(env_name, result),
+                env_name,
+                ticket,
+                result,
+                ..
+            } => self.handle_detail_recent_versions(env_name, ticket, result),
             AppMsg::FormPrefilled {
                 env_name, settings, ..
             } => self.handle_form_prefilled(env_name, settings),
@@ -1465,6 +1468,7 @@ impl App {
     fn handle_detail_recent_versions(
         &mut self,
         env_name: String,
+        ticket: Ticket,
         result: Result<Vec<crate::aws::AppVersion>, String>,
     ) {
         let Some(detail) = self.detail.as_mut() else {
@@ -1473,7 +1477,7 @@ impl App {
         if detail.env_name != env_name {
             return;
         }
-        detail.recent_versions.settle(result);
+        detail.recent_versions.settle_ticket(ticket, result);
     }
 
     fn handle_form_prefilled(

@@ -84,15 +84,17 @@ impl App {
     /// Detail-Health-tab recent-versions fetch. Same shape as
     /// `spawn_why_red_deploys` but lands on `AppMsg::DetailRecentVersions`.
     pub(super) fn spawn_detail_recent_versions(&mut self, app_name: String, env_name: String) {
-        if let Some(d) = self.detail.as_mut() {
-            d.recent_versions.begin();
-        }
+        // No Detail view: nothing would take the answer.
+        let Some(ticket) = self.detail.as_mut().map(|d| d.recent_versions.begin()) else {
+            return;
+        };
         if self.demo_mode {
             let result = Ok(crate::demo_fixture::deploys_for_app(&app_name));
             let gen = self.generation;
             let _ = self.msg_tx.send(AppMsg::DetailRecentVersions {
                 gen,
                 env_name,
+                ticket,
                 result,
             });
             return;
@@ -104,6 +106,7 @@ impl App {
             move |gen, result| AppMsg::DetailRecentVersions {
                 gen,
                 env_name,
+                ticket,
                 result,
             },
         );

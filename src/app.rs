@@ -773,6 +773,8 @@ pub(crate) enum AppMsg {
     DetailRecentVersions {
         gen: u64,
         env_name: String,
+        /// Which fetch this answers (`Fetch::settle_ticket`).
+        ticket: Ticket,
         result: Result<Vec<crate::aws::AppVersion>, String>,
     },
     /// Pre-fill values for an open modal form. The handler walks the form's
