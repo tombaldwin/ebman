@@ -75,6 +75,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **`icons = "ascii"` panel chrome is ascii.** Panel borders, the
   cursor marker and field separators now come from tb-tui-common 0.2.2:
   square corners, `>` and `|`. Unicode and Powerline render as before.
+- **Pre-deploy snapshots are kept per region.** `state.toml` now saves
+  them as `deploy_snapshot.REGION/NAME`. Ones saved by an earlier
+  version name no region, so they are dropped once on upgrade rather
+  than guessed at; `:rollback` falls back to the env's event history
+  for those, as it does for any env without a snapshot. Auto-rollback
+  and wait-for-Green watchdogs likewise follow the env in the region
+  they were armed in, not a same-named env elsewhere.
 
 ### Fixed
 
