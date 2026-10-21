@@ -154,11 +154,14 @@ jobs:
           check=$(mktemp -d)
           tar -xzf "$stage.tar.gz" -C "$check"
           bin="$check/$stage/ebman"
-          # x86_64-apple-darwin is built on an arm64 runner; it runs
-          # under Rosetta where that is installed, and is skipped, said
-          # out loud, where it is not.
-          if ! "$bin" --version >/dev/null 2>&1; then
-            echo "::warning::cannot execute the ${{ matrix.target }} binary on this runner; smoke test skipped"
+          # x86_64-apple-darwin is built on an arm64 runner: skipped,
+          # said out loud, only when the runner has no Rosetta. Decided by
+          # the target and the runner, never by the binary: a binary that
+          # crashes on start is what this step exists to catch, and
+          # "cannot execute" must not excuse it.
+          if [ "${{ matrix.target }}" = "x86_64-apple-darwin" ] && [ "$(uname -m)" = "arm64" ] \
+             && ! arch -x86_64 /usr/bin/true 2>/dev/null; then
+            echo "::warning::no Rosetta on this runner; the x86_64-apple-darwin smoke test is skipped"
             exit 0
           fi
           scripts/smoke.sh "$bin" "${GITHUB_REF_NAME#v}"
@@ -221,6 +224,18 @@ jobs:
           # once they've sanity-checked the artefacts.
           draft: true
           generate_release_notes: true
+      # The notes are generated from PR titles and commit messages, and
+      # the draft is edited by hand before it is published: neither is a
+      # tracked file, so the cargo test scan never sees them.
+      - name: The draft's notes name no protected client
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EBMAN_PROTECTED_NAMES: ${{ secrets.EBMAN_PROTECTED_NAMES }}
+        run: |
+          set -euo pipefail
+          gh release view "${GITHUB_REF_NAME}" --repo "${{ github.repository }}" --json body --jq .body > notes.md
+          . .githooks/protected-names.sh
+          check_protected_names "the release notes" notes.md
 
   crates_io:
     # Publish to crates.io once the maintainer has reviewed the draft
@@ -249,6 +264,18 @@ jobs:
           ref: ${{ github.event.release.tag_name || inputs.tag }}
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      # Again at publish, after the maintainer's edits to the draft, and
+      # before crates.io, which cannot be undone.
+      - name: The published notes name no protected client
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EBMAN_PROTECTED_NAMES: ${{ secrets.EBMAN_PROTECTED_NAMES }}
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: |
+          set -euo pipefail
+          gh release view "${TAG}" --repo "${{ github.repository }}" --json body --jq .body > notes.md
+          . .githooks/protected-names.sh
+          check_protected_names "the release notes" notes.md
       - name: cargo publish
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
