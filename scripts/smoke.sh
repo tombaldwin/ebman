@@ -42,12 +42,17 @@ sleep 30 &
 watchdog=$!
 # Whichever ends first: the server, or the watchdog's sleep.
 while kill -0 "$pid" 2>/dev/null && kill -0 "$watchdog" 2>/dev/null; do sleep 0.2; done
+kill "$watchdog" 2>/dev/null || true
+wait "$watchdog" 2>/dev/null || true
 if kill -0 "$pid" 2>/dev/null; then
   kill "$pid" 2>/dev/null || true
   fail "MCP: the server did not finish within 30s"
 fi
-kill "$watchdog" 2>/dev/null || true
-wait "$watchdog" 2>/dev/null || true
+# How it ended, too: answering and then aborting at end of input (the
+# release profile is panic=abort) must not pass.
+rc=0
+wait "$pid" || rc=$?
+[ "$rc" = 0 ] || fail "MCP: the server exited $rc"
 
 grep -q '"id":1,' "$out" || fail "MCP: no answer to initialize"
 # The list_environments answer itself, not any line that mentions it:
