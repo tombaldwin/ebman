@@ -1,0 +1,9 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 890254772c85b33961020a884b897392edd7443791f9896f1c8ef2f066344a7b # shrinks to lines = ["app.e.alarm_prefix = \" \""]
+cc c7e87f9c520e790812d91fd9afa3086d2951a50983cf8abbeba816945ae82289 # shrinks to (lines, crlf) = ([], false), new = []
+cc dbb38fca29355c567396838485c6a30e064a35e962aa29d7ead300975b10072a # shrinks to lines = ["app.e.rds = =\"#"]

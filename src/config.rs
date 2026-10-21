@@ -859,6 +859,10 @@ pub(crate) fn replace_app_lines(text: &str, env: &str, lines: &[String]) -> Stri
     if !placed {
         out.extend(lines.iter().cloned());
     }
+    // Nothing to write and nothing kept: an empty file, not one line.
+    if out.is_empty() {
+        return String::new();
+    }
     // In the file's own line ending: a CRLF file stays CRLF.
     let eol = if text.contains("\r\n") { "\r\n" } else { "\n" };
     let mut body = out.join(eol);
@@ -2437,5 +2441,154 @@ explain.max_tokens = 512
             !serialize(&parse("")).contains("safety.read_only"),
             "and the default must not be written out"
         );
+    }
+}
+
+/// Properties of the `app.` lines' parser and writers, over generated
+/// files. About ten fixes this cycle were the parser and a writer
+/// disagreeing (quoting, escapes, inline comments, CRLF, spaced keys),
+/// each found one example at a time.
+#[cfg(test)]
+mod app_line_properties {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// A value, often hostile: spaces, `#`, `"` and `\` among the
+    /// ordinary characters the fields take.
+    fn value() -> impl Strategy<Value = String> {
+        prop_oneof![
+            "[A-Za-z0-9_./:*-]{1,12}",
+            "[A-Za-z0-9_-]{1,6}=[A-Za-z0-9_-]{1,6}(,[A-Za-z0-9_-]{1,6}=[A-Za-z0-9_-]{1,6}){0,2}",
+            "[a-z]{1,8}\\|(Sum|Average|p99|Maximum)(\\|count)?",
+            "<?[0-9]{1,4}(\\.[0-9])?,[0-9]{1,4}",
+            "[A-Za-z0-9 #\"\\\\=|,.-]{0,16}",
+        ]
+    }
+
+    fn field() -> impl Strategy<Value = String> {
+        prop_oneof![
+            Just("namespace".to_string()),
+            Just("dimensions".to_string()),
+            Just("instance_dimension".to_string()),
+            "metric\\.[a-z]{1,4}",
+            "threshold\\.[a-z]{1,4}",
+            Just("rds".to_string()),
+            Just("elasticache".to_string()),
+            Just("alarm_prefix".to_string()),
+            Just("log_group".to_string()),
+            Just("error_fingerprint".to_string()),
+            Just("bogus".to_string()),
+        ]
+    }
+
+    /// One `app.` line for `env`, in the shapes people write.
+    fn app_line(env: &'static str) -> impl Strategy<Value = String> {
+        (field(), value(), 0..4usize).prop_map(move |(f, v, shape)| match shape {
+            0 => format!("app.{env}.{f} = \"{v}\""),
+            1 => format!("app.{env}.{f}=\"{v}\""),
+            2 => format!("  app. {env}.{f} = \"{v}\"  "),
+            _ => format!("app.{env}.{f} = {v}"),
+        })
+    }
+
+    /// A line of a config file: other envs' `app.` lines, comments,
+    /// blank lines and other keys around env `e`'s.
+    fn file_line() -> impl Strategy<Value = String> {
+        prop_oneof![
+            app_line("e"),
+            app_line("f"),
+            app_line("e-wk"),
+            "# [a-z #\"]{0,20}",
+            Just(String::new()),
+            Just("refresh_interval_secs = 15".to_string()),
+            Just("theme = \"dark\"".to_string()),
+        ]
+    }
+
+    fn file() -> impl Strategy<Value = (Vec<String>, bool)> {
+        (proptest::collection::vec(file_line(), 0..16), any::<bool>())
+    }
+
+    fn join(lines: &[String], crlf: bool) -> String {
+        let eol = if crlf { "\r\n" } else { "\n" };
+        lines.iter().map(|l| format!("{l}{eol}")).collect()
+    }
+
+    fn is_envs(line: &str, env: &str) -> bool {
+        crate::app_tab::key_of(line).is_some_and(|(e, _)| e == env)
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(400))]
+
+        /// Replacing env `e`'s lines gives `e` exactly what the new lines
+        /// say, keeps every other line byte for byte and in order, leaves
+        /// every other env's config as it was, and keeps the file's own
+        /// line ending.
+        #[test]
+        fn replacing_an_envs_lines_touches_nothing_else(
+            (lines, crlf) in file(),
+            new in proptest::collection::vec(app_line("e"), 0..6),
+        ) {
+            let text = join(&lines, crlf);
+            let out = replace_app_lines(&text, "e", &new);
+
+            let new_text = join(&new, false);
+            let (got, want) = (parse(&out).app_tabs, parse(&new_text).app_tabs);
+            prop_assert_eq!(
+                got.envs.get("e"),
+                want.envs.get("e"),
+                "e is what the new lines say:\n{}", out
+            );
+            let others = |t: &str| -> Vec<String> {
+                t.lines().filter(|l| !is_envs(l, "e")).map(str::to_string).collect()
+            };
+            prop_assert_eq!(others(&out), others(&text), "the rest, verbatim, in order");
+            let (before, after) = (parse(&text).app_tabs, parse(&out).app_tabs);
+            for env in ["f", "e-wk"] {
+                prop_assert_eq!(before.envs.get(env), after.envs.get(env), "{} untouched", env);
+            }
+            if crlf && !text.is_empty() {
+                prop_assert_eq!(out.matches('\n').count(), out.matches("\r\n").count(), "still CRLF");
+            }
+        }
+
+        /// A `:settings` save writes the `app.` lines back as read: what
+        /// every env's config means, and the lines that did not apply.
+        #[test]
+        fn a_settings_save_keeps_every_envs_app_config((lines, crlf) in file()) {
+            let text = join(&lines, crlf);
+            let read = parse(&text);
+            let saved = parse(&serialize(&read));
+            prop_assert_eq!(&saved.app_tabs.envs, &read.app_tabs.envs);
+            let rejected = |c: &Config| -> Vec<Option<String>> {
+                c.app_tabs.errors.iter().map(|e| e.line.clone()).collect()
+            };
+            prop_assert_eq!(rejected(&saved), rejected(&read));
+        }
+
+        /// What the App tab's editor writes for a parsed spec reads back
+        /// as that spec, or the editor refuses it: it never writes a line
+        /// that means something else.
+        #[test]
+        fn the_editor_writes_back_exactly_what_it_was_given(
+            lines in proptest::collection::vec(app_line("e"), 1..8),
+        ) {
+            let mut tabs = parse(&join(&lines, false)).app_tabs;
+            let clean = tabs.errors.is_empty();
+            let Some(spec) = tabs.envs.remove("e") else {
+                return Ok(());
+            };
+            let fields = crate::app::app_tab_fields_for_tests(Some(&spec));
+            match crate::app::app_tab_lines_for_tests("e", &fields) {
+                Ok(written) => {
+                    let back = parse(&join(&written, false)).app_tabs;
+                    prop_assert_eq!(back.envs.get("e"), Some(&spec), "{:?}", written);
+                }
+                // Refusing is right only for a config the parser itself
+                // faulted (a metric with no namespace, say).
+                Err(e) => prop_assert!(!clean, "a clean config refused: {:?} for {:?}", e, lines),
+            }
+        }
     }
 }

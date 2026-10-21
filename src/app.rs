@@ -117,6 +117,10 @@ mod cmd_write; // bulk writes: batch-action, batch-deploy
 mod action_flow; // action menu -> confirm -> undo window -> dispatch
 mod app_tab_form; // the App tab's editor + discovery
 pub(crate) use app_tab_form::AppTabSource;
+#[cfg(test)]
+pub(crate) use app_tab_form::{
+    fields as app_tab_fields_for_tests, lines_from_fields as app_tab_lines_for_tests,
+};
 mod apps_menu; // the Applications scope's menu + info overlay
 mod config_edit; // Detail's Config tab editor + template CRUD
 mod detail_nav; // the per-environment Detail view
