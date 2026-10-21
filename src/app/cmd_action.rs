@@ -150,28 +150,26 @@ impl App {
             self.error_message = Some(usage.into());
             return;
         };
-        if source_name == target_name {
+        // `NAME` or `NAME@REGION`: under `:region all` a bare name listed
+        // in two regions is refused, not resolved to the first row.
+        let source = match self.env_by_ref(source_name) {
+            Ok(env) => env,
+            Err(msg) => {
+                self.error_message = Some(msg);
+                return;
+            }
+        };
+        let target = match self.env_by_ref(target_name) {
+            Ok(env) => env,
+            Err(msg) => {
+                self.error_message = Some(msg);
+                return;
+            }
+        };
+        if self.env_key(&source) == self.env_key(&target) {
             self.error_message = Some("source and target must be different envs".into());
             return;
         }
-        let Some(source) = self
-            .environments
-            .iter()
-            .find(|e| e.name == source_name)
-            .cloned()
-        else {
-            self.error_message = Some(format!("no env named '{source_name}' in the current view"));
-            return;
-        };
-        let Some(target) = self
-            .environments
-            .iter()
-            .find(|e| e.name == target_name)
-            .cloned()
-        else {
-            self.error_message = Some(format!("no env named '{target_name}' in the current view"));
-            return;
-        };
         if source.version_label.is_empty() {
             self.error_message = Some(format!(
                 "source env '{source_name}' has no version deployed — nothing to promote"
@@ -443,18 +441,32 @@ impl App {
                 Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;
         };
-        let target = target.to_string();
-        let target_exists = self
-            .environments
-            .iter()
-            .any(|e| e.name == target && e.application == env.application);
+        // EB swaps CNAMEs within one region: the target is the selected
+        // row's region's env of that name (`NAME@REGION` naming another
+        // region is refused, not quietly re-aimed).
+        let region = self.region_for(&env);
+        let (name, named_region) = match target.split_once('@') {
+            Some((name, r)) => (name, Some(r)),
+            None => (target, None),
+        };
+        if named_region.is_some_and(|r| r != region) {
+            self.error_message = Some(format!(
+                "swap target '{target}': CNAME swaps stay within one region; {} is in {region}",
+                env.name
+            ));
+            return;
+        }
+        let target_exists = self.environments.iter().any(|e| {
+            e.name == name && e.application == env.application && self.region_for(e) == region
+        });
         if !target_exists {
             self.error_message = Some(format!(
-                "swap target '{target}' not found in app '{}'",
+                "swap target '{name}' not found in app '{}' in {region}",
                 env.application
             ));
             return;
         }
+        let target = name.to_string();
         self.open_parameterised_action(
             Action::SwapCnames,
             ParameterisedAction {

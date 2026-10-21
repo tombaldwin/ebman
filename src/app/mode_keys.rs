@@ -776,10 +776,8 @@ impl App {
                 // Red) so the operator can pull up the same
                 // four-section context any time, but the
                 // mnemonic targets the Red-row triage case.
-                if let Some(env) = self.selected_env() {
-                    let env_name = env.name.clone();
-                    let app_name = env.application.clone();
-                    self.open_why_red(env_name, app_name);
+                if let Some(env) = self.selected_env().cloned() {
+                    self.open_why_red(&env);
                 } else {
                     self.error_message = Some(
                         "no env selected — press 1-9, click a row, or type ' to jump by name"

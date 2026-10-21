@@ -223,7 +223,7 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
     ),
     cmd_env_arg(
         "diff",
-        ":diff NAME — side-by-side env comparison vs selected env;  :diff ENV-A ENV-B names both explicitly;  --ignore-keys \"version,updated\" hides those rows",
+        ":diff NAME — side-by-side env comparison vs selected env;  :diff ENV-A ENV-B names both explicitly;  --ignore-keys \"version,updated\" hides those rows;  NAME@REGION picks one region of a name listed in two",
         Category::Inspection,
         CommandKind::Prefill("diff "),
     ),
@@ -310,7 +310,7 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
     ),
     cmd_env_arg(
         "config-diff",
-        ":config-diff ENV — compare the selected env's option-settings against ENV's; shows every setting that differs",
+        ":config-diff ENV — compare the selected env's option-settings against ENV's; shows every setting that differs. ENV@REGION picks one region of a name listed in two",
         Category::Inspection,
         CommandKind::Prefill("config-diff "),
     ),
@@ -481,7 +481,7 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
     ),
     cmd(
         "promote-env",
-        ":promote-env SOURCE TARGET [--auto-rollback Nm] [--wait-for-green Nm] — ship SOURCE's currently-deployed version label to TARGET in one dispatch; opens the deploy confirm on TARGET with the same watchdog/wait flags as :deploy. Refuses if SOURCE has no version, or if SOURCE's version is already on TARGET.",
+        ":promote-env SOURCE TARGET [--auto-rollback Nm] [--wait-for-green Nm] — ship SOURCE's currently-deployed version label to TARGET in one dispatch; opens the deploy confirm on TARGET with the same watchdog/wait flags as :deploy. Refuses if SOURCE has no version, or if SOURCE's version is already on TARGET. Under :region all, a name listed in two regions takes @REGION (api@eu-west-2).",
         Category::Lifecycle,
         CommandKind::Prefill("promote-env "),
     ),
@@ -541,7 +541,7 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
     ),
     cmd(
         "swap",
-        ":swap TARGET — swap CNAMEs (Y/N confirm; same preflight as a → Swap)",
+        ":swap TARGET — swap CNAMEs with TARGET in the selected env's app and region (Y/N confirm; same preflight as a → Swap)",
         Category::Lifecycle,
         CommandKind::Prefill("swap "),
     ),

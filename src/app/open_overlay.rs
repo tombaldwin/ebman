@@ -10,7 +10,9 @@ impl App {
     /// user sees "fetching…" placeholders, then fans out four parallel
     /// fetchers (events, alarms, instances, deploys). Each lands as its
     /// own `AppMsg::WhyRed*` variant gated on `session_id`.
-    pub(crate) fn open_why_red(&mut self, env_name: String, app_name: String) {
+    pub(crate) fn open_why_red(&mut self, env: &crate::aws::Environment) {
+        let env_name = env.name.clone();
+        let app_name = env.application.clone();
         // `alarm_prefix` may have been edited by hand since.
         self.reload_config_and_refetch();
         self.why_red_session = self.why_red_session.wrapping_add(1);
@@ -19,15 +21,10 @@ impl App {
         // section for Web envs without consulting `self.environments`
         // (which may have refreshed under us by the time the overlay
         // renders).
-        let tier = self
-            .environments
-            .iter()
-            .find(|e| e.name == env_name)
-            .map(|e| e.tier.clone())
-            .unwrap_or_default();
-        // Resolved once: every fetch below, and a drill into its DLQ,
-        // goes to the same region.
-        let region = self.region_for_name(&env_name);
+        let tier = env.tier.clone();
+        // The row's own region, resolved once: every fetch below, and a
+        // drill into its DLQ, goes there.
+        let region = self.region_for(env);
         let is_worker = tier.eq_ignore_ascii_case("Worker");
         self.current_overlay = Some(Overlay::WhyRed {
             env_name: env_name.clone(),

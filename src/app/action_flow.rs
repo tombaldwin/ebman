@@ -181,8 +181,12 @@ impl App {
                     let Some(target) = picker.selected_value() else {
                         return;
                     };
-                    let source = match flow {
-                        ActionFlow::SwapTarget { source, .. } => source.clone(),
+                    let (source, source_region) = match flow {
+                        ActionFlow::SwapTarget {
+                            source,
+                            source_region,
+                            ..
+                        } => (source.clone(), source_region.clone()),
                         _ => return,
                     };
                     // A CNAME swap rewrites BOTH environments' DNS, so
@@ -203,18 +207,15 @@ impl App {
                         return;
                     }
                     let warning = self
-                        .environments
-                        .iter()
-                        .find(|e| e.name == source)
-                        .map(compute_traffic_warning)
-                        .unwrap_or(None);
+                        .env_by_key(&EnvKey::new(source_region.clone(), source.clone()))
+                        .and_then(compute_traffic_warning);
                     self.action_flow = Some(ActionFlow::Confirm(ConfirmModal {
                         params: ParameterisedAction {
                             swap_with: Some(target),
                             ..Default::default()
                         },
                         action: Action::SwapCnames,
-                        target_region: self.region_for_name(&source),
+                        target_region: source_region,
                         target_env: source,
                         typed: TextInput::new(),
                         kind: ConfirmKind::YesNo,
@@ -353,11 +354,18 @@ impl App {
         };
         match action {
             Action::SwapCnames => {
-                // Build a list of envs in the same application (excluding the source).
+                // Envs in the same application AND region (excluding the
+                // source): EB swaps CNAMEs within one region, and a
+                // same-named app elsewhere is another application.
+                let source_region = self.region_for(&env);
                 let candidates: Vec<String> = self
                     .environments
                     .iter()
-                    .filter(|e| e.application == env.application && e.name != env.name)
+                    .filter(|e| {
+                        e.application == env.application
+                            && e.name != env.name
+                            && self.region_for(e) == source_region
+                    })
                     .map(|e| e.name.clone())
                     .collect();
                 if candidates.is_empty() {
@@ -376,6 +384,7 @@ impl App {
                 let picker = Picker::new(PickerKind::Region, candidates, None); // kind unused here
                 self.action_flow = Some(ActionFlow::SwapTarget {
                     source: env.name.clone(),
+                    source_region,
                     picker,
                 });
             }

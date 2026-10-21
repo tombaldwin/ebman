@@ -2629,7 +2629,8 @@ async fn the_app_tab_refresh_re_reads_its_config() {
 
     settle(&mut app);
     std::fs::write(&path, "app.api-prod.namespace = \"Why\"\n").unwrap();
-    app.open_why_red("api-prod".into(), "poly".into());
+    let env = app.environments[0].clone();
+    app.open_why_red(&env);
     assert_eq!(namespace(&app).as_deref(), Some("Why"), ":why");
     assert!(refetched(&app), ":why refetched the tab");
 

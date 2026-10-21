@@ -67,7 +67,7 @@ pub(crate) fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
                 layout[1],
             );
         }
-        ActionFlow::SwapTarget { source, picker } => {
+        ActionFlow::SwapTarget { source, picker, .. } => {
             let popup = overlay_rect(OverlaySize::Picker, area);
             f.render_widget(Clear, popup);
             let layout = Layout::default()

@@ -30,7 +30,7 @@ Type `:` to open the command bar. Tab-completion is not implemented, but `Ctrl-K
 ## Per-env inspection
 
 - `:why` / `:diagnose` — diagnostic overlay (events + alarms + instances + recent deploys; DLQ peek for Worker envs). Bound to `!`.
-- `:diff NAME` — side-by-side env comparison vs selected env. `:diff ENV-A ENV-B` names both explicitly. Add `--ignore-keys "version,updated"` to suppress those metadata rows (field labels: `name`, `application`, `tier`, `status`, `health`, `platform`, `version`, `cname`, `updated`; `version_label` also matches `version`).
+- `:diff NAME` — side-by-side env comparison vs selected env. `:diff ENV-A ENV-B` names both explicitly. Add `--ignore-keys "version,updated"` to suppress those metadata rows (field labels: `name`, `application`, `tier`, `status`, `health`, `platform`, `version`, `cname`, `updated`; `version_label` also matches `version`). Under `:region all`, a name listed in two regions is refused until you pick one as `NAME@REGION` (`api-prod@eu-west-2`); the same holds for `:config-diff` and `:promote-env`.
 - `:config-diff ENV` — option-setting deltas between the selected env and `ENV`.
 - `:config-diff-local [NAME]` — diff the deployed env against a local EB CLI saved config under `.elasticbeanstalk/saved_configs/`. No arg auto-picks the lone file.
 - `:lineage` — deploy-only timeline (one row per version label, newest first, with Δ between deploys).
@@ -75,7 +75,7 @@ Type `:` to open the command bar. Tab-completion is not implemented, but `Ctrl-K
 - `:deploy --from PATH [--label L] [--describe D] [--no-deploy]` — upload a local `.zip` (or `--from s3://bucket/key`), register a new version, optionally deploy.
 - `:rollback [--to LABEL] [--auto-rollback Nm]` — redeploy the previous version. No arg uses the captured pre-deploy snapshot (falls back to event-history scan). `--to LABEL` targets a specific version. `--auto-rollback` arms a roll-forward watchdog.
 - `:undo` — reverse the most-recent option-settings write. 10-entry ring buffer; `:undo` of `:undo` redoes the original.
-- `:promote-env SOURCE TARGET [--auto-rollback Nm] [--wait-for-green Nm]` — ship `SOURCE`'s currently-deployed version label to `TARGET` in one dispatch. Refuses if `SOURCE` has no version, or if `SOURCE`'s version is already on `TARGET`.
+- `:promote-env SOURCE TARGET [--auto-rollback Nm] [--wait-for-green Nm]` — ship `SOURCE`'s currently-deployed version label to `TARGET` in one dispatch. Refuses if `SOURCE` has no version, or if `SOURCE`'s version is already on `TARGET`. Either name takes `@REGION` when it is listed in two regions.
 - `:rollout LABEL --regions r1,r2,r3 [--env NAME] [--wait-for-green Nm]` — sequential cross-region deploy. Pre-flights every region (env existence, current version), shows a plan overlay, dispatches on `y`. Stops on first failure. Single `rollout_id` correlation across audit lines. Also available as `ebman action rollout`. New in 0.16: `--parallel [--max-concurrency N]` fans out concurrently (implies `--continue-on-fail`); `--continue-on-fail` attempts every region in sequential mode (no halt on first failure); `--staggered Nm` waits N minutes between regions in sequential mode (canary pattern; requires `--wait-for-green`).
 - `:abort-rollback [ENV]` — disarm an armed `--auto-rollback` watchdog. No arg drains all in the current context.
 - `:freeze-deploys [REASON…]` — session-scoped fleet-wide write-lock. Every destructive op refuses while frozen. Useful during incident triage. Re-issue to update the reason in place.
@@ -88,7 +88,7 @@ Type `:` to open the command bar. Tab-completion is not implemented, but `Ctrl-K
 - `:start` — ASG min=max=1 (Y/N confirm).
 - `:capacity` — modal form to edit Min / Max / Instance type / Cooldown in one shot (pre-filled from `DescribeConfigurationSettings`).
 - `:scaling-triggers` — modal form for the metric-based autoscaling trigger (metric / statistic / period / breach duration / thresholds / scale increments).
-- `:swap TARGET` — swap CNAMEs (Y/N confirm; same pre-flight as `a` → Swap).
+- `:swap TARGET` — swap CNAMEs with `TARGET`, which must be in the selected env's application and region: EB swaps within one region (Y/N confirm; same pre-flight as `a` → Swap).
 - `:abort` — cancel an in-flight env update.
 - `:listener-edit PORT` — modal cert picker for an ALB listener: pick from the region's ACM certificates (loaded live). PORT = `443` / numeric / `default`.
 - `:rds-attach` — modal form to couple an RDS instance to the env (engine / class / storage / credentials / deletion policy / Multi-AZ). Pre-fills if one is already attached.

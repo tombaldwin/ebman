@@ -39,6 +39,14 @@ impl App {
             .unwrap_or_else(|| self.context.region.clone())
     }
 
+    /// The listed env a typed `NAME` or `NAME@REGION` names, or the
+    /// status line saying why it names none (or more than one).
+    pub(crate) fn env_by_ref(&self, input: &str) -> Result<crate::aws::Environment, String> {
+        super::env_ref::resolve_env_ref(input, &self.environments, &self.context.region)
+            .cloned()
+            .map_err(|e| e.message())
+    }
+
     /// The key every per-env poll cache uses for `env`: its own region
     /// and its name. See [`crate::app::EnvKey`].
     pub(crate) fn env_key(&self, env: &crate::aws::Environment) -> crate::app::EnvKey {

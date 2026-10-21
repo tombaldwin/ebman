@@ -617,18 +617,17 @@ impl App {
             // selected-env side. Useful for picking env-A ↔ env-B from a
             // different scope than what's currently selected.
             (Some(a), Some(b)) => {
-                if a == b {
+                let (left, right) = match (self.env_by_ref(a), self.env_by_ref(b)) {
+                    (Ok(left), Ok(right)) => (left, right),
+                    (Err(msg), _) | (_, Err(msg)) => {
+                        self.error_message = Some(msg);
+                        return;
+                    }
+                };
+                if self.env_key(&left) == self.env_key(&right) {
                     self.error_message = Some("pick two different envs to compare".into());
                     return;
                 }
-                let Some(left) = self.environments.iter().find(|e| e.name == **a).cloned() else {
-                    self.error_message = Some(format!("no env named '{a}' in current view"));
-                    return;
-                };
-                let Some(right) = self.environments.iter().find(|e| e.name == **b).cloned() else {
-                    self.error_message = Some(format!("no env named '{b}' in current view"));
-                    return;
-                };
                 self.current_overlay = Some(Overlay::Diff(diff_envs(
                     &left,
                     &right,
@@ -652,21 +651,12 @@ impl App {
                     );
                     return;
                 };
-                if left.name == **target {
-                    self.error_message = Some("pick a different env to compare against".into());
-                    return;
-                }
-                let right = self
-                    .environments
-                    .iter()
-                    .find(|e| e.name == **target)
-                    .cloned();
-                match right {
-                    None => {
-                        self.error_message =
-                            Some(format!("no env named '{target}' in current view"));
+                match self.env_by_ref(target) {
+                    Err(msg) => self.error_message = Some(msg),
+                    Ok(right) if self.env_key(&right) == self.env_key(&left) => {
+                        self.error_message = Some("pick a different env to compare against".into());
                     }
-                    Some(right) => {
+                    Ok(right) => {
                         self.current_overlay = Some(Overlay::Diff(diff_envs(
                             &left,
                             &right,
@@ -740,11 +730,14 @@ impl App {
                 Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;
         };
-        let Some(right) = self.environments.iter().find(|e| e.name == target).cloned() else {
-            self.error_message = Some(format!("no env named '{target}' in the current view"));
-            return;
+        let right = match self.env_by_ref(&target) {
+            Ok(env) => env,
+            Err(msg) => {
+                self.error_message = Some(msg);
+                return;
+            }
         };
-        if left.name == right.name {
+        if self.env_key(&left) == self.env_key(&right) {
             self.error_message = Some("pick a different env to compare against".into());
             return;
         }
@@ -753,8 +746,8 @@ impl App {
         // comparison is often that they're in different regions.
         // Fetching both through one client silently compared the
         // left-hand env against itself, or against nothing.
-        let left_client = self.client_for_env(&left.name);
-        let right_client = self.client_for_env(&right.name);
+        let left_client = self.client_for_region(&self.region_for(&left));
+        let right_client = self.client_for_region(&self.region_for(&right));
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let (la, ln) = (left.application.clone(), left.name.clone());

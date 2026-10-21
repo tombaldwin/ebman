@@ -151,6 +151,7 @@ mod cost;
 mod costs; // instance pricing, fleet rollups
 mod deploy_math; // rolling-batch and unavailability arithmetic
 mod env_edit; // the `:env` editor round-trip
+mod env_ref; // `NAME` / `NAME@REGION` typed env names
 mod polled; // per-env values the fleet view polls each refresh
 mod render; // overlay body renderers (`-> String`)
 mod safety; // the `deny_write` gate every mutation passes through

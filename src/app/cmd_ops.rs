@@ -178,21 +178,20 @@ impl App {
         // sourced the instance list). Falling back to selected_env()
         // would mismatch if the operator changed selection between
         // opening Detail and running :ssm-run.
-        let env_name = self
+        // Detail is open: the instance list above came from it.
+        let Some((env_name, key)) = self
             .detail
             .as_ref()
-            .map(|d| d.env_name.clone())
-            .unwrap_or_default();
+            .map(|d| (d.env_name.clone(), self.env_key(&d.env_snapshot)))
+        else {
+            return;
+        };
         // Resolve the env from the cached fleet so
         // `open_parameterised_action_on` has an `Environment` to work
         // with. `selected_env()` could be the wrong env if the cursor
-        // moved after Detail was opened, so look up by name.
-        let Some(env) = self
-            .environments
-            .iter()
-            .find(|e| e.name == env_name)
-            .cloned()
-        else {
+        // moved after Detail was opened, so look up Detail's own env by
+        // region and name.
+        let Some(env) = self.env_by_key(&key).cloned() else {
             self.error_message = Some(format!(
                 "ssm-run: env '{env_name}' not in cached fleet — refresh (Ctrl-R) and retry"
             ));

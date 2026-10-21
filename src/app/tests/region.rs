@@ -1715,7 +1715,8 @@ async fn the_why_overlay_records_the_region_it_opened_in() {
     app.demo_mode = true;
     app.environments = vec![eu_worker("jobs")];
     app.rebuild_view();
-    app.open_why_red("jobs".into(), "poly".into());
+    let env = app.environments[0].clone();
+    app.open_why_red(&env);
     let Some(crate::app::Overlay::WhyRed { region, .. }) = app.current_overlay.as_ref() else {
         panic!("no overlay");
     };
@@ -1805,4 +1806,153 @@ async fn the_why_overlays_enter_drill_keeps_its_region_too() {
     press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
     let dlq = app.dlq.as_ref().expect("Enter on the DLQ item drills in");
     assert_eq!(dlq.region, "eu-west-2");
+}
+
+// --- `NAME` / `NAME@REGION` (src/app/env_ref.rs) -------------------------
+
+mod env_ref {
+    use super::*;
+    use crate::app::env_ref::{resolve_env_ref, EnvRefError};
+
+    fn env(name: &str, region: Option<&str>) -> crate::aws::Environment {
+        let mut e = mk_env(name, "poly", "Web", "Green");
+        e.region = region.map(Into::into);
+        e
+    }
+
+    fn twins() -> Vec<crate::aws::Environment> {
+        vec![
+            env("api", None),
+            env("api", Some("eu-west-2")),
+            env("jobs", Some("eu-west-2")),
+        ]
+    }
+
+    #[test]
+    fn a_unique_bare_name_resolves() {
+        let envs = twins();
+        let got = resolve_env_ref("jobs", &envs, "us-east-1").unwrap();
+        assert_eq!(got.region.as_deref(), Some("eu-west-2"));
+    }
+
+    #[test]
+    fn a_bare_name_listed_twice_is_refused_with_both_regions() {
+        let envs = twins();
+        let err = resolve_env_ref("api", &envs, "us-east-1").unwrap_err();
+        assert_eq!(
+            err,
+            EnvRefError::Ambiguous {
+                name: "api".into(),
+                regions: vec!["eu-west-2".into(), "us-east-1".into()],
+            }
+        );
+        assert_eq!(
+            err.message(),
+            "'api' is listed in eu-west-2 and us-east-1 — name one, e.g. api@eu-west-2"
+        );
+    }
+
+    #[test]
+    fn name_at_region_picks_one_and_home_matches_a_regionless_row() {
+        let envs = twins();
+        let eu = resolve_env_ref("api@eu-west-2", &envs, "us-east-1").unwrap();
+        assert_eq!(eu.region.as_deref(), Some("eu-west-2"));
+        let home = resolve_env_ref("api@us-east-1", &envs, "us-east-1").unwrap();
+        assert_eq!(home.region, None);
+    }
+
+    #[test]
+    fn misses_say_which_half_missed() {
+        let envs = twins();
+        assert_eq!(
+            resolve_env_ref("nope", &envs, "us-east-1").unwrap_err(),
+            EnvRefError::NotFound {
+                name: "nope".into()
+            }
+        );
+        assert_eq!(
+            resolve_env_ref("jobs@us-east-1", &envs, "us-east-1").unwrap_err(),
+            EnvRefError::NotInRegion {
+                name: "jobs".into(),
+                region: "us-east-1".into(),
+            }
+        );
+    }
+}
+
+/// `api-prod` in us-east-1 (build-home) and eu-west-2 (build-eu), plus a
+/// unique `api-staging` at home.
+fn twins_and_staging() -> App {
+    let mut app = test_app();
+    let mut home = mk_env("api-prod", "poly", "Web", "Green");
+    home.version_label = "build-home".into();
+    let mut eu = mk_env("api-prod", "poly", "Web", "Green");
+    eu.region = Some("eu-west-2".into());
+    eu.version_label = "build-eu".into();
+    let staging = mk_env("api-staging", "poly", "Web", "Green");
+    app.environments = vec![home, eu, staging];
+    app.rebuild_view();
+    app
+}
+
+#[tokio::test]
+async fn promote_env_refuses_a_name_listed_twice() {
+    let mut app = twins_and_staging();
+    app.execute_command("promote-env api-prod api-staging");
+    let err = app.error_message.clone().unwrap_or_default();
+    assert!(err.contains("api-prod@eu-west-2"), "{err}");
+    assert!(app.action_flow.is_none());
+}
+
+#[tokio::test]
+async fn promote_env_takes_the_version_of_the_region_it_names() {
+    // By name it took the first row, so `@eu-west-2` would have promoted
+    // the home env's build.
+    let mut app = twins_and_staging();
+    app.execute_command("promote-env api-prod@eu-west-2 api-staging");
+    let Some(crate::app::ActionFlow::Confirm(modal)) = app.action_flow.as_ref() else {
+        panic!("no confirm: {:?}", app.error_message);
+    };
+    assert_eq!(modal.params.deploy_version.as_deref(), Some("build-eu"));
+    assert_eq!(modal.target_env, "api-staging");
+}
+
+#[tokio::test]
+async fn diff_compares_the_two_regions_of_one_name() {
+    // By name both sides were the first row: "pick two different envs".
+    let mut app = twins_and_staging();
+    app.execute_command("diff api-prod@us-east-1 api-prod@eu-west-2");
+    let Some(crate::app::Overlay::Diff(body)) = app.current_overlay.as_ref() else {
+        panic!("no diff: {:?}", app.error_message);
+    };
+    assert!(body.contains("build-eu"), "{body}");
+    assert!(body.contains("build-home"), "{body}");
+}
+
+#[tokio::test]
+async fn swap_stays_within_the_selected_rows_region() {
+    let mut app = test_app();
+    let blue = mk_env("blue", "poly", "Web", "Green");
+    let mut green = mk_env("green", "poly", "Web", "Green");
+    green.region = Some("eu-west-2".into());
+    app.environments = vec![blue, green];
+    app.rebuild_view();
+    app.table_state.select(Some(0));
+    app.execute_command("swap green");
+    let err = app.error_message.clone().unwrap_or_default();
+    assert!(
+        err.contains("not found in app 'poly' in us-east-1"),
+        "{err}"
+    );
+    app.error_message = None;
+    app.execute_command("swap green@eu-west-2");
+    let err = app.error_message.clone().unwrap_or_default();
+    assert!(err.contains("stay within one region"), "{err}");
+
+    // The action-menu picker offers no other-region candidates either.
+    app.error_message = None;
+    app.advance_action_flow(crate::app::Action::SwapCnames);
+    assert!(app.action_flow.is_none());
+    let err = app.error_message.clone().unwrap_or_default();
+    assert!(err.contains("no swap candidates"), "{err}");
 }

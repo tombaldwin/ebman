@@ -268,6 +268,9 @@ pub(crate) enum ActionFlow {
     },
     SwapTarget {
         source: String,
+        /// The source row's region. A CNAME swap happens within one
+        /// region, so the candidates and the confirm modal both use it.
+        source_region: String,
         picker: Picker,
     },
     Confirm(ConfirmModal),

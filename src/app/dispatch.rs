@@ -272,13 +272,12 @@ impl App {
             }
             "why" | "diagnose" => {
                 let env_opt = if let Some(d) = self.detail.as_ref() {
-                    Some((d.env_name.clone(), d.env_snapshot.application.clone()))
+                    Some(d.env_snapshot.clone())
                 } else {
-                    self.selected_env()
-                        .map(|e| (e.name.clone(), e.application.clone()))
+                    self.selected_env().cloned()
                 };
                 match env_opt {
-                    Some((env_name, app_name)) => self.open_why_red(env_name, app_name),
+                    Some(env) => self.open_why_red(&env),
                     None => {
                         self.error_message = Some(
                             "no env selected — press 1-9, click a row, or type ' to jump by name"
