@@ -20,6 +20,22 @@ CI additionally runs `cargo-deny` (advisories, licences), `cargo-semver-checks`
 effect/layer policy in `.candor/policy`. See CONTRIBUTING.md for what each one
 fails on.
 
+CI runs the suite with [cargo-nextest](https://nexte.st) (each test in its own
+process, a per-test time limit in `.config/nextest.toml`); `cargo test` runs the
+same tests locally. Also in CI, all non-gating:
+
+- `scripts/smoke.sh`: version, help, completions and an MCP demo session
+  against the built binary, also run on every release artifact.
+- A line-coverage report on pushes to main (`cargo llvm-cov`). It is a map of
+  untested layers, not a gate.
+- `cargo mutants --in-diff` on every push to main, with survivors in the job
+  summary (a PR fails on them). A weekly whole-tree sweep reports only new
+  survivors.
+
+Rendered screens are snapshot-tested with `insta` (`src/app/tests/snapshots/`):
+review an intended change with `cargo insta review`. `scripts/install-hooks.sh`
+installs the tracked git hooks (fmt, clippy, protected client names).
+
 See [`ARCHITECTURE.md`](../ARCHITECTURE.md) for the module map and the invariants the compiler doesn't enforce, and [`CONTRIBUTING.md`](../CONTRIBUTING.md) for the pre-PR checklist. See `BACKLOG.md` for in-flight and planned work, and `CLAUDE.md` for the AI-assisted-contributor rules (the project has been developed heavily with Claude Code).
 
 ## Distribution

@@ -1,0 +1,13 @@
+# cargo-nextest: CI runs the suite with it (each test in its own process,
+# with a per-test time limit); `cargo test` still works the same locally.
+
+[profile.default]
+# A test past 30s is reported as slow; past 2 minutes it is killed and
+# fails, rather than holding the job until GitHub's six-hour cap. Every
+# test here finishes in a few seconds, so this only fires on a hang.
+slow-timeout = { period = "30s", terminate-after = 4 }
+
+[profile.ci]
+slow-timeout = { period = "30s", terminate-after = 4 }
+# Every failure in one run, not the first.
+fail-fast = false

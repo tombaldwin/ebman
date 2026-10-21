@@ -48,13 +48,60 @@ jobs:
         run: |
           version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
           scripts/smoke.sh target/debug/ebman "$version"
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+      # nextest: each test in its own process, a time limit per test
+      # (.config/nextest.toml) so a hang fails one test rather than the
+      # job, and every failure reported rather than the first.
       - name: Test
-        run: cargo test --locked --all-targets
+        run: cargo nextest run --locked --all-targets --profile ci
       # `--all-targets` silently SKIPS doctests. Both current ones are
       # `ignore`d so nothing is lost today, but the gate did not exist —
       # a doctest added tomorrow would never run.
       - name: Doctests
         run: cargo test --locked --doc
+
+  # Line coverage, as a report: never a gate. The project measures test
+  # strength with mutation testing; what coverage adds is the map of
+  # whole layers nothing runs (a renderer, a CLI body), which a
+  # mutation run reports only as hundreds of separate survivors.
+  coverage:
+    name: coverage (report only)
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # the protected-name guard reads history
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov,nextest
+      - name: Measure
+        run: cargo llvm-cov nextest --locked --lib --lcov --output-path lcov.info
+      - name: Summary
+        run: |
+          report=$(cargo llvm-cov report --summary-only)
+          {
+            echo "### Line coverage (lib)"
+            echo
+            echo "$report" | awk '$1 == "TOTAL" {print "Total: " $10 " of lines"}'
+            echo
+            echo "Lowest 40 files:"
+            echo '```'
+            echo "$report" | awk '$10 ~ /%$/ && $1 != "TOTAL" {print $10, $1}' | sort -n | head -40
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: lcov
+          path: lcov.info
+          retention-days: 30
 
   fmt:
     name: rustfmt
