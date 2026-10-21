@@ -763,6 +763,10 @@ pub(crate) enum AppMsg {
     DetailAlarms {
         gen: u64,
         env_name: String,
+        /// Which fetch this answers: an `alarm_prefix` edit starts
+        /// another, and an answer matched under the old prefix must not
+        /// settle the panel.
+        ticket: Ticket,
         result: Result<Vec<crate::aws::CwAlarm>, String>,
     },
     /// Cost Explorer fetch result. Populates `App.costs` so the env

@@ -1201,9 +1201,11 @@ async fn detail_results_for_another_env_are_dropped() {
 
     // Alarms.
     let mut app = armed();
+    let ticket = app.detail.as_mut().unwrap().cw_alarms.begin();
     app.handle_msg(AppMsg::DetailAlarms {
         gen: app.generation,
         env_name: "worker-prod".into(),
+        ticket,
         result: Ok(Vec::new()),
     });
     assert!(
@@ -2195,14 +2197,15 @@ async fn a_top_errors_query_that_never_answered_does_not_block_forever() {
         .expect("the clock is past ten minutes");
     let d = app.detail.as_mut().unwrap();
     d.app_tab.top_errors.begin();
-    d.app_tab.top_errors_started = Some(long_ago);
+    d.app_tab.top_errors.backdate(long_ago);
     app.spawn_detail_top_errors("api-prod".into());
     let started = app
         .detail
         .as_ref()
         .unwrap()
         .app_tab
-        .top_errors_started
+        .top_errors
+        .in_flight_since()
         .unwrap();
     assert!(started > long_ago, "a fresh query replaced the stuck one");
 }
@@ -2966,6 +2969,8 @@ async fn a_config_change_forgets_only_what_it_invalidates() {
         let d = app.detail.as_mut().unwrap();
         let t = d.app_tab.metrics.begin();
         d.app_tab.metrics.settle_ticket(t, Ok(Default::default()));
+        let t = d.cw_alarms.begin();
+        d.cw_alarms.settle_ticket(t, Ok(Vec::new()));
         let t = d.app_tab.top_errors.begin();
         d.app_tab.top_errors.settle_ticket(
             t,
@@ -2980,57 +2985,118 @@ async fn a_config_change_forgets_only_what_it_invalidates() {
             }),
         );
     };
+    // (series, alarms, top errors) still shown after the edit.
     let kept = |app: &App| {
         let d = app.detail.as_ref().unwrap();
         (
             d.app_tab.metrics.ready().is_some(),
+            d.cw_alarms.ready().is_some(),
             d.app_tab.top_errors.ready().is_some(),
         )
     };
-
-    settle(&mut app);
-    app.set_app_tabs(tabs(&format!("{base}app.other.namespace = \"X\"\n")));
-    assert_eq!(kept(&app), (true, true), "another env's edit");
-
-    settle(&mut app);
-    app.set_app_tabs(tabs(&format!("{base}app.api-prod.threshold.x = \"1,2\"\n")));
-    assert_eq!(kept(&app), (false, true), "a threshold edit keeps the scan");
-
+    // One case per field, each from the same base.
+    for (edit, want, why) in [
+        (
+            "app.other.namespace = \"X\"\n",
+            (true, true, true),
+            "another env's edit",
+        ),
+        (
+            "app.api-prod.threshold.x = \"1,2\"\n",
+            (false, true, true),
+            "a threshold: series only",
+        ),
+        (
+            "app.api-prod.alarm_prefix = \"Shop-\"\n",
+            (true, false, true),
+            "the prefix: alarms only",
+        ),
+        (
+            "app.api-prod.error_fingerprint = \"x(?<fp>y)\"\n",
+            (true, true, false),
+            "the fingerprint: the query only",
+        ),
+    ] {
+        app.set_app_tabs(tabs(base));
+        settle(&mut app);
+        app.set_app_tabs(tabs(&format!("{base}{edit}")));
+        assert_eq!(kept(&app), want, "{why}");
+    }
+    app.set_app_tabs(tabs(base));
     settle(&mut app);
     app.set_app_tabs(tabs("app.api-prod.namespace = \"Shop\"\n"));
     assert_eq!(
         kept(&app),
-        (false, false),
-        "log_group removed: its rows go too"
+        (true, true, false),
+        "log_group removed: its rows go"
     );
-
     settle(&mut app);
-    app.set_app_tabs(tabs(
-        "app.api-prod.namespace = \"Shop\"\napp.api-prod.error_fingerprint = \"x(?<fp>y)\"\n",
-    ));
-    assert_eq!(kept(&app), (false, false), "a new fingerprint");
+    app.set_app_tabs(Default::default());
+    assert_eq!(
+        kept(&app),
+        (false, true, false),
+        "config removed: no series to keep"
+    );
 }
 
-/// After a reload outside a refresh empties the App tab on screen, it is
-/// fetched again, and not when it still has rows or is not on screen.
+/// After a reload outside a refresh empties the App tab on screen, its
+/// series and alarms are fetched again, each only if it was emptied, and
+/// not at all off the tab; an alarms answer matched under the old prefix
+/// does not settle the panel.
 #[tokio::test]
 async fn an_emptied_app_tab_on_screen_is_fetched_again() {
+    let fetched = |app: &mut App| {
+        let (mut series, mut alarms) = (false, false);
+        while let Ok(msg) = app.msg_rx.try_recv() {
+            series |= matches!(msg, AppMsg::DetailAppMetrics { .. });
+            alarms |= matches!(msg, AppMsg::DetailAlarms { .. });
+        }
+        (series, alarms)
+    };
     let mut app = detail_on("api-prod");
     app.demo_mode = true;
     app.detail.as_mut().unwrap().tab_idx = 1;
     assert_eq!(app.detail.as_ref().unwrap().tab(), DetailTab::App);
+    // As a config edit to both leaves them.
+    fetched(&mut app);
+    let d = app.detail.as_mut().unwrap();
+    d.app_tab.metrics.reset();
+    d.cw_alarms.reset();
+    app.detail_fetch_started = None;
     app.refetch_app_tab_if_emptied();
+    assert_eq!(fetched(&mut app), (true, true), "both blank: both fetched");
     assert!(
-        app.detail.as_ref().unwrap().app_tab.metrics.in_flight(),
-        "emptied: fetched"
+        app.detail_fetch_started.is_some(),
+        "and timed as a refresh is"
     );
+
+    // Series shown, alarms reset by a prefix edit: alarms alone.
+    let base = "app.api-prod.namespace = \"Shop\"\n";
+    app.set_app_tabs(crate::config::parse(base).app_tabs);
+    fetched(&mut app);
+    let d = app.detail.as_mut().unwrap();
+    let t = d.app_tab.metrics.begin();
+    d.app_tab.metrics.settle_ticket(t, Ok(Default::default()));
+    let old = d.cw_alarms.begin();
+    app.set_app_tabs(
+        crate::config::parse(&format!("{base}app.api-prod.alarm_prefix = \"x-\"\n")).app_tabs,
+    );
+    app.handle_msg(AppMsg::DetailAlarms {
+        gen: app.generation,
+        env_name: "api-prod".into(),
+        ticket: old,
+        result: Ok(Vec::new()),
+    });
+    assert!(
+        app.detail.as_ref().unwrap().cw_alarms.ready().is_none(),
+        "matched under the old prefix: dropped"
+    );
+    app.refetch_app_tab_if_emptied();
+    assert_eq!(fetched(&mut app), (false, true), "rows kept: not refetched");
 
     let mut app = detail_on("api-prod");
     app.refetch_app_tab_if_emptied();
-    assert!(
-        !app.detail.as_ref().unwrap().app_tab.metrics.in_flight(),
-        "not on screen"
-    );
+    assert_eq!(fetched(&mut app), (false, false), "not on screen");
 }
 
 /// The App's `app.` config is replaced only through `set_app_tabs`,

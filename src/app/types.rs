@@ -1087,6 +1087,9 @@ pub(crate) struct Fetch<T> {
     in_flight: bool,
     /// The latest request's [`Ticket`]: only its answer settles.
     issued: u64,
+    /// When the latest request began, while it is in flight: a request
+    /// whose task died never answers, and its age is how a caller tells.
+    began: Option<std::time::Instant>,
 }
 
 /// Which request a [`Fetch`]'s answer belongs to. A fetch that can be
@@ -1117,6 +1120,7 @@ impl<T> Default for Fetch<T> {
             settled: None,
             in_flight: false,
             issued: 0,
+            began: None,
         }
     }
 }
@@ -1127,6 +1131,7 @@ impl<T> Fetch<T> {
     pub(crate) fn begin(&mut self) -> Ticket {
         self.in_flight = true;
         self.issued = Ticket::next();
+        self.began = Some(std::time::Instant::now());
         Ticket(self.issued)
     }
 
@@ -1147,6 +1152,7 @@ impl<T> Fetch<T> {
     pub(crate) fn reset(&mut self) {
         self.settled = None;
         self.in_flight = false;
+        self.began = None;
         self.issued = Ticket::next();
     }
 
@@ -1156,6 +1162,23 @@ impl<T> Fetch<T> {
     pub(crate) fn settle(&mut self, result: Result<T, String>) {
         self.settled = Some(result);
         self.in_flight = false;
+    }
+
+    /// When the request in flight began; `None` with none in flight.
+    pub(crate) fn in_flight_since(&self) -> Option<std::time::Instant> {
+        self.began.filter(|_| self.in_flight)
+    }
+
+    /// Nothing to show and nothing coming: never asked, or
+    /// [`reset`](Self::reset) since.
+    pub(crate) fn is_blank(&self) -> bool {
+        !self.in_flight && self.settled.is_none()
+    }
+
+    /// Make the request in flight look as if it began at `at`.
+    #[cfg(test)]
+    pub(crate) fn backdate(&mut self, at: std::time::Instant) {
+        self.began = Some(at);
     }
 
     /// Is a request outstanding? True during a refresh even when a

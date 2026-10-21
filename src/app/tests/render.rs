@@ -2294,3 +2294,26 @@ async fn an_unconfigured_app_tab_shows_what_discovery_found() {
     let cache = form.fields.iter().find(|f| f.key == "elasticache").unwrap();
     assert_eq!(cache.value, "sessions-001");
 }
+
+/// A configured log group whose query has not run (not asked yet, or
+/// reset by a config edit) says `^R` runs it, rather than looking the
+/// same as no log group; with none configured, nothing is said.
+#[tokio::test]
+async fn top_errors_not_yet_queried_says_how_to_run_it() {
+    let hint = "top errors  not queried yet";
+    for (config, shown) in [
+        ("app.api-prod.log_group = \"var/log/app.log\"\n", true),
+        ("app.api-prod.namespace = \"Shop\"\n", false),
+    ] {
+        let mut app = App::for_tests(crate::aws::AwsClient::stub(), crate::config::parse(config));
+        app.environments = vec![mk_env("api-prod", "poly", "Web", "Green")];
+        app.view.invalidate();
+        app.rebuild_view();
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        app.detail.as_mut().unwrap().tab_idx = 1;
+        assert_eq!(app.detail.as_ref().unwrap().tab(), DetailTab::App);
+        app.detail.as_mut().unwrap().app_tab.top_errors.reset();
+        let text = render(&mut app, 160, 34);
+        assert_eq!(text.contains(hint), shown, "{config}\n{text}");
+    }
+}

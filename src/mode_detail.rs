@@ -420,9 +420,6 @@ pub(crate) struct AppTabState {
     /// `tab_loading`: a query can outlast the metrics refresh, and must
     /// not hold it up. `spawn_detail_top_errors` refuses to stack instead.
     pub top_errors: crate::app::Fetch<crate::app_tab::TopErrors>,
-    /// When the in-flight top-errors query started, so a task that never
-    /// answered stops blocking the next one.
-    pub top_errors_started: Option<std::time::Instant>,
 }
 
 pub(crate) struct DetailState {

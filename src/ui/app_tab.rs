@@ -45,7 +45,12 @@ pub(super) fn draw_detail_app(
         }
     }
     instance_rows(&mut lines, &detail.instances, area.width, theme);
-    top_error_rows(&mut lines, &detail.app_tab.top_errors, theme);
+    let queryable = !app.demo_mode
+        && matches!(
+            app.app_tab_source(env),
+            crate::app::AppTabSource::Configured(s) if s.log_group.is_some()
+        );
+    top_error_rows(&mut lines, &detail.app_tab.top_errors, queryable, theme);
     let mut title = format!("App · {}", humanize_range(detail.metrics_range_secs));
     if theme.icons == IconStyle::Ascii {
         title = asciify(&title);
@@ -322,13 +327,23 @@ fn metric_rows(
 fn top_error_rows(
     lines: &mut Vec<Line<'static>>,
     top: &crate::app::Fetch<crate::app_tab::TopErrors>,
+    queryable: bool,
     theme: &Theme,
 ) {
-    // Never asked: no `app.ENV.log_group`, or demo mode.
-    if !top.in_flight() && top.ready().is_none() && top.error().is_none() {
+    let muted = Style::default().fg(theme.muted);
+    if top.is_blank() {
+        // Configured but not run: not yet, or reset by a config edit.
+        // It is billed per scan, so it waits to be asked, and says so
+        // rather than looking like no log group at all.
+        if queryable {
+            lines.push(Line::default());
+            lines.push(Line::from(Span::styled(
+                "top errors  not queried yet: ^R runs it (billed per GB scanned)",
+                muted,
+            )));
+        }
         return;
     }
-    let muted = Style::default().fg(theme.muted);
     let window = crate::app_tab::TOP_ERRORS_WINDOW_MINS;
     lines.push(Line::default());
     if let Some(e) = top.error() {

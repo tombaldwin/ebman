@@ -356,16 +356,32 @@ impl App {
             old.envs.get(&d.env_name),
             self.cfg.app_tabs.envs.get(&d.env_name),
         );
-        if was == now {
-            return;
-        }
-        d.app_tab.metrics.reset();
+        // Each fetch is reset only by a change to what it reads: the
+        // series by everything but the alarm prefix and the query, the
+        // alarms by the prefix, top errors by its group and fingerprint.
+        let series = |s: Option<&crate::app_tab::AppTabSpec>| {
+            s.map(|s| crate::app_tab::AppTabSpec {
+                alarm_prefix: None,
+                log_group: None,
+                error_fingerprint: None,
+                ..s.clone()
+            })
+        };
+        let prefix =
+            |s: Option<&crate::app_tab::AppTabSpec>| s.and_then(|s| s.alarm_prefix.clone());
         let queried = |s: Option<&crate::app_tab::AppTabSpec>| {
             s.map(|s| (s.log_group.clone(), s.error_fingerprint.clone()))
         };
+        // A spec gained or lost differs too: the series then come from
+        // a preview, or from none.
+        if series(was) != series(now) {
+            d.app_tab.metrics.reset();
+        }
+        if prefix(was) != prefix(now) {
+            d.cw_alarms.reset();
+        }
         if queried(was) != queried(now) {
             d.app_tab.top_errors.reset();
-            d.app_tab.top_errors_started = None;
         }
     }
 
@@ -378,23 +394,26 @@ impl App {
         self.refetch_app_tab_if_emptied();
     }
 
-    /// The App tab on screen with nothing to show and nothing coming
-    /// (what [`set_app_tabs`](Self::set_app_tabs) leaves when the env's
-    /// config changed): fetch it.
+    /// The App tab on screen with its series or alarms blank (what
+    /// [`set_app_tabs`](Self::set_app_tabs) leaves when the config they
+    /// were fetched for changed): fetch them again. Top errors is billed
+    /// per scan, so it waits for `^R`, and the tab says so.
     pub(crate) fn refetch_app_tab_if_emptied(&mut self) {
-        let emptied = self.detail.as_ref().is_some_and(|d| {
-            d.tab() == DetailTab::App
-                && !d.app_tab.metrics.in_flight()
-                && d.app_tab.metrics.ready().is_none()
-                && d.app_tab.metrics.error().is_none()
-        });
-        if emptied {
-            let env = self
-                .detail
-                .as_ref()
-                .map(|d| d.env_name.clone())
-                .unwrap_or_default();
-            self.spawn_detail_app(env);
+        let Some(d) = self.detail.as_ref().filter(|d| d.tab() == DetailTab::App) else {
+            return;
+        };
+        let (series, alarms) = (d.app_tab.metrics.is_blank(), d.cw_alarms.is_blank());
+        let env = d.env_name.clone();
+        if series {
+            self.spawn_detail_app(env.clone());
+        }
+        if alarms {
+            self.spawn_detail_alarms(env);
+        }
+        if series || alarms {
+            // As a refresh would, so the tick's stuck check measures from
+            // this fetch rather than an older one.
+            self.detail_fetch_started = Some(std::time::Instant::now());
         }
     }
 

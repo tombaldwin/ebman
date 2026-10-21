@@ -269,8 +269,11 @@ impl App {
                 env_name, groups, ..
             } => self.handle_detail_log_groups(env_name, groups),
             AppMsg::DetailAlarms {
-                env_name, result, ..
-            } => self.handle_detail_alarms(env_name, result),
+                env_name,
+                ticket,
+                result,
+                ..
+            } => self.handle_detail_alarms(env_name, ticket, result),
             AppMsg::EnvVarsForEdit {
                 env_name, result, ..
             } => self.handle_env_vars_for_edit(env_name, result),
@@ -1345,6 +1348,7 @@ impl App {
     fn handle_detail_alarms(
         &mut self,
         env_name: String,
+        ticket: Ticket,
         result: Result<Vec<crate::aws::CwAlarm>, String>,
     ) {
         let Some(detail) = self.detail.as_mut() else {
@@ -1353,7 +1357,7 @@ impl App {
         if detail.env_name != env_name {
             return;
         }
-        detail.cw_alarms.settle(result);
+        detail.cw_alarms.settle_ticket(ticket, result);
     }
 
     fn handle_env_vars_for_edit(

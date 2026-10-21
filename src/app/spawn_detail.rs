@@ -47,9 +47,10 @@ impl App {
     /// AWS call shape but each lands on its own typed result so a stale
     /// fetch from a closed overlay can't clobber the Detail view.
     pub(super) fn spawn_detail_alarms(&mut self, env_name: String) {
-        if let Some(d) = self.detail.as_mut() {
-            d.cw_alarms.begin();
-        }
+        // No Detail view: nothing would take the answer.
+        let Some(ticket) = self.detail.as_mut().map(|d| d.cw_alarms.begin()) else {
+            return;
+        };
         // Demo-mode short-circuit (same pattern as
         // spawn_detail_instances / spawn_detail_events). Inject
         // fixture alarms so Detail/Health doesn't show an
@@ -60,6 +61,7 @@ impl App {
             let _ = self.msg_tx.send(AppMsg::DetailAlarms {
                 gen,
                 env_name,
+                ticket,
                 result,
             });
             return;
@@ -73,6 +75,7 @@ impl App {
             move |gen, result| AppMsg::DetailAlarms {
                 gen,
                 env_name: env_for_msg,
+                ticket,
                 result,
             },
         );
@@ -336,15 +339,15 @@ impl App {
         // answer could be (the query is bounded below): a task that
         // died without answering must not leave `^R` doing nothing.
         let stuck_after = crate::app_tab::TOP_ERRORS_BOUND + std::time::Duration::from_secs(30);
-        let running = d.app_tab.top_errors.in_flight()
-            && d.app_tab
-                .top_errors_started
-                .is_some_and(|t| t.elapsed() < stuck_after);
+        let running = d
+            .app_tab
+            .top_errors
+            .in_flight_since()
+            .is_some_and(|t| t.elapsed() < stuck_after);
         if running || self.demo_mode {
             return;
         }
         let ticket = d.app_tab.top_errors.begin();
-        d.app_tab.top_errors_started = Some(std::time::Instant::now());
         let fingerprint = self
             .cfg
             .app_tabs
