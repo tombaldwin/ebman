@@ -370,10 +370,9 @@ impl App {
             }
             crate::write_gate::Refusal::AmbiguousEnv { env, regions } => format!(
                 "{env} is in {} regions ({}), and a write cannot yet tell them \
-                 apart — narrow with :region {}",
+                 apart — :region off to work in the home region only",
                 regions.len(),
                 regions.join(", "),
-                regions.first().map(String::as_str).unwrap_or("REGION"),
             ),
         }
     }

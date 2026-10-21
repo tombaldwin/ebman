@@ -2082,3 +2082,26 @@ async fn a_swap_picked_from_the_action_menu_records_the_sources_region() {
         _ => panic!("no confirm modal: {:?}", app.error_message),
     }
 }
+
+#[tokio::test]
+async fn region_off_after_region_all_makes_a_once_twinned_name_writable_again() {
+    // The refusal remembers every region a name was seen in; `:region
+    // off` must forget the regions it drops, or the name stays refused
+    // for the session with nothing the operator can do about it.
+    let mut app = app_with_api_prod_in_two_regions();
+    app.apply_refresh(app.fanout_epoch, Ok(app.environments.clone()), Vec::new());
+    assert!(
+        app.deny_write("api-prod", "restart"),
+        "twinned under :region all"
+    );
+    app.execute_command("region off");
+    let mut home = mk_env("api-prod", "poly", "Web", "Green");
+    home.region = Some("us-east-1".into());
+    app.apply_refresh(app.fanout_epoch, Ok(vec![home]), Vec::new());
+    app.error_message = None;
+    assert!(
+        !app.deny_write("api-prod", "restart"),
+        "{:?}",
+        app.error_message
+    );
+}
