@@ -21,12 +21,23 @@ name: mutants
 
 on:
   pull_request:
+  # Every push to main, too. The changed-lines job ran only on pull
+  # requests, and work here lands on main directly: in its whole history
+  # the job never judged a maintainer's or an agent's change (found by
+  # the 2026-10-21 review; every PR on record was Dependabot's).
+  push:
+    branches: [main]
+  # Weekly, not nightly. A night's sweep is 24 shards of ~5 hours whose
+  # survivors were triaged by hand; a week's changes are what the next
+  # read wants, and the report job below lists only what is NEW.
   schedule:
-    - cron: "0 3 * * *"
+    - cron: "0 3 * * 0"
   workflow_dispatch:
 
 permissions:
   contents: read
+  # The report job reads the previous sweep's survivor list.
+  actions: read
 
 jobs:
   # The one that matters. `--in-diff` mutates only the lines this PR
@@ -37,9 +48,12 @@ jobs:
   # equivalent-mutant argument.
   in-diff:
     name: cargo-mutants (changed lines)
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
+    # A push cannot be refused after the fact, so there it reports rather
+    # than fails: survivors go to the job summary. A PR still blocks.
+    continue-on-error: ${{ github.event_name == 'push' }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -47,11 +61,26 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo install cargo-mutants --locked
-      - name: Diff against the merge base
+      - name: Diff against the merge base, or what the push replaced
+        env:
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
         run: |
           set -euo pipefail
-          base="${{ github.event.pull_request.base.sha }}"
-          git diff "$base" -- 'src/**/*.rs' > pr.diff
+          if [ -n "${PR_BASE}" ]; then
+            base="${PR_BASE}"
+          else
+            base="${PUSH_BEFORE}"
+          fi
+          # A force push or a new branch has no usable "before": nothing
+          # to diff against, which must not read as a clean pass.
+          if [ -z "${base}" ] || ! git cat-file -e "${base}^{commit}" 2>/dev/null \
+             || [ "${base}" = "0000000000000000000000000000000000000000" ]; then
+            echo "no base commit to diff against (${base:-none}); skipping" | tee -a "$GITHUB_STEP_SUMMARY"
+            : > pr.diff
+            exit 0
+          fi
+          git diff "${base}" -- 'src/**/*.rs' > pr.diff
           wc -l < pr.diff | xargs echo "diff lines:"
       - name: Mutate the changed lines
         run: |
@@ -63,6 +92,18 @@ jobs:
             exit 0
           fi
           cargo mutants --in-diff pr.diff --no-shuffle --timeout 120 -- --lib
+      - name: Survivors to the job summary
+        if: always()
+        run: |
+          if [ -s mutants.out/missed.txt ]; then
+            {
+              echo "### Surviving mutants on the changed lines"
+              echo
+              echo '```'
+              cat mutants.out/missed.txt
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
       - uses: actions/upload-artifact@v7
         if: always()
         with:
@@ -98,7 +139,7 @@ jobs:
   # actually happens.
   full:
     name: cargo-mutants (shard ${{ matrix.shard }}/24)
-    if: github.event_name != 'pull_request'
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     # 350, not 320. The first real run's shards finished at 298-300
     # minutes — 20 minutes of headroom on a 320 cap, which is close
@@ -139,3 +180,54 @@ jobs:
           name: mutants-shard-${{ matrix.shard }}
           path: mutants.out/
           retention-days: 14
+
+  # What the sweep found that the previous one did not. The full list is
+  # a reading list of hundreds, mostly known-equivalent; what changed
+  # since last week is the part worth reading.
+  report:
+    name: cargo-mutants (new survivors)
+    needs: full
+    if: always() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: mutants-shard-*
+          path: shards
+      - name: Merge this sweep's survivors
+        run: |
+          set -euo pipefail
+          cat shards/*/missed.txt 2>/dev/null | sort -u > missed-all.txt || true
+          wc -l < missed-all.txt | xargs echo "survivors this sweep:"
+      - name: Fetch the previous sweep's survivors
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          prev=$(gh run list --repo "${{ github.repository }}" --workflow mutants.yml \
+            --event schedule --status completed --limit 5 --json databaseId \
+            --jq "[.[] | select(.databaseId != ${{ github.run_id }})][0].databaseId")
+          if [ -n "${prev}" ] && gh run download "${prev}" --repo "${{ github.repository }}" \
+               --name mutants-missed --dir prev 2>/dev/null; then
+            sort -u prev/missed-all.txt > prev-missed.txt
+          else
+            echo "no previous sweep to compare with" | tee -a "$GITHUB_STEP_SUMMARY"
+            : > prev-missed.txt
+          fi
+      - name: New survivors to the job summary
+        run: |
+          comm -13 prev-missed.txt missed-all.txt > new-survivors.txt
+          {
+            echo "### Mutants surviving this sweep that did not survive the last"
+            echo
+            echo "$(wc -l < new-survivors.txt) new of $(wc -l < missed-all.txt) total."
+            echo
+            echo '```'
+            cat new-survivors.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: mutants-missed
+          path: missed-all.txt
+          retention-days: 90
