@@ -85,7 +85,8 @@ Tier definitions:
   4 the deploy lifecycle by key (done, 84125e3: snapshots, both
   watchdog maps, `AutoRollbackCheck`, both disarm passes, `state.toml`
   as `REGION/NAME` with name-only entries dropped); 5 DLQ and undo by
-  key; 6 `NAME@REGION` for the few commands that type a name
+  key (done, 0f756a6: the DLQ viewer and `:why` record their region,
+  undo entries carry an `EnvKey`); 6 `NAME@REGION` for the few commands that type a name
   (`:promote-env`, `:swap`, `:rds-detach`, `:rollout --env`, the read
   commands, completion), a bare name only when unique; 7 remove
   `client_for_env` / `region_for_name` / `env_regions` and both
@@ -93,15 +94,29 @@ Tier definitions:
   Done so far: the ambiguous-name refusal counts every source the router
   uses, a rollout (which names its regions) is exempt from it, and a
   confirm modal records its row's region and refuses a dispatch that
-  resolves elsewhere. Still by name: `dlq_client`, `spawn_events`,
-  `:alarms`, and the confirm modal's lint fetch (`spawn_confirm_lint`
+  resolves elsewhere. Still by name: `:why` at open (it then keeps that
+  region), the form submit path, `spawn_events`, `:alarms`, and the confirm modal's lint fetch (`spawn_confirm_lint`
   fetches by name and caches by `EnvKey`); and `costs` and
-  `stale_platforms` are keyed by name. Slices 2-4 route by key but are
+  `stale_platforms` are keyed by name. Slices 2-5 route by key but are
   not yet observable against same-named twins: the ambiguous-name
   refusal stops those writes first, so their guards against reverting
   to by-name routing land with slice 7. Anything that
   stores an `EnvKey` outside `ContextCaches` must be cleared in
   `apply_rebuild` itself: the key carries no account.
+
+- [ ] **A test cannot reach AWS through a remote-region client.**
+  Under `cfg(test)` nothing stops `RegionClient::resolve` for a region
+  other than home: it builds a real `AwsClient` (`aws_config` reads
+  `~/.aws`) and the spawned call would go out with the developer's
+  credentials. Tests that open Detail, `:why` or the DLQ viewer on a
+  row in another region stay off the network only because
+  `#[tokio::test]` is current-thread and their bodies never await, so
+  the spawned task is never polled. One added `.await` changes that
+  silently. Fix: a `cfg(test)` refusal in `resolve` for the remote arms
+  (tests that need a remote client seed the cache, as the role-cache
+  tests do), plus a guard test that a remote resolve fails offline.
+  `cached_client_reuses_one_client_per_profile_and_region` builds real
+  clients on purpose and needs its own seam.
 
 - [ ] **Audit writers take a typed label, and the verb spelling guard
   goes.** `no_surface_spells_a_shared_verb_itself` (`src/verb.rs`) bans
