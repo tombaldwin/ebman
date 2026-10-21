@@ -356,8 +356,11 @@ fn app_line(env: &str, field: &str, v: &str) -> String {
     if clean(&quoted) {
         return quoted;
     }
+    // Bare, a value is read trimmed and a leading quote opens a quoted
+    // one: written so, ` a"#` would save as `a"#`. Only a value that
+    // reads back as itself may go bare.
     let bare = format!("app.{env}.{field} = {v}");
-    if clean(&bare) {
+    if v.trim() == v && !v.starts_with('"') && clean(&bare) {
         bare
     } else {
         quoted
@@ -831,6 +834,18 @@ mod tests {
                 "{text} -> {back}"
             );
         }
+    }
+
+    /// A value neither form can write back as itself is refused with
+    /// the parser's reason, not saved changed.
+    #[test]
+    fn a_value_no_form_can_write_back_is_refused_not_changed() {
+        let spec = crate::app_tab::AppTabSpec {
+            alarm_prefix: Some(" a\"#".into()),
+            ..Default::default()
+        };
+        let result = lines_from_fields("e", &fields(Some(&spec)));
+        assert!(result.is_err(), "{result:?}");
     }
 
     #[test]
