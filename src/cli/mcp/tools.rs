@@ -1793,13 +1793,20 @@ impl Server {
 
     /// The env list with each env's firing alarms. A failed alarm
     /// check leaves the list standing with `firing_alarms: null`.
+    /// The env list with each env's firing alarms. A failed alarm
+    /// check leaves the list standing with `firing_alarms: null`.
     async fn tool_list_environments(&self, args: &Value) -> Result<String, String> {
-        let envs = self.fetch_envs(args).await?;
-        let firing = match self.backend {
-            Backend::Demo => Some(demo_fixture::firing_alarms()),
+        let (envs, firing) = match self.backend {
+            Backend::Demo => (demo_fixture::envs(), Some(demo_fixture::firing_alarms())),
             Backend::Aws => {
+                // One client for both calls, not one per call.
+                let profile = arg_str(args, "profile");
                 let client = self.client(args).await?;
-                match crate::cli::envs::fetch_firing_by_env(
+                let envs = client
+                    .list_environments()
+                    .await
+                    .map_err(|e| tool_error(&profile, "list_environments", &e.to_string()))?;
+                let firing = match crate::cli::envs::fetch_firing_by_env(
                     &client,
                     &envs,
                     &self.safety_cfg.alarm_dimensions,
@@ -1812,7 +1819,8 @@ impl Server {
                         tracing::warn!(error = %e, "list_environments: alarm check failed");
                         None
                     }
-                }
+                };
+                (envs, firing)
             }
         };
         Ok(crate::cli::envs::render_envs_json(&envs, firing.as_ref()))
