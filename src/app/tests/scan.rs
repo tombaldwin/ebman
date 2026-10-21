@@ -348,7 +348,17 @@ pub(crate) fn history_texts() -> Option<Vec<(String, String)>> {
     }
     let mut texts = Vec::new();
     // NUL-separated records: a message may contain anything else.
-    let log = git(&["log", "--all", "--format=%h%x00%B%x00"]).unwrap_or_default();
+    // What is published: HEAD, branches and tags. Not `--all`, which
+    // also reads the stash and stale remote-tracking refs, local state
+    // that can fail this for reasons the code does not have.
+    let log = git(&[
+        "log",
+        "HEAD",
+        "--branches",
+        "--tags",
+        "--format=%h%x00%B%x00",
+    ])
+    .unwrap_or_default();
     let mut parts = log.split('\0');
     while let (Some(hash), Some(body)) = (parts.next(), parts.next()) {
         let hash = hash.trim();
@@ -742,12 +752,23 @@ mod protected_names {
         // It reads the messages at all: a word every history here has
         // is found, through the same matcher.
         let probe = vec!["refactor".to_string()];
-        for kind in ["commit ", "tag "] {
+        assert!(
+            texts.iter().any(|(what, t)| what.starts_with("commit ")
+                && !super::protected_name_hits(t, &probe).is_empty()),
+            "the history scan read no commit messages ({} texts)",
+            texts.len()
+        );
+        // Tags: there are some to read (a word in them would be chance).
+        if std::process::Command::new("git")
+            .args(["tag", "--list"])
+            .output()
+            .is_ok_and(|o| !o.stdout.is_empty())
+        {
             assert!(
-                texts.iter().any(|(what, t)| what.starts_with(kind)
-                    && !super::protected_name_hits(t, &probe).is_empty()),
-                "the history scan read no {kind}texts ({} in all)",
-                texts.len()
+                texts
+                    .iter()
+                    .any(|(what, t)| what.starts_with("tag ") && !t.trim().is_empty()),
+                "the history scan read no tag texts"
             );
         }
         let names = super::protected_names();
