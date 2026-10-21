@@ -1925,3 +1925,31 @@ async fn a_confirmed_action_on_a_name_in_two_regions_is_not_dispatched() {
         );
     }
 }
+
+#[tokio::test]
+async fn a_name_once_seen_in_two_regions_stays_ambiguous_when_a_listing_drops_one() {
+    // The table alone said one region after eu-west-2's listing failed,
+    // while `region_for_name` could still route by Detail's snapshot or
+    // by what was seen before.
+    let mut app = app_with_api_prod_in_two_regions();
+    app.apply_refresh(app.fanout_epoch, Ok(app.environments.clone()), Vec::new());
+    let home_only: Vec<_> = app
+        .environments
+        .iter()
+        .filter(|e| e.region.is_none())
+        .cloned()
+        .collect();
+    app.apply_refresh(app.fanout_epoch, Ok(home_only), Vec::new());
+    assert_eq!(app.regions_named("api-prod").len(), 1 + 1, "seen in two");
+    assert!(app.deny_write("api-prod", "restart"));
+
+    // Detail's snapshot counts too, even with the remembered set empty.
+    let mut app = app_with_api_prod_in_two_regions();
+    app.open_detail();
+    app.environments.retain(|e| e.region.is_none());
+    app.caches.env_regions.clear();
+    assert!(
+        app.deny_write("api-prod", "restart"),
+        "Detail is on eu-west-2's"
+    );
+}

@@ -259,14 +259,29 @@ impl App {
         })
     }
 
-    /// The distinct regions of the fleet's environments named `env_name`.
+    /// Every region `env_name` may mean, from the same three sources
+    /// `region_for_name` routes a write by: the table's rows, Detail's
+    /// snapshot, and every region the name was seen in this context.
+    /// Counting the table alone let a refresh that lost one region's
+    /// listing make a name in two look like a name in one, while the
+    /// router still had the other in Detail.
     pub(crate) fn regions_named(&self, env_name: &str) -> Vec<String> {
-        let regions: std::collections::BTreeSet<String> = self
+        let mut regions: std::collections::BTreeSet<String> = self
             .environments
             .iter()
             .filter(|e| e.name == env_name)
             .map(|e| self.region_for(e))
             .collect();
+        if let Some(d) = self
+            .detail
+            .as_ref()
+            .filter(|d| d.env_snapshot.name == env_name)
+        {
+            regions.insert(self.region_for(&d.env_snapshot));
+        }
+        if let Some(seen) = self.caches.env_regions.get(env_name) {
+            regions.extend(seen.iter().cloned());
+        }
         regions.into_iter().collect()
     }
 

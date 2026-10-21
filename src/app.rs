@@ -3407,8 +3407,16 @@ impl App {
             })
             .map(|e| self.region_for(e))
             // Then what we last saw. Covers the write whose row left
-            // the table during its own undo window.
-            .or_else(|| self.caches.env_regions.get(env_name).cloned())
+            // the table during its own undo window. Only when that is
+            // one region: a write to a name seen in two is refused
+            // (`regions_named`) before it gets here.
+            .or_else(|| {
+                self.caches
+                    .env_regions
+                    .get(env_name)
+                    .filter(|r| r.len() == 1)
+                    .and_then(|r| r.first().cloned())
+            })
             .unwrap_or_else(|| self.context.region.clone())
     }
 

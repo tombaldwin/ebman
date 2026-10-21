@@ -1008,7 +1008,11 @@ impl App {
                 // appearing is exactly the case this exists for.
                 for e in &envs {
                     if let Some(r) = e.region.as_ref().filter(|r| !r.is_empty()) {
-                        self.caches.env_regions.insert(e.name.clone(), r.clone());
+                        self.caches
+                            .env_regions
+                            .entry(e.name.clone())
+                            .or_default()
+                            .insert(r.clone());
                     }
                 }
                 self.environments = envs;

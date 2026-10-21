@@ -82,7 +82,10 @@ pub(crate) struct ContextCaches {
     /// An environment cannot move between regions, so a remembered
     /// answer can only go stale by the name being reused in a different
     /// one. The live table always wins, and a context switch clears it.
-    pub(crate) env_regions: std::collections::HashMap<String, String>,
+    /// Every region a name was seen in: under `:region all` a name can
+    /// be in two, and remembering only the last one let a refresh that
+    /// lost one region's listing make the name look unambiguous.
+    pub(crate) env_regions: std::collections::HashMap<String, std::collections::BTreeSet<String>>,
     pub(crate) applications: Vec<Application>,
     /// `family_key → newest available version` from `ListAvailableSolutionStacks`,
     /// built by `spawn_solution_stacks`. Drives the envs-table stale-platform
