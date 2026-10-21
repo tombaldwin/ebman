@@ -1830,3 +1830,98 @@ async fn a_refusal_is_audited_under_the_label_its_dispatch_uses() {
         "a batch refusal must correlate the same way a single one does: {line}"
     );
 }
+
+// --- a name in two regions ---------------------------------------------
+//
+// Every write reaches its environment by NAME (`client_for_env` →
+// `region_for_name`, first match). Under `:region all` with `api-prod`
+// in two regions, a write aimed at one could land on the other, so a
+// write to an ambiguous name is refused until writes carry the region.
+
+/// `read_only_app_with_env`'s `api-prod`, writes allowed, plus a second
+/// `api-prod` in eu-west-2, which is the row selected.
+fn app_with_api_prod_in_two_regions() -> App {
+    let mut app = read_only_app_with_env();
+    app.read_only = false;
+    let mut away = mk_env("api-prod", "poly", "Web", "Green");
+    away.region = Some("eu-west-2".into());
+    app.environments.push(away);
+    app.multi_regions = vec!["us-east-1".into(), "eu-west-2".into()];
+    app.rebuild_view();
+    let eu_row = app
+        .view
+        .filtered()
+        .iter()
+        .position(|&i| app.environments[i].region.is_some())
+        .expect("eu row");
+    app.table_state.select(Some(eu_row));
+    app
+}
+
+#[tokio::test]
+async fn every_write_to_a_name_in_two_regions_is_refused() {
+    for cmd in WRITE_COMMANDS {
+        let mut app = app_with_api_prod_in_two_regions();
+        app.execute_command(cmd);
+        let err = app.error_message.as_deref().unwrap_or_default();
+        assert!(
+            err.contains("2 regions") && err.contains(":region"),
+            ":{cmd} wrote to a name in two regions — got {err:?}"
+        );
+    }
+    for cmd in BATCH_WRITE_COMMANDS {
+        let mut app = app_with_api_prod_in_two_regions();
+        app.multi_selected = ["api-prod".to_string()].into_iter().collect();
+        app.execute_command(cmd);
+        let err = app.error_message.as_deref().unwrap_or_default();
+        assert!(
+            err.contains("api-prod"),
+            ":{cmd} batch-wrote to a name in two regions — got {err:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_name_in_one_region_of_a_multi_region_fleet_can_still_be_written() {
+    let mut app = app_with_api_prod_in_two_regions();
+    let mut other = mk_env("api-staging", "poly", "Web", "Green");
+    other.region = Some("eu-west-2".into());
+    app.environments.push(other);
+    assert!(
+        !app.deny_write("api-staging", "restart"),
+        "{:?}",
+        app.error_message
+    );
+    assert!(app.deny_write("api-prod", "restart"));
+    assert_eq!(
+        app.refusal_for("api-prod").map(|r| r.rule()),
+        Some("ambiguous_env")
+    );
+}
+
+#[tokio::test]
+async fn a_confirmed_action_on_a_name_in_two_regions_is_not_dispatched() {
+    // The confirm-modal actions gate at dispatch (`spawn_action`), where
+    // the env is resolved by name.
+    for cmd in ["restart", "rebuild", "stop", "start"] {
+        let mut app = app_with_api_prod_in_two_regions();
+        app.execute_command(cmd);
+        let modal = match app.action_flow.as_ref() {
+            Some(ActionFlow::Confirm(modal)) => modal.clone(),
+            // Refused before a modal opened is refused too.
+            _ => {
+                let err = app.error_message.as_deref().unwrap_or_default();
+                assert!(err.contains("2 regions"), ":{cmd} — got {err:?}");
+                continue;
+            }
+        };
+        app.error_message = None;
+        app.spawn_action(modal);
+        let err = app.error_message.as_deref().unwrap_or_default();
+        assert!(err.contains("2 regions"), ":{cmd} dispatched — got {err:?}");
+        assert!(
+            app.pending_actions.is_empty(),
+            ":{cmd} left a pending action"
+        );
+    }
+}

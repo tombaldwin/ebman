@@ -244,6 +244,30 @@ impl App {
             safety_envs: &self.cfg.safety_envs,
             safety_accounts: &self.cfg.safety_accounts,
         })
+        // Then the TUI's own rung. Every write reaches its environment by
+        // NAME (`client_for_env` → `region_for_name`, first match), so
+        // under `:region all` with `api-prod` in two regions a restart,
+        // a deploy or an unattended auto-rollback on one could land on
+        // the other. Refused until writes carry the region they were
+        // aimed at.
+        .or_else(|| {
+            let regions = self.regions_named(env_name);
+            (regions.len() > 1).then(|| crate::write_gate::Refusal::AmbiguousEnv {
+                env: env_name.to_string(),
+                regions,
+            })
+        })
+    }
+
+    /// The distinct regions of the fleet's environments named `env_name`.
+    pub(crate) fn regions_named(&self, env_name: &str) -> Vec<String> {
+        let regions: std::collections::BTreeSet<String> = self
+            .environments
+            .iter()
+            .filter(|e| e.name == env_name)
+            .map(|e| self.region_for(e))
+            .collect();
+        regions.into_iter().collect()
     }
 
     /// Render a refusal in the TUI's voice — the freeze age, the
@@ -301,6 +325,13 @@ impl App {
             crate::write_gate::Refusal::AccountPinned { profile } => {
                 format!("read-only mode (account pinned via safety.accounts.{profile})")
             }
+            crate::write_gate::Refusal::AmbiguousEnv { env, regions } => format!(
+                "{env} is in {} regions ({}), and a write cannot yet tell them \
+                 apart — narrow with :region {}",
+                regions.len(),
+                regions.join(", "),
+                regions.first().map(String::as_str).unwrap_or("REGION"),
+            ),
         }
     }
 

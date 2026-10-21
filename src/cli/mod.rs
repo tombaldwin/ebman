@@ -222,6 +222,14 @@ pub(crate) fn write_refusal_unaudited(
         crate::write_gate::Refusal::GlobalReadOnly => {
             format!("refusing {env} — safety.read_only is set in config.toml")
         }
+        // The CLI writes in one region, so `decide` cannot produce this
+        // here; worded anyway rather than left to a wildcard.
+        crate::write_gate::Refusal::AmbiguousEnv { regions, .. } => {
+            format!(
+                "refusing {env} — the name is in more than one region ({})",
+                regions.join(", ")
+            )
+        }
     };
     Some((refusal, message, pin_profile))
 }

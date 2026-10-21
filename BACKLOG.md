@@ -38,6 +38,26 @@ Tier definitions:
 
 #### Refactors and test hygiene
 
+- [ ] **Writes carry the region they were aimed at** *(architecture — needs a design note; found 2026-10-21)*
+
+  Every per-env client and audit line resolves its environment by
+  NAME: `client_for_env` → `region_for_name`, first match in the
+  fleet (about 90 call sites, every write and the unattended
+  auto-rollback among them). Under `:region all` with `api-prod` in
+  two regions, a write aimed at one could land on the other. Since
+  2026-10-21 the write gate refuses a name the fleet holds in more than
+  one region (`Refusal::AmbiguousEnv`), which is safe but means those
+  envs cannot be written without `:region` narrowing. The fix is for
+  the target to be an `EnvKey { region, name }` from the moment the
+  operator picks the row: confirm modals, pending dispatch, the
+  watchdogs and deploy snapshots, `multi_selected`, the Detail and DLQ
+  targets, and `ActionResult`. Reads by name (`:why`, `:alarms`,
+  Detail's own fetches use the snapshot already) have the same shape
+  and can show the other region's data. The fleet-view caches still
+  keyed by name (`history`, `newly_red`, `newly_added`, `prev_health`,
+  `prev_status`, `env_tag_cache`, `env_health_cache`, `env_regions`)
+  move in the same pass.
+
 - [ ] **One way to drop a superseded answer: tickets for the Metrics tab
   and discovery.** The App tab's series, its top errors and the Detail
   alarms settle through `Fetch::settle_ticket`, and `Fetch` records when

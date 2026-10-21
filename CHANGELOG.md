@@ -74,6 +74,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- **A write to an environment whose name is in two regions is refused.**
+  Under `:region all`, writes found their environment by name and took
+  the first match, so with `api-prod` in two regions a restart, a
+  deploy or an unattended auto-rollback aimed at one could reach the
+  other. Such a write is now refused (audited as `ambiguous_env`) with
+  the regions named and `:region` suggested, until writes carry the
+  region they were aimed at.
 - **`:config-diff-local` reads a saved config containing `K: {}`.** The
   old YAML parser rejected an inline empty mapping and failed the whole
   file; it now diffs as `{}`. A tagged value (`!tag value`) keeps its
