@@ -84,7 +84,7 @@ impl App {
         crate::audit::append_dlq_op(
             self.context.account_id.as_deref(),
             self.context.profile.as_deref(),
-            &self.region_for_name(&env_name),
+            &self.dlq_region(),
             crate::verb::Verb::DlqDelete.audit_label(),
             &env_name,
             &[("queue", queue_label), ("msg_id", &msg.id)],
@@ -151,7 +151,7 @@ impl App {
         crate::audit::append_dlq_op(
             self.context.account_id.as_deref(),
             self.context.profile.as_deref(),
-            &self.region_for_name(&env_name),
+            &self.dlq_region(),
             crate::verb::Verb::DlqResend.audit_label(),
             &env_name,
             &[("msg_id", &msg.id)],
@@ -209,7 +209,7 @@ impl App {
         crate::audit::append_dlq_op(
             self.context.account_id.as_deref(),
             self.context.profile.as_deref(),
-            &self.region_for_name(&env_name),
+            &self.dlq_region(),
             crate::verb::Verb::DlqPurge.audit_label(),
             &env_name,
             &[],
@@ -279,7 +279,7 @@ impl App {
         crate::audit::append_dlq_op(
             self.context.account_id.as_deref(),
             self.context.profile.as_deref(),
-            &self.region_for_name(&env_name),
+            &self.dlq_region(),
             "dlq-replay",
             &env_name,
             &[("count", &count.to_string())],

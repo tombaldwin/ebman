@@ -279,20 +279,25 @@ async fn detail_and_why_and_dlq_use_the_rows_own_region() {
         "eu-west-2",
         "Detail must fetch from where the environment actually is"
     );
-    app.dlq = Some(crate::app::DlqState {
-        env_name: "api-prod".into(),
-        main_queue_url: String::new(),
-        dlq_url: String::new(),
-        messages: Vec::new(),
-        list_state: Default::default(),
-        loading: false,
-        error: None,
-        confirm_purge: false,
-        purge_typed: tui_common::TextInput::new(),
-        viewing: crate::app::QueueView::Dlq,
-        confirm_delete_id: None,
-        replay_input: None,
-    });
+    // Through the real path: Detail's Queue tab records the row's region
+    // on the viewer. Demo mode keeps the viewer's first peek off AWS.
+    {
+        let d = app.detail.as_mut().expect("detail open");
+        d.tabs = vec![crate::app::DetailTab::Queue];
+        d.tab_idx = 0;
+        d.queues.dlq_url = Some("https://sqs/q-dlq".into());
+    }
+    app.demo_mode = true;
+    app.open_dlq();
+    app.demo_mode = false;
+    assert_eq!(
+        app.dlq.as_ref().map(|d| d.region.as_str()),
+        Some("eu-west-2")
+    );
+    // The viewer keeps it once the row is gone.
+    app.environments.clear();
+    app.view.invalidate();
+    app.rebuild_view();
     assert_eq!(
         app.dlq_client().region_for_tests(),
         "eu-west-2",
@@ -323,6 +328,7 @@ async fn the_dlq_viewer_renders_its_messages() {
     app.table_state.select(Some(0));
     app.dlq = Some(crate::app::DlqState {
         env_name: "wk-prod".into(),
+        region: "us-east-1".into(),
         main_queue_url: "https://sqs.eu-west-2.amazonaws.com/1/awseb-main".into(),
         dlq_url: "https://sqs.eu-west-2.amazonaws.com/1/awseb-main-dlq".into(),
         messages: vec![crate::aws::QueueMessage {

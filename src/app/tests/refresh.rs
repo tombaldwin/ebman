@@ -650,11 +650,11 @@ fn build_undo_entry_set_with_prior_value_reverses_to_set() {
         "EC2KeyName".into(),
         "foo".into(),
     )];
-    let entry = crate::app::build_undo_entry("prod", "keypair foo", &to_set, &[], &pre);
+    let entry = crate::app::build_undo_entry(&home_key("prod"), "keypair foo", &to_set, &[], &pre);
     assert_eq!(entry.to_set.len(), 1);
     assert_eq!(entry.to_set[0].2, "bar");
     assert!(entry.to_remove.is_empty());
-    assert_eq!(entry.env_name, "prod");
+    assert_eq!(entry.env, home_key("prod"));
     assert_eq!(entry.original_summary, "keypair foo");
 }
 
@@ -669,8 +669,13 @@ fn build_undo_entry_set_with_no_prior_value_reverses_to_remove() {
         "Application Healthcheck URL".into(),
         "/healthz".into(),
     )];
-    let entry =
-        crate::app::build_undo_entry("prod", "health-check-url /healthz", &to_set, &[], &pre);
+    let entry = crate::app::build_undo_entry(
+        &home_key("prod"),
+        "health-check-url /healthz",
+        &to_set,
+        &[],
+        &pre,
+    );
     assert!(entry.to_set.is_empty());
     assert_eq!(entry.to_remove.len(), 1);
     assert_eq!(entry.to_remove[0].1, "Application Healthcheck URL");
@@ -690,7 +695,7 @@ fn build_undo_entry_empty_string_prior_treated_as_unset() {
         "EC2KeyName".into(),
         "foo".into(),
     )];
-    let entry = crate::app::build_undo_entry("prod", "keypair foo", &to_set, &[], &pre);
+    let entry = crate::app::build_undo_entry(&home_key("prod"), "keypair foo", &to_set, &[], &pre);
     assert!(entry.to_set.is_empty());
     assert_eq!(entry.to_remove.len(), 1);
 }
@@ -708,7 +713,8 @@ fn build_undo_entry_remove_with_prior_value_reverses_to_set() {
         "aws:autoscaling:launchconfiguration".into(),
         "EC2KeyName".into(),
     )];
-    let entry = crate::app::build_undo_entry("prod", "clear keypair", &[], &to_remove, &pre);
+    let entry =
+        crate::app::build_undo_entry(&home_key("prod"), "clear keypair", &[], &to_remove, &pre);
     assert_eq!(entry.to_set.len(), 1);
     assert_eq!(entry.to_set[0].2, "bar");
     assert!(entry.to_remove.is_empty());
@@ -719,7 +725,7 @@ fn build_undo_entry_remove_with_no_prior_value_is_a_noop_reverse() {
     // Original: remove a key that was already absent. Reverse:
     // nothing (both sides empty).
     let entry = crate::app::build_undo_entry(
-        "prod",
+        &home_key("prod"),
         "clear keypair",
         &[],
         &[(
@@ -740,7 +746,7 @@ async fn handle_undo_captured_pushes_into_history_with_cap() {
     let mut app = test_app();
     for i in 0..(crate::app::UNDO_HISTORY_CAP + 2) {
         let entry = crate::app::UndoEntry {
-            env_name: "prod".into(),
+            env: home_key("prod"),
             to_set: vec![("ns".into(), format!("k{i}"), "v".into())],
             to_remove: vec![],
             original_summary: format!("write #{i}"),

@@ -1700,3 +1700,109 @@ fn no_function_mixes_the_home_region_with_a_rows() {
         "home and per-row regions mixed in: {hits:#?}"
     );
 }
+
+fn eu_worker(name: &str) -> crate::aws::Environment {
+    let mut env = mk_env(name, "poly", "Worker", "Red");
+    env.region = Some("eu-west-2".into());
+    env
+}
+
+#[tokio::test]
+async fn the_why_overlay_records_the_region_it_opened_in() {
+    // Demo mode answers the fetches from fixtures, so opening the overlay
+    // on a row in another region reaches no AWS from a test.
+    let mut app = test_app();
+    app.demo_mode = true;
+    app.environments = vec![eu_worker("jobs")];
+    app.rebuild_view();
+    app.open_why_red("jobs".into(), "poly".into());
+    let Some(crate::app::Overlay::WhyRed { region, .. }) = app.current_overlay.as_ref() else {
+        panic!("no overlay");
+    };
+    assert_eq!(region, "eu-west-2");
+}
+
+#[tokio::test]
+async fn the_why_overlay_and_its_dlq_drill_keep_that_region() {
+    // Its fetches were spread over time: once the row left the table, the
+    // name resolved to the home region and the later fetches, and a DLQ
+    // drill, went there. Nothing here is listed, so by name it is home.
+    let mut app = test_app();
+    app.current_overlay = Some(crate::app::Overlay::WhyRed {
+        env_name: "jobs".into(),
+        region: "eu-west-2".into(),
+        tier: "Worker".into(),
+        events: None,
+        alarms: None,
+        instances: None,
+        deploys: None,
+        queues: Some(Ok(crate::aws::WorkerQueues {
+            main_url: Some("https://sqs/q".into()),
+            dlq_url: Some("https://sqs/q-dlq".into()),
+            main_stats: None,
+            dlq_stats: None,
+            dlq_origin: None,
+        })),
+        dlq_messages: None,
+        session_id: 1,
+        cursor: 0,
+    });
+    assert_eq!(app.why_red_client().region_for_tests(), "eu-west-2");
+
+    // Drilling spawns the DLQ peek; demo mode keeps that off the network.
+    app.demo_mode = true;
+    press(&mut app, KeyCode::Char('d'), KeyModifiers::NONE);
+    let dlq = app.dlq.as_ref().expect("d drills into the DLQ");
+    assert_eq!(dlq.region, "eu-west-2");
+    assert_eq!(app.dlq_region(), "eu-west-2");
+    app.demo_mode = false;
+    assert_eq!(app.dlq_client().region_for_tests(), "eu-west-2");
+}
+
+#[tokio::test]
+async fn undo_does_not_reverse_onto_a_same_named_env_elsewhere() {
+    // The entry was captured on the eu env; only the home one is listed.
+    let mut app = test_app();
+    app.environments = vec![mk_env("api-prod", "poly", "Web", "Green")];
+    app.rebuild_view();
+    app.undo_history.push_back(crate::app::UndoEntry {
+        env: eu_key("api-prod"),
+        to_set: vec![("ns".into(), "k".into(), "old".into())],
+        to_remove: Vec::new(),
+        original_summary: "set k".into(),
+        captured_at: chrono::Utc::now(),
+    });
+    app.cmd_undo();
+    let err = app.error_message.clone().unwrap_or_default();
+    assert!(err.contains("no longer in the current view"), "{err}");
+    assert!(app.pending_actions.is_empty(), "{:?}", app.pending_actions);
+}
+
+#[tokio::test]
+async fn the_why_overlays_enter_drill_keeps_its_region_too() {
+    let mut app = test_app();
+    app.current_overlay = Some(crate::app::Overlay::WhyRed {
+        env_name: "jobs".into(),
+        region: "eu-west-2".into(),
+        tier: "Worker".into(),
+        events: None,
+        alarms: None,
+        instances: None,
+        deploys: None,
+        queues: Some(Ok(crate::aws::WorkerQueues {
+            main_url: Some("https://sqs/q".into()),
+            dlq_url: Some("https://sqs/q-dlq".into()),
+            main_stats: None,
+            dlq_stats: None,
+            dlq_origin: None,
+        })),
+        dlq_messages: None,
+        session_id: 1,
+        cursor: 0,
+    });
+    app.why_items = vec![crate::app::WhyItem::OpenDlq];
+    app.demo_mode = true;
+    press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    let dlq = app.dlq.as_ref().expect("Enter on the DLQ item drills in");
+    assert_eq!(dlq.region, "eu-west-2");
+}

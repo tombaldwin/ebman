@@ -24,6 +24,9 @@ use crate::aws::QueueMessage;
 /// Cleared on `Esc` / `q` / context switch.
 pub(crate) struct DlqState {
     pub env_name: String,
+    /// The env's region, recorded when the viewer opened: its queue URLs
+    /// were fetched there, and SQS URLs only exist in their own region.
+    pub region: String,
     pub main_queue_url: String,
     pub dlq_url: String,
     pub messages: Vec<QueueMessage>,

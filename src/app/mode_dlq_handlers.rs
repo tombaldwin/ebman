@@ -22,6 +22,7 @@ impl App {
         let main_url = detail.queues.main_url.clone().unwrap_or_default();
         let dlq = DlqState {
             env_name: detail.env_name.clone(),
+            region: self.region_for(&detail.env_snapshot),
             main_queue_url: main_url,
             dlq_url,
             messages: Vec::new(),
@@ -43,14 +44,16 @@ impl App {
     /// when drilling in from the `:why` overlay, which already has the
     /// env's queue URLs from its `WhyRedQueues` fetch and shouldn't make
     /// the operator detour through Detail's Queue tab first.
-    pub(super) fn open_dlq_from_why(
-        &mut self,
-        env_name: String,
-        main_queue_url: String,
-        dlq_url: String,
-    ) {
+    pub(super) fn open_dlq_from_why(&mut self, target: WhyDlqTarget) {
+        let WhyDlqTarget {
+            env_name,
+            region,
+            main_queue_url,
+            dlq_url,
+        } = target;
         let dlq = DlqState {
             env_name,
+            region,
             main_queue_url,
             dlq_url,
             messages: Vec::new(),
@@ -264,5 +267,36 @@ impl App {
             }
             _ => {}
         }
+    }
+}
+
+/// What a drill from `:why` into the DLQ viewer opens: the overlay's env,
+/// the region it resolved that env in, and the queue URLs it fetched
+/// there.
+pub(crate) struct WhyDlqTarget {
+    pub env_name: String,
+    pub region: String,
+    pub main_queue_url: String,
+    pub dlq_url: String,
+}
+
+impl WhyDlqTarget {
+    /// `None` unless `overlay` is `:why` with a DLQ URL in hand.
+    pub(crate) fn of(overlay: &Overlay) -> Option<Self> {
+        let Overlay::WhyRed {
+            env_name,
+            region,
+            queues: Some(Ok(qs)),
+            ..
+        } = overlay
+        else {
+            return None;
+        };
+        Some(Self {
+            env_name: env_name.clone(),
+            region: region.clone(),
+            main_queue_url: qs.main_url.clone().unwrap_or_default(),
+            dlq_url: qs.dlq_url.clone()?,
+        })
     }
 }

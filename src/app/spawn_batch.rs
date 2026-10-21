@@ -199,7 +199,7 @@ impl App {
         let pending_label = format!("set-option {namespace}.{name}");
         self.push_pending(pending_label.clone(), env.clone());
         let env_for_msg = env.clone();
-        let env_for_undo = env.clone();
+        let env_for_undo = EnvKey::new(region.clone(), env.clone());
         let pending_label_for_undo = pending_label.clone();
         let to_set_for_undo: Vec<(String, String, String)> =
             vec![(namespace.clone(), name.clone(), value.clone())];
@@ -226,7 +226,7 @@ impl App {
             // captured for the affected env. Mirrors the safety-net
             // semantics of `spawn_option_settings_update`.
             let undo_entry = match aws
-                .fetch_env_option_settings(&app_name, &env_for_undo)
+                .fetch_env_option_settings(&app_name, &env_for_undo.name)
                 .await
             {
                 Ok(opts) => Some(build_undo_entry(

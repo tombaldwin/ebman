@@ -265,7 +265,7 @@ async fn cmd_undo_with_no_op_reverse_surfaces_clearly() {
     app.environments = vec![mk_env("prod", "shop", "Web", "Green")];
     app.rebuild_view();
     app.undo_history.push_back(crate::app::UndoEntry {
-        env_name: "prod".into(),
+        env: home_key("prod"),
         to_set: vec![],
         to_remove: vec![],
         original_summary: "keypair foo".into(),
@@ -302,7 +302,7 @@ async fn cmd_undo_uses_display_row_index_not_envs_vec_index() {
     app.rebuild_view();
     // Captured undo targets prod-web (envs-vec idx 2).
     app.undo_history.push_back(crate::app::UndoEntry {
-        env_name: "prod-web".into(),
+        env: home_key("prod-web"),
         to_set: vec![(
             "aws:autoscaling:launchconfiguration".into(),
             "EC2KeyName".into(),
@@ -345,7 +345,7 @@ async fn cmd_undo_refuses_with_hint_when_env_filtered_out() {
     app.view.set_filter("staging-");
     app.rebuild_view();
     app.undo_history.push_back(crate::app::UndoEntry {
-        env_name: "prod-api".into(),
+        env: home_key("prod-api"),
         to_set: vec![("ns".into(), "k".into(), "v".into())],
         to_remove: vec![],
         original_summary: "keypair foo".into(),
@@ -371,7 +371,7 @@ async fn cmd_undo_refuses_when_target_env_no_longer_visible() {
     // a missing env.
     let mut app = test_app();
     app.undo_history.push_back(crate::app::UndoEntry {
-        env_name: "vanished".into(),
+        env: home_key("vanished"),
         to_set: vec![("ns".into(), "k".into(), "v".into())],
         to_remove: vec![],
         original_summary: "keypair foo".into(),

@@ -2512,7 +2512,7 @@ impl App {
 /// (the common case) so the reverse cleanly removes the key
 /// rather than leaving it as a literal empty string.
 pub(crate) fn build_undo_entry(
-    env_name: &str,
+    target: &EnvKey,
     original_summary: &str,
     to_set: &[(String, String, String)],
     to_remove: &[(String, String)],
@@ -2551,7 +2551,7 @@ pub(crate) fn build_undo_entry(
         }
     }
     UndoEntry {
-        env_name: env_name.to_string(),
+        env: target.clone(),
         to_set: reverse_set,
         to_remove: reverse_remove,
         original_summary: original_summary.to_string(),
@@ -3504,7 +3504,7 @@ impl App {
     /// alarms and instances is the most misleading thing it could do.
     pub(crate) fn why_red_client(&self) -> RegionClient {
         let region = match self.current_overlay.as_ref() {
-            Some(Overlay::WhyRed { env_name, .. }) => self.region_for_name(env_name),
+            Some(Overlay::WhyRed { region, .. }) => region.clone(),
             _ => self.context.region.clone(),
         };
         self.client_for_region(&region)
@@ -3515,11 +3515,16 @@ impl App {
     /// against the home region's SQS is not merely stale — the URL
     /// doesn't exist there.
     pub(crate) fn dlq_client(&self) -> RegionClient {
-        let region = match self.dlq.as_ref() {
-            Some(d) => self.region_for_name(&d.env_name),
+        self.client_for_region(&self.dlq_region())
+    }
+
+    /// The region the open DLQ viewer recorded; its audit lines and its
+    /// client both use it.
+    pub(crate) fn dlq_region(&self) -> String {
+        match self.dlq.as_ref() {
+            Some(d) => d.region.clone(),
             None => self.context.region.clone(),
-        };
-        self.client_for_region(&region)
+        }
     }
 
     /// The client for whichever environment Detail currently has open.

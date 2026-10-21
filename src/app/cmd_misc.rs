@@ -554,10 +554,10 @@ impl App {
         }
         // The captured env may no longer exist (context switch,
         // terminated mid-undo). Refuse early with a clear message.
-        if !self.environments.iter().any(|e| e.name == entry.env_name) {
+        if self.env_by_key(&entry.env).is_none() {
             self.error_message = Some(format!(
                 "undo: env '{}' is no longer in the current view",
-                entry.env_name
+                entry.env.name
             ));
             return;
         }
@@ -571,14 +571,14 @@ impl App {
         // deque so the operator can retry after clearing.
         let display_idx = self.display_rows().iter().position(|row| match row {
             super::DisplayRow::Env(i) => {
-                self.environments.get(*i).map(|e| e.name.as_str()) == Some(entry.env_name.as_str())
+                self.environments.get(*i).map(|e| self.env_key(e)).as_ref() == Some(&entry.env)
             }
             super::DisplayRow::Separator => false,
         });
         let Some(display_idx) = display_idx else {
             self.error_message = Some(format!(
                 "undo: env '{}' is filtered out of the current view — clear the filter and retry",
-                entry.env_name
+                entry.env.name
             ));
             self.undo_history.push_back(entry);
             return;

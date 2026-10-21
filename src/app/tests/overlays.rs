@@ -777,6 +777,7 @@ async fn the_why_red_overlay_renders_its_findings() {
     app.table_state.select(Some(0));
     app.current_overlay = Some(crate::app::Overlay::WhyRed {
         env_name: "api-prod".into(),
+        region: "us-east-1".into(),
         tier: "Web".into(),
         events: Some(Ok(vec![make_event("WHYREDCANARY deploy failed")])),
         alarms: Some(Ok(Vec::new())),
@@ -1023,6 +1024,7 @@ async fn the_why_overlay_names_the_dead_lettered_task() {
     app.table_state.select(Some(0));
     app.current_overlay = Some(crate::app::Overlay::WhyRed {
         env_name: "api-prod".into(),
+        region: "us-east-1".into(),
         tier: "Worker".into(),
         events: Some(Ok(Vec::new())),
         alarms: Some(Ok(Vec::new())),

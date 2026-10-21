@@ -349,6 +349,7 @@ pub(super) fn open_dlq_state(env: &str) -> crate::app::DlqState {
     list_state.select(Some(0));
     crate::app::DlqState {
         env_name: env.into(),
+        region: "us-east-1".into(),
         main_queue_url: "https://sqs/q".into(),
         dlq_url: "https://sqs/q-dlq".into(),
         messages: vec![crate::aws::QueueMessage {

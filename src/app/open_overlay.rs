@@ -25,9 +25,13 @@ impl App {
             .find(|e| e.name == env_name)
             .map(|e| e.tier.clone())
             .unwrap_or_default();
+        // Resolved once: every fetch below, and a drill into its DLQ,
+        // goes to the same region.
+        let region = self.region_for_name(&env_name);
         let is_worker = tier.eq_ignore_ascii_case("Worker");
         self.current_overlay = Some(Overlay::WhyRed {
             env_name: env_name.clone(),
+            region,
             tier,
             events: None,
             alarms: None,
@@ -259,6 +263,7 @@ impl App {
         }
         let dlq = DlqState {
             env_name: detail.env_name.clone(),
+            region: self.region_for(&detail.env_snapshot),
             main_queue_url: main_url,
             dlq_url,
             messages: Vec::new(),

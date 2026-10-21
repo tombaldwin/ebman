@@ -153,6 +153,9 @@ pub(crate) enum Overlay {
     /// fetchers finished).
     WhyRed {
         env_name: String,
+        /// Where the env was resolved when the overlay opened; every
+        /// fetch, and a drill into the DLQ, uses it.
+        region: String,
         /// Captured at open time so the renderer knows whether to show
         /// the worker-only sections (queues, DLQ peek).
         tier: String,
@@ -725,7 +728,9 @@ pub(crate) struct WatchingDeploy {
 /// as an empty string).
 #[derive(Debug, Clone)]
 pub(crate) struct UndoEntry {
-    pub env_name: String,
+    /// The env the original write went to, by region and name: `:undo`
+    /// must reverse it there, not on a same-named env elsewhere.
+    pub env: crate::app::EnvKey,
     pub to_set: Vec<(String, String, String)>,
     pub to_remove: Vec<(String, String)>,
     /// One-line summary of what the ORIGINAL action was, so the

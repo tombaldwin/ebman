@@ -300,7 +300,7 @@ impl App {
             .iter()
             .find(|e| e.name == env_name)
             .map(|e| e.application.clone());
-        let env_for_undo = env_name.clone();
+        let env_for_undo = crate::app::EnvKey::new(region.clone(), env_name.clone());
         let summary_for_undo = summary.clone();
         let to_set_for_undo = to_set.clone();
         let to_remove_for_undo = to_remove.clone();
@@ -322,7 +322,7 @@ impl App {
             };
             let undo_entry = if let Some(app_name) = app_for_undo {
                 match aws
-                    .fetch_env_option_settings(&app_name, &env_for_undo)
+                    .fetch_env_option_settings(&app_name, &env_for_undo.name)
                     .await
                 {
                     Ok(opts) => Some(build_undo_entry(

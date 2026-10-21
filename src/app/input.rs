@@ -5,6 +5,7 @@
 //! arms MUST precede the unguarded `KeyCode::Char(c)` arm for the same
 //! character — the compiler does not warn about the shadowing.
 
+use super::mode_dlq_handlers::WhyDlqTarget;
 use super::*;
 
 /// Map a terminal screen line to an index into the display rows.
@@ -288,39 +289,24 @@ impl App {
             // `:why` Enter drill — extract the action under an immutable
             // borrow, then release it before mutating the overlay/mode.
             if matches!(key.code, KeyCode::Enter) {
-                let drill: Option<(WhyItem, String, Option<String>, Option<String>)> =
-                    if let Some(Overlay::WhyRed {
-                        cursor,
-                        queues,
-                        env_name,
-                        ..
-                    }) = self.current_overlay.as_ref()
-                    {
-                        self.why_items.get(*cursor).cloned().map(|item| {
-                            let qs = queues.as_ref().and_then(|r| r.as_ref().ok());
-                            (
-                                item,
-                                env_name.clone(),
-                                qs.and_then(|q| q.main_url.clone()),
-                                qs.and_then(|q| q.dlq_url.clone()),
-                            )
-                        })
-                    } else {
-                        None
+                let drill: Option<(WhyItem, Option<WhyDlqTarget>)> =
+                    match self.current_overlay.as_ref() {
+                        Some(overlay @ Overlay::WhyRed { cursor, .. }) => self
+                            .why_items
+                            .get(*cursor)
+                            .cloned()
+                            .map(|item| (item, WhyDlqTarget::of(overlay))),
+                        _ => None,
                     };
-                if let Some((item, env_name, main_url_opt, dlq_url_opt)) = drill {
+                if let Some((item, target)) = drill {
                     match item {
                         WhyItem::Describe(text) => {
                             self.current_overlay = Some(Overlay::Describe(text));
                         }
                         WhyItem::OpenDlq => {
-                            if let Some(dlq_url) = dlq_url_opt {
+                            if let Some(target) = target {
                                 self.current_overlay = None;
-                                self.open_dlq_from_why(
-                                    env_name,
-                                    main_url_opt.unwrap_or_default(),
-                                    dlq_url,
-                                );
+                                self.open_dlq_from_why(target);
                             }
                         }
                     }
@@ -331,33 +317,18 @@ impl App {
                 // Drill-in actions transition out of the overlay into
                 // another mode. Evaluated first so the overlay's q/esc
                 // close semantics still apply on the fallback path.
-                let drill_dlq: Option<(String, String, String)> = match overlay {
-                    Overlay::WhyRed {
-                        env_name,
-                        tier,
-                        queues,
-                        ..
-                    } if matches!(key.code, KeyCode::Char('d'))
-                        && tier.eq_ignore_ascii_case("Worker") =>
+                let drill_dlq = match overlay {
+                    Overlay::WhyRed { tier, .. }
+                        if matches!(key.code, KeyCode::Char('d'))
+                            && tier.eq_ignore_ascii_case("Worker") =>
                     {
-                        queues
-                            .as_ref()
-                            .and_then(|r| r.as_ref().ok())
-                            .and_then(|qs| {
-                                qs.dlq_url.clone().map(|du| {
-                                    (
-                                        env_name.clone(),
-                                        qs.main_url.clone().unwrap_or_default(),
-                                        du,
-                                    )
-                                })
-                            })
+                        WhyDlqTarget::of(overlay)
                     }
                     _ => None,
                 };
-                if let Some((env_name, main_url, dlq_url)) = drill_dlq {
+                if let Some(target) = drill_dlq {
                     self.current_overlay = None;
-                    self.open_dlq_from_why(env_name, main_url, dlq_url);
+                    self.open_dlq_from_why(target);
                     return;
                 }
                 let universal = matches!(key.code, KeyCode::Esc | KeyCode::Char('q'));

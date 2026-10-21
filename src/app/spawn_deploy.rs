@@ -58,7 +58,7 @@ impl App {
         // option-settings fetch happens BEFORE the write so we can
         // record the prior state and offer a clean reverse-action.
         let app_for_undo = env.application.clone();
-        let env_for_undo = env_name.clone();
+        let env_for_undo = EnvKey::new(region.clone(), env_name.clone());
         let summary_for_undo = summary.clone();
         let to_set_for_undo = to_set.clone();
         let to_remove_for_undo = to_remove.clone();
@@ -83,7 +83,7 @@ impl App {
             // Read failure doesn't block the write — undo is a
             // safety net, not a correctness invariant.
             let undo_entry = match aws
-                .fetch_env_option_settings(&app_for_undo, &env_for_undo)
+                .fetch_env_option_settings(&app_for_undo, &env_for_undo.name)
                 .await
             {
                 Ok(opts) => Some(build_undo_entry(
