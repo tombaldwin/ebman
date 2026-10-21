@@ -320,10 +320,6 @@ impl App {
         );
     }
 
-    /// The App tab's top errors: a Logs Insights query over the env's
-    /// `app.ENV.log_group`. Opt-in by that key, because a query is billed
-    /// per GB scanned; never stacked on one still running; never in
-    /// demo mode.
     /// The log group `env`'s top-errors query would scan, or `None` when
     /// there is none to run: no `app.ENV.log_group`, or demo mode. The
     /// spawn and the tab's "^R runs it" line both ask this.
@@ -340,6 +336,10 @@ impl App {
         }
     }
 
+    /// The App tab's top errors: a Logs Insights query over the env's
+    /// `app.ENV.log_group`. Opt-in by that key, because a query is billed
+    /// per GB scanned; never stacked on one still running; never in
+    /// demo mode.
     pub(super) fn spawn_detail_top_errors(&mut self, env_name: String) {
         let Some(group) = self.top_errors_group(&env_name) else {
             return;
