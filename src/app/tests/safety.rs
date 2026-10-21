@@ -109,7 +109,7 @@ async fn rollback_to_label_opens_confirm_for_named_label() {
     app.table_state.select(Some(0));
     // Snapshot exists with a DIFFERENT label; --to must override.
     app.deploy_snapshots.insert(
-        "prod".into(),
+        home_key("prod"),
         DeploySnapshot {
             previous_version_label: "build-snap".into(),
             taken_at: chrono::Utc::now(),

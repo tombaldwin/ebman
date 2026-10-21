@@ -69,7 +69,7 @@ impl App {
         // previous version). The snapshot was taken right before
         // the deploy we'd be rolling back from, so it's exactly
         // what the operator means.
-        if let Some(snapshot) = self.deploy_snapshots.get(&env_name).cloned() {
+        if let Some(snapshot) = self.deploy_snapshots.get(&self.env_key(&env)).cloned() {
             if snapshot.previous_version_label != current_version {
                 self.open_parameterised_action(
                     Action::Deploy,

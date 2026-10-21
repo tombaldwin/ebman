@@ -1556,3 +1556,114 @@ async fn an_applications_batch_marks_its_env_in_every_region() {
         app.multi_selected
     );
 }
+
+/// A watchdog and a wait-for-Green watcher on the eu `api-prod`, refreshed
+/// with the home twin in `home` health and the eu one in `eu` health.
+fn armed_on_eu_twin(home: &str, eu: &str) -> App {
+    let mut app = same_named_in_two_regions();
+    let now = chrono::Utc::now();
+    let deadline_at = now + chrono::Duration::seconds(300);
+    app.armed_watchdogs.insert(
+        eu_key("api-prod"),
+        ArmedWatchdog {
+            env_name: "api-prod".into(),
+            target_label: "build-old".into(),
+            armed_at: now,
+            deadline_at,
+        },
+    );
+    app.watching_deploys.insert(
+        eu_key("api-prod"),
+        WatchingDeploy {
+            env_name: "api-prod".into(),
+            target_label: "build-new".into(),
+            armed_at: now,
+            deadline_at,
+        },
+    );
+    let mut refreshed = app.environments.clone();
+    refreshed[0].health = home.into();
+    refreshed[1].health = eu.into();
+    app.apply_refresh(app.fanout_epoch, Ok(refreshed), Vec::new());
+    app
+}
+
+#[tokio::test]
+async fn a_watchdog_is_not_disarmed_by_its_twin_in_another_region() {
+    // By name, the home twin's Green disarmed the eu env's unattended
+    // rollback while the eu env was still Red.
+    let app = armed_on_eu_twin("Green", "Red");
+    assert!(app.armed_watchdogs.contains_key(&eu_key("api-prod")));
+    assert!(app.watching_deploys.contains_key(&eu_key("api-prod")));
+}
+
+#[tokio::test]
+async fn a_watchdog_disarms_when_its_own_region_goes_green() {
+    let app = armed_on_eu_twin("Red", "Green");
+    assert!(app.armed_watchdogs.is_empty(), "{:?}", app.armed_watchdogs);
+    assert!(app.watching_deploys.is_empty());
+}
+
+#[test]
+fn deploy_snapshots_round_trip_with_their_region() {
+    let mut snaps = std::collections::BTreeMap::new();
+    for key in [home_key("api-prod"), eu_key("api-prod")] {
+        snaps.insert(
+            key.to_persisted(),
+            DeploySnapshot {
+                previous_version_label: format!("v-{}", key.region),
+                taken_at: chrono::Utc::now(),
+            }
+            .to_persisted(),
+        );
+    }
+    let restored = crate::app::restore_deploy_snapshots(&snaps);
+    assert_eq!(restored.len(), 2, "{restored:?}");
+    assert_eq!(
+        restored[&eu_key("api-prod")].previous_version_label,
+        "v-eu-west-2"
+    );
+}
+
+#[test]
+fn a_snapshot_saved_by_name_alone_is_dropped_not_guessed() {
+    let raw = DeploySnapshot {
+        previous_version_label: "v1".into(),
+        taken_at: chrono::Utc::now(),
+    }
+    .to_persisted();
+    let snaps = [("api-prod".to_string(), raw)].into_iter().collect();
+    assert!(crate::app::restore_deploy_snapshots(&snaps).is_empty());
+}
+
+#[test]
+fn env_key_persisted_form_rejects_a_missing_half() {
+    for raw in ["api-prod", "/api-prod", "eu-west-2/", ""] {
+        assert!(crate::app::EnvKey::parse_persisted(raw).is_none(), "{raw}");
+    }
+    assert_eq!(
+        crate::app::EnvKey::parse_persisted("eu-west-2/api-prod"),
+        Some(eu_key("api-prod"))
+    );
+}
+
+#[tokio::test]
+async fn abort_rollback_by_name_clears_it_in_every_region() {
+    // Aborting is clearing state the operator armed, never a write, so a
+    // bare name reaches every region's watchdog for it.
+    let mut app = same_named_in_two_regions();
+    let now = chrono::Utc::now();
+    for key in [home_key("api-prod"), eu_key("api-prod")] {
+        app.armed_watchdogs.insert(
+            key,
+            ArmedWatchdog {
+                env_name: "api-prod".into(),
+                target_label: "build-old".into(),
+                armed_at: now,
+                deadline_at: now + chrono::Duration::seconds(300),
+            },
+        );
+    }
+    app.cmd_abort_rollback(&["api-prod"]);
+    assert!(app.armed_watchdogs.is_empty(), "{:?}", app.armed_watchdogs);
+}

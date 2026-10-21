@@ -418,7 +418,7 @@ async fn rebuild_clears_armed_watchdogs_and_snapshots() {
     let mut app = test_app();
     let now = chrono::Utc::now();
     app.armed_watchdogs.insert(
-        "prod".into(),
+        home_key("prod"),
         ArmedWatchdog {
             env_name: "prod".into(),
             target_label: "build-old".into(),
@@ -427,7 +427,7 @@ async fn rebuild_clears_armed_watchdogs_and_snapshots() {
         },
     );
     app.deploy_snapshots.insert(
-        "prod".into(),
+        home_key("prod"),
         DeploySnapshot {
             previous_version_label: "build-old".into(),
             taken_at: now,
@@ -563,7 +563,7 @@ async fn apply_refresh_keeps_watching_when_status_is_updating_even_if_health_is_
     let mut app = test_app();
     let now = chrono::Utc::now();
     app.watching_deploys.insert(
-        "prod".into(),
+        home_key("prod"),
         WatchingDeploy {
             env_name: "prod".into(),
             target_label: "build-900".into(),
@@ -575,7 +575,7 @@ async fn apply_refresh_keeps_watching_when_status_is_updating_even_if_health_is_
     env.status = "Updating".into();
     app.apply_refresh(app.fanout_epoch, Ok(vec![env]), Vec::new());
     assert!(
-        app.watching_deploys.contains_key("prod"),
+        app.watching_deploys.contains_key(&home_key("prod")),
         "Updating+Green is mid-deploy — watcher must remain armed"
     );
     let pinned = app.status_message.as_deref().unwrap_or("");
@@ -594,14 +594,14 @@ async fn apply_refresh_keeps_armed_watchdog_when_status_is_updating_even_if_heal
     let mut app = test_app();
     let now = chrono::Utc::now();
     app.deploy_snapshots.insert(
-        "prod".into(),
+        home_key("prod"),
         DeploySnapshot {
             previous_version_label: "build-820".into(),
             taken_at: now,
         },
     );
     app.armed_watchdogs.insert(
-        "prod".into(),
+        home_key("prod"),
         ArmedWatchdog {
             env_name: "prod".into(),
             target_label: "build-820".into(),
@@ -613,7 +613,7 @@ async fn apply_refresh_keeps_armed_watchdog_when_status_is_updating_even_if_heal
     env.status = "Updating".into();
     app.apply_refresh(app.fanout_epoch, Ok(vec![env]), Vec::new());
     assert!(
-        app.armed_watchdogs.contains_key("prod"),
+        app.armed_watchdogs.contains_key(&home_key("prod")),
         "Updating+Green is mid-deploy — watchdog must remain armed"
     );
 }
@@ -849,7 +849,7 @@ async fn apply_refresh_drains_watching_deploy_on_green() {
     let mut app = test_app();
     let now = chrono::Utc::now();
     app.watching_deploys.insert(
-        "prod".into(),
+        home_key("prod"),
         WatchingDeploy {
             env_name: "prod".into(),
             target_label: "build-900".into(),
@@ -885,7 +885,7 @@ async fn apply_refresh_drains_watching_deploy_on_timeout() {
     let mut app = test_app();
     let now = chrono::Utc::now();
     app.watching_deploys.insert(
-        "prod".into(),
+        home_key("prod"),
         WatchingDeploy {
             env_name: "prod".into(),
             target_label: "build-900".into(),
@@ -916,7 +916,7 @@ async fn rebuild_clears_watching_deploys() {
     // it must drop alongside armed_watchdogs + deploy_snapshots.
     let mut app = test_app();
     app.watching_deploys.insert(
-        "prod".into(),
+        home_key("prod"),
         WatchingDeploy {
             env_name: "prod".into(),
             target_label: "build-900".into(),
@@ -939,11 +939,11 @@ async fn rebuild_clears_watching_deploys() {
 fn soonest_watching_deploy_picks_earliest_deadline() {
     // Two watchers; pill shows the one firing first. Mirrors
     // the soonest_armed_rollback contract.
-    let mut map: std::collections::HashMap<String, WatchingDeploy> =
-        std::collections::HashMap::new();
+    let mut map: std::collections::BTreeMap<crate::app::EnvKey, WatchingDeploy> =
+        std::collections::BTreeMap::new();
     let now = chrono::Utc::now();
     map.insert(
-        "later".into(),
+        home_key("later"),
         WatchingDeploy {
             env_name: "later".into(),
             target_label: "v2".into(),
@@ -952,7 +952,7 @@ fn soonest_watching_deploy_picks_earliest_deadline() {
         },
     );
     map.insert(
-        "sooner".into(),
+        home_key("sooner"),
         WatchingDeploy {
             env_name: "sooner".into(),
             target_label: "v1".into(),
@@ -1027,7 +1027,8 @@ async fn refresh_tf_managed_envs_derives_set_from_tf_state() {
 
 #[test]
 fn soonest_watching_deploy_empty_returns_none() {
-    let map: std::collections::HashMap<String, WatchingDeploy> = std::collections::HashMap::new();
+    let map: std::collections::BTreeMap<crate::app::EnvKey, WatchingDeploy> =
+        std::collections::BTreeMap::new();
     assert!(soonest_watching_deploy(&map, chrono::Utc::now()).is_none());
 }
 
@@ -1040,7 +1041,7 @@ async fn abort_rollback_named_env_disarms_just_that_one() {
     let now = chrono::Utc::now();
     for env in ["prod", "staging"] {
         app.armed_watchdogs.insert(
-            env.into(),
+            home_key(env),
             ArmedWatchdog {
                 env_name: env.into(),
                 target_label: "build-820".into(),
@@ -1051,11 +1052,11 @@ async fn abort_rollback_named_env_disarms_just_that_one() {
     }
     app.execute_command("abort-rollback staging");
     assert!(
-        !app.armed_watchdogs.contains_key("staging"),
+        !app.armed_watchdogs.contains_key(&home_key("staging")),
         "named env should be drained"
     );
     assert!(
-        app.armed_watchdogs.contains_key("prod"),
+        app.armed_watchdogs.contains_key(&home_key("prod")),
         "other env's watchdog must stay armed"
     );
     let status = app.status_message.as_deref().unwrap_or("");
@@ -1087,7 +1088,7 @@ async fn abort_rollback_no_args_drains_every_watchdog() {
     let now = chrono::Utc::now();
     for env in ["a", "b", "c"] {
         app.armed_watchdogs.insert(
-            env.into(),
+            home_key(env),
             ArmedWatchdog {
                 env_name: env.into(),
                 target_label: "x".into(),
@@ -1126,7 +1127,7 @@ async fn abort_rollback_no_args_empty_is_a_noop_status() {
 
 #[test]
 fn format_armed_rollbacks_empty_returns_stub() {
-    let armed = std::collections::HashMap::new();
+    let armed = std::collections::BTreeMap::new();
     let body = crate::app::format_armed_rollbacks(&armed, chrono::Utc::now());
     assert!(body.contains("no auto-rollbacks armed"));
 }
@@ -1135,10 +1136,10 @@ fn format_armed_rollbacks_empty_returns_stub() {
 fn format_armed_rollbacks_sorts_by_deadline_ascending() {
     use chrono::TimeZone;
     let now = chrono::Utc.with_ymd_and_hms(2026, 5, 25, 12, 0, 0).unwrap();
-    let mut armed = std::collections::HashMap::new();
+    let mut armed = std::collections::BTreeMap::new();
     // Two watchdogs — `staging-api` deadlines first.
     armed.insert(
-        "prod-api".into(),
+        home_key("prod-api"),
         ArmedWatchdog {
             env_name: "prod-api".into(),
             target_label: "build-820".into(),
@@ -1147,7 +1148,7 @@ fn format_armed_rollbacks_sorts_by_deadline_ascending() {
         },
     );
     armed.insert(
-        "staging-api".into(),
+        home_key("staging-api"),
         ArmedWatchdog {
             env_name: "staging-api".into(),
             target_label: "build-822".into(),
@@ -1173,9 +1174,9 @@ fn format_armed_rollbacks_sorts_by_deadline_ascending() {
 fn format_armed_rollbacks_expired_deadline_reads_as_expired() {
     use chrono::TimeZone;
     let now = chrono::Utc.with_ymd_and_hms(2026, 5, 25, 12, 0, 0).unwrap();
-    let mut armed = std::collections::HashMap::new();
+    let mut armed = std::collections::BTreeMap::new();
     armed.insert(
-        "prod-api".into(),
+        home_key("prod-api"),
         ArmedWatchdog {
             env_name: "prod-api".into(),
             target_label: "build-820".into(),
@@ -1194,9 +1195,9 @@ fn format_armed_rollbacks_expired_deadline_reads_as_expired() {
 fn soonest_armed_rollback_picks_the_earliest_deadline() {
     use chrono::TimeZone;
     let now = chrono::Utc.with_ymd_and_hms(2026, 5, 25, 12, 0, 0).unwrap();
-    let mut armed = std::collections::HashMap::new();
+    let mut armed = std::collections::BTreeMap::new();
     armed.insert(
-        "later".into(),
+        home_key("later"),
         ArmedWatchdog {
             env_name: "later".into(),
             target_label: "x".into(),
@@ -1205,7 +1206,7 @@ fn soonest_armed_rollback_picks_the_earliest_deadline() {
         },
     );
     armed.insert(
-        "sooner".into(),
+        home_key("sooner"),
         ArmedWatchdog {
             env_name: "sooner".into(),
             target_label: "x".into(),
@@ -1221,7 +1222,7 @@ fn soonest_armed_rollback_picks_the_earliest_deadline() {
 
 #[test]
 fn soonest_armed_rollback_returns_none_when_empty() {
-    let armed = std::collections::HashMap::new();
+    let armed = std::collections::BTreeMap::new();
     assert!(crate::app::soonest_armed_rollback(&armed, chrono::Utc::now()).is_none());
 }
 
@@ -1234,7 +1235,7 @@ async fn refresh_early_disarms_armed_watchdog_when_env_goes_green() {
     let mut app = test_app();
     let now = chrono::Utc::now();
     app.armed_watchdogs.insert(
-        "prod".into(),
+        home_key("prod"),
         ArmedWatchdog {
             env_name: "prod".into(),
             target_label: "build-old".into(),
@@ -1266,7 +1267,7 @@ async fn refresh_leaves_watchdog_armed_when_env_still_non_green() {
     let mut app = test_app();
     let now = chrono::Utc::now();
     app.armed_watchdogs.insert(
-        "prod".into(),
+        home_key("prod"),
         ArmedWatchdog {
             env_name: "prod".into(),
             target_label: "build-old".into(),
@@ -1280,7 +1281,7 @@ async fn refresh_leaves_watchdog_armed_when_env_still_non_green() {
         Vec::new(),
     );
     assert!(
-        app.armed_watchdogs.contains_key("prod"),
+        app.armed_watchdogs.contains_key(&home_key("prod")),
         "Red refresh must leave watchdog armed"
     );
 }
@@ -1298,7 +1299,7 @@ async fn auto_rollback_check_is_noop_when_no_watchdog_armed() {
     // intentionally populated to prove that even with a usable
     // snapshot we don't fire when the slot's clean.
     app.deploy_snapshots.insert(
-        "prod".into(),
+        home_key("prod"),
         DeploySnapshot {
             previous_version_label: "build-old".into(),
             taken_at: chrono::Utc::now(),
@@ -1308,7 +1309,7 @@ async fn auto_rollback_check_is_noop_when_no_watchdog_armed() {
     let load_before = app.load_state;
     app.handle_msg(AppMsg::AutoRollbackCheck {
         gen: app.generation,
-        env_name: "prod".into(),
+        env: home_key("prod"),
     });
     assert_eq!(
         app.pending_actions.len(),
@@ -1332,7 +1333,7 @@ async fn apply_refresh_disarms_armed_watchdog_when_env_reaches_green() {
     let mut app = test_app();
     let now = chrono::Utc::now();
     app.armed_watchdogs.insert(
-        "prod".into(),
+        home_key("prod"),
         ArmedWatchdog {
             env_name: "prod".into(),
             target_label: "build-old".into(),
@@ -1363,7 +1364,7 @@ async fn apply_refresh_keeps_watchdog_armed_before_deadline_even_when_non_green(
     let mut app = test_app();
     let now = chrono::Utc::now();
     app.armed_watchdogs.insert(
-        "prod".into(),
+        home_key("prod"),
         ArmedWatchdog {
             env_name: "prod".into(),
             target_label: "build-old".into(),
@@ -1372,7 +1373,7 @@ async fn apply_refresh_keeps_watchdog_armed_before_deadline_even_when_non_green(
         },
     );
     app.deploy_snapshots.insert(
-        "prod".into(),
+        home_key("prod"),
         DeploySnapshot {
             previous_version_label: "build-old".into(),
             taken_at: now,
@@ -1385,7 +1386,7 @@ async fn apply_refresh_keeps_watchdog_armed_before_deadline_even_when_non_green(
         Vec::new(),
     );
     assert!(
-        app.armed_watchdogs.contains_key("prod"),
+        app.armed_watchdogs.contains_key(&home_key("prod")),
         "Yellow + pre-deadline must keep watchdog armed"
     );
     assert_eq!(
@@ -1403,7 +1404,7 @@ async fn apply_refresh_errors_when_deadline_passed_but_no_snapshot() {
     let mut app = test_app();
     let now = chrono::Utc::now();
     app.armed_watchdogs.insert(
-        "prod".into(),
+        home_key("prod"),
         ArmedWatchdog {
             env_name: "prod".into(),
             target_label: "build-old".into(),

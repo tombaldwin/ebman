@@ -31,6 +31,19 @@ pub(crate) struct EnvKey {
 }
 
 impl EnvKey {
+    /// `REGION/NAME`, as `state.toml` keeps a per-env entry. EB env names
+    /// cannot contain `/`, so the split is unambiguous.
+    pub(crate) fn to_persisted(&self) -> String {
+        format!("{}/{}", self.region, self.name)
+    }
+
+    /// The inverse of [`to_persisted`](Self::to_persisted); `None` for a
+    /// key saved without a region.
+    pub(crate) fn parse_persisted(raw: &str) -> Option<Self> {
+        let (region, name) = raw.split_once('/')?;
+        (!region.is_empty() && !name.is_empty()).then(|| Self::new(region, name))
+    }
+
     pub(crate) fn new(region: impl Into<String>, name: impl Into<String>) -> Self {
         Self {
             region: region.into(),

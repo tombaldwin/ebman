@@ -204,15 +204,27 @@ impl App {
     pub(crate) fn cmd_abort_rollback(&mut self, rest: &[&str]) {
         match rest.first().copied() {
             Some(env_name) => {
-                if self.armed_watchdogs.remove(env_name).is_some() {
-                    crate::audit::append_action_dispatched(
-                        self.context.account_id.as_deref(),
-                        self.context.profile.as_deref(),
-                        &self.region_for_name(env_name),
-                        "AbortRollback",
-                        env_name,
-                        &[],
-                    );
+                // Every region's watchdog for the name: aborting is
+                // clearing state the operator armed, never a write, so
+                // the broad reading is the safe one.
+                let keys: Vec<crate::app::EnvKey> = self
+                    .armed_watchdogs
+                    .keys()
+                    .filter(|k| k.name == env_name)
+                    .cloned()
+                    .collect();
+                if !keys.is_empty() {
+                    for key in &keys {
+                        self.armed_watchdogs.remove(key);
+                        crate::audit::append_action_dispatched(
+                            self.context.account_id.as_deref(),
+                            self.context.profile.as_deref(),
+                            &key.region,
+                            "AbortRollback",
+                            env_name,
+                            &[],
+                        );
+                    }
                     self.pin_status(format!("aborted auto-rollback for {env_name}"));
                 } else {
                     self.error_message = Some(format!(
@@ -225,15 +237,16 @@ impl App {
                     self.pin_status("no auto-rollbacks armed to abort");
                     return;
                 }
-                let names: Vec<String> = self.armed_watchdogs.keys().cloned().collect();
-                let n = names.len();
-                for env_name in &names {
+                let keys: Vec<crate::app::EnvKey> = self.armed_watchdogs.keys().cloned().collect();
+                let names: Vec<String> = keys.iter().map(|k| k.name.clone()).collect();
+                let n = keys.len();
+                for key in &keys {
                     crate::audit::append_action_dispatched(
                         self.context.account_id.as_deref(),
                         self.context.profile.as_deref(),
-                        &self.region_for_name(env_name),
+                        &key.region,
                         "AbortRollback",
-                        env_name,
+                        &key.name,
                         &[("reason", "batch")],
                     );
                 }

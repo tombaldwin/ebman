@@ -1045,23 +1045,25 @@ impl App {
                 //   2. Env still non-Green AND deadline passed →
                 //      dispatch the rollback redeploy.
                 //   3. Else → keep armed; check again next refresh.
-                let armed: Vec<(String, chrono::DateTime<chrono::Utc>)> = self
+                // By region and name: under a fan-out the other region's
+                // same-named env must not decide whether this one's
+                // unattended rollback fires.
+                let armed: Vec<(EnvKey, chrono::DateTime<chrono::Utc>)> = self
                     .armed_watchdogs
                     .iter()
                     .map(|(env, w)| (env.clone(), w.deadline_at))
                     .collect();
                 let now = chrono::Utc::now();
-                for (env_name, deadline_at) in armed {
+                for (key, deadline_at) in armed {
+                    let env_name = key.name.clone();
                     let Some((status, health)) = self
-                        .environments
-                        .iter()
-                        .find(|e| e.name == env_name)
+                        .env_by_key(&key)
                         .map(|e| (e.status.clone(), e.health.clone()))
                     else {
                         // Env left the fleet (terminated mid-watch) —
                         // disarm instead of dispatching a doomed
                         // redeploy at the deadline.
-                        self.armed_watchdogs.remove(&env_name);
+                        self.armed_watchdogs.remove(&key);
                         self.pin_status(format!(
                             "auto-rollback for {env_name}: env no longer in the fleet — watchdog disarmed"
                         ));
@@ -1069,7 +1071,7 @@ impl App {
                     };
                     let healthy = deploy_settled_green(&status, &health);
                     if healthy {
-                        self.armed_watchdogs.remove(&env_name);
+                        self.armed_watchdogs.remove(&key);
                         // pin_status survives the same-tick auto-clear
                         // at the bottom of apply_refresh — without it
                         // the disarm message gets wiped before the
@@ -1081,7 +1083,7 @@ impl App {
                         // Deadline reached, env still bad. Dispatch
                         // the redeploy using the just-refreshed health
                         // so the audit line is accurate.
-                        self.dispatch_auto_rollback(env_name, health);
+                        self.dispatch_auto_rollback(key.clone(), health);
                     }
                     // else: still armed, next refresh re-evaluates.
                 }
@@ -1093,7 +1095,7 @@ impl App {
                 //   2. Deadline passed and env still non-Green → drain,
                 //      pin timeout error (operator decides next move).
                 //   3. Else → keep watching, re-check next refresh.
-                let watching: Vec<(String, chrono::DateTime<chrono::Utc>, String, u64)> = self
+                let watching: Vec<(EnvKey, chrono::DateTime<chrono::Utc>, String, u64)> = self
                     .watching_deploys
                     .iter()
                     .map(|(env, w)| {
@@ -1101,16 +1103,15 @@ impl App {
                         (env.clone(), w.deadline_at, w.target_label.clone(), secs)
                     })
                     .collect();
-                for (env_name, deadline_at, target_label, total_secs) in watching {
+                for (key, deadline_at, target_label, total_secs) in watching {
+                    let env_name = key.name.clone();
                     let Some((status, health)) = self
-                        .environments
-                        .iter()
-                        .find(|e| e.name == env_name)
+                        .env_by_key(&key)
                         .map(|e| (e.status.clone(), e.health.clone()))
                     else {
                         // Env left the fleet — stop watching with an
                         // honest note rather than timing out later.
-                        self.watching_deploys.remove(&env_name);
+                        self.watching_deploys.remove(&key);
                         self.pin_error(format!(
                             "deploy watch for {env_name}: env no longer in the fleet"
                         ));
@@ -1118,7 +1119,7 @@ impl App {
                     };
                     let healthy = deploy_settled_green(&status, &health);
                     if healthy {
-                        self.watching_deploys.remove(&env_name);
+                        self.watching_deploys.remove(&key);
                         let label_hint = if target_label.is_empty() {
                             String::new()
                         } else {
@@ -1126,7 +1127,7 @@ impl App {
                         };
                         self.pin_status(format!("✓ deploy reached Green: {env_name}{label_hint}"));
                     } else if now >= deadline_at {
-                        self.watching_deploys.remove(&env_name);
+                        self.watching_deploys.remove(&key);
                         let label_hint = if target_label.is_empty() {
                             String::new()
                         } else {

@@ -468,14 +468,14 @@ async fn dispatch_auto_rollback_also_drains_watching_deploys() {
     app.rebuild_view();
     // Both watchers armed for the same env.
     app.deploy_snapshots.insert(
-        "prod".into(),
+        home_key("prod"),
         DeploySnapshot {
             previous_version_label: "build-820".into(),
             taken_at: chrono::Utc::now(),
         },
     );
     app.armed_watchdogs.insert(
-        "prod".into(),
+        home_key("prod"),
         ArmedWatchdog {
             env_name: "prod".into(),
             target_label: "build-820".into(),
@@ -484,7 +484,7 @@ async fn dispatch_auto_rollback_also_drains_watching_deploys() {
         },
     );
     app.watching_deploys.insert(
-        "prod".into(),
+        home_key("prod"),
         WatchingDeploy {
             env_name: "prod".into(),
             target_label: "build-900".into(),
@@ -492,13 +492,13 @@ async fn dispatch_auto_rollback_also_drains_watching_deploys() {
             deadline_at: chrono::Utc::now() + chrono::Duration::seconds(300),
         },
     );
-    app.dispatch_auto_rollback("prod".into(), "Red".into());
+    app.dispatch_auto_rollback(home_key("prod"), "Red".into());
     assert!(
-        !app.watching_deploys.contains_key("prod"),
+        !app.watching_deploys.contains_key(&home_key("prod")),
         "rollback dispatch must drain the parallel wait-for-green watcher"
     );
     assert!(
-        !app.armed_watchdogs.contains_key("prod"),
+        !app.armed_watchdogs.contains_key(&home_key("prod")),
         "rollback dispatch must drain its own armed watchdog"
     );
 }
@@ -511,7 +511,7 @@ async fn apply_refresh_dispatches_rollback_when_deadline_passed_and_env_non_gree
     let mut app = test_app();
     let now = chrono::Utc::now();
     app.armed_watchdogs.insert(
-        "prod".into(),
+        home_key("prod"),
         ArmedWatchdog {
             env_name: "prod".into(),
             target_label: "build-old".into(),
@@ -520,7 +520,7 @@ async fn apply_refresh_dispatches_rollback_when_deadline_passed_and_env_non_gree
         },
     );
     app.deploy_snapshots.insert(
-        "prod".into(),
+        home_key("prod"),
         DeploySnapshot {
             previous_version_label: "build-old".into(),
             taken_at: now - chrono::Duration::seconds(600),

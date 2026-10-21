@@ -179,7 +179,7 @@ impl App {
                 ..
             } => self.handle_app_versions(application, deployed_label, result),
             AppMsg::UpdateCheck(latest) => self.handle_update_check(latest),
-            AppMsg::AutoRollbackCheck { env_name, .. } => self.handle_auto_rollback_check(env_name),
+            AppMsg::AutoRollbackCheck { env, .. } => self.handle_auto_rollback_check(env),
             AppMsg::DryRunResult {
                 env_name, result, ..
             } => self.handle_dry_run_result(env_name, result),
@@ -732,11 +732,11 @@ impl App {
     /// trade-off is up to one refresh-roundtrip of extra latency
     /// past the deadline before dispatch, which is well below the
     /// human-noticeable threshold for an alert-and-rollback flow.
-    fn handle_auto_rollback_check(&mut self, env_name: String) {
+    fn handle_auto_rollback_check(&mut self, env: EnvKey) {
         // Slot may have been drained already (apply_refresh early-
         // disarm fired between the tokio task starting and this
         // message landing). If so, nothing to do.
-        if !self.armed_watchdogs.contains_key(&env_name) {
+        if !self.armed_watchdogs.contains_key(&env) {
             return;
         }
         // Kick the refresh. The watchdog stays armed in the meantime

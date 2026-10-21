@@ -144,7 +144,7 @@ pub(crate) fn format_lineage(env: &str, events: &[EbEvent]) -> String {
 /// remaining until deadline. Sorted by deadline so the soonest-
 /// firing watchdog reads first.
 pub(crate) fn format_armed_rollbacks(
-    armed: &std::collections::HashMap<String, ArmedWatchdog>,
+    armed: &std::collections::BTreeMap<crate::app::EnvKey, ArmedWatchdog>,
     now: chrono::DateTime<chrono::Utc>,
 ) -> String {
     if armed.is_empty() {
@@ -180,7 +180,7 @@ pub(crate) fn format_armed_rollbacks(
 /// pill chain to show "⏱ rollback prod-api in 4m22s". Returns
 /// `None` when nothing is armed.
 pub(crate) fn soonest_armed_rollback(
-    armed: &std::collections::HashMap<String, ArmedWatchdog>,
+    armed: &std::collections::BTreeMap<crate::app::EnvKey, ArmedWatchdog>,
     now: chrono::DateTime<chrono::Utc>,
 ) -> Option<(String, String)> {
     let next = armed.values().min_by_key(|w| w.deadline_at)?;
@@ -198,7 +198,7 @@ pub(crate) fn soonest_armed_rollback(
 /// 4m22s" for `:deploy --wait-for-green Nm`. Returns `None` when
 /// nothing is being watched. Parallel to `soonest_armed_rollback`.
 pub(crate) fn soonest_watching_deploy(
-    watching: &std::collections::HashMap<String, WatchingDeploy>,
+    watching: &std::collections::BTreeMap<crate::app::EnvKey, WatchingDeploy>,
     now: chrono::DateTime<chrono::Utc>,
 ) -> Option<(String, String)> {
     let next = watching.values().min_by_key(|w| w.deadline_at)?;

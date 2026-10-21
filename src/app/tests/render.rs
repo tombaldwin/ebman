@@ -469,7 +469,7 @@ async fn ascii_icon_mode_renders_no_decorative_unicode() {
     });
     app.sso_expiry = Some(chrono::Utc::now() + chrono::Duration::minutes(30));
     app.armed_watchdogs.insert(
-        "api-prod".into(),
+        home_key("api-prod"),
         crate::app::ArmedWatchdog {
             env_name: "api-prod".into(),
             target_label: "v1".into(),
@@ -478,7 +478,7 @@ async fn ascii_icon_mode_renders_no_decorative_unicode() {
         },
     );
     app.watching_deploys.insert(
-        "api-staging".into(),
+        home_key("api-staging"),
         crate::app::WatchingDeploy {
             env_name: "api-staging".into(),
             target_label: "v1".into(),
@@ -1296,7 +1296,7 @@ async fn the_watcher_pills_switch_between_singular_and_plural() {
         deadline_at: chrono::Utc::now() + chrono::Duration::minutes(mins),
     };
     app.armed_watchdogs
-        .insert("api-prod".into(), arm("api-prod", 5));
+        .insert(home_key("api-prod"), arm("api-prod", 5));
     app.rebuild_view();
     let one = render(&mut app, 300, 24);
     assert!(
@@ -1305,7 +1305,7 @@ async fn the_watcher_pills_switch_between_singular_and_plural() {
     );
 
     app.armed_watchdogs
-        .insert("api-staging".into(), arm("api-staging", 9));
+        .insert(home_key("api-staging"), arm("api-staging", 9));
     app.rebuild_view();
     let two = render(&mut app, 300, 24);
     assert!(
@@ -1757,7 +1757,7 @@ async fn the_watching_pill_pluralises_too() {
         deadline_at: chrono::Utc::now() + chrono::Duration::minutes(mins),
     };
     app.watching_deploys
-        .insert("api-prod".into(), watch("api-prod", 5));
+        .insert(home_key("api-prod"), watch("api-prod", 5));
     app.rebuild_view();
     let one = render(&mut app, 300, 24);
     assert!(
@@ -1766,7 +1766,7 @@ async fn the_watching_pill_pluralises_too() {
     );
 
     app.watching_deploys
-        .insert("api-staging".into(), watch("api-staging", 9));
+        .insert(home_key("api-staging"), watch("api-staging", 9));
     app.rebuild_view();
     let two = render(&mut app, 300, 24);
     assert!(

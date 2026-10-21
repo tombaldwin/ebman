@@ -28,7 +28,9 @@ pub(crate) struct PersistedState {
     pub cost_enabled: Option<bool>,
     pub aliases: BTreeMap<String, String>,
     pub saved_views: BTreeMap<String, String>,
-    /// Pre-deploy snapshots keyed by env name. Persists the
+    /// Pre-deploy snapshots keyed `REGION/NAME` (see
+    /// `EnvKey::to_persisted`); a key saved by name alone is dropped on
+    /// load. Persists the
     /// `previous_version_label` + `taken_at` captured by every `:deploy`
     /// so a cross-session `:rollback` still has a target (without
     /// falling back to the event-history scan, which has a 100-event

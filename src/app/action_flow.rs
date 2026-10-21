@@ -20,15 +20,16 @@ impl App {
     /// Green, watchdog slot exists. The "no snapshot" + read-only
     /// gating paths are handled here (drain the watchdog + surface
     /// an error / status) so caller logic stays simple.
-    pub(crate) fn dispatch_auto_rollback(&mut self, env_name: String, health: String) {
+    pub(crate) fn dispatch_auto_rollback(&mut self, target: EnvKey, health: String) {
+        let env_name = target.name.clone();
         // Always drain a parallel wait-for-green watcher when the
         // rollback fires — otherwise the subsequent Green from the
         // rolled-back version would pin "✓ deploy reached Green:
         // ENV (build-900)" even though build-900 is the version we
         // just rolled away from. The auto-rollback's own pin is
         // the signal the operator should see.
-        self.watching_deploys.remove(&env_name);
-        let Some(snapshot) = self.deploy_snapshots.get(&env_name).cloned() else {
+        self.watching_deploys.remove(&target);
+        let Some(snapshot) = self.deploy_snapshots.get(&target).cloned() else {
             // pin_error so the warning survives apply_refresh's auto-
             // clear — when this fires *from* apply_refresh (the
             // common case), the unpinned error_message would
@@ -36,18 +37,19 @@ impl App {
             self.pin_error(format!(
                 "auto-rollback for {env_name}: no pre-deploy snapshot; manual rollback required"
             ));
-            self.armed_watchdogs.remove(&env_name);
+            self.armed_watchdogs.remove(&target);
             return;
         };
         if self.deny_write(&env_name, "auto-rollback") {
-            self.armed_watchdogs.remove(&env_name);
+            self.armed_watchdogs.remove(&target);
             return;
         }
-        self.armed_watchdogs.remove(&env_name);
+        self.armed_watchdogs.remove(&target);
         let label = snapshot.previous_version_label.clone();
-        // The env's own region — this is a deploy, and the watchdog
-        // fires unattended.
-        let region = self.region_for_name(&env_name);
+        // The env's own region, as armed — this is a deploy, and the
+        // watchdog fires unattended. Not the name resolved again: under
+        // a fan-out that could be the other region's same-named env.
+        let region = target.region.clone();
         let client = self.client_for_region(&region);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
@@ -951,16 +953,14 @@ impl App {
         // before the refresh landed) — the existing :rollback can
         // scan events as a fallback.
         if modal.action == Action::Deploy {
-            if let Some(env) = self
-                .environments
-                .iter()
-                .find(|e| e.name == modal.target_env)
-            {
+            let target = modal.target();
+            if let Some(env) = self.env_by_key(&target) {
                 if !env.version_label.is_empty() {
+                    let previous = env.version_label.clone();
                     self.deploy_snapshots.insert(
-                        env.name.clone(),
+                        target.clone(),
                         DeploySnapshot {
-                            previous_version_label: env.version_label.clone(),
+                            previous_version_label: previous,
                             taken_at: chrono::Utc::now(),
                         },
                     );
@@ -974,20 +974,20 @@ impl App {
             // surfaces.
             if let Some(secs) = modal.params.auto_rollback_secs {
                 let tx = self.msg_tx.clone();
-                let env_name = modal.target_env.clone();
+                let env = target.clone();
                 let gen = self.generation;
                 // Snapshot the rollback target now so the watchdog
                 // doesn't have to re-look it up later. The pre-deploy
                 // snapshot we just inserted is the source of truth.
                 let target_label = self
                     .deploy_snapshots
-                    .get(&modal.target_env)
+                    .get(&target)
                     .map(|s| s.previous_version_label.clone())
                     .unwrap_or_default();
                 let armed_at = chrono::Utc::now();
                 let deadline_at = armed_at + chrono::Duration::seconds(secs as i64);
                 self.armed_watchdogs.insert(
-                    modal.target_env.clone(),
+                    target.clone(),
                     ArmedWatchdog {
                         env_name: modal.target_env.clone(),
                         target_label,
@@ -1000,7 +1000,7 @@ impl App {
                 ));
                 tokio::spawn(async move {
                     tokio::time::sleep(std::time::Duration::from_secs(secs)).await;
-                    let _ = tx.send(AppMsg::AutoRollbackCheck { gen, env_name });
+                    let _ = tx.send(AppMsg::AutoRollbackCheck { gen, env });
                 });
             }
             // Arm the wait-for-green tracker if requested. Pure
@@ -1014,7 +1014,7 @@ impl App {
                 let armed_at = chrono::Utc::now();
                 let deadline_at = armed_at + chrono::Duration::seconds(secs as i64);
                 self.watching_deploys.insert(
-                    modal.target_env.clone(),
+                    target.clone(),
                     WatchingDeploy {
                         env_name: modal.target_env.clone(),
                         target_label,

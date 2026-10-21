@@ -286,14 +286,15 @@ pub struct App {
     /// Set while a background home-client refresh is in flight, so the
     /// 15-second tick can't stack them.
     pub(crate) aws_refresh_in_flight: bool,
-    /// Pre-deploy snapshots keyed by env name. Captured at deploy
-    /// dispatch time so `:rollback-deploy ENV` (and the watchdog
-    /// armed by `:deploy --auto-rollback Nm`) can redeploy whatever
-    /// version was running just before. In-memory only — lost on
-    /// app restart; the existing `:rollback` falls back to scanning
-    /// the env's event history. See `DeploySnapshot`.
-    pub(crate) deploy_snapshots: std::collections::HashMap<String, DeploySnapshot>,
-    /// Currently-armed auto-rollback watchdogs keyed by env name.
+    /// Pre-deploy snapshots keyed by region and env name. Captured at
+    /// deploy dispatch time so `:rollback` (and the watchdog armed by
+    /// `:deploy --auto-rollback Nm`) can redeploy whatever version was
+    /// running just before. Saved to `state.toml` as `REGION/NAME`;
+    /// with no snapshot, `:rollback` falls back to scanning the env's
+    /// event history. See `DeploySnapshot`.
+    pub(crate) deploy_snapshots: std::collections::BTreeMap<EnvKey, DeploySnapshot>,
+    /// Currently-armed auto-rollback watchdogs keyed by region and env
+    /// name.
     /// Populated by `:deploy --auto-rollback Nm`, drained on either
     /// (a) the env reaching Green on a refresh tick (early disarm)
     /// or (b) the deadline firing `AutoRollbackCheck`. Used both
@@ -301,15 +302,16 @@ pub struct App {
     /// "auto-rollback armed for X — Ys remaining" in the UI. The
     /// tokio task that drives the deadline is fire-and-forget;
     /// the in-flight visibility lives here.
-    pub(crate) armed_watchdogs: std::collections::HashMap<String, ArmedWatchdog>,
-    /// In-flight `--wait-for-green` trackers keyed by env name. Populated
+    pub(crate) armed_watchdogs: std::collections::BTreeMap<EnvKey, ArmedWatchdog>,
+    /// In-flight `--wait-for-green` trackers keyed by region and env
+    /// name. Populated
     /// by `:deploy --wait-for-green Nm`; drained on either (a) the env
     /// reaching Green on a refresh tick (success outcome) or (b) the
     /// deadline elapsing without Green (timeout outcome). Either way the
     /// outcome is a pinned status — no follow-on action like
     /// `armed_watchdogs`. Both maps can be populated for the same env
     /// when the operator passes both flags.
-    pub(crate) watching_deploys: std::collections::HashMap<String, WatchingDeploy>,
+    pub(crate) watching_deploys: std::collections::BTreeMap<EnvKey, WatchingDeploy>,
     /// Session-scoped freeze set by `:freeze-deploys`. `None` is
     /// the common case (no freeze active); `Some(...)` makes
     /// every destructive op refuse with the freeze's reason.
@@ -1019,7 +1021,7 @@ pub(crate) enum AppMsg {
     /// current cached health: if Green, the watchdog disarms with a
     /// status toast; otherwise it dispatches a rollback deploy to
     /// the captured `DeploySnapshot.previous_version_label`.
-    AutoRollbackCheck { gen: u64, env_name: String },
+    AutoRollbackCheck { gen: u64, env: EnvKey },
     /// Result of an `UpdateTagsForResource` call from `:tag` / `:untag`.
     /// On success we re-issue the Config-tab tag fetch so the UI reflects
     /// the new state immediately.
@@ -1325,28 +1327,9 @@ impl App {
             // / auto-rollback still has a target. Malformed lines are
             // silently skipped — better to drop one stale entry than
             // abort the App-init path.
-            deploy_snapshots: persisted
-                .deploy_snapshots
-                .iter()
-                .filter_map(|(env, raw)| match DeploySnapshot::parse_persisted(raw) {
-                    Some(snap) => Some((env.clone(), snap)),
-                    None => {
-                        // Log the malformed line so the operator can spot
-                        // a corrupted state.toml entry. We still skip the
-                        // entry — better to lose one stale snapshot than
-                        // to abort App init.
-                        tracing::warn!(
-                            target: "ebman::state",
-                            env = %env,
-                            raw = %raw,
-                            "malformed deploy_snapshot entry in state.toml — skipping"
-                        );
-                        None
-                    }
-                })
-                .collect(),
-            armed_watchdogs: std::collections::HashMap::new(),
-            watching_deploys: std::collections::HashMap::new(),
+            deploy_snapshots: restore_deploy_snapshots(&persisted.deploy_snapshots),
+            armed_watchdogs: std::collections::BTreeMap::new(),
+            watching_deploys: std::collections::BTreeMap::new(),
             deploy_freeze: None,
             incident: None,
             // Load tfstate from cwd at construction time. Failure
@@ -1639,9 +1622,9 @@ impl App {
             aws_built_at: Instant::now(),
             detail_fetch_started: None,
             aws_refresh_in_flight: false,
-            deploy_snapshots: std::collections::HashMap::new(),
-            armed_watchdogs: std::collections::HashMap::new(),
-            watching_deploys: std::collections::HashMap::new(),
+            deploy_snapshots: std::collections::BTreeMap::new(),
+            armed_watchdogs: std::collections::BTreeMap::new(),
+            watching_deploys: std::collections::BTreeMap::new(),
             deploy_freeze: None,
             incident: None,
             // Tests / demo mode don't probe the operator's cwd
@@ -2245,7 +2228,7 @@ impl App {
             deploy_snapshots: self
                 .deploy_snapshots
                 .iter()
-                .map(|(env, snap)| (env.clone(), snap.to_persisted()))
+                .map(|(key, snap)| (key.to_persisted(), snap.to_persisted()))
                 .collect(),
             hidden_cols: self.view.hidden_cols.clone(),
             custom_metrics: self.custom_metrics.clone(),
@@ -3190,6 +3173,50 @@ impl AppsActionItem {
             Self::OpenInConsole => "Open application in AWS console",
         }
     }
+}
+
+/// `state.toml`'s `deploy_snapshot.*` lines, keyed `REGION/NAME`. An
+/// entry that won't parse is dropped, not guessed at: a snapshot is
+/// advisory, and `:rollback` falls back to the env's events.
+pub(crate) fn restore_deploy_snapshots(
+    persisted: &BTreeMap<String, String>,
+) -> BTreeMap<EnvKey, DeploySnapshot> {
+    persisted
+        .iter()
+        .filter_map(|(env, raw)| {
+            match (
+                EnvKey::parse_persisted(env),
+                DeploySnapshot::parse_persisted(raw),
+            ) {
+                (Some(key), Some(snap)) => Some((key, snap)),
+                // Saved by name alone, before snapshots were kept per
+                // region: which region's env it was is not known, so
+                // it is dropped rather than guessed. Snapshots are
+                // advisory; `:rollback` falls back to the env's events.
+                (None, _) => {
+                    tracing::info!(
+                        target: "ebman::state",
+                        env = %env,
+                        "deploy_snapshot saved without a region — skipping"
+                    );
+                    None
+                }
+                (Some(_), None) => {
+                    // Log the malformed line so the operator can spot
+                    // a corrupted state.toml entry. We still skip the
+                    // entry — better to lose one stale snapshot than
+                    // to abort App init.
+                    tracing::warn!(
+                        target: "ebman::state",
+                        env = %env,
+                        raw = %raw,
+                        "malformed deploy_snapshot entry in state.toml — skipping"
+                    );
+                    None
+                }
+            }
+        })
+        .collect()
 }
 
 /// Menu order — Drill at the top because it's the default action
