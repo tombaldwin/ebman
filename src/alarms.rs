@@ -142,4 +142,52 @@ mod tests {
             vec!["by-dimension"]
         );
     }
+
+    #[test]
+    fn the_alarm_match_takes_each_envs_own_prefix() {
+        let cfg = crate::config::parse("app.a.alarm_prefix = \"A-\"\napp.b.namespace = \"N\"\n");
+        let dims = ["EnvironmentName".to_string()];
+        let a = crate::alarms::AlarmMatch::for_env(&dims, &cfg.app_tabs, "a", ["a", "b"]);
+        assert_eq!(a.name_prefix.as_deref(), Some("A-"));
+        assert_eq!(a.dimension_names, dims);
+        assert_eq!(
+            crate::alarms::AlarmMatch::for_env(&dims, &cfg.app_tabs, "b", ["a", "b"]).name_prefix,
+            None
+        );
+        assert_eq!(
+            crate::alarms::AlarmMatch::for_env(&dims, &cfg.app_tabs, "c", ["a", "b"]).name_prefix,
+            None
+        );
+    }
+
+    #[test]
+    fn a_prefix_gives_way_to_a_longer_env_name_it_also_covers() {
+        // `Shop-prod-` covers the worker `Shop-prod-wk`'s alarms too. They
+        // are the worker's: the prefix must not take them.
+        let cfg = crate::config::parse("app.Shop-prod.alarm_prefix = \"Shop-prod-\"\n");
+        let dims = ["EnvironmentName".to_string()];
+        let m = crate::alarms::AlarmMatch::for_env(
+            &dims,
+            &cfg.app_tabs,
+            "Shop-prod",
+            ["Shop-prod", "Shop-prod-wk", "Shop-staging"],
+        );
+        assert_eq!(m.shadowed_by, ["Shop-prod-wk"]);
+        let none: [(Option<&str>, Option<&str>); 0] = [];
+        assert!(m.matches("Shop-prod", "Shop-prod-app-5xx", &none));
+        assert!(
+            m.matches("Shop-prod", "Shop-prod-wkld-cpu", &none),
+            "Shop-prod's own wkld alarm, not the worker's"
+        );
+        assert!(
+            !m.matches("Shop-prod", "Shop-prod-wk-health", &none),
+            "the worker's alarm"
+        );
+        // A dimension match is not affected: the alarm says whose it is.
+        assert!(m.matches(
+            "Shop-prod",
+            "Shop-prod-wk-odd",
+            &[(Some("EnvironmentName"), Some("Shop-prod"))]
+        ));
+    }
 }

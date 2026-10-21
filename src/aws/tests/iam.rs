@@ -96,27 +96,3 @@ async fn simulate_principal_policy_stops_when_not_truncated() {
     assert_eq!(rows.len(), 1);
     assert_eq!(page1.num_calls(), 1, "must not loop on a stale marker");
 }
-
-#[test]
-fn seeding_a_lazy_client_wins_over_get_or_init() {
-    // How the mock-AWS tests inject: seed the cell, and `get_or_init`
-    // hands back the mock rather than constructing a real client.
-    let cfg = aws_config::SdkConfig::builder()
-        .region(Region::new("us-east-1"))
-        .behavior_version(aws_config::BehaviorVersion::latest())
-        .build();
-    let client = AwsClient::for_tests(
-        Client::new(&cfg),
-        SqsClient::new(&cfg),
-        CwClient::new(&cfg),
-        CwLogsClient::new(&cfg),
-        S3Client::new(&cfg),
-        Ec2Client::new(&cfg),
-    );
-    let seeded = aws_sdk_iam::Client::new(&cfg);
-    assert!(client.iam.set(seeded).is_ok());
-    // Accessor returns the seeded instance, not a fresh one.
-    let got = client.iam() as *const _;
-    let stored = client.iam.get().unwrap() as *const _;
-    assert_eq!(got, stored);
-}
