@@ -434,11 +434,36 @@ pub(crate) fn protected_name_hits(text: &str, names: &[String]) -> Vec<(usize, u
 /// panics — see [`parse_protected_names`].
 pub(crate) fn protected_names() -> Vec<String> {
     let mut text = std::env::var(PROTECTED_NAMES_ENV).unwrap_or_default();
-    if let Ok(local) = std::fs::read_to_string(PROTECTED_NAMES_FILE) {
+    if let Some(local) = protected_names_paths()
+        .into_iter()
+        .find_map(|p| std::fs::read_to_string(p).ok())
+    {
         text.push('\n');
         text.push_str(&local);
     }
     parse_protected_names(&text).unwrap_or_else(|e| panic!("{e}"))
+}
+
+/// Where the list may be: this checkout, then the main checkout. A
+/// linked worktree has no copy of the gitignored file, and the guard
+/// there found an empty list and passed. The hooks look in the same two
+/// places (`.githooks/protected-names.sh`).
+fn protected_names_paths() -> Vec<std::path::PathBuf> {
+    let mut paths = vec![std::path::PathBuf::from(PROTECTED_NAMES_FILE)];
+    if let Ok(out) = std::process::Command::new("git")
+        .args(["rev-parse", "--path-format=absolute", "--git-common-dir"])
+        .output()
+    {
+        if out.status.success() {
+            let common = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            paths.push(
+                std::path::Path::new(&common)
+                    .join("..")
+                    .join(PROTECTED_NAMES_FILE),
+            );
+        }
+    }
+    paths
 }
 
 /// `123456789012` -> `12…12`: enough to find in `path:line`, not
@@ -781,6 +806,84 @@ mod protected_names {
                 "the hook printed a name: {stderr}"
             );
         }
+        // pre-commit, in a throwaway repo with no Cargo.toml: the name
+        // check runs before the cargo steps would bail, and it reads
+        // staged PATHS as well as lines.
+        let repo = dir.join("repo");
+        let _ = std::fs::remove_dir_all(&repo);
+        std::fs::create_dir_all(repo.join(".githooks")).unwrap();
+        for f in ["pre-commit", "protected-names.sh"] {
+            std::fs::copy(format!(".githooks/{f}"), repo.join(".githooks").join(f)).unwrap();
+        }
+        // Not this repository's: a test run from inside a git hook would
+        // otherwise inherit GIT_DIR and act on it.
+        let git_in = |dir: &std::path::Path, args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_INDEX_FILE")
+                .env_remove("GIT_WORK_TREE")
+                .output()
+                .expect("git")
+        };
+        let git = |args: &[&str]| git_in(&repo, args);
+        assert!(git(&["init", "-q"]).status.success());
+        std::fs::write(repo.join("zorblax-notes.txt"), "nothing to see\n").unwrap();
+        assert!(git(&["add", "zorblax-notes.txt"]).status.success());
+        let out = std::process::Command::new("bash")
+            .arg(".githooks/pre-commit")
+            .current_dir(&repo)
+            .env("EBMAN_PROTECTED_NAMES", fixture)
+            .output()
+            .expect("run the hook");
+        assert!(
+            !out.status.success(),
+            "a staged PATH naming a client passed"
+        );
+        assert!(!String::from_utf8_lossy(&out.stderr)
+            .to_lowercase()
+            .contains("zorblax"));
+
+        // A linked worktree has no copy of the gitignored list: the
+        // hooks there read the main checkout's, rather than passing on
+        // an empty one.
+        let identity = ["-c", "user.name=t", "-c", "user.email=t@example.invalid"];
+        let commit = [&identity[..], &["commit", "-q", "--no-verify", "-m", "x"]].concat();
+        assert!(git(&commit).status.success());
+        std::fs::write(repo.join(".protected-names"), "zorblax\n").unwrap();
+        let tree = dir.join("linked");
+        let _ = std::fs::remove_dir_all(&tree);
+        assert!(git(&["worktree", "add", "-q", tree.to_str().unwrap()])
+            .status
+            .success());
+        std::fs::create_dir_all(tree.join(".githooks")).unwrap();
+        for f in ["commit-msg", "protected-names.sh"] {
+            std::fs::copy(format!(".githooks/{f}"), tree.join(".githooks").join(f)).unwrap();
+        }
+        let msg = dir.join("linked-msg");
+        std::fs::write(&msg, "fix the zorblax fleet").unwrap();
+        let out = std::process::Command::new("bash")
+            .arg(".githooks/commit-msg")
+            .arg(&msg)
+            .current_dir(&tree)
+            .env_remove("EBMAN_PROTECTED_NAMES")
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_INDEX_FILE")
+            .env_remove("GIT_WORK_TREE")
+            .output()
+            .expect("run the hook");
+        assert!(
+            !out.status.success(),
+            "the worktree's hook found no list: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let _ = git_in(
+            &repo,
+            &["worktree", "remove", "--force", tree.to_str().unwrap()],
+        );
+        let _ = std::fs::remove_dir_all(&repo);
+
         // A name too short to scan for is refused, as by the parser.
         let path = dir.join("msg");
         std::fs::write(&path, "anything").unwrap();
@@ -795,6 +898,21 @@ mod protected_names {
     }
 
     use super::{parse_protected_names, protected_name_hits};
+
+    /// The guard reads the list from this checkout and then the main
+    /// one, as the hooks do: a linked worktree has no copy.
+    #[test]
+    fn the_list_is_looked_for_in_the_main_checkout_too() {
+        if super::tracked_files().is_none() {
+            return;
+        }
+        let paths = super::protected_names_paths();
+        assert_eq!(paths.len(), 2, "{paths:?}");
+        assert!(
+            paths[1].ends_with(std::path::Path::new("..").join(super::PROTECTED_NAMES_FILE)),
+            "{paths:?}"
+        );
+    }
 
     /// Fixture names are made up; the real list must never appear here.
     fn names(list: &str) -> Vec<String> {

@@ -8,9 +8,25 @@
 # Reports which entry matched by its position, never the name: a hook's
 # output ends up in terminals, logs and agent transcripts.
 
+# The list file: this checkout's, else the main checkout's. A linked
+# worktree has no copy (the file is gitignored), and without the
+# fallback every check there passed on an empty list.
+protected_names_file() {
+  top=$(git rev-parse --show-toplevel 2>/dev/null) || top=.
+  if [ -f "$top/.protected-names" ]; then
+    echo "$top/.protected-names"
+    return
+  fi
+  common=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return
+  if [ -f "$common/../.protected-names" ]; then
+    echo "$common/../.protected-names"
+  fi
+}
+
 protected_names() {
   {
-    [ -f .protected-names ] && cat .protected-names
+    file=$(protected_names_file)
+    [ -n "$file" ] && cat "$file"
     printf '%s\n' "${EBMAN_PROTECTED_NAMES:-}"
   } | grep -v '^[[:space:]]*#' | tr ',' '\n' \
     | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
@@ -23,7 +39,12 @@ check_protected_names() {
   what=$1
   file=$2
   names=$(protected_names) || return 2
-  [ -n "$names" ] || return 0
+  if [ -z "$names" ]; then
+    # Not an error (a contributor has no list), but never silent: a
+    # check that ran on nothing must not read as a check that passed.
+    echo "protected-names: no list (.protected-names or EBMAN_PROTECTED_NAMES): $what NOT checked" >&2
+    return 0
+  fi
   lower=$(tr '[:upper:]' '[:lower:]' < "$file")
   k=0
   found=0
