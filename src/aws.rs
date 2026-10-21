@@ -64,18 +64,17 @@ use aws_sdk_sts::Client as StsClient;
 use chrono::{DateTime, Utc};
 use color_eyre::eyre::{eyre, Result, WrapErr};
 
+// ---------------------------------------------------------------------------
+// Per-service sub-modules. Each contributes `impl AwsClient { ... }` for one
+// AWS service, so the boundary between "the Elastic Beanstalk domain" and
+// "generic AWS surface any operator TUI would want" is visible in the file
+// list rather than buried in a 6k-line module. They open with `use super::*`
+// and are glob-re-exported below, so every `crate::aws::foo` path resolves as
+// it did when this was one file.
+// ---------------------------------------------------------------------------
 mod acm;
 mod cloudwatch;
 mod cost;
-mod discover; // the App tab editor's discovery lookups
-              // ---------------------------------------------------------------------------
-              // Per-service sub-modules. Each contributes `impl AwsClient { ... }` for one
-              // AWS service, so the boundary between "the Elastic Beanstalk domain" and
-              // "generic AWS surface any operator TUI would want" is visible in the file
-              // list rather than buried in a 6k-line module. They open with `use super::*`
-              // and are glob-re-exported below, so every `crate::aws::foo` path resolves as
-              // it did when this was one file.
-              // ---------------------------------------------------------------------------
 mod eb; // Elastic Beanstalk — the domain
 mod ec2;
 mod iam;
@@ -86,6 +85,10 @@ mod secrets;
 mod sqs;
 mod ssm;
 mod waf;
+
+// Not a service: the App tab editor's discovery, free functions that make
+// several services' calls at once.
+mod discover;
 
 pub(crate) use cloudwatch::*;
 pub(crate) use cost::*;
