@@ -26,10 +26,10 @@ pub(super) fn draw_detail_app(
     alarm_line(&mut lines, &detail.cw_alarms, theme);
     match app.app_tab_source(env) {
         crate::app::AppTabSource::NotSetUp => {
-            not_set_up(&mut lines, env, detail, app, area.width, false)
+            not_set_up(&mut lines, env, detail, app, area.width, None)
         }
-        crate::app::AppTabSource::Preview(_) => {
-            not_set_up(&mut lines, env, detail, app, area.width, true)
+        crate::app::AppTabSource::Preview(found) => {
+            not_set_up(&mut lines, env, detail, app, area.width, Some(found))
         }
         crate::app::AppTabSource::Configured(spec) if spec.is_empty() => {
             lines.push(Line::from(Span::styled(
@@ -213,15 +213,15 @@ fn stale_group(
 
 /// An env with no App tab config: what discovery found, as an
 /// invitation to `e`, with the resources it has evidence for drawn as
-/// suggestions (`preview`). Without discovery (demo mode), the config
-/// keys to add.
+/// suggestions (`preview`, what [`App::app_tab_source`] found them in).
+/// Without discovery (demo mode), the config keys to add.
 fn not_set_up(
     lines: &mut Vec<Line<'static>>,
     env: &str,
     detail: &crate::app::DetailState,
     app: &App,
     width: u16,
-    preview: bool,
+    preview: Option<&crate::app_discover::Discovered>,
 ) {
     let theme = &app.theme;
     let muted = Style::default().fg(theme.muted);
@@ -235,7 +235,7 @@ fn not_set_up(
         )));
         return;
     }
-    let Some(found) = app.discovered_for(env) else {
+    let Some(found) = preview.or_else(|| app.discovered_for(env)) else {
         lines.push(Line::from(Span::styled(
             format!(
                 "No App tab config for {env}: press e to set it up, or add \
@@ -272,7 +272,7 @@ fn not_set_up(
         Span::styled(" to review and save.", muted),
     ]));
     // The resources an env variable names, drawn now; nothing is saved.
-    if preview {
+    if preview.is_some() {
         lines.push(Line::default());
         lines.push(Line::from(Span::styled("Suggested, not saved:", muted)));
         metric_rows(lines, detail, width, theme);

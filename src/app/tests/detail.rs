@@ -3195,14 +3195,24 @@ async fn an_envs_app_tab_comes_from_config_then_a_preview_then_nothing() {
                 && (code.contains(".is_some()") || code.contains(".is_none()")))
     });
     assert!(asked.is_empty(), "{asked:#?}: ask app_tab_source");
-    // The one place a preview is made from what discovery found, however
-    // it is imported: its definition and that one use.
+    // A preview is made from what discovery found only by AppTabSource,
+    // however it is imported: every use but the definition is there.
     let previewed = production_lines_where(|code| code.contains("preview_spec"));
-    assert_eq!(previewed.len(), 2, "{previewed:#?}: ask app_tab_source");
+    let uses: Vec<&String> = previewed
+        .iter()
+        .filter(|l| !l.contains("fn preview_spec("))
+        .collect();
+    assert_eq!(
+        previewed.len(),
+        uses.len() + 1,
+        "{previewed:#?}: its definition"
+    );
     assert!(
-        previewed[0].starts_with("src/app/app_tab_form.rs:")
-            || previewed[1].starts_with("src/app/app_tab_form.rs:"),
-        "{previewed:#?}"
+        !uses.is_empty()
+            && uses
+                .iter()
+                .all(|l| l.starts_with("src/app/app_tab_form.rs:")),
+        "{uses:#?}: ask app_tab_source"
     );
 }
 

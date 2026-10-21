@@ -460,12 +460,11 @@ impl App {
     pub(crate) fn app_tab_source(&self, env: &str) -> AppTabSource<'_> {
         match self.cfg.app_tabs.envs.get(env) {
             Some(spec) => AppTabSource::Configured(spec),
-            None => match self
-                .discovered_for(env)
-                .and_then(crate::app_discover::preview_spec)
-            {
-                Some(spec) => AppTabSource::Preview(Box::new(spec)),
-                None => AppTabSource::NotSetUp,
+            None => match self.discovered_for(env) {
+                Some(found) if crate::app_discover::preview_spec(found).is_some() => {
+                    AppTabSource::Preview(found)
+                }
+                _ => AppTabSource::NotSetUp,
             },
         }
     }
@@ -638,8 +637,9 @@ pub(crate) struct DiscoveryKey {
 pub(crate) enum AppTabSource<'a> {
     /// The env's `app.ENV.*` lines.
     Configured(&'a AppTabSpec),
-    /// No config; the resources discovery has evidence for, unsaved.
-    Preview(Box<AppTabSpec>),
+    /// No config; discovery found resources it has evidence for, which
+    /// are drawn unsaved ([`crate::app_discover::preview_spec`]).
+    Preview(&'a Discovered),
     /// No config, and nothing to suggest (yet).
     NotSetUp,
 }
@@ -653,7 +653,7 @@ impl AppTabSource<'_> {
     pub(crate) fn spec(&self) -> Option<AppTabSpec> {
         match self {
             AppTabSource::Configured(s) => Some((*s).clone()),
-            AppTabSource::Preview(s) => Some((**s).clone()),
+            AppTabSource::Preview(found) => crate::app_discover::preview_spec(found),
             AppTabSource::NotSetUp => None,
         }
     }
