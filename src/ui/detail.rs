@@ -165,7 +165,7 @@ pub(super) fn draw_detail(f: &mut Frame, area: Rect, app: &mut App) {
         loading_events: detail.loading_events,
         loading_instances: detail.loading_instances,
         loading_queues: detail.loading_queues,
-        loading_metrics: detail.loading_metrics,
+        loading_metrics: detail.metrics_request.in_flight(),
         log_stage: detail.log_tail.stage,
     };
 
@@ -1167,7 +1167,7 @@ pub(super) fn draw_detail_metrics(
     f.render_widget(outer, area);
 
     if detail.metrics.is_empty() {
-        let msg = if detail.loading_metrics {
+        let msg = if detail.metrics_request.in_flight() {
             "loading metrics…"
         } else {
             "no metrics returned — env may be too new, or CloudWatch perms missing"

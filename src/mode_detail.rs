@@ -464,7 +464,13 @@ pub(crate) struct DetailState {
     pub loading_events: bool,
     pub loading_instances: bool,
     pub loading_queues: bool,
-    pub loading_metrics: bool,
+    /// The Metrics tab's request: in flight, and which one. Only the
+    /// latest request's answer lands (`Fetch::settle_ticket`), so a
+    /// range changed and changed back, or two `^R`s, cannot have an
+    /// older answer overwrite a newer one. The series and the error stay
+    /// in `metrics` and `error`, so a failed refresh leaves the last
+    /// series on screen.
+    pub metrics_request: crate::app::Fetch<()>,
     pub loading_tags: bool,
     pub loading_env_vars: bool,
     pub error: Option<DetailError>,
@@ -567,7 +573,7 @@ impl DetailState {
             DetailTab::Events => self.loading_events,
             DetailTab::Instances => self.loading_instances,
             DetailTab::Queue => self.loading_queues,
-            DetailTab::Metrics => self.loading_metrics,
+            DetailTab::Metrics => self.metrics_request.in_flight(),
             // Not `loading_instances`: the eager instance fetch from
             // opening Detail would then block the tab's own first fetch.
             DetailTab::App => self.app_tab.metrics.in_flight(),
@@ -768,7 +774,7 @@ mod tests {
             loading_events: false,
             loading_instances: false,
             loading_queues: false,
-            loading_metrics: false,
+            metrics_request: Default::default(),
             loading_tags: false,
             loading_env_vars: false,
             error: None,

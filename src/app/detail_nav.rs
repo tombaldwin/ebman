@@ -83,7 +83,7 @@ impl App {
             loading_events: false,
             loading_instances: false,
             loading_queues: false,
-            loading_metrics: false,
+            metrics_request: Default::default(),
             loading_tags: false,
             loading_env_vars: false,
             error: None,

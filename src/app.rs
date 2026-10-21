@@ -630,9 +630,9 @@ pub(crate) enum AppMsg {
     DetailMetrics {
         gen: u64,
         env_name: String,
-        /// The range it was fetched for: `[` `]` pressed twice fires two
-        /// fetches, and the one for the old range must not land last.
-        range_secs: i64,
+        /// The request it answers: `[` `]` pressed twice fires two
+        /// fetches, and only the latest's answer may land.
+        ticket: crate::app::Ticket,
         result: crate::app::spawn_detail::MetricsResult,
     },
     /// What discovery found for the App tab's editor.

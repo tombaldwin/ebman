@@ -539,7 +539,7 @@ async fn the_anomaly_badge_is_ascii_at_its_call_site_too() {
         .iter()
         .position(|t| *t == DetailTab::Metrics)
         .expect("Metrics tab present");
-    detail.loading_metrics = false;
+    detail.metrics_request = Default::default();
     // A flat baseline then a spike — the shape `series_anomaly_label`
     // fires on for a 5xx series.
     let now = chrono::Utc::now();

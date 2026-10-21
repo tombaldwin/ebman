@@ -225,8 +225,7 @@ impl App {
         d.metrics_range_secs = RANGES[next];
         let env_name = d.env_name.clone();
         // The range is shared, so both tabs refetch: a result for the
-        // old range is dropped on arrival (`is_current_metrics_range` on
-        // the Metrics tab, the App tab's newer ticket on that one),
+        // old range is dropped on arrival (each tab's newer ticket),
         // and only a fetch for the new one outstanding on EACH tab
         // guarantees its loading state clears. Refetching just the tab
         // on screen left the other's in flight until the 120s stuck

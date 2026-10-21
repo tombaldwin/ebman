@@ -217,11 +217,13 @@ impl App {
             .as_ref()
             .map(|d| d.metrics_range_secs)
             .unwrap_or(3600);
-        if let Some(d) = self.detail.as_mut() {
-            d.loading_metrics = true;
-            // Only its own: a sibling's failure stays on screen.
-            d.clear_error(crate::mode_detail::DetailFetch::Metrics);
-        }
+        // Nothing to answer to without a Detail view.
+        let Some(d) = self.detail.as_mut() else {
+            return;
+        };
+        let ticket = d.metrics_request.begin();
+        // Only its own: a sibling's failure stays on screen.
+        d.clear_error(crate::mode_detail::DetailFetch::Metrics);
         // Snapshot the custom-metrics spec list at spawn time so concurrent
         // `:metric add`s don't race with the in-flight fetch.
         let custom: Vec<crate::aws::CustomMetricQuery> = self
@@ -248,7 +250,7 @@ impl App {
                     let _ = tx.send(AppMsg::DetailMetrics {
                         gen,
                         env_name,
-                        range_secs: range,
+                        ticket,
                         result: Err(flatten_err("cached_client", e)),
                     });
                     return;
@@ -269,7 +271,7 @@ impl App {
             let _ = tx.send(AppMsg::DetailMetrics {
                 gen,
                 env_name,
-                range_secs: range,
+                ticket,
                 result,
             });
         });

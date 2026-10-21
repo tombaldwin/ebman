@@ -540,7 +540,7 @@ async fn every_detail_tab_reports_its_own_loading_state() {
     d.loading_events = false;
     d.loading_instances = false;
     d.loading_queues = false;
-    d.loading_metrics = false;
+    d.metrics_request = Default::default();
     d.cw_alarms = Default::default();
     d.recent_versions = Default::default();
     d.app_tab.metrics = Default::default();
@@ -577,7 +577,9 @@ async fn every_detail_tab_reports_its_own_loading_state() {
         ),
         (
             "metrics",
-            |d| d.loading_metrics = true,
+            |d| {
+                let _ = d.metrics_request.begin();
+            },
             &[DetailTab::Metrics],
         ),
         (
@@ -621,7 +623,7 @@ async fn every_detail_tab_reports_its_own_loading_state() {
         d.loading_events = false;
         d.loading_instances = false;
         d.loading_queues = false;
-        d.loading_metrics = false;
+        d.metrics_request = Default::default();
         d.cw_alarms = Default::default();
         d.recent_versions = Default::default();
         d.app_tab.metrics = Default::default();
@@ -1795,7 +1797,7 @@ async fn the_range_keys_refetch_both_tabs_that_share_the_range() {
     let d = app.detail.as_mut().unwrap();
     d.tab_idx = d.tabs.iter().position(|t| *t == DetailTab::App).unwrap();
     d.app_tab.metrics.settle_now(Ok(Default::default()));
-    d.loading_metrics = false;
+    d.metrics_request = Default::default();
     assert_eq!(d.metrics_range_secs, 3600);
 
     press(&mut app, KeyCode::Char(']'), KeyModifiers::NONE);
@@ -1803,7 +1805,7 @@ async fn the_range_keys_refetch_both_tabs_that_share_the_range() {
     assert_eq!(d.metrics_range_secs, 21_600, "] widens the range");
     assert!(d.app_tab.metrics.in_flight(), "the App tab refetches");
     assert!(
-        d.loading_metrics,
+        d.metrics_request.in_flight(),
         "and so does the Metrics tab: the range is shared, and its old-range \
          result will be dropped, so only a new fetch clears its loading state"
     );
@@ -2296,9 +2298,10 @@ async fn a_metrics_result_for_a_range_left_behind_is_dropped() {
     let d = app.detail.as_mut().unwrap();
     // The fetch for the old range, then the range change's.
     let old = d.app_tab.metrics.begin();
+    let old_metrics = d.metrics_request.begin();
     d.metrics_range_secs = 86_400;
-    d.loading_metrics = true;
     let new = d.app_tab.metrics.begin();
+    let new_metrics = d.metrics_request.begin();
     let series = |label: &str| crate::aws::MetricSeries {
         id: label.into(),
         label: label.into(),
@@ -2313,7 +2316,7 @@ async fn a_metrics_result_for_a_range_left_behind_is_dropped() {
     app.handle_msg(AppMsg::DetailMetrics {
         gen: app.generation,
         env_name: "api-prod".into(),
-        range_secs: 900,
+        ticket: old_metrics,
         result: Ok((vec![series("old")], None)),
     });
     app.handle_msg(AppMsg::DetailAppMetrics {
@@ -2324,7 +2327,7 @@ async fn a_metrics_result_for_a_range_left_behind_is_dropped() {
     });
     let d = app.detail.as_ref().unwrap();
     assert!(
-        d.metrics.is_empty() && d.loading_metrics,
+        d.metrics.is_empty() && d.metrics_request.in_flight(),
         "Metrics tab kept waiting"
     );
     assert!(
@@ -2336,7 +2339,7 @@ async fn a_metrics_result_for_a_range_left_behind_is_dropped() {
     app.handle_msg(AppMsg::DetailMetrics {
         gen: app.generation,
         env_name: "api-prod".into(),
-        range_secs: 86_400,
+        ticket: new_metrics,
         result: Ok((vec![series("new")], None)),
     });
     app.handle_msg(AppMsg::DetailAppMetrics {
@@ -2347,10 +2350,51 @@ async fn a_metrics_result_for_a_range_left_behind_is_dropped() {
     });
     let d = app.detail.as_ref().unwrap();
     assert_eq!(d.metrics[0].label, "new");
+    assert!(!d.metrics_request.in_flight());
     assert_eq!(
         d.app_tab.metrics.ready().map(|m| m.notes[0].as_str()),
         Some("new")
     );
+}
+
+/// The case a range check could not catch: the range changed and
+/// changed back (or `^R` twice), so the older request is for the SAME
+/// range as the newer one, and its late answer used to land over it
+/// and end the loading state while the newer request was still out.
+#[tokio::test]
+async fn an_older_metrics_answer_for_the_same_range_is_dropped() {
+    let mut app = test_app();
+    app.environments = vec![mk_env("api-prod", "shop", "WebServer", "Green")];
+    app.rebuild_view();
+    app.table_state.select(Some(0));
+    app.open_detail();
+    let d = app.detail.as_mut().unwrap();
+    let first = d.metrics_request.begin();
+    let second = d.metrics_request.begin();
+    let series = |label: &str| crate::aws::MetricSeries {
+        id: label.into(),
+        label: label.into(),
+        points: vec![],
+    };
+    app.handle_msg(AppMsg::DetailMetrics {
+        gen: app.generation,
+        env_name: "api-prod".into(),
+        ticket: first,
+        result: Ok((vec![series("first")], None)),
+    });
+    let d = app.detail.as_ref().unwrap();
+    assert!(d.metrics.is_empty(), "the older answer was dropped");
+    assert!(
+        d.metrics_request.in_flight(),
+        "the newer request is still out"
+    );
+    app.handle_msg(AppMsg::DetailMetrics {
+        gen: app.generation,
+        env_name: "api-prod".into(),
+        ticket: second,
+        result: Ok((vec![series("second")], None)),
+    });
+    assert_eq!(app.detail.as_ref().unwrap().metrics[0].label, "second");
 }
 
 /// Starting a fetch clears only that fetch's own error. Each of these
@@ -2447,10 +2491,11 @@ async fn a_partial_metrics_result_draws_and_reports_its_failure() {
         label: "health".into(),
         points: vec![],
     };
+    let ticket = app.detail.as_mut().unwrap().metrics_request.begin();
     app.handle_msg(AppMsg::DetailMetrics {
         gen: app.generation,
         env_name: "api-prod".into(),
-        range_secs: 3600,
+        ticket,
         result: Ok((vec![series], Some("custom metrics: AccessDenied".into()))),
     });
     let d = app.detail.as_ref().unwrap();

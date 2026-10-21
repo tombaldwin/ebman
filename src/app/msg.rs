@@ -134,14 +134,10 @@ impl App {
             } => self.handle_detail_instances(env_name, result),
             AppMsg::DetailMetrics {
                 env_name,
-                range_secs,
+                ticket,
                 result,
                 ..
-            } => {
-                if self.is_current_metrics_range(range_secs) {
-                    self.handle_detail_metrics(env_name, result)
-                }
-            }
+            } => self.handle_detail_metrics(env_name, ticket, result),
             AppMsg::DetailAppMetrics {
                 env_name,
                 ticket,
@@ -616,24 +612,21 @@ impl App {
         });
     }
 
-    /// A metrics result for a range the operator has since moved off is
-    /// dropped. A fetch for the current range is always outstanding when
-    /// that happens (changing the range starts one), so the tab keeps
-    /// loading until the right answer lands rather than showing the
-    /// wrong window under the right title.
-    fn is_current_metrics_range(&self, range_secs: i64) -> bool {
-        self.detail
-            .as_ref()
-            .is_some_and(|d| d.metrics_range_secs == range_secs)
-    }
-
+    /// Only the latest request's answer lands: one for a range the
+    /// operator has since moved off, or from before a `^R`, is dropped,
+    /// and the newer request stays in flight, so the tab keeps loading
+    /// until the right answer arrives rather than showing the wrong
+    /// window under the right title.
     fn handle_detail_metrics(
         &mut self,
         env_name: String,
+        ticket: crate::app::Ticket,
         result: super::spawn_detail::MetricsResult,
     ) {
         self.apply_detail_msg(&env_name, result, |d, r| {
-            d.loading_metrics = false;
+            if !d.metrics_request.settle_ticket(ticket, Ok(())) {
+                return;
+            }
             match r {
                 Ok((metrics, partial)) => {
                     d.metrics = metrics;
