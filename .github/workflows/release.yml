@@ -224,9 +224,13 @@ jobs:
           # once they've sanity-checked the artefacts.
           draft: true
           generate_release_notes: true
-      # The notes are generated from PR titles and commit messages, and
-      # the draft is edited by hand before it is published: neither is a
-      # tracked file, so the cargo test scan never sees them.
+      # The notes are generated from PR titles and commit messages: not
+      # a tracked file, so the cargo test scan never sees them. This
+      # checks what was generated. Hand edits to the draft are checked
+      # only by the crates_io step below, which runs once the release is
+      # already public and can stop crates.io, not the release page: the
+      # release procedure (CLAUDE.md) has the command to run on an
+      # edited draft before publishing it. In CI a missing list fails.
       - name: The draft's notes name no protected client
         env:
           GH_TOKEN: ${{ github.token }}
@@ -266,6 +270,14 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       # Again at publish, after the maintainer's edits to the draft, and
       # before crates.io, which cannot be undone.
+      # The checker from the default branch, not the release checkout: a
+      # tag from before the hooks existed has no .githooks/, and a
+      # re-publish of one (workflow_dispatch) must still run.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: tools
+          sparse-checkout: .githooks
       - name: The published notes name no protected client
         env:
           GH_TOKEN: ${{ github.token }}
@@ -274,7 +286,7 @@ jobs:
         run: |
           set -euo pipefail
           gh release view "${TAG}" --repo "${{ github.repository }}" --json body --jq .body > notes.md
-          . .githooks/protected-names.sh
+          . tools/.githooks/protected-names.sh
           check_protected_names "the release notes" notes.md
       - name: cargo publish
         env:

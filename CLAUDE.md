@@ -201,4 +201,14 @@ When the user asks to cut a release (e.g. "tag 0.X", "ship the release", "prepar
 
 4. **Surface findings in the release message.** What the docs audit + code review fixed lands in the release notes / final summary alongside what shipped, so the audit and review aren't invisible work.
 
-5. **No silent edits — flag intentional gaps.** If a command shipped behind a feature flag or as a soft preview, say so in the audit summary rather than just documenting it as if it were generally available. If a code-review finding was deferred (not fixed in the release commit), say WHY and what version it's tracked against.
+5. **Check an edited draft's notes before publishing it.** `release.yml`
+   scans the notes it generated, and scans again before crates.io, but
+   that second scan runs once the release is already public. After any
+   hand edit to the draft, before flipping it to published:
+
+   ```bash
+   gh release view vX.Y.Z --json body --jq .body > /tmp/notes.md
+   bash -c '. .githooks/protected-names.sh; check_protected_names "the release notes" /tmp/notes.md'
+   ```
+
+6. **No silent edits — flag intentional gaps.** If a command shipped behind a feature flag or as a soft preview, say so in the audit summary rather than just documenting it as if it were generally available. If a code-review finding was deferred (not fixed in the release commit), say WHY and what version it's tracked against.

@@ -181,10 +181,17 @@ jobs:
         # verified by hand. Covering it here instead would mean
         # `--all-targets`, which recompiles and re-runs the process-level
         # suite for every mutant in the tree.
-        run: >
-          cargo mutants --shard ${{ matrix.shard }}/24
-          --exclude src/main.rs
-          --no-shuffle --timeout 120 -- --lib
+        # `complete` is written only once cargo-mutants returns (survivors
+        # included): the upload below runs `always()`, so a shard killed
+        # at its timeout still uploads, and must not count as reported.
+        run: |
+          set +e
+          cargo mutants --shard ${{ matrix.shard }}/24 \
+            --exclude src/main.rs \
+            --no-shuffle --timeout 120 -- --lib
+          code=$?
+          echo "$code" > mutants.out/complete
+          exit "$code"
       - uses: actions/upload-artifact@v7
         if: always()
         with:
@@ -214,7 +221,7 @@ jobs:
           # deduplicated, so two identical mutations in one file are two.
           cat shards/*/missed.txt 2>/dev/null \
             | sed -E 's/^([^:]+):[0-9]+:[0-9]+:/\1:/' | sort | uniq -c > missed-all.txt || true
-          ls -d shards/*/ 2>/dev/null | wc -l | tr -d ' ' > shards-reported.txt
+          ls shards/*/complete 2>/dev/null | wc -l | tr -d ' ' > shards-reported.txt
           wc -l < missed-all.txt | xargs echo "distinct survivors this sweep:"
       - name: Fetch the previous sweep's survivors
         env:
@@ -239,8 +246,11 @@ jobs:
           fi
       - name: New survivors to the job summary
         run: |
-          sort missed-all.txt -o missed-all.txt
-          comm -13 prev-missed.txt missed-all.txt > new-survivors.txt
+          # Per mutant: reported only where the count went UP. Comparing
+          # whole `count key` lines read a count going 2 -> 1 as new.
+          awk 'NR==FNR { c=$1; $1=""; prev[$0]=c; next }
+               { c=$1; $1=""; if (c > (prev[$0]+0)) print c - (prev[$0]+0) " more:" $0 }' \
+            prev-missed.txt missed-all.txt > new-survivors.txt
           {
             echo "### Mutants surviving this sweep that did not survive the last"
             echo
