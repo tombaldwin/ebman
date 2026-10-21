@@ -51,9 +51,6 @@ jobs:
     if: github.event_name == 'pull_request' || github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    # A push cannot be refused after the fact, so there it reports rather
-    # than fails: survivors go to the job summary. A PR still blocks.
-    continue-on-error: ${{ github.event_name == 'push' }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -91,7 +88,21 @@ jobs:
             echo "no src/**/*.rs changes; nothing to mutate"
             exit 0
           fi
+          # Exit 2 is "mutants survived" (3 is timeouts): on a push that
+          # is a report, since a push cannot be refused after the fact,
+          # and on a PR it blocks. Anything else (1 usage or diff error,
+          # 4 the baseline tests failing) fails either way: a broken job
+          # must not read as green.
+          set +e
           cargo mutants --in-diff pr.diff --no-shuffle --timeout 120 -- --lib
+          code=$?
+          set -e
+          if [ "$code" = 0 ]; then exit 0; fi
+          if { [ "$code" = 2 ] || [ "$code" = 3 ]; } && [ "${{ github.event_name }}" = "push" ]; then
+            echo "::warning::mutants survived on the changed lines (exit $code): see the job summary"
+            exit 0
+          fi
+          exit "$code"
       - name: Survivors to the job summary
         if: always()
         run: |
@@ -197,8 +208,14 @@ jobs:
       - name: Merge this sweep's survivors
         run: |
           set -euo pipefail
-          cat shards/*/missed.txt 2>/dev/null | sort -u > missed-all.txt || true
-          wc -l < missed-all.txt | xargs echo "survivors this sweep:"
+          # Positions stripped (`path:line:col:` -> `path:`): a week of
+          # commits moves most survivors' lines, and comparing with them
+          # reported nearly every survivor as new. Counted rather than
+          # deduplicated, so two identical mutations in one file are two.
+          cat shards/*/missed.txt 2>/dev/null \
+            | sed -E 's/^([^:]+):[0-9]+:[0-9]+:/\1:/' | sort | uniq -c > missed-all.txt || true
+          ls -d shards/*/ 2>/dev/null | wc -l | tr -d ' ' > shards-reported.txt
+          wc -l < missed-all.txt | xargs echo "distinct survivors this sweep:"
       - name: Fetch the previous sweep's survivors
         env:
           GH_TOKEN: ${{ github.token }}
@@ -209,13 +226,20 @@ jobs:
             --jq "[.[] | select(.databaseId != ${{ github.run_id }})][0].databaseId")
           if [ -n "${prev}" ] && gh run download "${prev}" --repo "${{ github.repository }}" \
                --name mutants-missed --dir prev 2>/dev/null; then
-            sort -u prev/missed-all.txt > prev-missed.txt
+            sort prev/missed-all.txt > prev-missed.txt
+            # A previous sweep with timed-out shards is missing survivors,
+            # which would read as new this week.
+            prev_shards=$(cat prev/shards-reported.txt 2>/dev/null || echo "?")
+            if [ "${prev_shards}" != "24" ]; then
+              echo "comparison partial: the previous sweep reported ${prev_shards} of 24 shards" | tee -a "$GITHUB_STEP_SUMMARY"
+            fi
           else
             echo "no previous sweep to compare with" | tee -a "$GITHUB_STEP_SUMMARY"
             : > prev-missed.txt
           fi
       - name: New survivors to the job summary
         run: |
+          sort missed-all.txt -o missed-all.txt
           comm -13 prev-missed.txt missed-all.txt > new-survivors.txt
           {
             echo "### Mutants surviving this sweep that did not survive the last"
@@ -229,5 +253,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         with:
           name: mutants-missed
-          path: missed-all.txt
+          path: |
+            missed-all.txt
+            shards-reported.txt
           retention-days: 90
