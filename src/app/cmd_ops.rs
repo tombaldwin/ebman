@@ -374,13 +374,14 @@ impl App {
             return;
         }
         let id = inst.id.clone();
-        let client = self.client_for_env(&env_name);
+        let region = self.region_for_name(&env_name);
+        let client = self.client_for_region(&region);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         crate::audit::append_action_dispatched(
             self.context.account_id.as_deref(),
             self.context.profile.as_deref(),
-            &self.region_for_name(&env_name),
+            &region,
             "TerminateInstance",
             env_name.as_str(),
             &[("instance", id.as_str())],
@@ -405,6 +406,7 @@ impl App {
                 gen,
                 action: Action::TerminateInstance,
                 env_name: target,
+                region,
                 result,
             });
         });

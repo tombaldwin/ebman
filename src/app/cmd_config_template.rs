@@ -33,7 +33,8 @@ impl App {
                 };
                 let template = template.to_string();
                 let app_name = env.application.clone();
-                let client = self.client_for_env(&env.name);
+                let region = self.region_for_name(&env.name);
+                let client = self.client_for_region(&region);
                 let tx = self.msg_tx.clone();
                 let gen = self.generation;
                 self.status_message = Some(format!(
@@ -47,7 +48,7 @@ impl App {
                 crate::audit::append_action_dispatched(
                     self.context.account_id.as_deref(),
                     self.context.profile.as_deref(),
-                    &self.region_for_name(&env.name),
+                    &region,
                     &action_label,
                     &display_env,
                     &[("template", template.as_str())],
@@ -68,6 +69,7 @@ impl App {
                         gen,
                         action,
                         env_name: display_env,
+                        region,
                         result: labelled,
                     });
                 });

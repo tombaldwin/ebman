@@ -963,6 +963,11 @@ pub(crate) enum AppMsg {
         gen: u64,
         action: Action,
         env_name: String,
+        /// The region the write was sent to, decided once when the client
+        /// was built: the completion audit line names it, rather than
+        /// resolving `env_name` again (which for a target like
+        /// `env/i-123` found no env and named the home region).
+        region: String,
         result: Result<(), String>,
     },
     /// Intermediate progress for the tail-logs pipeline (`Requesting` →

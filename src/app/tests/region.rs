@@ -376,8 +376,11 @@ async fn a_dispatch_and_its_completion_agree_on_the_region() {
     let env_name = "region-pair-probe-env";
 
     let mut app = test_app();
+    // By the time the result lands, the table names the env elsewhere
+    // (a listing that changed under the undo window): the completion line
+    // must still name where the write went, which the result carries.
     let mut env = mk_env(env_name, "poly", "Web", "Green");
-    env.region = Some("eu-west-2".into());
+    env.region = Some("ap-south-1".into());
     app.environments = vec![env];
     app.rebuild_view();
     app.table_state.select(Some(0));
@@ -389,6 +392,7 @@ async fn a_dispatch_and_its_completion_agree_on_the_region() {
         gen: app.generation,
         action: crate::app::Action::RestartAppServer,
         env_name: env_name.into(),
+        region: "eu-west-2".into(),
         result: Ok(()),
     });
 

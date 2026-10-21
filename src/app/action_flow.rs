@@ -47,12 +47,12 @@ impl App {
         let label = snapshot.previous_version_label.clone();
         // The env's own region — this is a deploy, and the watchdog
         // fires unattended.
-        let client = self.client_for_env(&env_name);
+        let region = self.region_for_name(&env_name);
+        let client = self.client_for_region(&region);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let account = self.context.account_id.clone();
         let profile = self.context.profile.clone();
-        let region = self.region_for_name(&env_name);
         crate::audit::append_action_dispatched(
             account.as_deref(),
             profile.as_deref(),
@@ -78,6 +78,7 @@ impl App {
                 gen,
                 action: Action::Deploy,
                 env_name: env_for_msg,
+                region,
                 result,
             });
         });
@@ -1074,6 +1075,7 @@ impl App {
                         gen,
                         action,
                         env_name: env,
+                        region,
                         result: Err(flatten_err("cached_client", e)),
                     });
                     return;
@@ -1127,6 +1129,7 @@ impl App {
                 gen,
                 action,
                 env_name: env,
+                region,
                 result,
             });
         });

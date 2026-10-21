@@ -311,14 +311,15 @@ impl App {
         if self.deny_write(&env_name, "config-apply") {
             return;
         }
-        let client = self.client_for_env(&env_name);
+        let region = self.region_for_name(&env_name);
+        let client = self.client_for_region(&region);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         // In-flight ack lives on the pending pill; completion toasts.
         crate::audit::append_action_dispatched(
             self.context.account_id.as_deref(),
             self.context.profile.as_deref(),
-            &self.region_for_name(&env_name),
+            &region,
             "ConfigApply",
             env_name.as_str(),
             &[("template", template.as_str())],
@@ -337,6 +338,7 @@ impl App {
                 gen,
                 action: Action::ConfigApply,
                 env_name: env_for_msg,
+                region,
                 result,
             });
         });
@@ -354,7 +356,8 @@ impl App {
         if self.deny_write("", "config-delete") {
             return;
         }
-        let client = self.client_for_app(&app_name);
+        let region = self.region_for_app(&app_name);
+        let client = self.client_for_region(&region);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let target = format!("{app_name}/{template}");
@@ -364,7 +367,7 @@ impl App {
         crate::audit::append_action_dispatched(
             self.context.account_id.as_deref(),
             self.context.profile.as_deref(),
-            &self.region_for_app(&app_name),
+            &region,
             "ConfigDelete",
             &target,
             &[],
@@ -384,6 +387,7 @@ impl App {
                 gen,
                 action: Action::ConfigDelete,
                 env_name: target,
+                region,
                 result,
             });
         });

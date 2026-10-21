@@ -126,9 +126,10 @@ impl App {
             AppMsg::ActionResult {
                 action,
                 env_name,
+                region,
                 result,
                 ..
-            } => self.handle_action_result(action, env_name, result),
+            } => self.handle_action_result(action, env_name, region, result),
             AppMsg::DetailInstances {
                 env_name, result, ..
             } => self.handle_detail_instances(env_name, result),
@@ -564,16 +565,18 @@ impl App {
         &mut self,
         action: Action,
         env_name: String,
+        region: String,
         result: Result<(), String>,
     ) {
         // The COMPLETION line has to name the same region as the
         // dispatch line it closes, or a grep across the pair reports
         // an action that started in one region and finished in
-        // another.
+        // another. The region the dispatch used, carried on the result,
+        // not the name resolved again now.
         write_audit_outcome(
             self.context.account_id.as_deref(),
             self.context.profile.as_deref(),
-            &self.region_for_name(&env_name),
+            &region,
             action,
             &env_name,
             result.as_ref().map(|_| ()).map_err(|e| e.as_str()),

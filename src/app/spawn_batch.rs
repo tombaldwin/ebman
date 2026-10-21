@@ -21,10 +21,11 @@ impl App {
     /// opted in by typing `:batch-…`. Only Rebuild and RestartAppServer are
     /// allowed; destructive actions still require per-env strict confirm.
     pub(super) fn spawn_batch_action(&mut self, action: Action, env: String) {
+        let region = self.region_for_name(&env);
         write_audit_entry(
             self.context.account_id.as_deref(),
             self.context.profile.as_deref(),
-            &self.region_for_name(&env),
+            &region,
             action,
             &env,
             None,
@@ -34,7 +35,7 @@ impl App {
         // Per-env: a multi-selection can span regions, and these are
         // rebuild / restart / terminate.
         self.spawn_aws_in(
-            self.client_for_env(&env_for_msg),
+            self.client_for_region(&region),
             "batch_action",
             move |aws| async move {
                 match action {
@@ -49,6 +50,7 @@ impl App {
                 gen,
                 action,
                 env_name: env_for_msg,
+                region,
                 result,
             },
         );
@@ -58,13 +60,14 @@ impl App {
     /// pill + audit + `ActionResult` plumbing with the existing single-env
     /// `:deploy` path via `Action::Deploy`.
     pub(super) fn spawn_batch_deploy(&mut self, env: String, label: String) {
-        let client = self.client_for_env(&env);
+        let region = self.region_for_name(&env);
+        let client = self.client_for_region(&region);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         crate::audit::append_action_dispatched(
             self.context.account_id.as_deref(),
             self.context.profile.as_deref(),
-            &self.region_for_name(&env),
+            &region,
             crate::verb::Verb::Deploy.audit_label(),
             env.as_str(),
             &[("version", label.as_str())],
@@ -83,6 +86,7 @@ impl App {
                 gen,
                 action: Action::Deploy,
                 env_name: env_for_msg,
+                region,
                 result,
             });
         });
