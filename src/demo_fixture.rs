@@ -67,7 +67,7 @@ pub(crate) fn envs() -> Vec<Environment> {
                 application: "poly".into(),
                 status: status.into(),
                 health: health.into(),
-                platform: "Node.js 20 running on 64bit Amazon Linux 2023".into(),
+                platform: "Node.js 20".into(),
                 solution_stack: "64bit Amazon Linux 2023 v6.1.0 running Node.js 20".into(),
                 platform_version: "6.1.0".into(),
                 tier: tier.into(),
@@ -131,7 +131,7 @@ pub(crate) fn envs() -> Vec<Environment> {
         // even on the same stack as everything else, and it's been on
         // a dead platform branch untouched for years.
         Environment {
-            platform: "Go 1.4 running on 64bit Amazon Linux 2018.03".into(),
+            platform: "Go 1.4".into(),
             solution_stack: "64bit Amazon Linux 2018.03 v2.7.0 running Go 1.4".into(),
             platform_version: "2.7.0".into(),
             ..mk("ironwood", "Web", "Ready", "Grey", "build-1420", 25920)

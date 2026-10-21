@@ -587,6 +587,14 @@ pub(crate) fn env_cell<'a>(label: &str, ctx: &CellCtx<'a>) -> Cell<'a> {
             if let Some(g) = icon {
                 spans.push(Span::styled(format!("{g} "), Style::default().fg(colour)));
             }
+            // The ↑ leads, so a narrow column clips the version rather
+            // than the sign that a newer one exists.
+            if stale.is_some() {
+                spans.push(Span::styled(
+                    format!("{} ", stale_glyph(theme.icons)),
+                    Style::default().fg(theme.health_yellow),
+                ));
+            }
             spans.push(Span::styled(
                 e.platform.as_str(),
                 Style::default().fg(name_colour),
@@ -601,12 +609,6 @@ pub(crate) fn env_cell<'a>(label: &str, ctx: &CellCtx<'a>) -> Cell<'a> {
                     } else {
                         theme.muted
                     }),
-                ));
-            }
-            if stale.is_some() {
-                spans.push(Span::styled(
-                    format!(" {}", stale_glyph(theme.icons)),
-                    Style::default().fg(theme.health_yellow),
                 ));
             }
             Cell::from(Line::from(spans))

@@ -2435,3 +2435,27 @@ async fn a_worker_with_a_dlq_backlog_and_alarms_of_unknown_count_shows_both() {
     assert!(row.contains("⚠3"), "{row}");
     assert!(row.contains("⚑2?"), "{row}");
 }
+
+#[tokio::test]
+async fn a_narrow_platform_column_keeps_the_newer_version_sign() {
+    // The ↑ followed the family and the version, so the column's floor
+    // clipped it first: the one part that says "upgrade available".
+    let mut app = test_app();
+    let mut e = mk_env("api-prod", "poly", "Web", "Green");
+    e.platform = "Tomcat 9 Corretto 17".into();
+    e.platform_version = "5.1.0".into();
+    e.solution_stack = "64bit Amazon Linux 2023 v5.1.0 running Tomcat 9 Corretto 17".into();
+    app.environments = vec![e];
+    app.latest_stacks = crate::aws::latest_stack_versions(&[
+        "64bit Amazon Linux 2023 v5.4.0 running Tomcat 9 Corretto 17".to_string(),
+    ]);
+    app.view.invalidate();
+    app.rebuild_view();
+    // 100 columns: PLATFORM survives at about its floor.
+    let frame = render(&mut app, 100, 20);
+    let row = frame
+        .lines()
+        .find(|l| l.contains("api-prod") && l.contains("Ready"))
+        .unwrap_or_else(|| panic!("{frame}"));
+    assert!(row.contains("↑ Tomcat"), "{row}");
+}
