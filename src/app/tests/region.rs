@@ -1350,3 +1350,62 @@ async fn a_same_named_env_going_red_beside_a_green_twin_is_flagged() {
         Some(vec!["Green".into(), "Green".into(), "Green".into()])
     );
 }
+
+#[tokio::test]
+async fn sorting_by_alarm_puts_the_most_alarmed_env_first_descending() {
+    let mut app = test_app();
+    app.environments = vec![
+        mk_env("quiet", "poly", "Web", "Green"),
+        mk_env("loud", "poly", "Web", "Green"),
+        mk_env("unknown", "poly", "Web", "Green"),
+    ];
+    app.caches
+        .firing_alarms
+        .set(home_key("loud"), vec!["a".into(), "b".into()]);
+    app.caches
+        .firing_alarms
+        .reconcile(home_key("unknown"), Err(()));
+    app.set_sort(SortKey::Alarms, true);
+    let order: Vec<&str> = app.environments.iter().map(|e| e.name.as_str()).collect();
+    assert_eq!(order, ["loud", "unknown", "quiet"]);
+
+    // Alarms arrive after the refresh sorted the table: they re-sort it.
+    app.handle_msg(AppMsg::FiringAlarms {
+        gen: app.generation,
+        round: 1,
+        results: vec![(
+            "us-east-1".into(),
+            Ok(vec![
+                firing("x", "quiet"),
+                firing("y", "quiet"),
+                firing("z", "quiet"),
+            ]),
+        )],
+    });
+    assert_eq!(app.environments[0].name, "quiet");
+    assert_eq!(
+        SortKey::parse(SortKey::Alarms.label()),
+        Some(SortKey::Alarms)
+    );
+}
+
+#[tokio::test]
+async fn the_alarm_column_is_the_alarm_sort_and_wears_its_marker() {
+    let mut app = test_app();
+    app.environments = vec![mk_env("api-prod", "poly", "Web", "Green")];
+    app.set_sort(SortKey::Alarms, true);
+    app.rebuild_view();
+    let frame = render(&mut app, 200, 12);
+    let header = frame
+        .lines()
+        .find(|l| l.contains("NAME") && l.contains("STATUS"))
+        .unwrap_or_else(|| panic!("{frame}"));
+    assert!(
+        header.contains("ALARM ▼") || header.contains("ALARM ▲"),
+        "{header}"
+    );
+    assert!(
+        !header.contains("HEALTH ▼") && !header.contains("● ▼"),
+        "{header}"
+    );
+}

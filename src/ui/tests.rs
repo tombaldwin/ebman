@@ -1862,7 +1862,7 @@ fn every_column_has_its_own_documented_minimum_width() {
         ("APPLICATION", 11),
         ("TIER", 11),
         ("STATUS", 10),
-        ("ALARM", 5),
+        ("ALARM", 7),
         ("HEALTH", 3),
         ("INST", 7),
         ("TREND", 12),

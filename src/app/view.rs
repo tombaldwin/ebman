@@ -155,6 +155,20 @@ impl App {
         let key = self.view.sort_key();
         let desc = self.view.sort_desc();
         let pinned = self.pinned.clone();
+        // Firing alarms per env, for the ALARM sort: (count, unknown).
+        let home = self.context.region.clone();
+        let alarms = |e: &crate::aws::Environment| {
+            let k = crate::app::EnvKey::of(e, &home);
+            (
+                self.caches.firing_alarms.get(&k).map_or(0, Vec::len),
+                self.caches.firing_alarms.is_stale(&k),
+            )
+        };
+        let alarm_rank: std::collections::HashMap<crate::app::EnvKey, (usize, bool)> = self
+            .environments
+            .iter()
+            .map(|e| (crate::app::EnvKey::of(e, &home), alarms(e)))
+            .collect();
         self.environments.sort_by(|a, b| {
             // Pinned envs always sort to the top regardless of key/direction.
             let a_pin = pinned.contains(&a.name);
@@ -178,6 +192,17 @@ impl App {
                     .to_lowercase()
                     .cmp(&b.status.to_lowercase())
                     .then(a.name.to_lowercase().cmp(&b.name.to_lowercase())),
+                SortKey::Alarms => {
+                    let rank = |e: &crate::aws::Environment| {
+                        alarm_rank
+                            .get(&crate::app::EnvKey::of(e, &home))
+                            .copied()
+                            .unwrap_or_default()
+                    };
+                    rank(a)
+                        .cmp(&rank(b))
+                        .then(a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+                }
                 SortKey::Health => health_rank(&a.health)
                     .cmp(&health_rank(&b.health))
                     .then(a.name.to_lowercase().cmp(&b.name.to_lowercase())),

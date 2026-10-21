@@ -408,6 +408,8 @@ pub(crate) enum SortKey {
     App,
     Name,
     Status,
+    /// Firing CloudWatch alarms: count, then unknown, then name.
+    Alarms,
     Health,
     Age,
     Version,
@@ -415,12 +417,13 @@ pub(crate) enum SortKey {
 
 impl SortKey {
     /// Cycle in the same order the columns appear in the UI:
-    /// NAME → APPLICATION → STATUS → HEALTH → VERSION → AGE → NAME.
+    /// NAME → APPLICATION → STATUS → ALARM → HEALTH → VERSION → AGE → NAME.
     pub(crate) fn next(self) -> Self {
         match self {
             Self::Name => Self::App,
             Self::App => Self::Status,
-            Self::Status => Self::Health,
+            Self::Status => Self::Alarms,
+            Self::Alarms => Self::Health,
             Self::Health => Self::Version,
             Self::Version => Self::Age,
             Self::Age => Self::Name,
@@ -432,6 +435,7 @@ impl SortKey {
             Self::App => "app",
             Self::Name => "name",
             Self::Status => "status",
+            Self::Alarms => "alarms",
             Self::Health => "health",
             Self::Age => "age",
             Self::Version => "version",
@@ -443,6 +447,7 @@ impl SortKey {
             "app" => Some(Self::App),
             "name" => Some(Self::Name),
             "status" => Some(Self::Status),
+            "alarms" => Some(Self::Alarms),
             "health" => Some(Self::Health),
             "age" => Some(Self::Age),
             "version" => Some(Self::Version),

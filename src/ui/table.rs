@@ -214,7 +214,7 @@ pub(crate) fn visible_columns(
         ("APPLICATION", SortKey::App),
         ("TIER", SortKey::App),
         ("STATUS", SortKey::Status),
-        ("ALARM", SortKey::Health),
+        ("ALARM", SortKey::Alarms),
         ("HEALTH", SortKey::Health),
         ("INST", SortKey::Health),
         ("TREND", SortKey::Health),
@@ -274,8 +274,9 @@ pub(crate) fn column_min_width(label: &str) -> u16 {
         "STATUS" => 10,
         // `⚑12?`: a count of firing alarms and the unknown mark. Its
         // own column because the marker clipped inside STATUS, and the
-        // `?` that says "the check failed" was the part that went.
-        "ALARM" => 5,
+        // `?` that says "the check failed" was the part that went. Seven
+        // so a sorted header keeps its marker: `ALARM ▼`.
+        "ALARM" => 7,
         "HEALTH" => 3,
         "INST" => 7,
         "TREND" => 12,
@@ -733,6 +734,7 @@ pub(crate) fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
                 (SortKey::Name, SortKey::Name)
                     | (SortKey::App, SortKey::App)
                     | (SortKey::Status, SortKey::Status)
+                    | (SortKey::Alarms, SortKey::Alarms)
                     | (SortKey::Health, SortKey::Health)
                     | (SortKey::Age, SortKey::Age)
                     | (SortKey::Version, SortKey::Version)

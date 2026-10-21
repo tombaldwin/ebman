@@ -115,7 +115,8 @@ async fn render_cost_column_red_tints_expensive_envs() {
     crate::demo_fixture::install(&mut app);
     app.table_state.select(None);
     let theme = app.theme.clone();
-    let buf = render_buf(&mut app, 160, 30);
+    // Wide enough that every demo name shows whole beside COST.
+    let buf = render_buf(&mut app, 200, 30);
     let pricey = find_row(&buf, "poly-prod-api").expect("prod-api row");
     let cheap = find_row(&buf, "poly-staging-worker").expect("staging-worker row");
     assert!(

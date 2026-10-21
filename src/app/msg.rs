@@ -507,6 +507,11 @@ impl App {
                 }
             }
         }
+        // They land after the refresh that sorted the table.
+        if self.view.sort_key() == SortKey::Alarms {
+            self.resort_envs();
+            self.rebuild_view();
+        }
     }
 
     fn handle_env_instance_counts(
