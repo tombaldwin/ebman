@@ -454,13 +454,17 @@ impl App {
         // "no DLQ" removes, and a fetch error keeps the previous depth
         // so alerts survive an AccessDenied/throttle blip.
         for (key, outcome) in results {
+            // Logged when the check starts failing, not on every 15s
+            // tick while it stays failed.
             if let Err(e) = &outcome {
-                tracing::warn!(
-                    env = %key.name,
-                    region = %key.region,
-                    error = %e,
-                    "worker queue check failed — keeping previous DLQ depth (marked stale)"
-                );
+                if !self.worker_dlq.is_stale(&key) {
+                    tracing::warn!(
+                        env = %key.name,
+                        region = %key.region,
+                        error = %e,
+                        "worker queue check failed — keeping previous DLQ depth (marked stale)"
+                    );
+                }
             }
             self.worker_dlq.reconcile(key, outcome);
         }
