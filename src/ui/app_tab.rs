@@ -77,15 +77,20 @@ pub(super) fn draw_detail_app(
 /// group's name, a CloudWatch note) becomes `?`: ascii mode is for
 /// terminals that cannot draw it.
 fn asciify(s: &str) -> String {
-    s.chars()
-        .map(|c| match c {
-            '—' => '-',
-            '…' => '.',
-            '·' => '|',
-            c if c.is_ascii() => c,
-            _ => '?',
-        })
-        .collect()
+    use unicode_width::UnicodeWidthChar;
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '—' => out.push('-'),
+            '…' => out.push('.'),
+            '·' => out.push('|'),
+            c if c.is_ascii() => out.push(c),
+            // As many cells as it took: a combining mark takes none, a
+            // CJK character two.
+            c => out.push_str(&"?".repeat(c.width().unwrap_or(0))),
+        }
+    }
+    out
 }
 
 /// What discovery found, as the lines an unconfigured env's App tab
@@ -829,14 +834,18 @@ mod tests {
 
     #[test]
     fn asciify_keeps_every_cell_count() {
-        let s = "loading… — a · b é→";
-        let a = asciify(s);
-        assert!(a.is_ascii(), "{a}");
-        assert_eq!(
-            Span::raw(a.clone()).width(),
-            Span::raw(s).width(),
-            "a fitted row must not grow"
-        );
+        // One sample at a time, so a cell gained in one cannot cancel a
+        // cell lost in another: a precomposed é, an arrow, an e with a
+        // combining acute (zero cells for the mark), a CJK character (two).
+        for s in ["loading… — a · b", "é→", "e\u{301}", "日"] {
+            let a = asciify(s);
+            assert!(a.is_ascii(), "{a}");
+            assert_eq!(
+                Span::raw(a.clone()).width(),
+                Span::raw(s).width(),
+                "{s:?}: a fitted row must not grow or shrink"
+            );
+        }
     }
 
     #[test]

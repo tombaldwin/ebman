@@ -29,6 +29,9 @@ exclude = ["mutants.out*", "target", ".protected-names"]
 # bottom of this file (don't commit it uncommented).
 tui-common = { version = "0.2.2", package = "tb-tui-common" }
 ratatui = "0.30"
+# Display width per char, for the App tab's ascii mode, which must keep
+# a fitted row's width. Already in the tree through ratatui.
+unicode-width = "0.2"
 crossterm = { version = "0.29", features = ["event-stream"] }
 # io-util + io-std: the MCP server's stdio JSON-RPC transport.
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "signal", "io-util", "io-std"] }
