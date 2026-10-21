@@ -3100,23 +3100,57 @@ async fn an_emptied_app_tab_on_screen_is_fetched_again() {
     assert_eq!(fetched(&mut app), (false, false), "not on screen");
 }
 
-/// The App's `app.` config is replaced only through `set_app_tabs`,
-/// which drops what was fetched under the old config: a direct
-/// assignment would leave the old rows beside the new config, and an
-/// answer in flight for the old landing as the new one's.
+/// Production code lines (test modules excised, line comments stripped)
+/// that `hit` accepts, as `path: line`.
+fn production_lines_where(hit: impl Fn(&str) -> bool) -> Vec<String> {
+    let mut out = Vec::new();
+    for (path, text) in super::scan::source_files() {
+        if super::scan::is_test_path(&path) {
+            continue;
+        }
+        for line in super::scan::production_half(&text).lines() {
+            let code = super::scan::strip_line_comment(line);
+            if hit(code) {
+                out.push(format!("{path}: {}", code.trim()));
+            }
+        }
+    }
+    out
+}
+
+/// The App's `app.` config is changed only through `set_app_tabs`,
+/// which drops what was fetched under the old config: any other write
+/// (an assignment, an insert or remove on its envs, a mutable borrow, a
+/// whole new `cfg`) would leave the old rows beside the new config, and
+/// an answer in flight for the old landing as the new one's.
 #[test]
 fn app_config_is_replaced_only_through_set_app_tabs() {
-    let assigned = super::scan::find_in_production("self.cfg.app_tabs =");
-    assert!(assigned.is_empty(), "{assigned:?}: use set_app_tabs");
-    let borrowed = super::scan::find_in_production("&mut self.cfg.app_tabs");
-    assert_eq!(
-        borrowed.len(),
-        1,
-        "{borrowed:?}: only set_app_tabs's own swap"
-    );
+    const WRITES: &[&str] = &[
+        "app_tabs =",
+        "&mut self.cfg.app_tabs",
+        "&mut app.cfg.app_tabs",
+        "app_tabs.envs.insert(",
+        "app_tabs.envs.remove(",
+        "app_tabs.envs.clear(",
+        "app_tabs.envs.get_mut(",
+        "app_tabs.envs.entry(",
+        "self.cfg = ",
+        "app.cfg = ",
+    ];
+    let writes = production_lines_where(|code| {
+        code.contains("cfg") && WRITES.iter().any(|w| code.contains(w))
+    });
+    // config.rs builds a `Config` (its parser, and the save that keeps
+    // the file's app. lines); no App passes through it.
+    let by_app: Vec<&String> = writes
+        .iter()
+        .filter(|w| !w.starts_with("src/config.rs:"))
+        .collect();
+    assert_eq!(by_app.len(), 1, "{by_app:#?}: use set_app_tabs");
     assert!(
-        borrowed[0].starts_with("src/app/detail_nav.rs:"),
-        "{borrowed:?}"
+        by_app[0].starts_with("src/app/detail_nav.rs:")
+            && by_app[0].contains("std::mem::replace(&mut self.cfg.app_tabs"),
+        "{by_app:#?}: only set_app_tabs's own swap"
     );
 }
 
@@ -3154,14 +3188,21 @@ async fn an_envs_app_tab_comes_from_config_then_a_preview_then_nothing() {
     assert!(configured.is_configured(), "config wins, even with no rows");
     assert_eq!(configured.spec().map(|s| s.rds), Some(vec![]));
 
-    let asked = super::scan::find_in_production("app_tabs.envs.contains_key");
-    assert!(asked.is_empty(), "{asked:?}: ask app_tab_source");
-    // The one place a preview is made from what discovery found.
-    let previewed = super::scan::find_in_production("app_discover::preview_spec");
-    assert_eq!(previewed.len(), 1, "{previewed:?}: ask app_tab_source");
+    // However the config is reached (`tabs.envs`, `app.cfg.app_tabs.envs`).
+    let asked = production_lines_where(|code| {
+        code.contains(".envs.contains_key(")
+            || (code.contains(".envs.get(")
+                && (code.contains(".is_some()") || code.contains(".is_none()")))
+    });
+    assert!(asked.is_empty(), "{asked:#?}: ask app_tab_source");
+    // The one place a preview is made from what discovery found, however
+    // it is imported: its definition and that one use.
+    let previewed = production_lines_where(|code| code.contains("preview_spec"));
+    assert_eq!(previewed.len(), 2, "{previewed:#?}: ask app_tab_source");
     assert!(
-        previewed[0].starts_with("src/app/app_tab_form.rs:"),
-        "{previewed:?}"
+        previewed[0].starts_with("src/app/app_tab_form.rs:")
+            || previewed[1].starts_with("src/app/app_tab_form.rs:"),
+        "{previewed:#?}"
     );
 }
 
