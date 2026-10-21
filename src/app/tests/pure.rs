@@ -169,7 +169,7 @@ fn app_rollup_counts_envs_red_and_updating() {
         },
     ];
     let dlq: HashMap<String, i64> = HashMap::new();
-    let r = crate::app::app_rollup(&envs, "foo", &dlq);
+    let r = crate::app::app_rollup(&envs, "foo", |e| dlq.get(&e.name).copied().unwrap_or(0));
     assert_eq!(r.env_count, 2, "foo has 2 envs (prod + staging)");
     assert_eq!(r.red_count, 1, "staging is Red");
     assert_eq!(r.updating_count, 1, "staging is Updating");
@@ -180,7 +180,7 @@ fn app_rollup_counts_envs_red_and_updating() {
 fn app_rollup_empty_for_unknown_app() {
     let envs: Vec<crate::aws::Environment> = vec![];
     let dlq: HashMap<String, i64> = HashMap::new();
-    let r = crate::app::app_rollup(&envs, "nope", &dlq);
+    let r = crate::app::app_rollup(&envs, "nope", |e| dlq.get(&e.name).copied().unwrap_or(0));
     assert_eq!(r, crate::app::AppRollup::default());
 }
 

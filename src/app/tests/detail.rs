@@ -1431,7 +1431,7 @@ async fn a_stale_dlq_depth_says_so_rather_than_reading_as_current() {
     app.table_state.select(Some(0));
     app.open_detail();
     app.mode = crate::app::Mode::Detail;
-    app.worker_dlq_depths.insert("worker-prod".to_string(), 42);
+    app.worker_dlq.set(home_key("worker-prod"), 42);
 
     let live = render(&mut app, 200, 40);
     assert!(
@@ -1443,7 +1443,7 @@ async fn a_stale_dlq_depth_says_so_rather_than_reading_as_current() {
         "a fresh reading is not marked stale; got:\n{live}"
     );
 
-    app.worker_dlq_stale.insert("worker-prod".to_string());
+    app.worker_dlq.reconcile(home_key("worker-prod"), Err(()));
     let stale = render(&mut app, 200, 40);
     assert!(
         stale.contains("DLQ:42 (stale)"),

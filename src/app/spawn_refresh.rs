@@ -401,22 +401,21 @@ impl App {
 
     /// Per-Worker-env DLQ depth fan-out. Fires once per refresh after
     /// `list_environments` lands. Skips Web envs (no DLQ). Each env's
-    /// fetch is independent — a failure on one drops that entry from
-    /// the result rather than failing the batch.
-    fn spawn_worker_queue_check(&self) {
+    /// fetch is independent — a failure on one is that env's `Err`,
+    /// never the batch's.
+    fn spawn_worker_queue_check(&self, round: u64) {
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         // A client per env: SQS queue URLs are region-scoped, and this
         // feeds the table's DLQ-depth alert — the home region's SQS
         // has no answer for another region's worker.
-        let workers: Vec<(String, String, RegionClient)> = self
+        let workers: Vec<((EnvKey, String), RegionClient)> = self
             .environments
             .iter()
             .filter(|e| e.tier.eq_ignore_ascii_case("Worker"))
             .map(|e| {
                 (
-                    e.name.clone(),
-                    e.application.clone(),
+                    (self.env_key(e), e.application.clone()),
                     // `region_for(e)`, not `client_for_env(&e.name)`:
                     // we already hold the row, and the by-name lookup
                     // scans the whole fleet — quadratic across a
@@ -429,29 +428,24 @@ impl App {
             return;
         }
         tokio::spawn(async move {
-            use futures::future::join_all;
-            let futs = workers.into_iter().map(|(env, app, client)| {
-                async move {
-                    let aws = match client.resolve().await {
-                        Ok(aws) => aws,
-                        Err(e) => {
-                            return (env, Err(flatten_err("cached_client", e)));
-                        }
-                    };
-                    // Errors stay errors — a failed fetch must not be
-                    // indistinguishable from "no DLQ" (the pre-0.27
-                    // shape silently blinded red-alerting on
-                    // AccessDenied/throttle).
-                    let outcome = match aws.describe_worker_queues(&app, &env).await {
-                        Ok(q) => Ok(q.dlq_stats.map(|s| s.visible)),
-                        Err(e) => Err(flatten_err("describe_worker_queues", e)),
-                    };
-                    (env, outcome)
-                }
+            // Errors stay errors — a failed fetch must not be
+            // indistinguishable from "no DLQ" (the pre-0.27 shape
+            // silently blinded red-alerting on AccessDenied/throttle).
+            let results = fan_out(workers, |aws, (key, app)| async move {
+                aws.describe_worker_queues(&app, &key.name)
+                    .await
+                    .map(|q| q.dlq_stats.map(|s| s.visible))
+                    .map_err(|e| flatten_err("describe_worker_queues", e))
+            })
+            .await
+            .into_iter()
+            .map(|((key, _), outcome)| (key, outcome))
+            .collect();
+            let _ = tx.send(AppMsg::WorkerQueueCheck {
+                gen,
+                round,
+                results,
             });
-            let results: Vec<(String, Result<Option<i64>, String>)> =
-                join_all(futs).await.into_iter().collect();
-            let _ = tx.send(AppMsg::WorkerQueueCheck { gen, results });
         });
     }
 
@@ -460,7 +454,7 @@ impl App {
     /// nothing about another region's rows. Assignment to envs happens
     /// on arrival, in `handle_firing_alarms`, with the config then
     /// current.
-    pub(crate) fn spawn_firing_alarms(&self) {
+    pub(crate) fn spawn_firing_alarms(&self, round: u64) {
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let regions: std::collections::BTreeSet<String> = self
@@ -479,62 +473,62 @@ impl App {
             })
             .collect();
         tokio::spawn(async move {
-            use futures::future::join_all;
-            let futs = targets.into_iter().map(|(region, client)| async move {
-                let outcome = match client.resolve().await {
-                    Ok(aws) => aws
-                        .list_firing_alarms()
-                        .await
-                        .map_err(|e| flatten_err("list_firing_alarms", e)),
-                    Err(e) => Err(flatten_err("cached_client", e)),
-                };
-                (region, outcome)
+            let results = fan_out(targets, |aws, _region| async move {
+                aws.list_firing_alarms()
+                    .await
+                    .map_err(|e| flatten_err("list_firing_alarms", e))
+            })
+            .await;
+            let _ = tx.send(AppMsg::FiringAlarms {
+                gen,
+                round,
+                results,
             });
-            let results = join_all(futs).await;
-            let _ = tx.send(AppMsg::FiringAlarms { gen, results });
         });
     }
 
     /// Fan `DescribeEnvironmentHealth` across every env on each refresh
-    /// tick to populate the `INST` column. Skips Terminated / Terminating
-    /// envs (EB returns AccessDenied-ish errors for them) and silently
-    /// drops failures so a single env's API blip doesn't poison the
-    /// whole batch. Same shape as `spawn_worker_queue_check`.
-    pub(crate) fn spawn_env_instance_counts(&self) {
+    /// tick to populate the `INST` column. Envs in a terminal lifecycle
+    /// state are answered `Ok(None)` without a call (EB returns
+    /// AccessDenied-ish errors for them, and there is nothing to
+    /// count); a failed call is that env's `Err`, so its last counts
+    /// stand rather than its cell blanking. Same shape as
+    /// `spawn_worker_queue_check`.
+    pub(crate) fn spawn_env_instance_counts(&self, round: u64) {
         let tx = self.msg_tx.clone();
         let gen = self.generation;
+        let (targets, idle): (Vec<_>, Vec<_>) = self.environments.iter().partition(|e| {
+            !matches!(
+                e.status.as_str(),
+                "Terminated" | "Terminating" | "Launching"
+            )
+        });
+        let idle: Vec<EnvKey> = idle.into_iter().map(|e| self.env_key(e)).collect();
         // A client per env, same as the worker-queue fan-out: this
         // fills the INST column for every row in the table, and under
-        // a fan-out those rows span regions.
-        let targets: Vec<(String, RegionClient)> = self
-            .environments
-            .iter()
-            .filter(|e| {
-                // EB rejects DescribeEnvironmentHealth for envs in
-                // terminal lifecycle states — no instances to count.
-                !matches!(
-                    e.status.as_str(),
-                    "Terminated" | "Terminating" | "Launching"
-                )
-            })
-            // Same: the row is in hand, so skip the by-name scan.
-            .map(|e| (e.name.clone(), self.client_for_region(&self.region_for(e))))
+        // a fan-out those rows span regions. The row is in hand, so no
+        // by-name scan.
+        let targets: Vec<(EnvKey, RegionClient)> = targets
+            .into_iter()
+            .map(|e| (self.env_key(e), self.client_for_region(&self.region_for(e))))
             .collect();
-        if targets.is_empty() {
+        if targets.is_empty() && idle.is_empty() {
             return;
         }
         tokio::spawn(async move {
-            use futures::future::join_all;
-            let futs = targets.into_iter().map(|(env, client)| async move {
-                let aws = client.resolve().await.ok()?;
-                aws.fetch_env_instance_counts(&env)
+            let mut results: Vec<_> = fan_out(targets, |aws, key| async move {
+                aws.fetch_env_instance_counts(&key.name)
                     .await
-                    .ok()
-                    .map(|counts| (env, counts))
+                    .map(Some)
+                    .map_err(|e| flatten_err("fetch_env_instance_counts", e))
+            })
+            .await;
+            results.extend(idle.into_iter().map(|key| (key, Ok(None))));
+            let _ = tx.send(AppMsg::EnvInstanceCountsCheck {
+                gen,
+                round,
+                results,
             });
-            let results: Vec<(String, crate::aws::EnvInstanceCounts)> =
-                join_all(futs).await.into_iter().flatten().collect();
-            let _ = tx.send(AppMsg::EnvInstanceCountsCheck { gen, results });
         });
     }
 
@@ -857,11 +851,8 @@ impl App {
                 self.dlq = None;
                 // Per-env caches from the old context — stale numbers
                 // would render as current until the first refresh.
-                self.worker_dlq_depths.clear();
-                self.worker_dlq_stale.clear();
-                self.worker_dlq_absent.clear();
+                self.worker_dlq.clear();
                 self.firing_alarms.clear();
-                self.firing_alarms_unknown.clear();
                 self.env_instance_counts.clear();
                 self.applications.clear();
                 self.costs.clear();
@@ -1010,7 +1001,7 @@ impl App {
                     .map(|e| (e.name.clone(), e.status.clone()))
                     .collect();
 
-                let new_alerts = compute_red_alerts(&envs, &self.worker_dlq_depths);
+                let new_alerts = compute_red_alerts(&envs, |e| self.dlq_depth(e));
                 if should_ring(self.notify_bell, new_alerts, self.prev_alerts) {
                     // BEL — write to stderr and flush so the terminal rings
                     // immediately even though we're in the alt screen.
@@ -1034,6 +1025,14 @@ impl App {
                 self.environments = envs;
                 self.view.invalidate();
                 self.resort_envs();
+                // An env that left the fleet takes its polled values
+                // with it, including when the fleet is now empty and no
+                // poll will run to say so.
+                let fleet: std::collections::HashSet<EnvKey> =
+                    self.environments.iter().map(|e| self.env_key(e)).collect();
+                self.worker_dlq.prune_to(&fleet);
+                self.env_instance_counts.prune_to(&fleet);
+                self.firing_alarms.prune_to(&fleet);
 
                 // Watchdog decision pass — single source of truth for
                 // auto-rollback outcomes. Every armed watchdog gets
@@ -1225,15 +1224,19 @@ impl App {
                 // lands as `AppMsg::WorkerQueueCheck` and updates the
                 // alert count + the in-row `⚠ DLQ:N` chip on the next
                 // draw.
-                self.spawn_worker_queue_check();
+                // One round for this refresh's polls, so a slow answer
+                // from the previous one cannot land on top of them.
+                self.poll_round += 1;
+                let round = self.poll_round;
+                self.spawn_worker_queue_check(round);
                 // Same fan-out shape for the INST column: per-env
                 // `DescribeEnvironmentHealth` summarised down to
                 // `(healthy, total)`. Cache rebuilt from results in
                 // `handle_env_instance_counts`.
-                self.spawn_env_instance_counts();
+                self.spawn_env_instance_counts(round);
                 // Alarms firing per env, one `DescribeAlarms` per
                 // region. Lands as `AppMsg::FiringAlarms`.
-                self.spawn_firing_alarms();
+                self.spawn_firing_alarms(round);
             }
             Err(msg) => {
                 tracing::error!(error = %msg, "refresh failed");
@@ -1256,4 +1259,27 @@ impl App {
             }
         }
     }
+}
+
+/// Run `op` against each target's client concurrently, keeping each
+/// target's own outcome: one target failing is that target's `Err`,
+/// never the batch's. The shape the three fleet polls share.
+async fn fan_out<K, T, F, Fut>(
+    targets: Vec<(K, RegionClient)>,
+    op: F,
+) -> Vec<(K, Result<T, String>)>
+where
+    K: Clone,
+    F: Fn(Arc<AwsClient>, K) -> Fut,
+    Fut: std::future::Future<Output = Result<T, String>>,
+{
+    let op = &op;
+    futures::future::join_all(targets.into_iter().map(|(key, client)| async move {
+        let outcome = match client.resolve().await {
+            Ok(aws) => op(aws, key.clone()).await,
+            Err(e) => Err(flatten_err("cached_client", e)),
+        };
+        (key, outcome)
+    }))
+    .await
 }

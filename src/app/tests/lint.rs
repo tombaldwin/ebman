@@ -303,7 +303,7 @@ fn the_tui_lint_paths_use_the_shared_assembly() {
             "{file} `{func}` builds its own LintContext — a private copy of the \
              assembly again"
         );
-        for cache in ["latest_stacks", "worker_dlq_depths", "lint_disable"] {
+        for cache in ["latest_stacks", ".worker_dlq.", "lint_disable"] {
             assert!(
                 !body.contains(cache),
                 "{file} `{func}` reads `{cache}` itself instead of through the snapshot"
@@ -641,7 +641,7 @@ async fn the_lint_snapshot_reads_the_caches_as_lint_may_use_them() {
     ));
 
     // A depth in hand is used — EBL011 fires on it...
-    app.worker_dlq_depths.insert("jobs".into(), 250);
+    app.worker_dlq.set(home_key("jobs"), 250);
     let snap = app.lint_snapshot(&worker);
     let run = snap.finish(EnvLintInputs::bare(Vec::new()), &[]);
     assert!(
@@ -654,7 +654,7 @@ async fn the_lint_snapshot_reads_the_caches_as_lint_may_use_them() {
         .any(|w| w.starts_with("EBL011")));
 
     // ...but not once the last check failed: no verdict, and a gap.
-    app.worker_dlq_stale.insert("jobs".into());
+    app.worker_dlq.reconcile(home_key("jobs"), Err(()));
     let snap = app.lint_snapshot(&worker);
     assert!(matches!(snap.dlq, WorkerDlq::Unknown(_)));
     let run = snap.finish(EnvLintInputs::bare(Vec::new()), &[]);

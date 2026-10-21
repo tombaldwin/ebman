@@ -323,8 +323,8 @@ async fn render_main_table_includes_inst_column_header_and_data() {
         mk_env("api-staging", "poly", "Web", "Green"),
     ];
     // Seed counts: prod has 3/3 healthy, staging unknown (no entry).
-    app.env_instance_counts.insert(
-        "api-prod".into(),
+    app.env_instance_counts.set(
+        home_key("api-prod"),
         crate::aws::EnvInstanceCounts {
             healthy: 3,
             total: 3,
@@ -593,8 +593,9 @@ async fn a_green_env_with_a_firing_alarm_is_marked_and_tinted() {
     unknown.status = "Ready".into();
     app.environments = vec![calm, alarming, unknown];
     app.firing_alarms
-        .insert("api-alarm".into(), vec!["api-alarm-5xx".into()]);
-    app.firing_alarms_unknown.insert("api-unknown".into());
+        .set(home_key("api-alarm"), vec!["api-alarm-5xx".into()]);
+    app.firing_alarms
+        .reconcile(home_key("api-unknown"), Err(()));
     app.rebuild_view();
 
     let buf = render_buf(&mut app, 200, 20);

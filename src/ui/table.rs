@@ -66,7 +66,7 @@ pub(crate) fn draw_apps_table(f: &mut Frame, area: Rect, app: &mut App) {
             // Operational rollup — env count + Red / Updating buckets.
             // Pulls from the global env list via `app_rollup` so the
             // numbers move with the same 15s ticker as the envs table.
-            let rollup = crate::app::app_rollup(&app.environments, &a.name, &app.worker_dlq_depths);
+            let rollup = crate::app::app_rollup(&app.environments, &a.name, |e| app.dlq_depth(e));
             let red_style = if rollup.red_count > 0 {
                 Style::default()
                     .fg(theme.health_red)
@@ -418,6 +418,9 @@ pub(crate) struct CellCtx<'a> {
     pub redact: bool,
     pub dlq_depth: i64,
     pub instance_counts: Option<crate::aws::EnvInstanceCounts>,
+    /// The last instance-count check failed: `instance_counts` is the
+    /// last known, not a current reading.
+    pub instance_counts_stale: bool,
     pub history: Option<&'a std::collections::VecDeque<String>>,
     pub newly_red: bool,
     pub stale_platform: Option<&'a String>,
@@ -515,7 +518,11 @@ pub(crate) fn env_cell<'a>(label: &str, ctx: &CellCtx<'a>) -> Cell<'a> {
             // zero healthy with instances present = red,
             // empty env = muted.
             let counts = ctx.instance_counts;
-            let (text, color) = format_instance_counts(counts, theme);
+            let (mut text, color) = format_instance_counts(counts, theme);
+            // The last check failed: these are the last known counts.
+            if ctx.instance_counts_stale && counts.is_some() {
+                text.push('?');
+            }
             Cell::from(Span::styled(
                 text,
                 Style::default().fg(color).add_modifier(Modifier::BOLD),
@@ -844,6 +851,10 @@ pub(crate) fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
                         Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
                     ),
                 ]));
+                // The per-env poll caches are keyed by region and name:
+                // a same-named env in another region is another row.
+                let key = crate::app::EnvKey::of(e, &app.context.region);
+                let dlq_depth = app.worker_dlq.get(&key).copied().unwrap_or(0);
                 let cell_ctx = CellCtx {
                     theme: &theme,
                     e,
@@ -852,14 +863,15 @@ pub(crate) fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
                     color,
                     now,
                     redact: app.view.redact,
-                    dlq_depth: app.worker_dlq_depths.get(&e.name).copied().unwrap_or(0),
-                    instance_counts: app.env_instance_counts.get(&e.name).copied(),
+                    dlq_depth,
+                    instance_counts: app.env_instance_counts.get(&key).copied(),
+                    instance_counts_stale: app.env_instance_counts.is_stale(&key),
                     history: app.history.get(&e.name),
                     newly_red: app.newly_red.contains(&e.name),
                     stale_platform: app.view.stale_platforms().get(&e.name),
                     cost: app.costs.get(&e.name),
-                    firing_alarms: app.firing_alarms.get(&e.name).map_or(0, Vec::len),
-                    alarms_unknown: app.firing_alarms_unknown.contains(&e.name),
+                    firing_alarms: app.firing_alarms.get(&key).map_or(0, Vec::len),
+                    alarms_unknown: app.firing_alarms.is_stale(&key),
                 };
                 let cells: Vec<Cell> = columns
                     .iter()
@@ -873,14 +885,10 @@ pub(crate) fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
                 // when EB reports Green/Yellow — failed jobs sitting in
                 // the dead-letter queue are an operational red flag the
                 // EB health check doesn't model.
-                let dlq_red = e.tier.eq_ignore_ascii_case("Worker")
-                    && app.worker_dlq_depths.get(&e.name).copied().unwrap_or(0) > 0;
+                let dlq_red = e.tier.eq_ignore_ascii_case("Worker") && dlq_depth > 0;
                 // A firing CloudWatch alarm raises the row to at
                 // least yellow: EB health can stay Green through it.
-                let alarming = app
-                    .firing_alarms
-                    .get(&e.name)
-                    .is_some_and(|a| !a.is_empty());
+                let alarming = app.firing_alarms.get(&key).is_some_and(|a| !a.is_empty());
                 let bg = if dlq_red
                     || e.health.eq_ignore_ascii_case("Red")
                     || e.health.eq_ignore_ascii_case("Severe")

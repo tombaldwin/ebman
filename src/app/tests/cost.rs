@@ -639,7 +639,7 @@ fn app_rollup_counts_each_signal_independently() {
     let mut depths = HashMap::new();
     depths.insert("a-worker".to_string(), 3i64);
 
-    let r = app_rollup(&envs, "shop", &depths);
+    let r = app_rollup(&envs, "shop", |e| depths.get(&e.name).copied().unwrap_or(0));
     assert_eq!(r.env_count, 5, "only this application's envs");
     // Each in-flight status counts, `Terminating` included — its arm was
     // separately deletable.
@@ -650,7 +650,7 @@ fn app_rollup_counts_each_signal_independently() {
     let mut empty = HashMap::new();
     empty.insert("a-worker".to_string(), 0i64);
     assert_eq!(
-        app_rollup(&envs, "shop", &empty).worker_dlq_alerts,
+        app_rollup(&envs, "shop", |e| empty.get(&e.name).copied().unwrap_or(0)).worker_dlq_alerts,
         0,
         "a worker with an empty DLQ is not an alert"
     );
@@ -660,7 +660,11 @@ fn app_rollup_counts_each_signal_independently() {
     let mut web_depth = HashMap::new();
     web_depth.insert("a-steady".to_string(), 9i64);
     assert_eq!(
-        app_rollup(&envs, "shop", &web_depth).worker_dlq_alerts,
+        app_rollup(&envs, "shop", |e| web_depth
+            .get(&e.name)
+            .copied()
+            .unwrap_or(0))
+        .worker_dlq_alerts,
         0,
         "only Worker-tier envs raise a DLQ alert"
     );

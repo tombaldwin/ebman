@@ -448,3 +448,8 @@ pub(super) fn mk_application(name: &str) -> crate::aws::Application {
         latest_version_created: None,
     }
 }
+
+/// The poll-cache key of a `test_app()` row with no region of its own.
+pub(super) fn home_key(name: &str) -> crate::app::EnvKey {
+    crate::app::EnvKey::new("us-east-1", name)
+}

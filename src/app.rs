@@ -146,6 +146,7 @@ mod cost;
 mod costs; // instance pricing, fleet rollups
 mod deploy_math; // rolling-batch and unavailability arithmetic
 mod env_edit; // the `:env` editor round-trip
+mod polled; // per-env values the fleet view polls each refresh
 mod render; // overlay body renderers (`-> String`)
 mod safety; // the `deny_write` gate every mutation passes through
 mod saved_views; // saved-view encode / apply
@@ -158,6 +159,7 @@ pub(crate) use cost::*;
 pub(crate) use costs::Costs;
 pub(crate) use deploy_math::*;
 pub(crate) use env_edit::*;
+pub(crate) use polled::{EnvKey, PolledByEnv};
 pub(crate) use render::*;
 pub(crate) use saved_views::*;
 pub(crate) use text::*;
@@ -243,33 +245,23 @@ pub struct App {
     pub(crate) help: HelpState,
     pub(crate) hover_row: Option<usize>,
     pub(crate) alerts: usize, // count of envs currently in Red, recomputed each refresh
-    /// Cached DLQ depth (`Visible` messages) for each Worker-tier env,
-    /// keyed by env name. Populated by a per-refresh fan-out of
-    /// `describe_worker_queues`. Used by the Red-alert calc + the table
-    /// render's `⚠ DLQ:N` chip on Worker rows. Missing entry = "not
-    /// checked yet" (don't fire an alert on cold state).
-    pub(crate) worker_dlq_depths: std::collections::HashMap<String, i64>,
-    /// Envs whose last worker-queue check FAILED — their entry in
-    /// `worker_dlq_depths` is the last-known depth, kept so an
-    /// AccessDenied/throttle can't silently clear an alert. The UI
-    /// appends a staleness marker so the operator knows the number
-    /// may be old. Cleared per-env on the next successful check and
-    /// wholesale on context switch.
-    pub(crate) worker_dlq_stale: std::collections::HashSet<String>,
-    /// Worker envs whose last check found NO DLQ configured. Without
-    /// it, a missing `worker_dlq_depths` entry meant both "no DLQ" and
-    /// "not checked yet", and lint could not tell a rule with nothing
-    /// to check from one that had no input. Cleared with the depths.
-    pub(crate) worker_dlq_absent: std::collections::HashSet<String>,
-    /// The CloudWatch alarms in ALARM state for each env, by name, from
-    /// a per-region `DescribeAlarms` each refresh. An env with none has
-    /// no entry. Tints the row and marks STATUS: EB health can be Green
-    /// while an alarm fires, and the fleet view used to say nothing.
-    pub(crate) firing_alarms: std::collections::HashMap<String, Vec<String>>,
-    /// Envs whose region's last alarm check FAILED. Their
-    /// `firing_alarms` entry is the last known, kept; the table marks
-    /// them unknown rather than letting a failure read as "no alarms".
-    pub(crate) firing_alarms_unknown: std::collections::HashSet<String>,
+    /// DLQ depth (`Visible` messages) per Worker-tier env, from a
+    /// per-refresh fan-out of `describe_worker_queues`. Drives the
+    /// Red-alert count, the row tint and the `⚠N` chip. `absent` = the
+    /// worker has no DLQ; `stale` = the last check failed and the depth
+    /// is the last known one, so an AccessDenied or a throttle cannot
+    /// silently clear an alert.
+    pub(crate) worker_dlq: PolledByEnv<i64>,
+    /// The CloudWatch alarms in ALARM state per env, from a per-region
+    /// `DescribeAlarms` each refresh. Tints the row and marks STATUS:
+    /// EB health can be Green while an alarm fires. `stale` = the
+    /// region's last check failed; the table marks the count unknown
+    /// rather than letting a failure read as "no alarms".
+    pub(crate) firing_alarms: PolledByEnv<Vec<String>>,
+    /// Bumped once per fleet refresh and stamped on that refresh's
+    /// polls, so a slow answer from an older round cannot overwrite a
+    /// newer one (`PolledByEnv::accept_round`).
+    pub(crate) poll_round: u64,
     /// Monotonic counter of context-switch spawns (`:region`,
     /// `:profile`, `:account`). Stamped into `AppMsg::Rebuild` so a
     /// slow older switch losing the race to a newer one is dropped in
@@ -398,11 +390,12 @@ pub struct App {
     pub(crate) demo_mode: bool,
     /// Per-env `(healthy, total)` instance counts, populated by
     /// `spawn_env_instance_counts` after each refresh tick. Drives the
-    /// `INST` column on the main env table. Missing entry = "not
-    /// checked yet"; rendered as `—`. `EnvInstanceCounts { 0, 0 }` is
-    /// a real value ("env reports no instances") and renders as `0/0`.
-    pub(crate) env_instance_counts:
-        std::collections::HashMap<String, crate::aws::EnvInstanceCounts>,
+    /// `INST` column on the main env table. No value = not checked, or
+    /// an env with nothing to count (terminal lifecycle states); both
+    /// render as `—`. `EnvInstanceCounts { 0, 0 }` is a real value
+    /// ("env reports no instances") and renders as `0/0`. A failed
+    /// check keeps the last counts, marked stale.
+    pub(crate) env_instance_counts: PolledByEnv<crate::aws::EnvInstanceCounts>,
     /// Per-env spend, whether the walk that produced it finished, when
     /// it landed, and whether Cost Explorer is opted in — one type, in
     /// `app/costs.rs`, because three of those must move together and
@@ -631,25 +624,34 @@ pub(crate) enum AppMsg {
     /// all of them. Feeds into the Red-alert calc + the table render.
     WorkerQueueCheck {
         gen: u64,
+        /// The fleet refresh this poll belongs to (`App::poll_round`).
+        round: u64,
         /// Per-env outcome: `Ok(Some(depth))` = DLQ depth fetched,
         /// `Ok(None)` = env genuinely has no DLQ, `Err(msg)` = fetch
         /// failed — the handler keeps the previous depth so an
         /// AccessDenied/throttle can't silently clear an alert.
-        results: Vec<(String, Result<Option<i64>, String>)>,
+        results: Vec<(EnvKey, Result<Option<i64>, String>)>,
     },
     /// Alarms in ALARM state, one outcome per region, fanned out after
     /// `Refresh` lands via `spawn_firing_alarms`. `Err` keeps that
     /// region's envs at their last known count, marked unknown.
     FiringAlarms {
         gen: u64,
+        round: u64,
         results: Vec<(String, Result<Vec<crate::aws::FiringAlarm>, String>)>,
     },
     /// Per-env `(healthy, total)` instance counts, fanned out after
-    /// `Refresh` lands via `spawn_env_instance_counts`. Failed envs are
-    /// absent. Feeds the `INST` column on the main table.
+    /// `Refresh` lands via `spawn_env_instance_counts`. Feeds the
+    /// `INST` column on the main table.
     EnvInstanceCountsCheck {
         gen: u64,
-        results: Vec<(String, crate::aws::EnvInstanceCounts)>,
+        round: u64,
+        /// `Ok(None)`: the env is in a lifecycle state with nothing to
+        /// count. `Err`: the check failed, and the last counts stand.
+        results: Vec<(
+            EnvKey,
+            Result<Option<crate::aws::EnvInstanceCounts>, String>,
+        )>,
     },
     Rebuild {
         /// Monotonic rebuild epoch captured at spawn. `apply_rebuild`
@@ -1373,11 +1375,9 @@ impl App {
             },
             hover_row: None,
             alerts: 0,
-            worker_dlq_depths: std::collections::HashMap::new(),
-            firing_alarms: std::collections::HashMap::new(),
-            firing_alarms_unknown: std::collections::HashSet::new(),
-            worker_dlq_stale: std::collections::HashSet::new(),
-            worker_dlq_absent: std::collections::HashSet::new(),
+            worker_dlq: PolledByEnv::default(),
+            firing_alarms: PolledByEnv::default(),
+            poll_round: 0,
             rebuild_epoch: 0,
             fanout_epoch: 0,
             aws_built_at: Instant::now(),
@@ -1425,7 +1425,7 @@ impl App {
             undo_history: std::collections::VecDeque::new(),
             promotion_history: Vec::new(),
             demo_mode: false,
-            env_instance_counts: std::collections::HashMap::new(),
+            env_instance_counts: PolledByEnv::default(),
             costs: {
                 let mut c = Costs::default();
                 c.set_enabled(persisted.cost_enabled.unwrap_or(false));
@@ -1711,11 +1711,9 @@ impl App {
             },
             hover_row: None,
             alerts: 0,
-            worker_dlq_depths: std::collections::HashMap::new(),
-            firing_alarms: std::collections::HashMap::new(),
-            firing_alarms_unknown: std::collections::HashSet::new(),
-            worker_dlq_stale: std::collections::HashSet::new(),
-            worker_dlq_absent: std::collections::HashSet::new(),
+            worker_dlq: PolledByEnv::default(),
+            firing_alarms: PolledByEnv::default(),
+            poll_round: 0,
             rebuild_epoch: 0,
             fanout_epoch: 0,
             aws_built_at: Instant::now(),
@@ -1739,7 +1737,7 @@ impl App {
             undo_history: std::collections::VecDeque::new(),
             promotion_history: Vec::new(),
             demo_mode: false,
-            env_instance_counts: std::collections::HashMap::new(),
+            env_instance_counts: PolledByEnv::default(),
             costs: Costs::default(),
             last_yanked_cli: None,
             latest_stacks: std::collections::HashMap::new(),
@@ -2498,19 +2496,18 @@ pub(crate) fn compute_traffic_warning(env: &Environment) -> Option<String> {
 /// that exact framing of the message doesn't matter.
 /// Pure: count "Red-equivalent" alerts across the env list. An env counts
 /// as alert-worthy when either (a) EB reports its health as Red / Severe,
-/// or (b) it's a Worker-tier env with `worker_dlq_depths.get(name) > 0`.
+/// or (b) it's a Worker-tier env whose `dlq_depth` is above zero.
 /// The two predicates are disjoint per env, so a worker that's both
 /// EB-Red and DLQ-loaded is counted once.
 pub(crate) fn compute_red_alerts(
     envs: &[crate::aws::Environment],
-    worker_dlq_depths: &std::collections::HashMap<String, i64>,
+    dlq_depth: impl Fn(&crate::aws::Environment) -> i64,
 ) -> usize {
     envs.iter()
         .filter(|e| {
             let eb_red =
                 e.health.eq_ignore_ascii_case("Red") || e.health.eq_ignore_ascii_case("Severe");
-            let dlq_red = e.tier.eq_ignore_ascii_case("Worker")
-                && worker_dlq_depths.get(&e.name).copied().unwrap_or(0) > 0;
+            let dlq_red = e.tier.eq_ignore_ascii_case("Worker") && dlq_depth(e) > 0;
             eb_red || dlq_red
         })
         .count()

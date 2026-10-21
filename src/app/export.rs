@@ -35,6 +35,20 @@ impl App {
             .clone()
             .unwrap_or_else(|| self.context.region.clone())
     }
+
+    /// The key every per-env poll cache uses for `env`: its own region
+    /// and its name. See [`crate::app::EnvKey`].
+    pub(crate) fn env_key(&self, env: &crate::aws::Environment) -> crate::app::EnvKey {
+        crate::app::EnvKey::of(env, &self.context.region)
+    }
+
+    /// `env`'s DLQ depth, 0 when unknown or none.
+    pub(crate) fn dlq_depth(&self, env: &crate::aws::Environment) -> i64 {
+        self.worker_dlq
+            .get(&self.env_key(env))
+            .copied()
+            .unwrap_or(0)
+    }
 }
 
 impl App {

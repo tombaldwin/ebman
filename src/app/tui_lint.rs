@@ -122,11 +122,14 @@ impl App {
                 // answer for it.
                 &self.region_for(env),
             ),
-            dlq: worker_dlq(
-                self.worker_dlq_depths.get(&env.name).copied(),
-                self.worker_dlq_absent.contains(&env.name),
-                self.worker_dlq_stale.contains(&env.name),
-            ),
+            dlq: {
+                let key = self.env_key(env);
+                worker_dlq(
+                    self.worker_dlq.get(&key).copied(),
+                    self.worker_dlq.is_absent(&key),
+                    self.worker_dlq.is_stale(&key),
+                )
+            },
         }
     }
 }

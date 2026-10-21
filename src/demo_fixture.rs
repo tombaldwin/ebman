@@ -656,9 +656,17 @@ pub(crate) fn install(app: &mut App) {
     app.environments = envs();
     app.view.invalidate();
     app.event_panel.events = events();
-    app.worker_dlq_depths = worker_dlq_depths();
-    app.env_instance_counts = instance_counts();
-    app.firing_alarms = firing_alarms();
+    // Every demo env is in us-east-1.
+    let key = |name: &str| crate::app::EnvKey::new("us-east-1", name);
+    for (name, depth) in worker_dlq_depths() {
+        app.worker_dlq.set(key(&name), depth);
+    }
+    for (name, counts) in instance_counts() {
+        app.env_instance_counts.set(key(&name), counts);
+    }
+    for (name, alarms) in firing_alarms() {
+        app.firing_alarms.set(key(&name), alarms);
+    }
     app.costs.set_enabled(true);
     app.costs.set_complete(costs(), fixture_now());
     app.context.account_id = Some("123456789012".into());

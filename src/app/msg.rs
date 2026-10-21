@@ -110,10 +110,14 @@ impl App {
             AppMsg::Applications { result, .. } => self.handle_applications(result),
             AppMsg::SolutionStacks { result, .. } => self.handle_solution_stacks(result),
             AppMsg::AppLatestVersions { results, .. } => self.handle_app_latest_versions(results),
-            AppMsg::WorkerQueueCheck { results, .. } => self.handle_worker_queue_check(results),
-            AppMsg::FiringAlarms { results, .. } => self.handle_firing_alarms(results),
-            AppMsg::EnvInstanceCountsCheck { results, .. } => {
-                self.handle_env_instance_counts(results)
+            AppMsg::WorkerQueueCheck { round, results, .. } => {
+                self.handle_worker_queue_check(round, results)
+            }
+            AppMsg::FiringAlarms { round, results, .. } => {
+                self.handle_firing_alarms(round, results)
+            }
+            AppMsg::EnvInstanceCountsCheck { round, results, .. } => {
+                self.handle_env_instance_counts(round, results)
             }
             AppMsg::Events { result, .. } => self.handle_events(result),
             AppMsg::DetailEvents {
@@ -436,96 +440,102 @@ impl App {
         }
     }
 
-    fn handle_worker_queue_check(&mut self, results: Vec<(String, Result<Option<i64>, String>)>) {
+    fn handle_worker_queue_check(
+        &mut self,
+        round: u64,
+        results: Vec<(EnvKey, Result<Option<i64>, String>)>,
+    ) {
+        if !self.worker_dlq.accept_round(round) {
+            return;
+        }
         // Per-env reconcile (NOT a clear-and-rebuild — that dropped a
         // failed env's entry every tick, silently clearing its
-        // `⚠ DLQ:N` chip and alert, the exact thing the old comment
-        // claimed to avoid): a fetched depth updates, a genuine
-        // "no DLQ" removes, and a fetch error keeps the previous
-        // depth so alerts survive an AccessDenied/throttle blip.
-        for (env_name, outcome) in results {
-            match outcome {
-                Ok(Some(depth)) => {
-                    self.worker_dlq_depths.insert(env_name.clone(), depth);
-                    self.worker_dlq_stale.remove(&env_name);
-                    self.worker_dlq_absent.remove(&env_name);
-                }
-                Ok(None) => {
-                    self.worker_dlq_depths.remove(&env_name);
-                    self.worker_dlq_stale.remove(&env_name);
-                    self.worker_dlq_absent.insert(env_name);
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        env = %env_name,
-                        error = %e,
-                        "worker queue check failed — keeping previous DLQ depth (marked stale)"
-                    );
-                    self.worker_dlq_stale.insert(env_name);
-                }
+        // `⚠ DLQ:N` chip and alert): a fetched depth updates, a genuine
+        // "no DLQ" removes, and a fetch error keeps the previous depth
+        // so alerts survive an AccessDenied/throttle blip.
+        for (key, outcome) in results {
+            if let Err(e) = &outcome {
+                tracing::warn!(
+                    env = %key.name,
+                    region = %key.region,
+                    error = %e,
+                    "worker queue check failed — keeping previous DLQ depth (marked stale)"
+                );
             }
+            self.worker_dlq.reconcile(key, outcome);
         }
         // Recompute alerts now that the cache is fresh — the count set
         // during apply_refresh used the *previous* tick's cache. Workers
         // newly above DLQ=0 join the alert pill on the next draw.
-        self.alerts = compute_red_alerts(&self.environments, &self.worker_dlq_depths);
+        self.alerts = compute_red_alerts(&self.environments, |e| self.dlq_depth(e));
     }
 
     fn handle_firing_alarms(
         &mut self,
+        round: u64,
         results: Vec<(String, Result<Vec<crate::aws::FiringAlarm>, String>)>,
     ) {
+        if !self.firing_alarms.accept_round(round) {
+            return;
+        }
         for (region, outcome) in results {
-            let envs: Vec<String> = self
+            // This region's rows only: a same-named env elsewhere is
+            // another key, answered by its own region.
+            let envs: Vec<EnvKey> = self
                 .environments
                 .iter()
                 .filter(|e| self.region_for(e) == region)
-                .map(|e| e.name.clone())
+                .map(|e| self.env_key(e))
                 .collect();
             match outcome {
                 Ok(firing) => {
-                    for env in envs {
-                        let names =
-                            crate::app_tab::firing_for(&self.alarm_match_for(&env), &env, &firing);
-                        self.firing_alarms_unknown.remove(&env);
-                        if names.is_empty() {
-                            self.firing_alarms.remove(&env);
-                        } else {
-                            self.firing_alarms.insert(env, names);
-                        }
+                    for key in envs {
+                        let names = crate::app_tab::firing_for(
+                            &self.alarm_match_for(&key.name),
+                            &key.name,
+                            &firing,
+                        );
+                        self.firing_alarms
+                            .reconcile::<()>(key, Ok((!names.is_empty()).then_some(names)));
                     }
                 }
-                // Same reconcile as the DLQ check: a failure keeps the
-                // last known alarms rather than clearing them, and says
-                // the count is unknown.
+                // A failure keeps the last known alarms and marks the
+                // count unknown. Logged when the region first fails,
+                // not on every 15s tick while it stays failed.
                 Err(e) => {
-                    tracing::warn!(
-                        region = %region,
-                        error = %e,
-                        "firing-alarm check failed — keeping previous alarms (marked unknown)"
-                    );
-                    self.firing_alarms_unknown.extend(envs);
+                    if envs.iter().any(|k| !self.firing_alarms.is_stale(k)) {
+                        tracing::warn!(
+                            region = %region,
+                            error = %e,
+                            "firing-alarm check failed — keeping previous alarms (marked unknown)"
+                        );
+                    }
+                    for key in envs {
+                        self.firing_alarms.reconcile(key, Err(()));
+                    }
                 }
             }
         }
-        // An env that left the fleet takes its alarms with it.
-        let current: std::collections::HashSet<&str> =
-            self.environments.iter().map(|e| e.name.as_str()).collect();
-        self.firing_alarms
-            .retain(|env, _| current.contains(env.as_str()));
-        self.firing_alarms_unknown
-            .retain(|env| current.contains(env.as_str()));
     }
 
     fn handle_env_instance_counts(
         &mut self,
-        results: Vec<(String, crate::aws::EnvInstanceCounts)>,
+        round: u64,
+        results: Vec<(
+            EnvKey,
+            Result<Option<crate::aws::EnvInstanceCounts>, String>,
+        )>,
     ) {
-        // Same shape as the DLQ cache: full rebuild per refresh so envs
-        // whose instances reach Green clear back to a healthy count.
-        self.env_instance_counts.clear();
-        for (env_name, counts) in results {
-            self.env_instance_counts.insert(env_name, counts);
+        if !self.env_instance_counts.accept_round(round) {
+            return;
+        }
+        // Per env, as the DLQ check: one env's throttle keeps its last
+        // counts (marked stale) instead of blanking its INST cell.
+        for (key, outcome) in results {
+            if let Err(e) = &outcome {
+                tracing::debug!(env = %key.name, error = %e, "instance count check failed");
+            }
+            self.env_instance_counts.reconcile(key, outcome);
         }
     }
 

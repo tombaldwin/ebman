@@ -2556,5 +2556,5 @@ async fn a_fleet_refresh_checks_for_firing_alarms() {
             break;
         }
     }
-    assert!(app.firing_alarms_unknown.contains("api-prod"));
+    assert!(app.firing_alarms.is_stale(&home_key("api-prod")));
 }

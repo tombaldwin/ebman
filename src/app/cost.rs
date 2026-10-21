@@ -183,7 +183,7 @@ pub(crate) fn render_fleet_cost(
 pub(crate) fn app_rollup(
     envs: &[crate::aws::Environment],
     app_name: &str,
-    dlq_depths: &HashMap<String, i64>,
+    dlq_depth: impl Fn(&crate::aws::Environment) -> i64,
 ) -> AppRollup {
     let mut out = AppRollup::default();
     for e in envs.iter().filter(|e| e.application == app_name) {
@@ -201,9 +201,7 @@ pub(crate) fn app_rollup(
         {
             out.updating_count += 1;
         }
-        if e.tier.eq_ignore_ascii_case("Worker")
-            && dlq_depths.get(&e.name).copied().unwrap_or(0) > 0
-        {
+        if e.tier.eq_ignore_ascii_case("Worker") && dlq_depth(e) > 0 {
             out.worker_dlq_alerts += 1;
         }
     }

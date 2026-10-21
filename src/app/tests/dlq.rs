@@ -30,7 +30,7 @@ fn app_rollup_worker_dlq_alert_counts() {
     }];
     let mut dlq: HashMap<String, i64> = HashMap::new();
     dlq.insert("worker-prod".into(), 7);
-    let r = crate::app::app_rollup(&envs, "wapp", &dlq);
+    let r = crate::app::app_rollup(&envs, "wapp", |e| dlq.get(&e.name).copied().unwrap_or(0));
     // EB calls it Green; ebman flags it because the DLQ is non-empty.
     assert_eq!(r.env_count, 1);
     assert_eq!(r.red_count, 0, "EB health stays Green");
@@ -70,7 +70,10 @@ fn compute_red_alerts_counts_eb_red_and_worker_dlq() {
     dlq.insert("worker-green-dlq".to_string(), 3);
     dlq.insert("worker-clean".to_string(), 0);
     // EB-Red + DLQ-Red + EB-Red-on-worker = 3 alerts (worker-red counted once).
-    assert_eq!(crate::app::compute_red_alerts(&envs, &dlq), 3);
+    assert_eq!(
+        crate::app::compute_red_alerts(&envs, |e| dlq.get(&e.name).copied().unwrap_or(0)),
+        3
+    );
 }
 
 #[test]
@@ -97,7 +100,10 @@ fn compute_red_alerts_ignores_dlq_for_web_tier() {
     // entry surviving a tier change.
     let mut dlq = std::collections::HashMap::new();
     dlq.insert("web-prod".to_string(), 99);
-    assert_eq!(crate::app::compute_red_alerts(&[env], &dlq), 0);
+    assert_eq!(
+        crate::app::compute_red_alerts(&[env], |e| dlq.get(&e.name).copied().unwrap_or(0)),
+        0
+    );
 }
 
 #[test]
@@ -121,7 +127,10 @@ fn compute_red_alerts_zero_dlq_is_not_alert_worthy() {
     };
     let mut dlq = std::collections::HashMap::new();
     dlq.insert("worker-clean".to_string(), 0);
-    assert_eq!(crate::app::compute_red_alerts(&[env], &dlq), 0);
+    assert_eq!(
+        crate::app::compute_red_alerts(&[env], |e| dlq.get(&e.name).copied().unwrap_or(0)),
+        0
+    );
 }
 
 #[tokio::test]
@@ -131,42 +140,47 @@ async fn worker_queue_fetch_error_keeps_previous_dlq_depth() {
     let mut app = test_app();
     app.handle_msg(AppMsg::WorkerQueueCheck {
         gen: app.generation,
-        results: vec![("wk-prod".into(), Ok(Some(7)))],
+        round: 0,
+        results: vec![(home_key("wk-prod"), Ok(Some(7)))],
     });
-    assert_eq!(app.worker_dlq_depths.get("wk-prod"), Some(&7));
+    assert_eq!(app.worker_dlq.get(&home_key("wk-prod")), Some(&7));
     // Fetch error → depth survives, marked stale.
     app.handle_msg(AppMsg::WorkerQueueCheck {
         gen: app.generation,
-        results: vec![("wk-prod".into(), Err("AccessDenied".into()))],
+        round: 0,
+        results: vec![(home_key("wk-prod"), Err("AccessDenied".into()))],
     });
     assert_eq!(
-        app.worker_dlq_depths.get("wk-prod"),
+        app.worker_dlq.get(&home_key("wk-prod")),
         Some(&7),
         "error must not read as 'no DLQ'"
     );
-    assert!(app.worker_dlq_stale.contains("wk-prod"));
+    assert!(app.worker_dlq.is_stale(&home_key("wk-prod")));
     // Successful re-check clears the staleness.
     app.handle_msg(AppMsg::WorkerQueueCheck {
         gen: app.generation,
-        results: vec![("wk-prod".into(), Ok(Some(3)))],
+        round: 0,
+        results: vec![(home_key("wk-prod"), Ok(Some(3)))],
     });
-    assert!(!app.worker_dlq_stale.contains("wk-prod"));
-    assert_eq!(app.worker_dlq_depths.get("wk-prod"), Some(&3));
+    assert!(!app.worker_dlq.is_stale(&home_key("wk-prod")));
+    assert_eq!(app.worker_dlq.get(&home_key("wk-prod")), Some(&3));
     // Genuine no-DLQ → cleared; fresh depth → updated.
     app.handle_msg(AppMsg::WorkerQueueCheck {
         gen: app.generation,
-        results: vec![("wk-prod".into(), Ok(None))],
+        round: 0,
+        results: vec![(home_key("wk-prod"), Ok(None))],
     });
-    assert!(!app.worker_dlq_depths.contains_key("wk-prod"));
+    assert!(app.worker_dlq.get(&home_key("wk-prod")).is_none());
     // ...and recorded as KNOWN to have no DLQ, which a never-checked
     // env is not: lint needs the difference (EBL011).
-    assert!(app.worker_dlq_absent.contains("wk-prod"));
+    assert!(app.worker_dlq.is_absent(&home_key("wk-prod")));
     app.handle_msg(AppMsg::WorkerQueueCheck {
         gen: app.generation,
-        results: vec![("wk-prod".into(), Ok(Some(1)))],
+        round: 0,
+        results: vec![(home_key("wk-prod"), Ok(Some(1)))],
     });
     assert!(
-        !app.worker_dlq_absent.contains("wk-prod"),
+        !app.worker_dlq.is_absent(&home_key("wk-prod")),
         "a DLQ that appears is no longer absent"
     );
 }
@@ -186,7 +200,7 @@ async fn render_dlq_depth_tints_the_ready_pill_amber() {
     let clean = render_buf(&mut app, 140, 30);
     let clean_amber = count_fg(&clean, theme.health_yellow);
 
-    app.worker_dlq_depths.insert("worker-x".into(), 12);
+    app.worker_dlq.set(home_key("worker-x"), 12);
     let backed_up = render_buf(&mut app, 140, 30);
     let dlq_amber = count_fg(&backed_up, theme.health_yellow);
 
@@ -1090,12 +1104,13 @@ async fn a_context_switch_forgets_which_workers_have_no_dlq() {
     let mut app = test_app();
     app.handle_msg(AppMsg::WorkerQueueCheck {
         gen: app.generation,
-        results: vec![("wk-prod".into(), Ok(None))],
+        round: 0,
+        results: vec![(home_key("wk-prod"), Ok(None))],
     });
-    assert!(app.worker_dlq_absent.contains("wk-prod"));
+    assert!(app.worker_dlq.is_absent(&home_key("wk-prod")));
     app.handle_msg(AppMsg::Rebuild {
         epoch: app.rebuild_epoch,
         result: Ok(Box::new(crate::aws::AwsClient::stub())),
     });
-    assert!(app.worker_dlq_absent.is_empty());
+    assert!(!app.worker_dlq.is_absent(&home_key("wk-prod")));
 }

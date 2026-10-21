@@ -106,6 +106,33 @@ now head the list.*
 
 ### Now
 
+0. **The 2026-10-21 quality review: fix everything it found** *(ruled "do all of them")*
+
+   Three agents (bugs, architecture, engineering process) reviewed
+   v0.45.2..HEAD. Order of work, each in its own commits:
+
+   - **Bugs.** Same-named envs in two regions share one alarm / DLQ
+     entry; STATUS clips the alarm marker (own column); a hand edit to
+     `alarm_prefix` misses the fleet view (reload once per refresh); a
+     throttled instance-count check blanks INST; DLQ depths and an
+     emptied fleet's alarms are never pruned; MCP reads
+     `alarm_dimensions` only at startup; PLATFORM version pushes ↑ off;
+     `envs` ALARMS separator; a permanent `⚑?` warns every tick; a
+     duplicated and a dead comment.
+   - **Refactors.** One fan-out helper and one `PolledByEnv` cache for
+     the three per-refresh polls; per-env caches keyed by region and
+     name; context-scoped state in one resettable struct; Metrics and
+     discovery on tickets; `AlarmMatch` to `alarms.rs`; serde for the
+     `envs` JSON; split `aws/tests.rs`.
+   - **Process.** `cargo mutants --in-diff` on push; property tests for
+     the `app.` parser/writer round trip; a model test of the
+     stale-answer lifecycle; tracked git hooks plus commit-message and
+     pushed-range client-name scans; rendered-frame snapshots with a
+     width invariant; testable CLI `run()`s; a smoke run of the release
+     binary; weekly full mutation sweep with a survivor diff; log
+     rotation and per-task spans; nextest and a non-gating coverage
+     report.
+
 1. **No `stage=asked` line has ever landed in the real audit log** *(measurement — needs Tom at the keyboard, ~5 min)*
 
    Found on 2026-09-25 while setting up the live typed-confirm

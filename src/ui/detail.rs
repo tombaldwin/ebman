@@ -477,15 +477,11 @@ pub(super) fn draw_detail_health(
         ),
     ];
     let is_worker = env.tier.eq_ignore_ascii_case("Worker");
-    let dlq_depth = if is_worker {
-        app.worker_dlq_depths.get(&env.name).copied().unwrap_or(0)
-    } else {
-        0
-    };
+    let dlq_depth = if is_worker { app.dlq_depth(env) } else { 0 };
     if dlq_depth > 0 {
         // Last check failed → the depth is the last-known value, not
         // a live reading. Say so instead of presenting it as current.
-        let stale_suffix = if app.worker_dlq_stale.contains(&env.name) {
+        let stale_suffix = if app.worker_dlq.is_stale(&app.env_key(env)) {
             " (stale)"
         } else {
             ""

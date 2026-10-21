@@ -30,7 +30,7 @@ impl App {
         };
         // Walk env list for the rollup figures; mirrors the apps-table
         // columns so the operator can compare without bouncing.
-        let rollup = app_rollup(&self.environments, &app.name, &self.worker_dlq_depths);
+        let rollup = app_rollup(&self.environments, &app.name, |e| self.dlq_depth(e));
         let env_names: Vec<&str> = self
             .environments
             .iter()

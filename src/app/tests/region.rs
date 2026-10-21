@@ -1066,68 +1066,180 @@ fn firing(name: &str, env: &str) -> crate::aws::FiringAlarm {
     }
 }
 
-#[tokio::test]
-async fn firing_alarms_land_on_the_envs_of_the_region_they_came_from() {
-    // Two same-named envs in two regions: an alarm in eu-west-2 is the
-    // eu-west-2 env's, and must not mark the home one.
+/// `api-prod` in us-east-1 and `api-prod` in eu-west-2.
+fn same_named_in_two_regions() -> App {
     let mut app = test_app();
     let home = mk_env("api-prod", "poly", "Web", "Green");
-    let mut away = mk_env("api-eu", "poly", "Web", "Green");
+    let mut away = mk_env("api-prod", "poly", "Web", "Green");
     away.region = Some("eu-west-2".into());
     app.environments = vec![home, away];
     app.rebuild_view();
+    app
+}
 
-    app.handle_msg(AppMsg::FiringAlarms {
-        gen: app.generation,
+fn eu_key(name: &str) -> crate::app::EnvKey {
+    crate::app::EnvKey::new("eu-west-2", name)
+}
+
+#[tokio::test]
+async fn firing_alarms_land_on_the_envs_of_the_region_they_came_from() {
+    // Two envs with the SAME name in two regions. Keyed by name alone,
+    // whichever region was applied last decided both rows, so a quiet
+    // region could erase the other's firing alarm. Both orders.
+    for eu_first in [true, false] {
+        let mut app = same_named_in_two_regions();
+        let mut results = vec![
+            ("us-east-1".to_string(), Ok(vec![])),
+            (
+                "eu-west-2".to_string(),
+                Ok(vec![firing("eu-5xx", "api-prod")]),
+            ),
+        ];
+        if eu_first {
+            results.reverse();
+        }
+        app.handle_msg(AppMsg::FiringAlarms {
+            gen: app.generation,
+            round: 0,
+            results,
+        });
+        assert_eq!(
+            app.firing_alarms.get(&eu_key("api-prod")),
+            Some(&vec!["eu-5xx".to_string()]),
+            "eu_first={eu_first}"
+        );
+        assert_eq!(
+            app.firing_alarms.get(&home_key("api-prod")),
+            None,
+            "eu_first={eu_first}"
+        );
+    }
+
+    // A failed region keeps its env's last known alarms, marked
+    // unknown; the same-named env in the other region is untouched.
+    let mut app = same_named_in_two_regions();
+    let ok = |eu: Vec<crate::aws::FiringAlarm>| AppMsg::FiringAlarms {
+        gen: 0,
+        round: 0,
         results: vec![
             ("us-east-1".into(), Ok(vec![])),
-            (
-                "eu-west-2".into(),
-                Ok(vec![
-                    firing("eu-5xx", "api-eu"),
-                    // Dimensioned by the HOME env's name, but fetched
-                    // from eu-west-2: not the home env's alarm.
-                    firing("stray", "api-prod"),
-                ]),
-            ),
+            ("eu-west-2".into(), Ok(eu)),
         ],
-    });
-    assert_eq!(
-        app.firing_alarms.get("api-eu"),
-        Some(&vec!["eu-5xx".to_string()])
-    );
-    assert!(!app.firing_alarms.contains_key("api-prod"));
-
-    // A failed region keeps its envs' last known alarms, marked
-    // unknown; the other region is untouched.
+    };
+    app.handle_msg(ok(vec![firing("eu-5xx", "api-prod")]));
     app.handle_msg(AppMsg::FiringAlarms {
         gen: app.generation,
+        round: 0,
         results: vec![
             ("us-east-1".into(), Ok(vec![])),
             ("eu-west-2".into(), Err("AccessDenied".into())),
         ],
     });
-    assert_eq!(app.firing_alarms.get("api-eu").map(Vec::len), Some(1));
-    assert!(app.firing_alarms_unknown.contains("api-eu"));
-    assert!(!app.firing_alarms_unknown.contains("api-prod"));
+    assert_eq!(
+        app.firing_alarms.get(&eu_key("api-prod")).map(Vec::len),
+        Some(1)
+    );
+    assert!(app.firing_alarms.is_stale(&eu_key("api-prod")));
+    assert!(!app.firing_alarms.is_stale(&home_key("api-prod")));
 
     // Recovery clears the mark, and an alarm that stopped firing goes.
-    app.handle_msg(AppMsg::FiringAlarms {
-        gen: app.generation,
-        results: vec![("eu-west-2".into(), Ok(vec![]))],
-    });
-    assert!(!app.firing_alarms_unknown.contains("api-eu"));
-    assert!(!app.firing_alarms.contains_key("api-eu"));
+    app.handle_msg(ok(vec![]));
+    assert!(!app.firing_alarms.is_stale(&eu_key("api-prod")));
+    assert_eq!(app.firing_alarms.get(&eu_key("api-prod")), None);
+}
 
-    // An env that left the fleet does not keep its alarms.
-    app.firing_alarms.insert("gone".into(), vec!["x".into()]);
-    app.firing_alarms_unknown.insert("gone".into());
-    app.handle_msg(AppMsg::FiringAlarms {
+#[tokio::test]
+async fn a_late_alarm_answer_from_an_older_refresh_is_dropped() {
+    let mut app = same_named_in_two_regions();
+    let answer = |round, alarms| AppMsg::FiringAlarms {
+        gen: 0,
+        round,
+        results: vec![("eu-west-2".into(), Ok(alarms))],
+    };
+    app.handle_msg(answer(2, vec![]));
+    app.handle_msg(answer(1, vec![firing("old", "api-prod")]));
+    assert_eq!(
+        app.firing_alarms.get(&eu_key("api-prod")),
+        None,
+        "round 1 answered after round 2 and must not overwrite it"
+    );
+}
+
+#[tokio::test]
+async fn dlq_depths_of_same_named_workers_in_two_regions_stay_apart() {
+    let mut app = same_named_in_two_regions();
+    for e in &mut app.environments {
+        e.tier = "Worker".into();
+    }
+    app.handle_msg(AppMsg::WorkerQueueCheck {
         gen: app.generation,
-        results: vec![("us-east-1".into(), Ok(vec![]))],
+        round: 0,
+        results: vec![
+            (eu_key("api-prod"), Ok(Some(9))),
+            (home_key("api-prod"), Ok(Some(0))),
+        ],
     });
-    assert!(!app.firing_alarms.contains_key("gone"));
-    assert!(!app.firing_alarms_unknown.contains("gone"));
+    let depths: Vec<i64> = app.environments.iter().map(|e| app.dlq_depth(e)).collect();
+    assert_eq!(depths, vec![0, 9], "each row reads its own region's depth");
+    assert_eq!(app.alerts, 1, "one worker has a DLQ backlog, not two");
+}
+
+#[tokio::test]
+async fn a_failed_instance_count_keeps_the_last_counts_instead_of_blanking() {
+    let mut app = test_app();
+    app.environments = vec![mk_env("api-prod", "poly", "Web", "Green")];
+    let counts = crate::aws::EnvInstanceCounts {
+        healthy: 2,
+        total: 3,
+    };
+    let answer = |outcome| AppMsg::EnvInstanceCountsCheck {
+        gen: 0,
+        round: 0,
+        results: vec![(home_key("api-prod"), outcome)],
+    };
+    app.handle_msg(answer(Ok(Some(counts))));
+    app.handle_msg(answer(Err("ThrottlingException: slow down".into())));
+    assert_eq!(
+        app.env_instance_counts.get(&home_key("api-prod")),
+        Some(&counts)
+    );
+    assert!(app.env_instance_counts.is_stale(&home_key("api-prod")));
+    // And the cell says the counts are the last known ones.
+    app.rebuild_view();
+    let frame = render(&mut app, 200, 20);
+    assert!(frame.contains("2/3?"), "{frame}");
+}
+
+#[tokio::test]
+async fn a_refresh_forgets_polled_values_of_envs_that_left_even_an_emptied_fleet() {
+    let mut app = test_app();
+    app.environments = vec![mk_env("kept", "poly", "Worker", "Green")];
+    for name in ["kept", "gone"] {
+        app.worker_dlq.set(home_key(name), 3);
+        app.firing_alarms.set(home_key(name), vec!["a".into()]);
+        app.env_instance_counts.set(
+            home_key(name),
+            crate::aws::EnvInstanceCounts {
+                healthy: 1,
+                total: 1,
+            },
+        );
+    }
+    app.apply_refresh(
+        app.fanout_epoch,
+        Ok(vec![mk_env("kept", "poly", "Worker", "Green")]),
+        Vec::new(),
+    );
+    assert!(app.worker_dlq.get(&home_key("kept")).is_some());
+    assert!(app.worker_dlq.get(&home_key("gone")).is_none());
+    assert!(app.firing_alarms.get(&home_key("gone")).is_none());
+    assert!(app.env_instance_counts.get(&home_key("gone")).is_none());
+
+    // No envs left: no poll runs, and the values still go.
+    app.apply_refresh(app.fanout_epoch, Ok(vec![]), Vec::new());
+    assert!(app.worker_dlq.get(&home_key("kept")).is_none());
+    assert!(app.firing_alarms.get(&home_key("kept")).is_none());
+    assert!(app.env_instance_counts.get(&home_key("kept")).is_none());
 }
 
 #[tokio::test]
@@ -1149,7 +1261,34 @@ async fn firing_alarms_use_the_envs_alarm_prefix() {
     };
     app.handle_msg(AppMsg::FiringAlarms {
         gen: app.generation,
+        round: 0,
         results: vec![("us-east-1".into(), Ok(vec![by_name]))],
     });
-    assert_eq!(app.firing_alarms.get("shop-prod").map(Vec::len), Some(1));
+    assert_eq!(
+        app.firing_alarms.get(&home_key("shop-prod")).map(Vec::len),
+        Some(1)
+    );
+}
+
+#[tokio::test]
+async fn the_table_marks_only_the_row_of_the_region_whose_alarm_fires() {
+    let mut app = same_named_in_two_regions();
+    app.multi_regions = vec!["us-east-1".into(), "eu-west-2".into()];
+    app.firing_alarms
+        .set(eu_key("api-prod"), vec!["eu-5xx".into()]);
+    app.rebuild_view();
+    let buf = render_buf(&mut app, 220, 20);
+    let text = |y: u16| -> String { (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect() };
+    let rows: Vec<String> = (0..buf.area.height)
+        .map(text)
+        // Table rows, not the header breadcrumb.
+        .filter(|r| r.contains("api-prod") && r.contains("Ready"))
+        .collect();
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    let marked: Vec<bool> = rows.iter().map(|r| r.contains('⚑')).collect();
+    let eu: Vec<bool> = rows.iter().map(|r| r.contains("eu-west-2")).collect();
+    assert_eq!(
+        marked, eu,
+        "the marker is on the eu-west-2 row only: {rows:?}"
+    );
 }
