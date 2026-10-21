@@ -206,6 +206,43 @@ pub(crate) fn redact_option_value(
     value.to_string()
 }
 
+/// Rotate a log file that has grown past `max_bytes`: `name` becomes
+/// `name.1`, `name.1` becomes `name.2`, and so on, keeping `keep` old
+/// files and deleting the oldest. Returns whether it rotated.
+///
+/// Run once at startup, before the log is opened. The log used to grow
+/// without bound (and the docs said it rotated). A daily rolling
+/// appender would have changed its name, which `:report-bug` reads, and
+/// created each new file with the umask's permissions, where this one
+/// is kept at 0600: it carries env names, ARNs and error bodies.
+pub fn rotate_log(path: &std::path::Path, max_bytes: u64, keep: usize) -> std::io::Result<bool> {
+    let size = match std::fs::metadata(path) {
+        Ok(m) => m.len(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(e),
+    };
+    if size <= max_bytes || keep == 0 {
+        return Ok(false);
+    }
+    let numbered = |n: usize| {
+        let mut p = path.as_os_str().to_owned();
+        p.push(format!(".{n}"));
+        std::path::PathBuf::from(p)
+    };
+    // Oldest first: `name.(keep-1)` replaces `name.keep`, which is how
+    // the oldest goes (a rename replaces its target on the Unix
+    // platforms ebman ships for).
+    for n in (1..keep).rev() {
+        match std::fs::rename(numbered(n), numbered(n + 1)) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
+        }
+    }
+    std::fs::rename(path, numbered(1))?;
+    Ok(true)
+}
+
 /// Open (create-if-missing) a file for appending with 0600 perms —
 /// operator-only. The cache artifacts this guards (audit.log with SSM
 /// command strings, ebman.log, crash reports, explain cache) were
@@ -253,7 +290,34 @@ pub fn write_secure(path: &std::path::Path, contents: &[u8]) -> std::io::Result<
 
 #[cfg(test)]
 mod tests {
-    use super::{json_escape, json_string};
+    use super::{json_escape, json_string, rotate_log};
+
+    #[test]
+    fn a_log_past_its_size_rotates_and_keeps_only_so_many() {
+        let dir =
+            std::env::temp_dir().join(format!("ebman-test-{}-log-rotation", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("ebman.log");
+        let at = |n: usize| dir.join(format!("ebman.log.{n}"));
+        // Small: left alone. Missing: nothing to do.
+        std::fs::write(&log, "x").unwrap();
+        assert!(!rotate_log(&log, 10, 3).unwrap());
+        assert!(!rotate_log(&dir.join("absent.log"), 10, 3).unwrap());
+        // Four rotations with three kept: the oldest goes.
+        for round in 1..=4 {
+            std::fs::write(&log, format!("round {round} {}", "x".repeat(20))).unwrap();
+            assert!(rotate_log(&log, 10, 3).unwrap());
+            assert!(!log.exists(), "the live log starts afresh");
+        }
+        let first_word =
+            |p: std::path::PathBuf| std::fs::read_to_string(p).unwrap()[..7].to_string();
+        assert_eq!(first_word(at(1)), "round 4");
+        assert_eq!(first_word(at(2)), "round 3");
+        assert_eq!(first_word(at(3)), "round 2");
+        assert!(!at(4).exists(), "only three kept");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[cfg(unix)]
     #[test]

@@ -625,6 +625,9 @@ fn prune_old_crash_reports(dir: &std::path::Path, keep: usize) {
 fn init_logging() -> Result<LogReloadHandle> {
     let log_dir = dirs_log_dir();
     std::fs::create_dir_all(&log_dir).ok();
+    // Past 10 MB the log moves to ebman.log.1 (three kept) and starts
+    // afresh. Best effort: a failed rotation must not stop the TUI.
+    let _ = util::rotate_log(&log_dir.join("ebman.log"), 10 * 1024 * 1024, 3);
     // Pre-create the log with 0600 — tracing_appender opens with the
     // umask default (usually world-readable) and the log carries env
     // names, ARNs, and error bodies.

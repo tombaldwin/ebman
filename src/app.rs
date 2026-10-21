@@ -3258,6 +3258,12 @@ impl RegionClient {
     /// The region this client will actually talk to.
     #[cfg(test)]
     pub(crate) fn region_for_tests(&self) -> String {
+        self.region()
+    }
+
+    /// The region this client will actually talk to: what a spawned
+    /// task's log span names.
+    pub(crate) fn region(&self) -> String {
         match &self.remote {
             Some(Remote::Profile(_, region)) => region.clone(),
             Some(Remote::Account(_, spec)) => spec.region.clone().unwrap_or_default(),

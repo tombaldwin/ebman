@@ -55,10 +55,17 @@ impl App {
         let aws = self.aws.clone();
         let tx = self.msg_tx.clone();
         let gen = self.generation;
-        tokio::spawn(async move {
-            let result = op(aws).await.map_err(|e| flatten_err(op_name, e));
-            let _ = tx.send(into_msg(gen, result));
-        });
+        // What the task's log lines belong to (`flatten_err` logs the
+        // full error chain from inside it): the call, its region, and
+        // the generation a stale answer is dropped by.
+        let span = tracing::info_span!("aws", op = op_name, region = %self.context.region, gen);
+        tokio::spawn(tracing::Instrument::instrument(
+            async move {
+                let result = op(aws).await.map_err(|e| flatten_err(op_name, e));
+                let _ = tx.send(into_msg(gen, result));
+            },
+            span,
+        ));
     }
 
     /// `spawn_aws`, but against the region the row actually lives in.
@@ -80,13 +87,17 @@ impl App {
     {
         let tx = self.msg_tx.clone();
         let gen = self.generation;
-        tokio::spawn(async move {
-            let result = match client.resolve().await {
-                Ok(aws) => op(aws).await.map_err(|e| flatten_err(op_name, e)),
-                Err(e) => Err(flatten_err(op_name, e)),
-            };
-            let _ = tx.send(into_msg(gen, result));
-        });
+        let span = tracing::info_span!("aws", op = op_name, region = %client.region(), gen);
+        tokio::spawn(tracing::Instrument::instrument(
+            async move {
+                let result = match client.resolve().await {
+                    Ok(aws) => op(aws).await.map_err(|e| flatten_err(op_name, e)),
+                    Err(e) => Err(flatten_err(op_name, e)),
+                };
+                let _ = tx.send(into_msg(gen, result));
+            },
+            span,
+        ));
     }
 
     pub(crate) fn spawn_cost_fetch(&mut self) {
@@ -432,7 +443,7 @@ impl App {
             // Errors stay errors — a failed fetch must not be
             // indistinguishable from "no DLQ" (the pre-0.27 shape
             // silently blinded red-alerting on AccessDenied/throttle).
-            let results = fan_out(workers, |aws, (key, app)| async move {
+            let results = fan_out("worker queues", workers, |aws, (key, app)| async move {
                 aws.describe_worker_queues(&app, &key.name)
                     .await
                     .map(|q| q.dlq_stats.map(|s| s.visible))
@@ -474,7 +485,7 @@ impl App {
             })
             .collect();
         tokio::spawn(async move {
-            let results = fan_out(targets, |aws, _region| async move {
+            let results = fan_out("firing alarms", targets, |aws, _region| async move {
                 aws.list_firing_alarms()
                     .await
                     .map_err(|e| flatten_err("list_firing_alarms", e))
@@ -517,7 +528,7 @@ impl App {
             return;
         }
         tokio::spawn(async move {
-            let mut results: Vec<_> = fan_out(targets, |aws, key| async move {
+            let mut results: Vec<_> = fan_out("instance counts", targets, |aws, key| async move {
                 aws.fetch_env_instance_counts(&key.name)
                     .await
                     .map(Some)
@@ -1246,21 +1257,29 @@ impl App {
 /// target's own outcome: one target failing is that target's `Err`,
 /// never the batch's. The shape the three fleet polls share.
 async fn fan_out<K, T, F, Fut>(
+    poll: &'static str,
     targets: Vec<(K, RegionClient)>,
     op: F,
 ) -> Vec<(K, Result<T, String>)>
 where
-    K: Clone,
+    K: Clone + std::fmt::Debug,
     F: Fn(Arc<AwsClient>, K) -> Fut,
     Fut: std::future::Future<Output = Result<T, String>>,
 {
     let op = &op;
-    futures::future::join_all(targets.into_iter().map(|(key, client)| async move {
-        let outcome = match client.resolve().await {
-            Ok(aws) => op(aws, key.clone()).await,
-            Err(e) => Err(flatten_err("cached_client", e)),
-        };
-        (key, outcome)
+    futures::future::join_all(targets.into_iter().map(|(key, client)| {
+        // Each target's log lines say which poll, which target, where.
+        let span = tracing::info_span!("poll", poll, target = ?key, region = %client.region());
+        tracing::Instrument::instrument(
+            async move {
+                let outcome = match client.resolve().await {
+                    Ok(aws) => op(aws, key.clone()).await,
+                    Err(e) => Err(flatten_err("cached_client", e)),
+                };
+                (key, outcome)
+            },
+            span,
+        )
     }))
     .await
 }
