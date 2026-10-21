@@ -131,6 +131,10 @@ pub(crate) struct Environment {
     /// platform envs that don't report a solution stack. Drives the
     /// stale-platform comparison against `ListAvailableSolutionStacks`.
     pub solution_stack: String,
+    /// EB's platform version, e.g. `6.1.0`: the `v6.1.0` token of the
+    /// solution stack, or the last path segment of a platform ARN.
+    /// Empty when neither carries one. See [`platform_version`].
+    pub platform_version: String,
     pub tier: String, // "Web" / "Worker" / "?"
     pub cname: String,
     pub version_label: String,
@@ -266,6 +270,7 @@ pub(super) fn map_env(e: aws_sdk_elasticbeanstalk::types::EnvironmentDescription
             .map(|h| h.as_str().to_string())
             .unwrap_or_else(|| "-".into()),
         platform: platform_family(&raw_platform),
+        platform_version: platform_version(&raw_platform),
         solution_stack,
         tier,
         cname: e.cname.unwrap_or_default(),
@@ -740,6 +745,28 @@ pub(crate) fn platform_family(raw: &str) -> String {
         return after.trim().to_string();
     }
     raw.to_string()
+}
+
+/// The platform version in a solution stack name or platform ARN:
+/// `64bit Amazon Linux 2023 v6.1.0 running Node.js 20` → `6.1.0`,
+/// `arn:…:platform/Python 3.11 running on 64bit Amazon Linux 2023/4.3.2`
+/// → `4.3.2`. Empty when there is none, rather than a guess.
+pub(crate) fn platform_version(raw: &str) -> String {
+    if raw.starts_with("arn:") {
+        return raw
+            .rsplit_once('/')
+            .map(|(_, last)| last)
+            .filter(|v| {
+                !v.is_empty()
+                    && v.split('.')
+                        .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
+            })
+            .unwrap_or_default()
+            .to_string();
+    }
+    stack_family_version(raw)
+        .map(|(_, version)| version)
+        .unwrap_or_default()
 }
 
 pub(crate) fn normalize_tier(name: &str) -> String {

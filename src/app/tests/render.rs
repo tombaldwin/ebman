@@ -566,6 +566,21 @@ async fn the_anomaly_badge_is_ascii_at_its_call_site_too() {
 }
 
 #[tokio::test]
+async fn the_platform_column_shows_the_platform_version() {
+    let mut app = test_app();
+    let mut e = mk_env("api-prod", "poly", "Web", "Green");
+    e.platform = "Node.js 20".into();
+    e.platform_version = "6.1.0".into();
+    app.environments = vec![e];
+    app.rebuild_view();
+    let frame = render(&mut app, 200, 20);
+    assert!(
+        frame.contains("Node.js 20 6.1.0"),
+        "the version follows the family; got:\n{frame}"
+    );
+}
+
+#[tokio::test]
 async fn a_red_env_gets_a_red_status_pill_in_the_table() {
     // `status_alert()` has unit tests; nothing checked that the TABLE
     // uses its result. Forcing `StatusAlert::None` at the call site —

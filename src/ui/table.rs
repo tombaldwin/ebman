@@ -271,12 +271,15 @@ pub(crate) fn column_min_width(label: &str) -> u16 {
 /// The order is a judgement about what an operator needs at a glance
 /// when they have only 80 columns: which env (NAME), is it healthy
 /// (HEALTH/STATUS), what is deployed (VERSION), and how stale (AGE).
-/// TREND is a sparkline, CNAME is rarely read off the fleet view, and
-/// PLATFORM changes about once a year.
+/// TREND is a sparkline and CNAME is rarely read off the fleet view.
+/// TIER goes before PLATFORM: a worker's name and its DLQ marker
+/// usually say which it is, while the platform version is the answer
+/// to "is this env behind its siblings?" and has no other place on
+/// the fleet view.
 ///
 /// NAME, HEALTH, STATUS, VERSION and AGE are deliberately absent: they
 /// are never dropped.
-const DROP_ORDER: &[&str] = &["TREND", "CNAME", "PLATFORM", "INST", "TIER", "APPLICATION"];
+const DROP_ORDER: &[&str] = &["TREND", "CNAME", "TIER", "PLATFORM", "INST", "APPLICATION"];
 
 /// Drop optional columns until the remaining minimums fit `available`.
 ///
@@ -539,6 +542,18 @@ pub(crate) fn env_cell<'a>(label: &str, ctx: &CellCtx<'a>) -> Cell<'a> {
                 e.platform.as_str(),
                 Style::default().fg(name_colour),
             ));
+            // EB's platform version, muted: the family says what the
+            // env runs, the version says how current it is.
+            if !e.platform_version.is_empty() {
+                spans.push(Span::styled(
+                    format!(" {}", e.platform_version),
+                    Style::default().fg(if stale.is_some() {
+                        theme.health_yellow
+                    } else {
+                        theme.muted
+                    }),
+                ));
+            }
             if stale.is_some() {
                 spans.push(Span::styled(
                     format!(" {}", stale_glyph(theme.icons)),

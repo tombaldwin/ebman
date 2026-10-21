@@ -27,6 +27,7 @@ fn describe_env_dumps_known_fields() {
         health: "Green".into(),
         platform: "Java 17".into(),
         solution_stack: String::new(),
+        platform_version: String::new(),
         tier: "Web".into(),
         cname: "my-env.elb.amazonaws.com".into(),
         version_label: "v42".into(),

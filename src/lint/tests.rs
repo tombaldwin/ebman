@@ -13,6 +13,7 @@ fn mk_env(name: &str, tier: &str, health: &str) -> Environment {
         health: health.into(),
         platform: "Java 17".into(),
         solution_stack: String::new(),
+        platform_version: String::new(),
         tier: tier.into(),
         cname: format!("{name}.example.com"),
         version_label: "build-1".into(),
@@ -468,6 +469,7 @@ fn ebl007_fix_is_manual_because_cert_arn_is_operator_specific() {
 fn ebl008_fires_when_live_stack_differs_from_latest() {
     let env = Environment {
         solution_stack: "64bit Amazon Linux 2 v3.5.1 running Docker".into(),
+        platform_version: String::new(),
         ..mk_env("prod", "Web", "Green")
     };
     let opts: Vec<(String, String, String)> = vec![];
@@ -511,6 +513,7 @@ fn ebl008_skips_when_caller_says_no_newer() {
     // newer version exists → passes None → rule no-ops.
     let env = Environment {
         solution_stack: "64bit Amazon Linux 2 v3.6.0".into(),
+        platform_version: String::new(),
         ..mk_env("prod", "Web", "Green")
     };
     let opts: Vec<(String, String, String)> = vec![];

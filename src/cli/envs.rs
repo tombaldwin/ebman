@@ -99,6 +99,7 @@ mod envs_json_tests {
             health: "Yellow".into(),
             platform: "Java 17".into(),
             solution_stack: String::new(),
+            platform_version: String::new(),
             tier: "Worker".into(),
             cname: String::new(),
             version_label: "build-900".into(),

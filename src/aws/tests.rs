@@ -71,6 +71,51 @@ fn platform_family_from_arn() {
 }
 
 #[test]
+fn platform_version_from_stack_and_arn() {
+    assert_eq!(
+        platform_version("64bit Amazon Linux 2023 v6.1.0 running Node.js 20"),
+        "6.1.0"
+    );
+    assert_eq!(
+        platform_version(
+            "arn:aws:elasticbeanstalk:us-east-1::platform/Python 3.11 running on 64bit Amazon Linux 2023/4.3.2"
+        ),
+        "4.3.2"
+    );
+    // Nothing to find is empty, not a guess: no version token, an
+    // ARN whose last segment is not a version, and nothing at all.
+    assert_eq!(
+        platform_version("64bit Amazon Linux 2023 running Corretto 17"),
+        ""
+    );
+    assert_eq!(
+        platform_version("arn:aws:elasticbeanstalk:us-east-1::platform/custom-node"),
+        ""
+    );
+    assert_eq!(platform_version(""), "");
+}
+
+#[test]
+fn an_env_carries_its_platform_version_from_either_source() {
+    use aws_sdk_elasticbeanstalk::types::EnvironmentDescription;
+    let by_stack = map_env(
+        EnvironmentDescription::builder()
+            .solution_stack_name("64bit Amazon Linux 2023 v6.1.0 running Node.js 20")
+            .build(),
+    );
+    assert_eq!(by_stack.platform_version, "6.1.0");
+    // A custom-platform env reports only the ARN.
+    let by_arn = map_env(
+        EnvironmentDescription::builder()
+            .platform_arn(
+                "arn:aws:elasticbeanstalk:us-east-1::platform/Java 17 running on 64bit Amazon Linux 2/3.5.0",
+            )
+            .build(),
+    );
+    assert_eq!(by_arn.platform_version, "3.5.0");
+}
+
+#[test]
 fn platform_family_handles_empty_and_unknown() {
     assert_eq!(platform_family(""), "");
     assert_eq!(platform_family("just a string"), "just a string");
@@ -3228,6 +3273,7 @@ fn stamp_region_labels_every_row_with_the_resolved_region() {
             health: "Green".into(),
             platform: String::new(),
             solution_stack: String::new(),
+            platform_version: String::new(),
             tier: "WebServer".into(),
             cname: String::new(),
             version_label: String::new(),

@@ -681,6 +681,7 @@ mod tests {
             health: "Green".into(),
             platform: "Java 17".into(),
             solution_stack: String::new(),
+            platform_version: String::new(),
             tier: "Web".into(),
             cname: format!("{name}.example.com"),
             version_label: version_label.into(),

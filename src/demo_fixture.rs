@@ -69,6 +69,7 @@ pub(crate) fn envs() -> Vec<Environment> {
                 health: health.into(),
                 platform: "Node.js 20 running on 64bit Amazon Linux 2023".into(),
                 solution_stack: "64bit Amazon Linux 2023 v6.1.0 running Node.js 20".into(),
+                platform_version: "6.1.0".into(),
                 tier: tier.into(),
                 cname: format!("{name}.us-east-1.elasticbeanstalk.com"),
                 version_label: version.into(),
@@ -132,6 +133,7 @@ pub(crate) fn envs() -> Vec<Environment> {
         Environment {
             platform: "Go 1.4 running on 64bit Amazon Linux 2018.03".into(),
             solution_stack: "64bit Amazon Linux 2018.03 v2.7.0 running Go 1.4".into(),
+            platform_version: "2.7.0".into(),
             ..mk("ironwood", "Web", "Ready", "Grey", "build-1420", 25920)
         },
     ]

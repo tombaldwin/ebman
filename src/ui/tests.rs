@@ -675,6 +675,7 @@ fn summarize_group_omits_empty_buckets() {
             cname: "".into(),
             platform: "".into(),
             solution_stack: "".into(),
+            platform_version: String::new(),
             version_label: "".into(),
             updated: None,
             id: None,
@@ -705,6 +706,7 @@ fn summarize_group_shows_tier_split_when_both_present() {
             cname: "".into(),
             platform: "".into(),
             solution_stack: "".into(),
+            platform_version: String::new(),
             version_label: "".into(),
             updated: None,
             id: None,
@@ -1446,6 +1448,16 @@ fn dropping_sheds_the_least_useful_column_first_and_never_the_identifier() {
     let mut cols = full();
     let dropped = drop_columns_to_fit(&mut cols, 76);
     assert_eq!(dropped.first(), Some(&"TREND"), "got {dropped:?}");
+
+    // The platform version outlasts TIER: it has no other place on
+    // the fleet view.
+    let mut cols = full();
+    let dropped = drop_columns_to_fit(&mut cols, 20);
+    let at = |l: &str| dropped.iter().position(|d| *d == l);
+    assert!(
+        at("TIER").is_some() && at("TIER") < at("PLATFORM"),
+        "got {dropped:?}"
+    );
 
     // Absurdly narrow: it sheds everything it is allowed to, and the
     // columns that identify a row and its health are still there.
