@@ -335,16 +335,23 @@ impl App {
             return false;
         };
         self.config_seen = stamp;
-        // Dimensions decide which alarms are an env's, as the prefix
-        // does: a change empties the alarms fetched under the old ones.
-        if live.alarm_dimensions != self.cfg.alarm_dimensions {
-            self.cfg.alarm_dimensions = live.alarm_dimensions;
-            if let Some(d) = self.detail.as_mut() {
-                d.cw_alarms.reset();
-            }
-        }
+        self.set_alarm_dimensions(live.alarm_dimensions);
         self.set_app_tabs(live.app_tabs);
         true
+    }
+
+    /// Replace `alarm_dimensions`. They decide which alarms are an env's,
+    /// as the prefix does, so a change empties the alarms the Detail
+    /// view fetched under the old ones. The one writer: a reload and a
+    /// `:settings` save both come through here.
+    pub(crate) fn set_alarm_dimensions(&mut self, dims: Vec<String>) {
+        if dims == self.cfg.alarm_dimensions {
+            return;
+        }
+        self.cfg.alarm_dimensions = dims;
+        if let Some(d) = self.detail.as_mut() {
+            d.cw_alarms.reset();
+        }
     }
 
     /// Replace the app. config, and forget what the Detail view fetched

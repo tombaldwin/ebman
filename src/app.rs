@@ -2120,7 +2120,7 @@ impl App {
     /// Apply a saved [`Config`] to the running App. Mirrors the assignments
     /// in [`App::new`] for the slots that can change at runtime; fields not
     /// listed here only take effect on restart.
-    fn apply_config_live(&mut self, cfg: &Config) {
+    pub(crate) fn apply_config_live(&mut self, cfg: &Config) {
         // Theme + icons are stored on an `Arc<Theme>`; rebuild it from the
         // resolved values so renderers pick up the new palette/icon style
         // on the next draw.
@@ -2158,7 +2158,7 @@ impl App {
         self.extra_regions = cfg.extra_regions.clone();
         self.notify_bell = cfg.notify_bell;
         self.cfg.required_tags = cfg.required_tags.clone();
-        self.cfg.alarm_dimensions = cfg.alarm_dimensions.clone();
+        self.set_alarm_dimensions(cfg.alarm_dimensions.clone());
         // Theme swap invalidates the cached per-app colour assignments —
         // those store final `Color` values, not palette indices, so they'd
         // otherwise carry the old palette into the new theme's rendering.

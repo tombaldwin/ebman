@@ -3659,3 +3659,59 @@ mod lifecycle_model {
         }
     }
 }
+
+/// An older discovery run's late answer neither replaces what the newer
+/// run found nor fills the open form.
+#[tokio::test]
+async fn a_superseded_discovery_answer_changes_nothing() {
+    let mut app = test_app();
+    let key = app.discovery_key("api-prod");
+    let run = app
+        .caches
+        .app_tab_discovery
+        .discovering
+        .entry(key.clone())
+        .or_default();
+    let older = run.begin();
+    let newer = run.begin();
+    let found = |prefix: &str| {
+        let mut d = crate::app_discover::Discovered::default();
+        d.discovery.alarm_prefix = Some((prefix.into(), 1));
+        Box::new(d)
+    };
+    let answer = |ticket, prefix: &str| AppMsg::AppTabDiscovered {
+        gen: 0,
+        region: "us-east-1".into(),
+        env_name: "api-prod".into(),
+        ticket,
+        found: found(prefix),
+    };
+    app.handle_msg(answer(newer, "new-"));
+    app.handle_msg(answer(older, "old-"));
+    let kept = app.caches.app_tab_discovery.discovered.get(&key);
+    assert_eq!(
+        kept.and_then(|d| d.discovery.alarm_prefix.as_ref())
+            .map(|(p, _)| p.as_str()),
+        Some("new-")
+    );
+}
+
+/// A `:settings` save that changes `alarm_dimensions` drops the alarms
+/// the Detail view fetched under the old ones, as a reload does: both go
+/// through `set_alarm_dimensions`.
+#[tokio::test]
+async fn a_settings_change_to_alarm_dimensions_drops_the_old_alarms() {
+    let mut app = detail_on("api-prod");
+    app.detail
+        .as_mut()
+        .unwrap()
+        .cw_alarms
+        .settle_now(Ok(Vec::new()));
+    let cfg = crate::config::Config {
+        alarm_dimensions: vec!["EnvironmentName".into(), "Environment".into()],
+        ..crate::config::Config::default()
+    };
+    app.apply_config_live(&cfg);
+    assert_eq!(app.cfg.alarm_dimensions.len(), 2);
+    assert!(app.detail.as_ref().unwrap().cw_alarms.ready().is_none());
+}
