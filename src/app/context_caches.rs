@@ -45,7 +45,7 @@ pub(crate) struct ContextCaches {
     /// The last `HISTORY_CAP` health readings per env, for TREND.
     pub(crate) history: HashMap<EnvKey, VecDeque<String>>,
     pub(crate) newly_red: HashSet<EnvKey>,
-    /// Env names that appeared for the first time on the most recent
+    /// Envs (region and name) that appeared for the first time on the most recent
     /// refresh (weren't in `prev_health` last cycle). Used by the env
     /// table to render a transient `+` marker on the NAME cell so a new
     /// env doesn't scroll past unnoticed. Cleared on context switch +

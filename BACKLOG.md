@@ -51,6 +51,16 @@ Tier definitions:
   output is PLAN item 2's typed-report question, so it waits on that
   ruling.
 
+- [ ] **The Detail view's other fetches settle by ticket.** The Metrics
+  tab and the App tab do; `loading_events`, `loading_instances`,
+  `loading_queues`, `loading_tags` and `loading_env_vars` are still bare
+  flags, so two `^R`s in a row can land the older answer over the newer
+  and clear the loading state while the newer is out (the Metrics tab's
+  bug before 2026-10-21). Move each onto a `Fetch` ticket; if more of
+  them want "keep the last value on error", that belongs in `Fetch`
+  rather than in more `Fetch<()>`s. *Architecture re-review,
+  2026-10-21.*
+
 - [ ] **Writes carry the region they were aimed at** *(architecture — needs a design note; found 2026-10-21)*
 
   Every per-env client and audit line resolves its environment by
@@ -69,6 +79,16 @@ Tier definitions:
   and can show the other region's data. `env_regions` (name → last
   region seen, the fallback for a write whose row left the table) moves
   in the same pass; the fleet-view caches already moved to `EnvKey`.
+  Done so far: the ambiguous-name refusal counts every source the router
+  uses, a rollout (which names its regions) is exempt from it, and a
+  confirm modal records its row's region and refuses a dispatch that
+  resolves elsewhere. Still by name: batch writes, the auto-rollback,
+  `dlq_client`, `spawn_events`, `:alarms`, and the confirm modal's lint
+  fetch (`spawn_confirm_lint` fetches by name and caches by `EnvKey`);
+  and `costs`, `stale_platforms`, `multi_selected`, `watching_deploys`,
+  `armed_watchdogs`, `deploy_snapshots` are keyed by name. Anything that
+  stores an `EnvKey` outside `ContextCaches` must be cleared in
+  `apply_rebuild` itself: the key carries no account.
 
 - [ ] **Audit writers take a typed label, and the verb spelling guard
   goes.** `no_surface_spells_a_shared_verb_itself` (`src/verb.rs`) bans
@@ -91,21 +111,20 @@ Tier definitions:
   and `fetch_stale_platform_issues`'s branch warnings a third. A typed
   `CoverageGap { rule: Option<RuleId>, why }` rendered at each surface.
   *0.45 release review.*
-- [ ] **One map for the worker-queue poll.** `worker_dlq_depths`,
-  `worker_dlq_stale` and `worker_dlq_absent` track one fact in three
-  collections updated together by hand (`msg.rs`, the context-switch
-  clear). `HashMap<String, DlqState::{Depth(i64), Stale(i64), Absent}>`
-  makes the impossible combinations unrepresentable; lint already reads
-  them through one function (`tui_lint::worker_dlq`). Touches the alert
-  calc, the table chip and Detail, so its own change. *0.45 re-review.*
-  The same for the platform cache: `latest_stacks` and
+- [ ] **`PolledByEnv` as one map of states.** Since 2026-10-21 the
+  three fleet polls share `PolledByEnv<T>` (one reconcile, one prune,
+  keyed by region and name), but it still keeps a value map and two
+  sets (`stale`, `absent`) updated together; an enum per key
+  (`Value(T)`, `Stale(Option<T>)`, `Absent`) would make the combinations
+  explicit. *0.45 re-review, re-scoped 2026-10-21.*
+  The platform cache is still two fields for one fact: `latest_stacks` and
   `latest_stacks_error` are one fact in two fields, and the cache is the
   HOME region's only — lint now reports an env elsewhere as not
   evaluated, but a per-region cache would let EBL008 run for it.
 - [ ] **`src/app/tests/scan.rs` has outgrown its name and location**
   (~1,100 lines): source-scan primitives, git/packaging checks (account
   IDs, protected names) and the `write_gate` guard, under `app/tests/`
-  while `verb.rs`, `aws/tests.rs` and `cli` all use it. A crate-level
+  while `verb.rs`, `aws/tests/` and `cli` all use it. A crate-level
   test-support module split into `scan` and `packaging`. *0.45 release
   review.*
 - [ ] **The MCP undo buffer to its own file.** ~200 self-contained lines
@@ -190,7 +209,7 @@ Tier definitions:
 
 - [ ] **Eleven hand-rolled `read_dir` walks in guards bypass
   `scan::source_files`** (`app/tests/dispatch.rs` ×7, `refresh.rs`,
-  `aws/tests.rs`, `cli/mod.rs`). None is wrong today — each uses
+  `aws/tests/core.rs`, `cli/mod.rs`). None is wrong today — each uses
   `strip_line_comment` — so this is consolidation, not a fix, but it is
   the house rule. S.
 
@@ -542,7 +561,7 @@ Since extended to nineteen — `tf_managed_envs` (the IaC drift
   boundary, since two armed watchdogs rendered as one hides the second),
   `newly_red` and `newly_added` (marker on the right row and no other).
 
-`worker_dlq_stale` followed, making twenty — it marks a DLQ
+`worker_dlq_stale` (now `caches.worker_dlq`'s stale mark) followed, making twenty — it marks a DLQ
   depth as last-known rather than live, and the number reads identically
   either way, so the suffix carries the entire difference between "the
   queue drained" and "nothing was read".

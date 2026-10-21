@@ -745,8 +745,8 @@ impl App {
                 // stale value would render as current until the first
                 // refresh. One assignment, so none can be missed.
                 self.caches = ContextCaches::default();
-                // Covers every view-cache input this block clears —
-                // `environments` here and `latest_stacks` below.
+                // Covers every view-cache input this block clears:
+                // `environments` and `caches.latest_stacks`, above.
                 self.view.invalidate();
                 self.event_panel.events.clear();
                 self.event_panel.scroll = 0;
@@ -1213,10 +1213,6 @@ impl App {
                 // semantics again.
                 self.status_message_pinned = false;
                 self.restore_or_clamp_selection();
-                // Fan out DLQ depth checks for Worker-tier envs. Result
-                // lands as `AppMsg::WorkerQueueCheck` and updates the
-                // alert count + the in-row `⚠ DLQ:N` chip on the next
-                // draw.
                 // A hand edit to the alarm config reaches the fleet view
                 // on this refresh: the polls below are matched under it.
                 self.reload_config_and_refetch();
@@ -1224,10 +1220,14 @@ impl App {
                 // from the previous one cannot land on top of them.
                 self.caches.poll_round += 1;
                 let round = self.caches.poll_round;
+                // Fan out DLQ depth checks for Worker-tier envs. Result
+                // lands as `AppMsg::WorkerQueueCheck` and updates the
+                // alert count + the in-row `⚠ DLQ:N` chip on the next
+                // draw.
                 self.spawn_worker_queue_check(round);
                 // Same fan-out shape for the INST column: per-env
                 // `DescribeEnvironmentHealth` summarised down to
-                // `(healthy, total)`. Cache rebuilt from results in
+                // `(healthy, total)`, reconciled per env in
                 // `handle_env_instance_counts`.
                 self.spawn_env_instance_counts(round);
                 // Alarms firing per env, one `DescribeAlarms` per

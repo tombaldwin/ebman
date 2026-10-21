@@ -117,7 +117,7 @@ automatically, and reading a stale one trips a `debug_assert` (and logs once
 in release). Sort is private too: `App::set_sort` is the only way to change
 it and it always re-sorts, so the header arrow can't disagree with the rows.
 The inputs `ViewState` doesn't own — `environments`, `aliases`,
-`latest_stacks`, the theme palette — still need an explicit
+`caches.latest_stacks`, the theme palette — still need an explicit
 `view.invalidate()` before `rebuild_view()`.
 
 One trap worth naming: `filter_mut()` marks the cache stale on the *borrow*,

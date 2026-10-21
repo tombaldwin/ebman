@@ -99,6 +99,9 @@ impl<T> PolledByEnv<T> {
 
     /// Apply one env's outcome: `Ok(Some)` a value, `Ok(None)` nothing
     /// to have, `Err` a failed check that keeps the last known value.
+    /// A failure after `Ok(None)` leaves the key both `absent` and
+    /// `stale`, on purpose: the last good check found nothing, and that
+    /// is now unverified. Lint reads both (`tui_lint::worker_dlq`).
     pub(crate) fn reconcile<E>(&mut self, key: EnvKey, outcome: Result<Option<T>, E>) {
         match outcome {
             Ok(Some(value)) => {

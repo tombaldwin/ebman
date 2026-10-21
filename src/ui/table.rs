@@ -430,8 +430,8 @@ pub(crate) fn column_widths(columns: &[(&'static str, SortKey)], available: u16)
 /// Per-row VALUES, not `&App`.
 ///
 /// Six of the arms did a map lookup keyed by this row's env
-/// (`worker_dlq_depths`, `env_instance_counts`, `history`,
-/// `newly_red`, `stale_platforms`, `costs`). Holding `&App` to reach
+/// (`caches.worker_dlq`, `caches.env_instance_counts`, `caches.history`,
+/// `caches.newly_red`, `stale_platforms`, `costs`). Holding `&App` to reach
 /// them made the rows borrow the whole struct, which defeats the
 /// field-level split the borrow checker was using to let
 /// `render_stateful_widget` take `&mut app.table_state` afterwards.

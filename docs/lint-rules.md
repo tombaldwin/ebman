@@ -157,7 +157,7 @@ Why it matters: headline failure mode for SQS-driven workers — consumer crashe
 
 Fix: operator triages via `aws sqs receive-message` + worker logs before redriving / purging / scaling. `--fix` can't decide which.
 
-TUI-live: 0.18+ (from `App.worker_dlq_depths`). CLI-unwired.
+TUI-live: 0.18+ (from the fleet view's per-env DLQ poll, `App.caches.worker_dlq`). CLI-unwired.
 
 ### EBL012 — Green-but-0-instances divergence
 
