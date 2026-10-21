@@ -304,7 +304,7 @@ impl App {
         // (read-only / :freeze-deploys / incident / safety pins)
         // applies before we even start planning. Re-checked at every
         // per-region dispatch in `spawn_rollout_dispatch`.
-        if self.deny_write(&env_name, "rollout") {
+        if self.deny_write_in_region(&env_name, "rollout") {
             return;
         }
 

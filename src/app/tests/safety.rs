@@ -1953,3 +1953,49 @@ async fn a_name_once_seen_in_two_regions_stays_ambiguous_when_a_listing_drops_on
         "Detail is on eu-west-2's"
     );
 }
+
+#[tokio::test]
+async fn a_rollout_names_its_regions_so_a_name_in_two_is_not_refused_but_a_pin_still_is() {
+    // A rollout builds a client per region it was given: the fleet with
+    // `api-prod` in two regions is the one it exists for. Its gate is
+    // every rung but the ambiguous-name one.
+    let mut app = app_with_api_prod_in_two_regions();
+    assert!(
+        app.deny_write("api-prod", "restart"),
+        "routed by name: refused"
+    );
+    app.error_message = None;
+    assert!(
+        !app.deny_write_in_region("api-prod", "rollout"),
+        "{:?}",
+        app.error_message
+    );
+    app.cfg.safety_envs.insert("api-prod".into(), true);
+    assert!(
+        app.deny_write_in_region("api-prod", "rollout"),
+        "a pin still refuses"
+    );
+    app.cfg.safety_envs.clear();
+    app.read_only = true;
+    assert!(
+        app.deny_write_in_region("api-prod", "rollout"),
+        "read-only still refuses"
+    );
+}
+
+/// Both rollout gates are the region-explicit one: planning in
+/// `:rollout` and each per-region dispatch.
+#[test]
+fn both_rollout_gates_skip_only_the_ambiguous_name_rung() {
+    for (file, src) in [
+        ("cmd_action.rs", include_str!("../cmd_action.rs")),
+        ("spawn_rollout.rs", include_str!("../spawn_rollout.rs")),
+    ] {
+        let code = super::scan::statements_of(src).join("\n");
+        assert!(
+            code.contains("deny_write_in_region(&env_name, \"rollout\")")
+                && !code.contains("deny_write(&env_name, \"rollout\")"),
+            "{file}"
+        );
+    }
+}

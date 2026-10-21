@@ -110,6 +110,28 @@ impl App {
     /// under the toast phrase is invisible to a filter that finds the
     /// dispatch.
     pub(crate) fn deny_write_as(&mut self, env_name: &str, verb: &str, audit_action: &str) -> bool {
+        let refusal = self.refusal_for(env_name);
+        self.deny_with(env_name, verb, audit_action, refusal)
+    }
+
+    /// [`deny_write`](Self::deny_write) for a write that names its region
+    /// explicitly rather than routing by name: a `:rollout`, which builds
+    /// a client per region it was given. The ambiguous-name rung is about
+    /// routing by name, so it does not apply; every other rung does.
+    /// Refusing a rollout because its env exists in two regions blocked
+    /// exactly the fleet a cross-region rollout is for.
+    pub(crate) fn deny_write_in_region(&mut self, env_name: &str, verb: &str) -> bool {
+        let refusal = self.gate_refusal(env_name);
+        self.deny_with(env_name, verb, refusal_action_label(verb), refusal)
+    }
+
+    fn deny_with(
+        &mut self,
+        env_name: &str,
+        verb: &str,
+        audit_action: &str,
+        refusal: Option<crate::write_gate::Refusal>,
+    ) -> bool {
         // `--demo` mode refuses writes outright (see spawn_action's
         // matching guard for the rationale — synthetic fleet, fake
         // AwsClient, real audit log).
@@ -130,7 +152,7 @@ impl App {
             ));
             return true;
         }
-        let Some(refusal) = self.refusal_for(env_name) else {
+        let Some(refusal) = refusal else {
             return false;
         };
         // Record the attempt. Until this landed a blocked write left no
@@ -226,6 +248,25 @@ impl App {
     /// *recorded* as well as shown, and the audit log needs the rule
     /// name — which is precisely what rendering throws away.
     pub(crate) fn refusal_for(&self, env_name: &str) -> Option<crate::write_gate::Refusal> {
+        self.gate_refusal(env_name)
+            // Then the TUI's own rung. Every write reaches its environment
+            // by NAME (`client_for_env` → `region_for_name`, first match),
+            // so under `:region all` with `api-prod` in two regions a
+            // restart, a deploy or an unattended auto-rollback on one could
+            // land on the other. Refused until writes carry the region they
+            // were aimed at.
+            .or_else(|| {
+                let regions = self.regions_named(env_name);
+                (regions.len() > 1).then(|| crate::write_gate::Refusal::AmbiguousEnv {
+                    env: env_name.to_string(),
+                    regions,
+                })
+            })
+    }
+
+    /// The shared gate (`write_gate::decide`), without the TUI's
+    /// ambiguous-name rung: for a write that names its region.
+    fn gate_refusal(&self, env_name: &str) -> Option<crate::write_gate::Refusal> {
         // The DECISION is `write_gate::decide`, shared with the CLI and
         // MCP paths. The WORDING below is not shared and should not be:
         // a toast can afford the freeze age and the `:incident END`
@@ -243,19 +284,6 @@ impl App {
             frozen: self.deploy_freeze.is_some(),
             safety_envs: &self.cfg.safety_envs,
             safety_accounts: &self.cfg.safety_accounts,
-        })
-        // Then the TUI's own rung. Every write reaches its environment by
-        // NAME (`client_for_env` → `region_for_name`, first match), so
-        // under `:region all` with `api-prod` in two regions a restart,
-        // a deploy or an unattended auto-rollback on one could land on
-        // the other. Refused until writes carry the region they were
-        // aimed at.
-        .or_else(|| {
-            let regions = self.regions_named(env_name);
-            (regions.len() > 1).then(|| crate::write_gate::Refusal::AmbiguousEnv {
-                env: env_name.to_string(),
-                regions,
-            })
         })
     }
 
