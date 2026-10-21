@@ -19,10 +19,21 @@ use std::collections::{HashMap, HashSet};
 /// No account: every per-env cache is emptied on a profile or account
 /// switch (`apply_rebuild`), so one account's envs never share a map
 /// with another's.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+// `Hash` by hand, not derived: the derive crashes the nightly the
+// candor lint is pinned to (internal compiler error "missing value for
+// assoc item in impl" at this derive, on Linux only, 2026-10-21). Hashes
+// exactly what the derive would.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct EnvKey {
     pub region: String,
     pub name: String,
+}
+
+impl std::hash::Hash for EnvKey {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.region.hash(state);
+        self.name.hash(state);
+    }
 }
 
 impl EnvKey {
