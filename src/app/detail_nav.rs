@@ -495,9 +495,10 @@ impl App {
         // spawn_* methods which take `&mut self`.
         let _ = detail;
         // Before anything reads app. config (the App tab's fetches, every
-        // tab's alarm match), and only when a fetch is about to start:
-        // swapping config under one still in flight would show its
-        // result beside config it was not fetched for.
+        // tab's alarm match), and past the in-flight guard: a reload
+        // resets the fetches the edit changed (`set_app_tabs`), and a
+        // refresh the guard then skipped would start none to replace
+        // them, leaving the tab blank until the next one.
         self.reload_app_tabs_from_disk();
         match tab {
             // Health tab is a rollup — refresh events (for the recent-

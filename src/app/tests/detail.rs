@@ -2531,10 +2531,10 @@ fn own_config_file(app: &mut App, test: &str, text: &str) -> std::path::PathBuf 
     path
 }
 
-/// Hand edits reach the App tab on its refresh, but not under a fetch
-/// still in flight (its result would land beside config it was not
-/// fetched for); and `:alarms` and `:why`, which use `alarm_prefix`,
-/// read them too.
+/// Hand edits reach the App tab on its refresh, but not on one the
+/// in-flight guard skips (the reload would reset that fetch and nothing
+/// would replace it); and `:alarms` and `:why`, which use
+/// `alarm_prefix`, read them too.
 #[tokio::test]
 async fn the_app_tab_refresh_re_reads_its_config() {
     let mut app = detail_on("api-prod");
