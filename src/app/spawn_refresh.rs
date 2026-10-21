@@ -118,7 +118,7 @@ impl App {
 
     pub(crate) fn spawn_alarms_fetch(&mut self, env_name: String) {
         // `alarm_prefix` may have been edited by hand since.
-        self.reload_app_tabs_and_refetch();
+        self.reload_config_and_refetch();
         // The fetch's env name lives on the Overlay::Alarms variant so a late
         // result for a different env can be dropped at the handler. The body
         // is initially a placeholder until the result arrives.
@@ -1224,6 +1224,9 @@ impl App {
                 // lands as `AppMsg::WorkerQueueCheck` and updates the
                 // alert count + the in-row `⚠ DLQ:N` chip on the next
                 // draw.
+                // A hand edit to the alarm config reaches the fleet view
+                // on this refresh: the polls below are matched under it.
+                self.reload_config_and_refetch();
                 // One round for this refresh's polls, so a slow answer
                 // from the previous one cannot land on top of them.
                 self.poll_round += 1;

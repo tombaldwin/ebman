@@ -795,14 +795,37 @@ pub(crate) fn save(path: &std::path::Path, cfg: &Config) -> std::io::Result<()> 
     crate::util::write_atomic(path, &body)
 }
 
-/// The `app.` config a read of the config file gives: what it parses
-/// to; none when there is no file; `None` (keep what you have, and try
-/// again later) when it cannot be read. The TUI's reload and the MCP
-/// server's per-call read both decide by this.
-pub(crate) fn app_tabs_from_read(read: std::io::Result<String>) -> Option<crate::app_tab::AppTabs> {
+/// The part of the config that applies without a restart: what decides
+/// which metrics and alarms belong to an env. The TUI re-reads it when
+/// the file changes and the MCP server on every call, so a hand edit to
+/// either half lands everywhere at once. `alarm_dimensions` used to be
+/// read once at startup beside `app.` lines read live, so an edit to it
+/// matched alarms by the old dimensions and the new prefix.
+#[derive(Clone, Debug)]
+pub(crate) struct LiveConfig {
+    pub app_tabs: crate::app_tab::AppTabs,
+    pub alarm_dimensions: Vec<String>,
+}
+
+impl LiveConfig {
+    pub(crate) fn of(cfg: &Config) -> Self {
+        Self {
+            app_tabs: cfg.app_tabs.clone(),
+            alarm_dimensions: cfg.alarm_dimensions.clone(),
+        }
+    }
+}
+
+/// The live config a read of the config file gives: what it parses to;
+/// the defaults when there is no file; `None` (keep what you have, and
+/// try again later) when it cannot be read. The TUI's reload and the
+/// MCP server's per-call read both decide by this.
+pub(crate) fn live_config_from_read(read: std::io::Result<String>) -> Option<LiveConfig> {
     match read {
-        Ok(text) => Some(parse(&text).app_tabs),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(Default::default()),
+        Ok(text) => Some(LiveConfig::of(&parse(&text))),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            Some(LiveConfig::of(&Config::default()))
+        }
         Err(_) => None,
     }
 }
@@ -1146,7 +1169,7 @@ mod tests {
     /// the TUI's reload and the MCP server alike.
     #[test]
     fn a_read_of_the_config_file_gives_its_app_lines_none_or_keep() {
-        let read = |r| app_tabs_from_read(r).map(|t| t.envs.len());
+        let read = |r| live_config_from_read(r).map(|t| t.app_tabs.envs.len());
         assert_eq!(read(Ok("app.e.namespace = \"N\"\n".into())), Some(1));
         let err = |kind| Err(std::io::Error::from(kind));
         assert_eq!(

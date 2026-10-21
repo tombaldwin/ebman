@@ -23,6 +23,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   `firing_alarms`: the names, or `null` when the check failed. A
   failed check leaves the listing and its exit status alone, with a
   warning on stderr.
+  A hand edit to `alarm_prefix` or `alarm_dimensions` reaches the fleet
+  view on the next refresh, and `alarm_dimensions` now applies without
+  a restart everywhere, MCP included.
 - **The PLATFORM column shows EB's platform version** after the
   family (`Node.js 20 6.1.0`), from the solution stack or a custom
   platform's ARN. On a narrow terminal it now outlasts TIER. `ebman

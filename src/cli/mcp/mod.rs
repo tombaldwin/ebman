@@ -970,21 +970,22 @@ impl Server {
         s
     }
 
-    /// The `app.` config as the file has it now; with no file, none;
-    /// the startup copy when it cannot be read, or when this server
-    /// reads no file (demo, tests).
-    pub(crate) fn app_tabs(&self) -> crate::app_tab::AppTabs {
+    /// The live config (`app.` lines and `alarm_dimensions`) as the file
+    /// has it now; with no file, the defaults; the startup copy when it
+    /// cannot be read, or when this server reads no file (demo, tests).
+    /// Read once per call, so a call matches by one version of both.
+    pub(crate) fn live_config(&self) -> crate::config::LiveConfig {
+        let startup = || crate::config::LiveConfig::of(&self.safety_cfg);
         let Some(path) = &self.config_file else {
-            return self.safety_cfg.app_tabs.clone();
+            return startup();
         };
-        crate::config::app_tabs_from_read(std::fs::read_to_string(path))
-            .unwrap_or_else(|| self.safety_cfg.app_tabs.clone())
+        crate::config::live_config_from_read(std::fs::read_to_string(path)).unwrap_or_else(startup)
     }
 
-    /// Read the `app.` lines from `path` on each call, as a real server
+    /// Read the live config from `path` on each call, as a real server
     /// reads `config.toml`.
     #[cfg(test)]
-    pub(crate) fn reading_app_tabs_from(mut self, path: &std::path::Path) -> Self {
+    pub(crate) fn reading_config_from(mut self, path: &std::path::Path) -> Self {
         self.config_file = Some(path.to_path_buf());
         self
     }

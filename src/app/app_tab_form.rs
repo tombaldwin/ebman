@@ -357,7 +357,7 @@ impl App {
         // Built from the file as it is now: a hand edit since the last
         // refresh would otherwise be missing from the form, and saving
         // the form replaces the env's lines on disk.
-        self.reload_app_tabs_and_refetch();
+        self.reload_config_and_refetch();
         let form = crate::form::Form {
             title: format!("App tab: {env}"),
             fields: fields(self.cfg.app_tabs.envs.get(&env)),

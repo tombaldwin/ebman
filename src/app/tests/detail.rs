@@ -2465,7 +2465,7 @@ async fn a_partial_metrics_result_draws_and_reports_its_failure() {
 #[tokio::test]
 async fn app_lines_are_re_read_when_the_file_changed() {
     let mut app = test_app();
-    assert!(!app.reload_app_tabs_if_changed(), "no config file");
+    assert!(!app.reload_config_if_changed(), "no config file");
     assert!(app.cfg.app_tabs.envs.is_empty());
 
     let path = own_config_file(&mut app, "re-read", "app.e.namespace = \"First\"\n");
@@ -2476,13 +2476,13 @@ async fn app_lines_are_re_read_when_the_file_changed() {
             .get("e")
             .and_then(|s| s.namespace.clone())
     };
-    assert!(app.reload_app_tabs_if_changed(), "first read");
+    assert!(app.reload_config_if_changed(), "first read");
     assert_eq!(namespace(&app).as_deref(), Some("First"));
-    assert!(!app.reload_app_tabs_if_changed(), "unchanged");
+    assert!(!app.reload_config_if_changed(), "unchanged");
 
     // A different size: an edit even within the same mtime tick.
     std::fs::write(&path, "app.e.namespace = \"Edited\"\n").unwrap();
-    assert!(app.reload_app_tabs_if_changed(), "changed");
+    assert!(app.reload_config_if_changed(), "changed");
     assert_eq!(namespace(&app).as_deref(), Some("Edited"));
     assert_eq!(app.config_seen, crate::config::stamp_of(&path));
 
@@ -2491,25 +2491,25 @@ async fn app_lines_are_re_read_when_the_file_changed() {
     std::fs::remove_file(&path).unwrap();
     std::fs::create_dir(&path).unwrap();
     let seen = app.config_seen;
-    assert!(!app.reload_app_tabs_if_changed());
+    assert!(!app.reload_config_if_changed());
     assert_eq!(namespace(&app).as_deref(), Some("Edited"));
     assert_eq!(app.config_seen, seen, "a failed read records nothing");
 
     // Deleted: nothing configured.
     std::fs::remove_dir(&path).unwrap();
-    assert!(app.reload_app_tabs_if_changed());
+    assert!(app.reload_config_if_changed());
     assert!(app.cfg.app_tabs.envs.is_empty());
 
     // An edit to the env on screen drops its rows fetched under the old
     // config (`set_app_tabs`), rather than leaving them beside the new.
     let mut app = detail_on("e");
     let path = own_config_file(&mut app, "re-read-detail", "app.e.namespace = \"First\"\n");
-    app.reload_app_tabs_if_changed();
+    app.reload_config_if_changed();
     let d = app.detail.as_mut().unwrap();
     let t = d.app_tab.metrics.begin();
     d.app_tab.metrics.settle_ticket(t, Ok(Default::default()));
     std::fs::write(&path, "app.e.namespace = \"Edited\"\n").unwrap();
-    assert!(app.reload_app_tabs_if_changed());
+    assert!(app.reload_config_if_changed());
     assert!(app
         .detail
         .as_ref()
@@ -3160,7 +3160,7 @@ async fn a_prefix_only_save_under_a_fetch_in_flight_refetches_the_alarms() {
     let base = "app.api-prod.namespace = \"Shop\"\n";
     let path = own_config_file(&mut app, "prefix-only-save", base);
     app.detail.as_mut().unwrap().tab_idx = 1;
-    app.reload_app_tabs_if_changed();
+    app.reload_config_if_changed();
     press(&mut app, KeyCode::Char('e'), KeyModifiers::NONE);
     while let Ok(msg) = app.msg_rx.try_recv() {
         app.handle_msg(msg);
@@ -3332,4 +3332,68 @@ async fn settings_save_to_the_apps_config_file() {
         "{:?}",
         app.error_message
     );
+}
+
+/// A hand edit to the alarm config reaches the fleet view on the next
+/// refresh, without opening an env: the refresh re-reads it before its
+/// polls are matched. Both halves: the prefix and the dimensions.
+#[tokio::test]
+async fn a_fleet_refresh_re_reads_the_alarm_config() {
+    let mut app = test_app();
+    let path = own_config_file(&mut app, "fleet-reload", "");
+    app.reload_config_if_changed();
+    std::fs::write(
+        &path,
+        "app.shop-prod.alarm_prefix = \"shop-prod-\"\n\
+         alarm_dimensions = \"Environment,-EnvironmentName\"\n",
+    )
+    .unwrap();
+    app.apply_refresh(
+        app.fanout_epoch,
+        Ok(vec![mk_env("shop-prod", "poly", "Web", "Green")]),
+        Vec::new(),
+    );
+    let alarm = |name: &str, dim: &str| crate::aws::FiringAlarm {
+        name: name.into(),
+        dimensions: vec![(dim.into(), "shop-prod".into())],
+    };
+    app.handle_msg(AppMsg::FiringAlarms {
+        gen: app.generation,
+        round: app.poll_round,
+        results: vec![(
+            "us-east-1".into(),
+            Ok(vec![
+                alarm("shop-prod-db", "DBInstanceIdentifier"),
+                alarm("by-own-spelling", "Environment"),
+                alarm("by-default-spelling", "EnvironmentName"),
+            ]),
+        )],
+    });
+    assert_eq!(
+        app.firing_alarms.get(&home_key("shop-prod")),
+        Some(&vec![
+            "shop-prod-db".to_string(),
+            "by-own-spelling".to_string()
+        ]),
+        "matched by the edited prefix and the edited dimensions"
+    );
+}
+
+/// An edit to `alarm_dimensions` changes which alarms are an env's, so
+/// the alarms the Detail view fetched under the old ones are dropped.
+#[tokio::test]
+async fn an_alarm_dimensions_edit_drops_the_alarms_fetched_under_the_old_ones() {
+    let mut app = detail_on("api-prod");
+    let path = own_config_file(&mut app, "dims-reload", "");
+    app.reload_config_if_changed();
+    let d = app.detail.as_mut().unwrap();
+    let t = d.cw_alarms.begin();
+    d.cw_alarms.settle_ticket(t, Ok(Vec::new()));
+    std::fs::write(&path, "alarm_dimensions = \"Environment\"\n").unwrap();
+    assert!(app.reload_config_if_changed());
+    assert_eq!(
+        app.cfg.alarm_dimensions,
+        vec!["EnvironmentName".to_string(), "Environment".to_string()]
+    );
+    assert!(app.detail.as_ref().unwrap().cw_alarms.ready().is_none());
 }

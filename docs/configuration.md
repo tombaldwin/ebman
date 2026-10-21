@@ -52,7 +52,8 @@ required_tags = "Owner,Project"
 # carry an `EnvironmentName` dimension of their own, use
 # `alarm_dimensions = "MyDim,-EnvironmentName"` to stop ebman claiming
 # them. Removing every name would match nothing at all, so an
-# all-removals list falls back to `EnvironmentName`.
+# all-removals list falls back to `EnvironmentName`. Edits apply without
+# a restart, as the app. lines below do.
 # alarm_dimensions = "Environment"
 # alarm_dimensions = "MyDim,-EnvironmentName"
 
@@ -119,8 +120,9 @@ safety.accounts.prod.read_only = true
 # backslash is written once. A line that cannot be applied is reported
 # on the App tab rather than skipped, and is kept on save. Edits apply
 # without a restart: these lines are re-read whenever config.toml has
-# changed and something is about to use them (any Detail tab's refresh,
-# the App tab's editor, :alarms, :why).
+# changed and something is about to use them (every fleet refresh, any
+# Detail tab's refresh, the App tab's editor, :alarms, :why; every MCP
+# call).
 #
 # An env with no app. lines needs none of this to start: its App tab
 # looks for what the env uses, lists what it found, and draws the

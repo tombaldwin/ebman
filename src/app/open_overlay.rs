@@ -12,7 +12,7 @@ impl App {
     /// own `AppMsg::WhyRed*` variant gated on `session_id`.
     pub(crate) fn open_why_red(&mut self, env_name: String, app_name: String) {
         // `alarm_prefix` may have been edited by hand since.
-        self.reload_app_tabs_and_refetch();
+        self.reload_config_and_refetch();
         self.why_red_session = self.why_red_session.wrapping_add(1);
         let session_id = self.why_red_session;
         // Tier captured up front so the renderer can hide the queue

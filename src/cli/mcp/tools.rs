@@ -1513,6 +1513,9 @@ impl Server {
         }
 
         let client = self.client(args).await?;
+        // One read, so the alarms are matched by one version of the
+        // prefix and the dimensions.
+        let live = self.live_config();
         let mut errors: Vec<(String, String)> = Vec::new();
         // Each section records its own failure rather than aborting the
         // bundle: five good sections and one error is a far more useful
@@ -1535,8 +1538,8 @@ impl Server {
                 .list_alarms_for_env(
                     &env_name,
                     &crate::app_tab::AlarmMatch::for_env(
-                        &self.safety_cfg.alarm_dimensions,
-                        &self.app_tabs(),
+                        &live.alarm_dimensions,
+                        &live.app_tabs,
                         &env_name,
                         envs.iter().map(|e| e.name.as_str()),
                     ),
@@ -1793,8 +1796,6 @@ impl Server {
 
     /// The env list with each env's firing alarms. A failed alarm
     /// check leaves the list standing with `firing_alarms: null`.
-    /// The env list with each env's firing alarms. A failed alarm
-    /// check leaves the list standing with `firing_alarms: null`.
     async fn tool_list_environments(&self, args: &Value) -> Result<String, String> {
         let (envs, firing) = match self.backend {
             Backend::Demo => (demo_fixture::envs(), Some(demo_fixture::firing_alarms())),
@@ -1806,11 +1807,12 @@ impl Server {
                     .list_environments()
                     .await
                     .map_err(|e| tool_error(&profile, "list_environments", &e.to_string()))?;
+                let live = self.live_config();
                 let firing = match crate::cli::envs::fetch_firing_by_env(
                     &client,
                     &envs,
-                    &self.safety_cfg.alarm_dimensions,
-                    &self.app_tabs(),
+                    &live.alarm_dimensions,
+                    &live.app_tabs,
                 )
                 .await
                 {

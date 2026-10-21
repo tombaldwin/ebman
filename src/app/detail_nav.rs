@@ -314,12 +314,14 @@ impl App {
         }
     }
 
-    /// Re-read the `app.` lines when the config file changed since they
-    /// were last read, so a hand edit shows on the next App tab refresh
-    /// rather than after a restart. Called wherever app. config is about
-    /// to be used: any Detail refresh, the App tab's editor, `:alarms`,
+    /// Re-read the live config (`app.` lines and `alarm_dimensions`,
+    /// [`crate::config::LiveConfig`]) when the config file changed since
+    /// it was last read, so a hand edit applies without a restart.
+    /// Called on every fleet refresh, which covers the table's alarm
+    /// marks, and wherever the config is about to be used between
+    /// refreshes: any Detail refresh, the App tab's editor, `:alarms`,
     /// `:why`. Returns whether anything was re-read.
-    pub(super) fn reload_app_tabs_if_changed(&mut self) -> bool {
+    pub(crate) fn reload_config_if_changed(&mut self) -> bool {
         let Some(path) = self.config_file.clone() else {
             return false;
         };
@@ -328,11 +330,20 @@ impl App {
             return false;
         }
         // Unreadable: keep what we have, and try again next time.
-        let Some(tabs) = crate::config::app_tabs_from_read(std::fs::read_to_string(&path)) else {
+        let Some(live) = crate::config::live_config_from_read(std::fs::read_to_string(&path))
+        else {
             return false;
         };
         self.config_seen = stamp;
-        self.set_app_tabs(tabs);
+        // Dimensions decide which alarms are an env's, as the prefix
+        // does: a change empties the alarms fetched under the old ones.
+        if live.alarm_dimensions != self.cfg.alarm_dimensions {
+            self.cfg.alarm_dimensions = live.alarm_dimensions;
+            if let Some(d) = self.detail.as_mut() {
+                d.cw_alarms.reset();
+            }
+        }
+        self.set_app_tabs(live.app_tabs);
         true
     }
 
@@ -380,12 +391,12 @@ impl App {
         }
     }
 
-    /// [`reload_app_tabs_if_changed`](Self::reload_app_tabs_if_changed)
+    /// [`reload_config_if_changed`](Self::reload_config_if_changed)
     /// outside a Detail refresh (the editor, `:alarms`, `:why`): what the
     /// reload emptied on the tab on screen is fetched again. A refresh
     /// fetches it anyway.
-    pub(super) fn reload_app_tabs_and_refetch(&mut self) {
-        self.reload_app_tabs_if_changed();
+    pub(super) fn reload_config_and_refetch(&mut self) {
+        self.reload_config_if_changed();
         self.refetch_what_an_edit_emptied();
     }
 
@@ -488,7 +499,7 @@ impl App {
         // resets the fetches the edit changed (`set_app_tabs`), and a
         // refresh the guard then skipped would start none to replace
         // them, leaving the tab blank until the next one.
-        self.reload_app_tabs_if_changed();
+        self.reload_config_if_changed();
         match tab {
             // Health tab is a rollup — refresh events (for the recent-
             // events list) and queues (for worker DLQ depth shown

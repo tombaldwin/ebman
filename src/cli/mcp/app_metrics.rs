@@ -41,7 +41,8 @@ impl Server {
             .get("top_errors")
             .and_then(Value::as_bool)
             .unwrap_or(false);
-        let tabs = &self.app_tabs();
+        let live = self.live_config();
+        let tabs = &live.app_tabs;
         let spec = tabs.envs.get(&env).cloned();
         let config_errors: Vec<String> = tabs.errors_for(&env).map(str::to_string).collect();
         let mut errors: Vec<(String, String)> = Vec::new();
@@ -107,7 +108,7 @@ impl Server {
                     Vec::new()
                 };
                 let matching = crate::app_tab::AlarmMatch::for_env(
-                    &self.safety_cfg.alarm_dimensions,
+                    &live.alarm_dimensions,
                     tabs,
                     &env,
                     fleet.iter().map(String::as_str),
@@ -440,6 +441,20 @@ mod tests {
                         .state_value(StateValue::Alarm)
                         .build(),
                 )
+                // The env's only under the `alarm_dimensions` a file
+                // edited after start adds.
+                .metric_alarms(
+                    MetricAlarm::builder()
+                        .alarm_name("own-spelling")
+                        .state_value(StateValue::Alarm)
+                        .dimensions(
+                            Dimension::builder()
+                                .name("Environment")
+                                .value("api-prod")
+                                .build(),
+                        )
+                        .build(),
+                )
                 .build()
         });
         // The fleet, for the prefix: the worker's alarms are its own.
@@ -513,6 +528,37 @@ mod tests {
         assert_eq!(v["instances"], json!([]));
         assert_eq!(v["top_errors"], Value::Null);
         assert_eq!(start.num_calls(), 0, "no Insights query unless asked");
+
+        // `alarm_dimensions` edited while the server runs: the alarms are
+        // matched by what the file has now, with the same read's prefix.
+        let dir = std::env::temp_dir().join(format!(
+            "ebman-test-{}-mcp-app-metrics-dims",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(
+            &path,
+            "app.api-prod.namespace = \"N\"\n\
+             app.api-prod.metric.users = \"users|Sum\"\n\
+             app.api-prod.alarm_prefix = \"api-prod-\"\n\
+             alarm_dimensions = \"Environment\"\n",
+        )
+        .unwrap();
+        let out = server(cfg())
+            .reading_config_from(&path)
+            .call_tool("app_metrics", &json!({"env": "api-prod"}))
+            .await
+            .expect("answers");
+        let v: Value = serde_json::from_str(&out).unwrap();
+        let mut names: Vec<&str> = v["alarms"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{v}"))
+            .iter()
+            .filter_map(|a| a["name"].as_str())
+            .collect();
+        names.sort_unstable();
+        assert_eq!(names, ["api-prod-db", "own-spelling"], "{v}");
 
         // Asked for, but this env has no log_group: null, and said why.
         let out = server(crate::config::parse("app.api-prod.namespace = \"N\"\n"))
@@ -682,11 +728,12 @@ mod tests {
         // The startup copy configures another env, so `e` is configured
         // only when the call read the file.
         let startup = crate::config::parse("app.other.namespace = \"Startup\"\n");
-        let server = Server::with_config(true, false, WriteScope::None, startup)
-            .reading_app_tabs_from(&path);
+        let server =
+            Server::with_config(true, false, WriteScope::None, startup).reading_config_from(&path);
         let namespace = |server: &Server, env: &str| {
             server
-                .app_tabs()
+                .live_config()
+                .app_tabs
                 .envs
                 .get(env)
                 .and_then(|s| s.namespace.clone())
@@ -705,7 +752,7 @@ mod tests {
         assert_eq!(namespace(&server, "e"), None, "removed: no config");
         assert_eq!(namespace(&server, "other"), None, "not the startup copy");
 
-        let server = server.reading_app_tabs_from(&dir.join("config.toml").join("x"));
+        let server = server.reading_config_from(&dir.join("config.toml").join("x"));
         std::fs::write(dir.join("config.toml"), "").unwrap();
         assert_eq!(
             namespace(&server, "other").as_deref(),

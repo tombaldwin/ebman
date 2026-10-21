@@ -1308,6 +1308,62 @@ mod orchestration {
         assert!(v[0]["firing_alarms"].is_null(), "{v}");
     }
 
+    /// `alarm_dimensions` edited while the server runs applies on the
+    /// next call, as the `app.` lines already did: one read per call,
+    /// so prefix and dimensions are never from two versions.
+    #[tokio::test]
+    async fn list_environments_matches_by_the_alarm_dimensions_the_file_has_now() {
+        use aws_sdk_cloudwatch::operation::describe_alarms::DescribeAlarmsOutput;
+        use aws_sdk_cloudwatch::types::{Dimension, MetricAlarm};
+        let firing = aws_smithy_mocks::mock!(aws_sdk_cloudwatch::Client::describe_alarms)
+            .then_output(|| {
+                DescribeAlarmsOutput::builder()
+                    .metric_alarms(
+                        MetricAlarm::builder()
+                            .alarm_name("own-spelling")
+                            .dimensions(
+                                Dimension::builder()
+                                    .name("Environment")
+                                    .value("poly-prod-wk")
+                                    .build(),
+                            )
+                            .build(),
+                    )
+                    .build()
+            });
+        let listing = env_listing();
+        let eb = aws_smithy_mocks::mock_client!(aws_sdk_elasticbeanstalk, [&listing]);
+        let cw = aws_smithy_mocks::mock_client!(aws_sdk_cloudwatch, [&firing]);
+        let sdk = aws_config::SdkConfig::builder()
+            .region(aws_config::Region::new("us-west-1"))
+            .behavior_version(aws_config::BehaviorVersion::latest())
+            .build();
+        let client = crate::aws::AwsClient::for_tests(
+            eb,
+            SqsClient::new(&sdk),
+            cw,
+            aws_sdk_cloudwatchlogs::Client::new(&sdk),
+            aws_sdk_s3::Client::new(&sdk),
+            aws_sdk_ec2::Client::new(&sdk),
+        );
+        let dir = std::env::temp_dir().join(format!(
+            "ebman-test-{}-mcp-live-dimensions",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        // Started with the default dimensions; edited after.
+        let server = Server::with_injected_client(WriteScope::None, Default::default(), client)
+            .reading_config_from(&path);
+        std::fs::write(&path, "alarm_dimensions = \"Environment\"\n").unwrap();
+        let out = server
+            .call_tool("list_environments", &json!({}))
+            .await
+            .expect("lists");
+        let v: Value = serde_json::from_str(&out).expect("valid JSON");
+        assert_eq!(v[0]["firing_alarms"], json!(["own-spelling"]), "{v}");
+    }
+
     fn env_listing() -> aws_smithy_mocks::Rule {
         use aws_sdk_elasticbeanstalk::operation::describe_environments::DescribeEnvironmentsOutput;
         use aws_sdk_elasticbeanstalk::types::EnvironmentDescription;
@@ -1356,6 +1412,20 @@ mod orchestration {
                         MetricAlarm::builder()
                             .alarm_name("poly-prod-wk-blue-cpu")
                             .state_value(StateValue::Alarm)
+                            .build(),
+                    )
+                    // The env's by a dimension the file's
+                    // `alarm_dimensions` adds, edited after start too.
+                    .metric_alarms(
+                        MetricAlarm::builder()
+                            .alarm_name("own-spelling")
+                            .state_value(StateValue::Alarm)
+                            .dimensions(
+                                Dimension::builder()
+                                    .name("Environment")
+                                    .value("poly-prod-wk")
+                                    .build(),
+                            )
                             .build(),
                     )
                     .build()
@@ -1427,8 +1497,12 @@ mod orchestration {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("config.toml");
         let server = Server::with_injected_client(WriteScope::None, Default::default(), client)
-            .reading_app_tabs_from(&path);
-        std::fs::write(&path, "app.poly-prod-wk.alarm_prefix = \"poly-prod-wk-\"\n").unwrap();
+            .reading_config_from(&path);
+        std::fs::write(
+            &path,
+            "app.poly-prod-wk.alarm_prefix = \"poly-prod-wk-\"\nalarm_dimensions = \"Environment\"\n",
+        )
+        .unwrap();
         let out = server
             .call_tool("why", &json!({"env": "poly-prod-wk"}))
             .await
@@ -1440,7 +1514,9 @@ mod orchestration {
             .iter()
             .filter_map(|a| a["name"].as_str())
             .collect();
-        assert_eq!(names, ["poly-prod-wk-db-cpu"]);
+        let mut names = names;
+        names.sort_unstable();
+        assert_eq!(names, ["own-spelling", "poly-prod-wk-db-cpu"]);
     }
 
     /// Which lint input the mock fleet refuses.
