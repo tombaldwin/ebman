@@ -8,6 +8,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- **The fleet view shows firing CloudWatch alarms.** An env with an
+  alarm in ALARM state looked healthy on the main screen: EB health
+  stays Green through most alarms, and alarms were fetched only when an
+  env was opened. Each refresh now asks every region the fleet spans
+  for its firing alarms (one `DescribeAlarms`, filtered by CloudWatch)
+  and assigns them by the same rule as the Health and App tabs
+  (`alarm_dimensions`, `app.ENV.alarm_prefix`). The STATUS cell gains
+  ` ⚑N` (`A` with `icons = "ascii"`) and the row is tinted at least
+  yellow. A failed check keeps the last known count and shows `?`
+  rather than reading as no alarms. It does not ring the bell.
+- **The PLATFORM column shows EB's platform version** after the
+  family (`Node.js 20 6.1.0`), from the solution stack or a custom
+  platform's ARN. On a narrow terminal it now outlasts TIER.
 - **An App tab in the Detail view: your own metrics, per environment.**
   Name a CloudWatch namespace and metrics under `app.ENV.*` in
   `config.toml` and the tab shows each as a row: latest value, unit, a

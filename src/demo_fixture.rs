@@ -649,6 +649,12 @@ pub(crate) fn install(app: &mut App) {
     app.event_panel.events = events();
     app.worker_dlq_depths = worker_dlq_depths();
     app.env_instance_counts = instance_counts();
+    // A Green env with an alarm firing: EB health says nothing of it,
+    // and the fleet view's ` ⚑N` and yellow tint are the only sign.
+    app.firing_alarms.insert(
+        "poly-staging-worker".into(),
+        vec!["poly-staging-worker-queue-age".into()],
+    );
     app.costs.set_enabled(true);
     app.costs.set_complete(costs(), fixture_now());
     app.context.account_id = Some("123456789012".into());
