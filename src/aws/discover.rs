@@ -3,7 +3,7 @@
 //! answers mean is `app_discover`'s, which is pure.
 
 /// The longest the editor waits on any one discovery lookup.
-pub(crate) const LOOKUP_BOUND: std::time::Duration = std::time::Duration::from_secs(15);
+const LOOKUP_BOUND: std::time::Duration = std::time::Duration::from_secs(15);
 
 /// A lookup within [`LOOKUP_BOUND`]: past it, an error saying so.
 async fn bounded<T>(

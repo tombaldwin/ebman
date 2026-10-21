@@ -479,7 +479,7 @@ impl App {
     /// The discovery caches' key for `env`: (region, env). The Detail
     /// view's own env by its snapshot's region (it may have left the
     /// list), any other by its row's.
-    pub(crate) fn discovery_key(&self, env: &str) -> DiscoveryKey {
+    pub(super) fn discovery_key(&self, env: &str) -> DiscoveryKey {
         let region = self
             .detail
             .as_ref()
@@ -496,7 +496,7 @@ impl App {
     /// the Detail view's own env by its snapshot, any other by the row
     /// in `key`'s region. By name alone, a same-named env in another
     /// region of a fan-out could name another application.
-    pub(crate) fn discovery_app_name(&self, key: &DiscoveryKey) -> String {
+    pub(super) fn discovery_app_name(&self, key: &DiscoveryKey) -> String {
         self.detail
             .as_ref()
             .filter(|d| d.env_name == key.env && self.region_for(&d.env_snapshot) == key.region)
@@ -512,7 +512,7 @@ impl App {
 
     /// The client discovery for `key` runs on: the key's region, so the
     /// lookups and the cache entry they fill agree.
-    pub(crate) fn discovery_client(&self, key: &DiscoveryKey) -> RegionClient {
+    pub(super) fn discovery_client(&self, key: &DiscoveryKey) -> RegionClient {
         self.client_for_region(&key.region)
     }
 
@@ -660,7 +660,7 @@ impl AppTabSource<'_> {
 }
 
 /// Past this, a discovery with no answer is treated as lost: well beyond
-/// the discovery lookups' own bound (`aws::discover`), which bounds every lookup it makes.
+/// the 15s bound on each of its lookups (`aws::discover`).
 pub(crate) const DISCOVERY_STALE: std::time::Duration = std::time::Duration::from_secs(60);
 
 #[cfg(test)]

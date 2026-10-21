@@ -319,7 +319,7 @@ impl App {
     /// rather than after a restart. Called wherever app. config is about
     /// to be used: any Detail refresh, the App tab's editor, `:alarms`,
     /// `:why`. Returns whether anything was re-read.
-    pub(crate) fn reload_app_tabs_if_changed(&mut self) -> bool {
+    pub(super) fn reload_app_tabs_if_changed(&mut self) -> bool {
         let Some(path) = self.config_file.clone() else {
             return false;
         };
@@ -384,7 +384,7 @@ impl App {
     /// outside a Detail refresh (the editor, `:alarms`, `:why`): when the
     /// reload emptied the App tab on screen, fetch it again, or it would
     /// stay empty until the next refresh. A refresh fetches it anyway.
-    pub(crate) fn reload_app_tabs_and_refetch(&mut self) {
+    pub(super) fn reload_app_tabs_and_refetch(&mut self) {
         self.reload_app_tabs_if_changed();
         self.refetch_app_tab_if_emptied();
     }
@@ -393,7 +393,7 @@ impl App {
     /// [`set_app_tabs`](Self::set_app_tabs) leaves when the config they
     /// were fetched for changed): fetch them again. Top errors is billed
     /// per scan, so it waits for `^R`, and the tab says so.
-    pub(crate) fn refetch_app_tab_if_emptied(&mut self) {
+    pub(super) fn refetch_app_tab_if_emptied(&mut self) {
         let Some(d) = self.detail.as_ref().filter(|d| d.tab() == DetailTab::App) else {
             return;
         };
