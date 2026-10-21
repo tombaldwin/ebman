@@ -589,7 +589,9 @@ pub(crate) fn parse(text: &str) -> Config {
                 }
             }
             other if other.starts_with("app.") => {
-                let rest = other.trim_start_matches("app.");
+                // Once, as `app_tab::key_of` strips it: `app.app.e.x` is
+                // env `app`'s line, to the parser and to the editor's save.
+                let rest = other.strip_prefix("app.").unwrap_or(other);
                 if let Some(problem) = app_value_problem(raw) {
                     cfg.app_tabs
                         .reject(rest, line, format!("app.{rest} {problem}"));

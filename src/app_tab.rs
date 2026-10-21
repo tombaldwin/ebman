@@ -175,12 +175,13 @@ impl AppTabs {
     }
 
     fn apply_field(&mut self, rest: &str, value: &str) -> Result<(), String> {
-        let Some((env, field)) = rest.split_once('.').map(|_| split_rest(rest)) else {
+        if !rest.contains('.') {
             return Err(format!(
                 "app.{rest} is missing a field (expected app.ENV.namespace, \
                  app.ENV.metric.LABEL, …)"
             ));
-        };
+        }
+        let (env, field) = split_rest(rest);
         let (env, field) = (env.as_str(), field.as_str());
         if env.is_empty() {
             return Err(format!("app..{field} has an empty environment name"));
@@ -268,10 +269,11 @@ impl AppTabs {
 /// How `config::parse` reads an `app.` line's key, as `(env, field)`:
 /// each part trimmed, and a family's label too (`metric. heap` is
 /// `metric.heap`). `None` when the parser does not read the line as an
-/// `app.` line at all (`app .e.x` is passed through). The one place this
-/// is decided: the parser, the editor's save and its rejected-line
-/// matching all go through it, so they cannot disagree about which
-/// line is whose.
+/// `app.` line at all (`app .e.x` is passed through). The editor's save
+/// and its rejected-line matching go through it; the parser routes the
+/// line itself and splits it with the same `split_rest`, and
+/// `key_of_agrees_with_the_parser_on_whose_line_it_is` pins that the
+/// two file every line under the same env.
 pub(crate) fn key_of(line: &str) -> Option<(String, String)> {
     let (key, _) = line.trim().split_once('=')?;
     Some(split_rest(key.trim().strip_prefix("app.")?))
@@ -1085,6 +1087,38 @@ mod tests {
         let tabs = parse(lines);
         assert_eq!(tabs.errors.len(), 1, "{:?}", tabs.errors);
         tabs.errors[0].message.clone()
+    }
+
+    /// `key_of` against the parser itself: for each line, the env the
+    /// parser filed it under (as config or as an error) is the env
+    /// `key_of` reads, so the editor's save replaces exactly the lines
+    /// the parser used.
+    #[test]
+    fn key_of_agrees_with_the_parser_on_whose_line_it_is() {
+        for line in [
+            "app.e.namespace = \"N\"",
+            "  app. e .metric. heap = \"X|Average\"",
+            "app.e.threshold.lag=\"1,2\"",
+            "app.app.e.namespace = \"X\"",
+            "app.e.bogus = \"x\"",
+            "app.e.namespace = \"a=b\"",
+            "app.e = \"x\"",
+        ] {
+            let tabs = crate::config::parse(&format!("{line}\n")).app_tabs;
+            // Each env once: a line can leave a spec and an error.
+            let filed: std::collections::BTreeSet<String> = tabs
+                .envs
+                .keys()
+                .cloned()
+                .chain(tabs.errors.iter().filter_map(|e| e.env.clone()))
+                .collect();
+            let read = key_of(line).map(|(env, _)| env);
+            assert_eq!(filed, read.into_iter().collect(), "{line}");
+        }
+        // Not an `app.` line to either.
+        let tabs = crate::config::parse("app .e.namespace = \"N\"\n").app_tabs;
+        assert!(tabs.envs.is_empty() && tabs.errors.is_empty());
+        assert_eq!(key_of("app .e.namespace = \"N\""), None);
     }
 
     #[test]
