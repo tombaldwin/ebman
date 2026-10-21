@@ -38,6 +38,16 @@ Tier definitions:
 
 #### Refactors and test hygiene
 
+- [ ] **One way to drop a superseded answer: tickets for the Metrics tab
+  and discovery.** The App tab's series, its top errors and the Detail
+  alarms settle through `Fetch::settle_ticket`, and `Fetch` records when
+  a request began. The Metrics tab still drops by range
+  (`is_current_metrics_range`, with `loading_metrics` a bare bool), and
+  discovery tracks a run by its own `started` stamp in
+  `AppTabDiscovery::discovering` and `AppMsg::AppTabDiscovered`. So
+  `cycle_metrics_range`'s comment has to explain two schemes. Moving the
+  Metrics tab onto `Fetch<Vec<MetricSeries>>` with a ticket is the
+  larger half. *App tab re-review, 2026-10-21.*
 - [ ] **Audit writers take a typed label, and the verb spelling guard
   goes.** `no_surface_spells_a_shared_verb_itself` (`src/verb.rs`) bans
   any production literal `"Deploy"` / `"Rebuild"` / `"Terminate"` /

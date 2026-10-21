@@ -116,10 +116,13 @@ on `^R`, on opening only when its last answer is older than five
 minutes (`top_errors_due`), never on the tick, and the section shows how
 old it is.
 
-**Superseded answers.** Each fetch carries the `Ticket` its `Fetch`
-issued; only the latest request's answer settles. A range change, a
-stuck query retried, or a config edit (below) starts a newer request,
-and the older answer is dropped when it lands.
+**Superseded answers.** The App tab's series, its top errors and the
+Detail alarms each carry the `Ticket` their `Fetch` issued; only the
+latest request's answer settles. A range change, a stuck query retried,
+or a config edit (below) starts a newer request, and the older answer
+is dropped when it lands. Discovery tracks a run by its start instead,
+and the Metrics tab still drops an old range's answer by its range
+(BACKLOG: one way to drop a superseded answer).
 
 ## The tab
 
