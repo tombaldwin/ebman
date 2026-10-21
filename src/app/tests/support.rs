@@ -464,3 +464,18 @@ pub(super) fn discovery_ticket(app: &App, env: &str) -> crate::app::Ticket {
         .and_then(crate::app::Fetch::ticket_in_flight)
         .unwrap_or_else(|| crate::app::Fetch::<()>::default().begin())
 }
+
+/// A glyph `icons = "ascii"` must never draw: arrows, technical
+/// symbols, geometric shapes, misc symbols, dingbats, emoji. Box drawing
+/// (U+2500-U+257F) and block elements (U+2580-U+259F) are not ours:
+/// ratatui draws borders and bar charts with them whatever the icon
+/// style.
+pub(super) fn decorative(c: char) -> bool {
+    let n = c as u32;
+    (0x2190..=0x21FF).contains(&n)      // arrows
+        || (0x2300..=0x23FF).contains(&n) // misc technical (⏱)
+        || (0x25A0..=0x25FF).contains(&n) // geometric (▲ ▼ ●)
+        || (0x2600..=0x26FF).contains(&n) // misc symbols (★ ⚠ ⚑)
+        || (0x2700..=0x27BF).contains(&n) // dingbats (✓ ✗)
+        || (0x1F000..=0x1FAFF).contains(&n) // emoji (👁 💡 🚨)
+}

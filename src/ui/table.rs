@@ -279,7 +279,10 @@ pub(crate) fn column_min_width(label: &str) -> u16 {
         "HEALTH" => 3,
         "INST" => 7,
         "TREND" => 12,
-        "PLATFORM" => 11,
+        // `↑ Node.js 20 6.1.0`. At 11 it clipped to `↑ Node.js 2`,
+        // which reads as a different runtime: better dropped (after
+        // TREND and CNAME) than mangled.
+        "PLATFORM" => 18,
         "VERSION" => 9,
         "CNAME" => 12,
         "AGE" => 6,

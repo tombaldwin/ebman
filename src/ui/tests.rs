@@ -1866,7 +1866,7 @@ fn every_column_has_its_own_documented_minimum_width() {
         ("HEALTH", 3),
         ("INST", 7),
         ("TREND", 12),
-        ("PLATFORM", 11),
+        ("PLATFORM", 18),
         ("VERSION", 9),
         ("CNAME", 12),
         ("AGE", 6),

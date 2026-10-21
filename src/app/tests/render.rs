@@ -438,16 +438,6 @@ async fn ascii_icon_mode_renders_no_decorative_unicode() {
     // are deliberately excluded: ratatui draws borders and bar charts
     // with them regardless of our icon style, so they are not ours to
     // fall back.
-    fn decorative(c: char) -> bool {
-        let n = c as u32;
-        (0x2190..=0x21FF).contains(&n)      // arrows
-            || (0x2300..=0x23FF).contains(&n) // misc technical (⏱)
-            || (0x25A0..=0x25FF).contains(&n) // geometric (▲ ▼ ●)
-            || (0x2600..=0x26FF).contains(&n) // misc symbols (★ ⚠)
-            || (0x2700..=0x27BF).contains(&n) // dingbats (✓ ✗)
-            || (0x1F000..=0x1FAFF).contains(&n) // emoji (👁 💡 🚨)
-    }
-
     let cfg = crate::config::Config {
         icons: "ascii".into(),
         ..crate::config::Config::default()
@@ -2439,8 +2429,9 @@ async fn a_narrow_platform_column_keeps_the_newer_version_sign() {
     ]);
     app.view.invalidate();
     app.rebuild_view();
-    // 100 columns: PLATFORM survives at about its floor.
-    let frame = render(&mut app, 100, 20);
+    // 120 columns: PLATFORM survives at its floor, too narrow for
+    // this family and version.
+    let frame = render(&mut app, 120, 20);
     let row = frame
         .lines()
         .find(|l| l.contains("api-prod") && l.contains("Ready"))
