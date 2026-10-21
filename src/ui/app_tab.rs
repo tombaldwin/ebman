@@ -45,11 +45,7 @@ pub(super) fn draw_detail_app(
         }
     }
     instance_rows(&mut lines, &detail.instances, area.width, theme);
-    let queryable = !app.demo_mode
-        && matches!(
-            app.app_tab_source(env),
-            crate::app::AppTabSource::Configured(s) if s.log_group.is_some()
-        );
+    let queryable = app.top_errors_group(env).is_some();
     top_error_rows(&mut lines, &detail.app_tab.top_errors, queryable, theme);
     let mut title = format!("App · {}", humanize_range(detail.metrics_range_secs));
     if theme.icons == IconStyle::Ascii {

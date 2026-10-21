@@ -321,15 +321,24 @@ impl App {
     /// `app.ENV.log_group`. Opt-in by that key, because a query is billed
     /// per GB scanned; never stacked on one still running; never in
     /// demo mode.
+    /// The log group `env`'s top-errors query would scan, or `None` when
+    /// there is none to run: no `app.ENV.log_group`, or demo mode. The
+    /// spawn and the tab's "^R runs it" line both ask this.
+    pub(crate) fn top_errors_group(&self, env: &str) -> Option<String> {
+        if self.demo_mode {
+            return None;
+        }
+        match self.app_tab_source(env) {
+            crate::app::AppTabSource::Configured(spec) => spec
+                .log_group
+                .as_deref()
+                .map(|g| crate::app_tab::top_errors_log_group(env, g)),
+            _ => None,
+        }
+    }
+
     pub(super) fn spawn_detail_top_errors(&mut self, env_name: String) {
-        let Some(group) = self
-            .cfg
-            .app_tabs
-            .envs
-            .get(&env_name)
-            .and_then(|s| s.log_group.as_deref())
-            .map(|g| crate::app_tab::top_errors_log_group(&env_name, g))
-        else {
+        let Some(group) = self.top_errors_group(&env_name) else {
             return;
         };
         let Some(d) = self.detail.as_mut() else {
@@ -344,7 +353,7 @@ impl App {
             .top_errors
             .in_flight_since()
             .is_some_and(|t| t.elapsed() < stuck_after);
-        if running || self.demo_mode {
+        if running {
             return;
         }
         let ticket = d.app_tab.top_errors.begin();
