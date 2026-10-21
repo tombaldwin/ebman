@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Refuse a commit message that names a protected client. Commit
+# messages are public, and the release notes are generated from them:
+# the file scan in `cargo test` runs after the commit exists and never
+# read them. Installed by `scripts/install-hooks.sh`.
+set -u
+. "$(git rev-parse --show-toplevel)/.githooks/protected-names.sh"
+check_protected_names "the commit message" "$1"

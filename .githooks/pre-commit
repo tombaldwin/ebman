@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# pre-commit hook for ebman, tracked in `.githooks/` and installed by
+# `scripts/install-hooks.sh`. Runs the CI checks that are cheap enough
+# to fire on every commit:
+#   1. `cargo fmt --all -- --check`  — ~1s.
+#   2. `cargo clippy --all-targets -- -D warnings` — ~5–15s warm,
+#      slower cold; catches doc-lint / dead-code / etc. that have
+#      bounced CI in the past.
+#
+#   3. no staged line names a protected client (see
+#      `.githooks/protected-names.sh`) — before it is in history.
+#
+# Slower CI checks (cargo build, cargo test, msrv, codeql) stay
+# server-side — they take long enough that running them per-commit
+# would discourage actually committing.
+#
+# Skip with: `git commit --no-verify` (don't make a habit of it —
+# that pushes the breakage to CI).
+
+set -e
+
+if ! command -v cargo >/dev/null 2>&1; then
+  echo "pre-commit: cargo not on PATH, skipping checks" >&2
+  exit 0
+fi
+
+# Only run if Cargo.toml is present at the repo root — protects
+# against running this hook from inside an unrelated checkout.
+if [ ! -f Cargo.toml ]; then
+  exit 0
+fi
+
+# 1. Formatting check (fast).
+if ! cargo fmt --all -- --check; then
+  echo
+  echo "pre-commit: formatting differences detected. Run:" >&2
+  echo "  cargo fmt --all" >&2
+  echo "then re-stage and re-commit." >&2
+  exit 1
+fi
+
+# 2. Clippy (slower; matches the CI invocation exactly so failures
+# here mirror failures there). Uses `--all-targets` so test code
+# gets linted alongside lib + bin. `-D warnings` promotes every
+# clippy warning to a hard error.
+if ! cargo clippy --all-targets -- -D warnings 2>&1; then
+  echo
+  echo "pre-commit: clippy found issues. Fix them, then re-stage and" >&2
+  echo "re-commit. (Reaching for #[allow(...)] is a stop condition in" >&2
+  echo "CLAUDE.md, not a fix.)" >&2
+  exit 1
+fi
+
+# 3. Protected client names in what is being added.
+. "$(git rev-parse --show-toplevel)/.githooks/protected-names.sh"
+staged=$(mktemp)
+git diff --cached -U0 --no-color | grep '^+' | grep -v '^+++' > "$staged" || true
+if check_protected_names "a staged line" "$staged"; then status=0; else status=$?; fi
+rm -f "$staged"
+[ "$status" = 0 ] || exit 1

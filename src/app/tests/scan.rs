@@ -320,6 +320,58 @@ pub(crate) fn account_id_candidates(text: &str) -> Vec<(usize, &str)> {
 /// Where the names of clients whose data must never ship are listed,
 /// locally. Gitignored and in `Cargo.toml`'s `exclude`: the list is
 /// itself the sensitive data, so it can live anywhere but the repo.
+/// Every commit message (labelled by its short hash) and tag
+/// annotation in the repository, for the protected-name scan; `None`
+/// outside a git checkout, as [`tracked_files`]. A shallow clone would
+/// make that scan see one commit and pass, so in CI it is an error.
+pub(crate) fn history_texts() -> Option<Vec<(String, String)>> {
+    let git = |args: &[&str]| -> Option<String> {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .env("LC_ALL", "C")
+            .output()
+            .ok()?;
+        out.status
+            .success()
+            .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+    };
+    tracked_files()?;
+    if std::env::var_os("CI").is_some() {
+        assert_ne!(
+            git(&["rev-parse", "--is-shallow-repository"])
+                .as_deref()
+                .map(str::trim),
+            Some("true"),
+            "a shallow clone: the commit-message scan would see one commit. \
+             Check out with `fetch-depth: 0`"
+        );
+    }
+    let mut texts = Vec::new();
+    // NUL-separated records: a message may contain anything else.
+    let log = git(&["log", "--all", "--format=%h%x00%B%x00"]).unwrap_or_default();
+    let mut parts = log.split('\0');
+    while let (Some(hash), Some(body)) = (parts.next(), parts.next()) {
+        let hash = hash.trim();
+        if !hash.is_empty() {
+            texts.push((format!("commit {hash}"), body.to_string()));
+        }
+    }
+    let tags = git(&[
+        "for-each-ref",
+        "refs/tags",
+        "--format=%(refname:short)%00%(contents)%00",
+    ])
+    .unwrap_or_default();
+    let mut parts = tags.split('\0');
+    while let (Some(tag), Some(body)) = (parts.next(), parts.next()) {
+        let tag = tag.trim();
+        if !tag.is_empty() {
+            texts.push((format!("tag {tag}"), body.to_string()));
+        }
+    }
+    Some(texts)
+}
+
 pub(crate) const PROTECTED_NAMES_FILE: &str = ".protected-names";
 
 /// The same list for CI, from a repository secret.
@@ -651,6 +703,95 @@ mod protected_names {
              Use the `poly-*` placeholder convention, or \"a production \
              fleet\" when citing real-world evidence."
         );
+    }
+
+    /// Commit messages and tag annotations are published too, and the
+    /// release notes are generated from the messages; the file scan
+    /// above never read them. History was rewritten clean on
+    /// 2026-10-21, so this holds over all of it.
+    #[test]
+    fn no_commit_message_or_tag_names_a_protected_client() {
+        let Some(texts) = super::history_texts() else {
+            return;
+        };
+        // It reads the messages at all: a word every history here has
+        // is found, through the same matcher.
+        let probe = vec!["refactor".to_string()];
+        for kind in ["commit ", "tag "] {
+            assert!(
+                texts.iter().any(|(what, t)| what.starts_with(kind)
+                    && !super::protected_name_hits(t, &probe).is_empty()),
+                "the history scan read no {kind}texts ({} in all)",
+                texts.len()
+            );
+        }
+        let names = super::protected_names();
+        if names.is_empty() {
+            // The file scan above fails CI for a missing list.
+            return;
+        }
+        let mut hits = Vec::new();
+        for (what, text) in &texts {
+            for (line, k) in super::protected_name_hits(text, &names) {
+                hits.push(format!("{what} line {line}: protected name #{}", k + 1));
+            }
+        }
+        assert!(
+            hits.is_empty(),
+            "these name a protected client, and history is public: {hits:#?}\n\
+             A pushed commit needs its message rewritten (and a force \
+             push); an unpushed one, `git commit --amend`."
+        );
+    }
+
+    /// The commit-msg and pre-commit hooks check with their own shell
+    /// copy of the list rules; they must find what this matcher finds,
+    /// and say which entry without naming it.
+    #[test]
+    fn the_commit_hooks_agree_with_the_guard_and_never_print_a_name() {
+        if !std::path::Path::new(".githooks/commit-msg").exists() {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("ebman-test-{}-hooks", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let fixture = "# made up\nZorblax, quuxcorp";
+        let names = parse_protected_names(fixture).unwrap();
+        for (message, named) in [
+            ("feat: a fix for the zorblax fleet", true),
+            ("feat: QuuxCorp's alarms", true),
+            ("feat: a fix for a production fleet", false),
+        ] {
+            let path = dir.join("msg");
+            std::fs::write(&path, message).unwrap();
+            let out = std::process::Command::new("bash")
+                .arg(".githooks/commit-msg")
+                .arg(&path)
+                .env("EBMAN_PROTECTED_NAMES", fixture)
+                .output()
+                .expect("run the hook");
+            assert_eq!(!out.status.success(), named, "{message}");
+            assert_eq!(
+                !protected_name_hits(message, &names).is_empty(),
+                named,
+                "the guard agrees: {message}"
+            );
+            let stderr = String::from_utf8_lossy(&out.stderr).to_lowercase();
+            assert!(
+                !stderr.contains("zorblax") && !stderr.contains("quuxcorp"),
+                "the hook printed a name: {stderr}"
+            );
+        }
+        // A name too short to scan for is refused, as by the parser.
+        let path = dir.join("msg");
+        std::fs::write(&path, "anything").unwrap();
+        let out = std::process::Command::new("bash")
+            .arg(".githooks/commit-msg")
+            .arg(&path)
+            .env("EBMAN_PROTECTED_NAMES", "abc")
+            .output()
+            .expect("run the hook");
+        assert!(!out.status.success());
+        assert!(parse_protected_names("abc").is_err());
     }
 
     use super::{parse_protected_names, protected_name_hits};
