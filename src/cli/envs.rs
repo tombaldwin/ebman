@@ -5,7 +5,6 @@
 use color_eyre::eyre::Result;
 
 use crate::aws;
-use crate::cli::cli_esc;
 
 /// Firing CloudWatch alarms by env name. An env with none has no entry.
 pub(crate) type FiringByEnv = std::collections::HashMap<String, Vec<String>>;
@@ -55,61 +54,63 @@ pub(crate) async fn fetch_firing_by_env(
 /// `firing` is `None` when the alarm check failed: every env's
 /// `firing_alarms` is then `null`, where `[]` would claim it is quiet.
 pub(crate) fn render_envs_json(envs: &[aws::Environment], firing: Option<&FiringByEnv>) -> String {
-    let entries: Vec<String> = envs
-        .iter()
-        .map(|e| {
-            // `tier`, `updated` and `region` were on the record all
-            // along and dropped on the way out, which cost
-            // a real incident real minutes: a consumer could not tell a
-            // worker from a web env except by guessing from the name, and
-            // had no timestamp to tell a condition that started sixteen
-            // hours ago from one that started in the last hour.
-            //
-            // `updated` is EB's `DateUpdated` — the environment's last
-            // change, NOT a health-since. It is the more useful of the
-            // two anyway when a managed platform update is what moved
-            // the health: it timestamps the update itself.
-            let updated = match &e.updated {
-                Some(t) => format!("\"{}\"", cli_esc(&t.to_rfc3339())),
-                None => "null".to_string(),
-            };
-            let region = match &e.region {
-                Some(r) => format!("\"{}\"", cli_esc(r)),
-                None => "null".to_string(),
-            };
-            let firing_alarms = match firing {
-                None => "null".to_string(),
-                Some(map) => format!(
-                    "[{}]",
-                    map.get(&e.name)
-                        .map(|names| {
-                            names
-                                .iter()
-                                .map(|n| format!("\"{}\"", cli_esc(n)))
-                                .collect::<Vec<_>>()
-                                .join(",")
-                        })
-                        .unwrap_or_default()
-                ),
-            };
-            format!(
-                "{{\"name\":\"{}\",\"application\":\"{}\",\"tier\":\"{}\",\"status\":\"{}\",\"health\":\"{}\",\"platform\":\"{}\",\"platform_version\":\"{}\",\"cname\":\"{}\",\"version_label\":\"{}\",\"updated\":{},\"region\":{},\"firing_alarms\":{}}}",
-                cli_esc(&e.name),
-                cli_esc(&e.application),
-                cli_esc(&e.tier),
-                cli_esc(&e.status),
-                cli_esc(&e.health),
-                cli_esc(&e.platform),
-                cli_esc(&e.platform_version),
-                cli_esc(&e.cname),
-                cli_esc(&e.version_label),
-                updated,
-                region,
-                firing_alarms,
-            )
-        })
-        .collect();
-    format!("[{}]", entries.join(","))
+    let rows: Vec<EnvRow<'_>> = envs.iter().map(|e| EnvRow::of(e, firing)).collect();
+    // Serialising borrowed strings and options cannot fail.
+    serde_json::to_string(&rows).unwrap_or_else(|_| "[]".into())
+}
+
+/// One env in the `envs --json` / `list_environments` schema, in its
+/// field order.
+#[derive(serde::Serialize)]
+struct EnvRow<'a> {
+    name: &'a str,
+    application: &'a str,
+    tier: &'a str,
+    status: &'a str,
+    health: &'a str,
+    platform: &'a str,
+    platform_version: &'a str,
+    cname: &'a str,
+    version_label: &'a str,
+    // `tier`, `updated` and `region` were on the record all along and
+    // dropped on the way out, which cost a real incident real minutes: a
+    // consumer could not tell a worker from a web env except by guessing
+    // from the name, and had no timestamp to tell a condition that
+    // started sixteen hours ago from one that started in the last hour.
+    //
+    // `updated` is EB's `DateUpdated` — the environment's last change,
+    // NOT a health-since. It is the more useful of the two anyway when a
+    // managed platform update is what moved the health: it timestamps
+    // the update itself.
+    updated: Option<String>,
+    region: Option<&'a str>,
+    /// `None` (JSON `null`) when the alarm check failed: `[]` would
+    /// claim the env is quiet. The type says so; the hand-built string
+    /// this replaced had to be told.
+    firing_alarms: Option<Vec<&'a str>>,
+}
+
+impl<'a> EnvRow<'a> {
+    fn of(e: &'a aws::Environment, firing: Option<&'a FiringByEnv>) -> Self {
+        Self {
+            name: &e.name,
+            application: &e.application,
+            tier: &e.tier,
+            status: &e.status,
+            health: &e.health,
+            platform: &e.platform,
+            platform_version: &e.platform_version,
+            cname: &e.cname,
+            version_label: &e.version_label,
+            updated: e.updated.map(|t| t.to_rfc3339()),
+            region: e.region.as_deref(),
+            firing_alarms: firing.map(|map| {
+                map.get(&e.name)
+                    .map(|names| names.iter().map(String::as_str).collect())
+                    .unwrap_or_default()
+            }),
+        }
+    }
 }
 
 /// `ebman envs` — list environments, optionally as JSON.
