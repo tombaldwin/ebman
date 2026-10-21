@@ -389,7 +389,7 @@ pub(super) fn is_test_source(path: &std::path::Path) -> bool {
 fn is_test_source_excludes_test_trees_and_nothing_else() {
     use std::path::Path;
     // Test code, in both shapes that exist in this repo.
-    assert!(is_test_source(Path::new("src/aws/tests.rs")));
+    assert!(is_test_source(Path::new("src/aws/tests/eb.rs")));
     assert!(is_test_source(Path::new("src/ui/tests.rs")));
     assert!(is_test_source(Path::new("src/app/tests/refresh.rs")));
     assert!(is_test_source(Path::new("src/app/tests/support.rs")));
