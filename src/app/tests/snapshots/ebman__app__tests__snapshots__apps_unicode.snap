@@ -1,0 +1,16 @@
+---
+source: src/app/tests/snapshots.rs
+expression: out
+---
+╭[ ◆ ebman [version] ]╮╭──────────────────────────────────────────────╮
+│us-east-1 / shop / shop-prod                                          ││                     Elastic Beanstalk   Apps │
+│Account: —  •  Region: us-east-1  •  Profile: default                 ││            <tab> scope  <?> help  <:> command│
+│Sort: app↑  •  Status: idle        •  Envs: 4  •  Last: — · next 15s  ││                                              │
+╰──────────────────────────────────────────────────────────────────────╯╰──────────────────────────────────────────────╯
+╭[ ◆ Applications  1 ◆ ]───────────────────────────────────────────────────────────────────────────────────────────────╮
+│   NAME             ENVS  RED  UPDATING  VERSIONS UPDATED  LATEST                    DESCRIPTION                      │
+│ ▌   shop           4     2    1         0        —        —                                                          │
+│                                                                                                                      │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+                                                                                                                        
+ j/k move  enter drill  a actions  / filter  : command  ^K palette  r region  p profile  ^R refresh  ? help  q quit

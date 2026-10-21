@@ -1,0 +1,18 @@
+---
+source: src/app/tests/snapshots.rs
+expression: out
+---
+╭[ ◆ ebman [version] ]╮╭──────────────────────────────────────────────────────────────╮
+│us-east-1 / shop / shop-prod                                                                  ││                                     Elastic Beanstalk   Envs │
+│Account: —  •  Region: us-east-1  •  Profile: default                                         ││      <tab> scope  <?> help  <:> command  </> filter  <q> quit│
+│Sort: app↑  •  Status: idle        •  Envs: 5  •  Last: — · next 15s  •  Caller: —            ││                                                              │
+╰──────────────────────────────────────────────────────────────────────────────────────────────╯╰──────────────────────────────────────────────────────────────╯
+╭[ ◆ Environments  5/5 ◆ ]─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│   NAME                REGION ▲     APPLICATION  TIER        STATUS     ALARM ●   INST    TREND (5m)   PLATFORM            VERSION    CNAME            AGE    │
+│ ▌ shop-prod                        shop          ⊕ Web       Ready     ⚑2    ●   3/3                  ↑ Node.js 20 6.1.0  build-1    shop-prod.exampl —      │
+│   shop-prod-wk                     shop          ⚒ Worker    Ready  ⚠3       ●   2/2                  ↑ Node.js 20 6.1.0  build-1    shop-prod-wk.exa —      │
+│   shop-staging                     shop          ⊕ Web       Ready     ⚑?    ●   0/2                  ↑ Node.js 20 6.1.0  build-1    shop-staging.exa —      │
+│   shop-batch                       shop          ⚒ Worker    Updating        ●   1/2?                 ↑ Node.js 20 6.1.0  build-1    shop-batch.examp —      │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+                                                                                                                                                                
+ j/k move  enter drill  a actions  / filter  : command  ^K palette  r region  p profile  ^R refresh  ? help  q quit

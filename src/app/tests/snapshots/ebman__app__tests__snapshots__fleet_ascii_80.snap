@@ -1,0 +1,18 @@
+---
+source: src/app/tests/snapshots.rs
+expression: out
+---
+┌[ ebman [version] ]┐┌──────────────────────────────┐
+│us-east-1 / shop / shop-prod                  ││     Elastic Beanstalk   Envs │
+│Account: —  |  Region: us-east-1              ││         <tab> scope  <?> help│
+│Sort: app^  |  Status: idle        |  Envs: 4 ││                              │
+└──────────────────────────────────────────────┘└──────────────────────────────┘
+┌[ Environments  4/4  · 5 cols hidden (widen) ]────────────────────────────────┐
+│   NAME                   APPLICATION  STATUS     ALARM *   VERSION    AGE    │
+│ > shop-prod              shop          Ready     A2    *   build-1    —      │
+│   shop-prod-wk           shop          Ready  !3       *   build-1    —      │
+│   shop-staging           shop          Ready     A?    *   build-1    —      │
+│   shop-batch             shop          Updating        *   build-1    —      │
+└──────────────────────────────────────────────────────────────────────────────┘
+                                                                                
+ j/k move  enter drill  a actions  / filter  : command  ^K palette  r region

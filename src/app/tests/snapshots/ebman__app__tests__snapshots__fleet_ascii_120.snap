@@ -1,0 +1,18 @@
+---
+source: src/app/tests/snapshots.rs
+expression: out
+---
+┌[ ebman [version] ]┐┌──────────────────────────────────────────────┐
+│us-east-1 / shop / shop-prod                                          ││                     Elastic Beanstalk   Envs │
+│Account: —  |  Region: us-east-1  |  Profile: default                 ││            <tab> scope  <?> help  <:> command│
+│Sort: app^  |  Status: idle        |  Envs: 4  |  Last: — · next 15s  ││                                              │
+└──────────────────────────────────────────────────────────────────────┘└──────────────────────────────────────────────┘
+┌[ Environments  4/4  · 2 cols hidden (widen) ]────────────────────────────────────────────────────────────────────────┐
+│   NAME                   APPLICATION  TIER        STATUS     ALARM *   INST    PLATFORM            VERSION    AGE    │
+│ > shop-prod              shop          W Web       Ready     A2    *   3/3     ^ Node.js 20 6.1.0  build-1    —      │
+│   shop-prod-wk           shop          K Worker    Ready  !3       *   2/2     ^ Node.js 20 6.1.0  build-1    —      │
+│   shop-staging           shop          W Web       Ready     A?    *   0/2     ^ Node.js 20 6.1.0  build-1    —      │
+│   shop-batch             shop          K Worker    Updating        *   1/2?    ^ Node.js 20 6.1.0  build-1    —      │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+                                                                                                                        
+ j/k move  enter drill  a actions  / filter  : command  ^K palette  r region  p profile  ^R refresh  ? help  q quit

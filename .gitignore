@@ -47,3 +47,7 @@ mutants.out.old/
 # sensitive data, so it is local-only (CI reads the same list from the
 # EBMAN_PROTECTED_NAMES secret). Also in Cargo.toml's `exclude`.
 /.protected-names
+
+# insta: a failing snapshot run leaves these for `cargo insta review`
+*.snap.new
+*.pending-snap

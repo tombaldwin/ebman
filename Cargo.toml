@@ -107,6 +107,12 @@ unwrap_used = "deny"
 expect_used = "deny"
 
 [dev-dependencies]
+# Snapshot tests of whole rendered screens (`src/app/tests/snapshots.rs`):
+# the layout bugs this repo keeps finding (a clipped marker, a dropped
+# column, a glyph that ascii mode missed) show as a diff of the frame,
+# reviewable in the commit, rather than as a hand-written assertion
+# someone thought to add after the fact.
+insta = { version = "1", features = ["filters"] }
 # Used by one test: a source-scanning guard for the wrapped-literal
 # bug needs to know where string literals begin and end, and five
 # hand-rolled scanners got that wrong in five different ways (`//`
