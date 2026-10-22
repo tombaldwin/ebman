@@ -282,8 +282,11 @@ impl App {
                 ..
             } => self.handle_detail_alarms(env_name, ticket, result),
             AppMsg::EnvVarsForEdit {
-                env_name, result, ..
-            } => self.handle_env_vars_for_edit(env_name, result),
+                env_name,
+                region,
+                result,
+                ..
+            } => self.handle_env_vars_for_edit(EnvKey::new(region, env_name), result),
             AppMsg::CostsFetched {
                 account,
                 region,
@@ -1440,7 +1443,7 @@ impl App {
 
     fn handle_env_vars_for_edit(
         &mut self,
-        env_name: String,
+        target: EnvKey,
         result: Result<Vec<(String, String)>, String>,
     ) {
         match result {
@@ -1448,7 +1451,7 @@ impl App {
                 // Stash for the main loop to consume. The editor shell-out
                 // has to happen there because that's where the `Tui`
                 // handle is.
-                self.pending_env_edit = Some((env_name, vars));
+                self.pending_env_edit = Some((target, vars));
             }
             Err(msg) => {
                 self.error_message = Some(format!("env-edit fetch: {msg}"));

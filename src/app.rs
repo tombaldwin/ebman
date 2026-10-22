@@ -484,7 +484,7 @@ pub struct App {
     /// the alternate screen, only available in the main loop).
     /// Carries `(env_name, current_env_vars)` — the editor opens
     /// against these, diffs on save, dispatches the deltas.
-    pub(crate) pending_env_edit: Option<(String, Vec<(String, String)>)>,
+    pub(crate) pending_env_edit: Option<(EnvKey, Vec<(String, String)>)>,
     /// The live embedded shell pane, if any. `None` outside Mode::Shell.
     pub(crate) current_shell: Option<Box<crate::shell::ShellSession>>,
     /// Mode to return to when the user detaches from a shell pane (F12).
@@ -848,6 +848,9 @@ pub(crate) enum AppMsg {
     EnvVarsForEdit {
         gen: u64,
         env_name: String,
+        /// The env's region: the edit is applied to this env, not to
+        /// whatever is on screen when the editor closes.
+        region: String,
         result: Result<Vec<(String, String)>, String>,
     },
     PreflightEvents {
@@ -1954,8 +1957,8 @@ impl App {
             // temp file holding the current env vars. Same
             // leave-altscreen / spawn / re-enter pattern as the
             // legacy inline-SSM path.
-            if let Some((env_name, vars)) = self.pending_env_edit.take() {
-                if let Err(e) = self.run_env_editor(terminal, &env_name, &vars) {
+            if let Some((target, vars)) = self.pending_env_edit.take() {
+                if let Err(e) = self.run_env_editor(terminal, &target, &vars) {
                     self.error_message = Some(format!("env-edit: {e}"));
                 }
             }

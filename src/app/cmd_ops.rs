@@ -342,6 +342,7 @@ impl App {
         let app_name = env.application.clone();
         let env_name = env.name.clone();
         let env_name_for_msg = env_name.clone();
+        let region = self.region_for(&env);
         self.status_message = Some(format!("fetching env vars for {env_name}…"));
         tokio::spawn(async move {
             let result = match client.resolve().await {
@@ -354,6 +355,7 @@ impl App {
             let _ = tx.send(AppMsg::EnvVarsForEdit {
                 gen,
                 env_name: env_name_for_msg,
+                region,
                 result,
             });
         });

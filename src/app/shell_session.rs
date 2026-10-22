@@ -151,9 +151,10 @@ impl App {
     pub(crate) fn run_env_editor(
         &mut self,
         terminal: &mut Tui,
-        env_name: &str,
+        target: &super::EnvKey,
         original: &[(String, String)],
     ) -> Result<()> {
+        let env_name = target.name.as_str();
         use crossterm::{
             event::EnableMouseCapture,
             execute,
@@ -241,7 +242,22 @@ impl App {
         };
         let _ = std::fs::remove_file(&path);
 
-        let edited_map = parse_env_edit_body(&edited);
+        self.apply_env_edit(target, original, &edited);
+        Ok(())
+    }
+
+    /// The second half of `:env-edit`: diff what came back from the
+    /// editor against the vars it was given, and write the difference to
+    /// `target`. Split from `run_env_editor` so it is testable without a
+    /// terminal.
+    pub(crate) fn apply_env_edit(
+        &mut self,
+        target: &super::EnvKey,
+        original: &[(String, String)],
+        edited: &str,
+    ) {
+        let env_name = target.name.as_str();
+        let edited_map = parse_env_edit_body(edited);
         let original_map: std::collections::BTreeMap<String, String> = original
             .iter()
             .map(|(k, v)| (k.clone(), v.clone()))
@@ -254,7 +270,7 @@ impl App {
 
         if to_set.is_empty() && to_remove.is_empty() {
             self.status_message = Some("env-edit: no changes — nothing dispatched".into());
-            return Ok(());
+            return;
         }
 
         let label = format!(
@@ -262,7 +278,15 @@ impl App {
             to_set.len(),
             to_remove.len()
         );
-        self.spawn_option_settings_update(label, to_set, to_remove);
-        Ok(())
+        // The env the vars were fetched from, not whatever is on screen
+        // now: the operator may have moved while the fetch or the editor
+        // was open, and this diff is against that env's vars.
+        let Some(env) = self.env_by_key(target).cloned() else {
+            self.error_message = Some(format!(
+                "env-edit: {env_name} is no longer listed — nothing dispatched"
+            ));
+            return;
+        };
+        self.spawn_option_settings_update_on(env, label, to_set, to_remove);
     }
 }

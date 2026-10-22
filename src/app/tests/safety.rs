@@ -2000,6 +2000,35 @@ async fn a_write_from_detail_goes_to_detail_s_env_when_the_cursor_has_moved() {
 }
 
 #[tokio::test]
+async fn env_edit_writes_to_the_env_its_vars_came_from() {
+    // The vars were fetched from the eu-west-2 twin; the operator moved
+    // to the home one before the editor closed. The diff is against the
+    // eu vars, so it goes there.
+    let mut app = app_with_a_name_in_two_regions();
+    app.handle_msg(AppMsg::EnvVarsForEdit {
+        gen: app.generation,
+        env_name: twin(),
+        region: "eu-west-2".into(),
+        result: Ok(vec![("A".into(), "1".into())]),
+    });
+    let Some((target, vars)) = app.pending_env_edit.take() else {
+        panic!("not stashed: {:?}", app.error_message);
+    };
+    let home_row = app
+        .view
+        .filtered()
+        .iter()
+        .position(|&i| app.environments[i].region.is_none())
+        .expect("home row");
+    app.table_state.select(Some(home_row));
+    let before = audit_log();
+    app.apply_env_edit(&target, &vars, "A=2\n");
+    let went = twin_audit_regions(&before);
+    assert!(!went.is_empty(), "not dispatched: {:?}", app.error_message);
+    assert!(went.iter().all(|r| r == "eu-west-2"), "{went:?}");
+}
+
+#[tokio::test]
 async fn a_confirmed_action_on_a_name_in_two_regions_is_dispatched_to_its_row() {
     for cmd in ["restart", "rebuild"] {
         let mut app = app_with_a_name_in_two_regions();

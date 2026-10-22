@@ -21,6 +21,19 @@ impl App {
                 Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;
         };
+        self.spawn_option_settings_update_on(env, summary, to_set, to_remove);
+    }
+
+    /// [`spawn_option_settings_update`](Self::spawn_option_settings_update)
+    /// against an env the caller already holds, for a write whose target
+    /// was fixed earlier than now (`:env-edit`, across its editor).
+    pub(crate) fn spawn_option_settings_update_on(
+        &mut self,
+        env: crate::aws::Environment,
+        summary: String,
+        to_set: Vec<(String, String, String)>,
+        to_remove: Vec<(String, String)>,
+    ) {
         if self.deny_write(&self.env_key(&env), &summary) {
             return;
         }
