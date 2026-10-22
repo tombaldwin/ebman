@@ -939,29 +939,30 @@ impl App {
                 // name-keyed map held one reading for both, so one going
                 // Red beside a Green twin could be missed, and with it
                 // the red-transition audit line notifiers key off.
-                let home = self.context.region.clone();
-                let key = |e: &crate::aws::Environment| EnvKey::of(e, &home);
+                let keys: Vec<EnvKey> = envs.iter().map(|e| self.env_key(e)).collect();
                 if !self.caches.prev_health.is_empty() {
-                    for e in &envs {
-                        if !self.caches.prev_health.contains_key(&key(e)) {
-                            self.caches.newly_added.insert(key(e));
+                    for key in &keys {
+                        if !self.caches.prev_health.contains_key(key) {
+                            self.caches.newly_added.insert(key.clone());
                         }
                     }
                 }
-                for e in &envs {
+                for (e, key) in envs.iter().zip(&keys) {
                     let prev_red = self
                         .caches
                         .prev_health
-                        .get(&key(e))
+                        .get(key)
                         .map(|h| is_red(h))
                         .unwrap_or(false);
                     if is_red(&e.health) && !prev_red {
-                        self.caches.newly_red.insert(key(e));
+                        self.caches.newly_red.insert(key.clone());
                         // The ROW's region, not the home one: under a
                         // multi-region fan-out the env that went red is
                         // usually elsewhere, and this line is what an
-                        // operator's own notifier keys off.
-                        let region = e.region.as_deref().unwrap_or(&self.context.region);
+                        // operator's own notifier keys off. The key's, so
+                        // an empty region reads as home here as it does
+                        // in the key.
+                        let region = key.region.as_str();
                         // Surface the transition via tracing + the audit log
                         // so operators can wire their own notifier (Slack,
                         // pager, etc.) off the audit stream. The previous
@@ -985,13 +986,29 @@ impl App {
                     }
                 }
                 // Compute health + status deltas before swapping prev maps.
-                self.caches.health_delta =
-                    bucket_delta(&self.caches.prev_health, &envs, key, |e| e.health.clone());
-                self.caches.status_delta =
-                    bucket_delta(&self.caches.prev_status, &envs, key, |e| e.status.clone());
+                self.caches.health_delta = bucket_delta(
+                    &self.caches.prev_health,
+                    &envs,
+                    |e| self.env_key(e),
+                    |e| e.health.clone(),
+                );
+                self.caches.status_delta = bucket_delta(
+                    &self.caches.prev_status,
+                    &envs,
+                    |e| self.env_key(e),
+                    |e| e.status.clone(),
+                );
 
-                self.caches.prev_health = envs.iter().map(|e| (key(e), e.health.clone())).collect();
-                self.caches.prev_status = envs.iter().map(|e| (key(e), e.status.clone())).collect();
+                self.caches.prev_health = keys
+                    .iter()
+                    .cloned()
+                    .zip(envs.iter().map(|e| e.health.clone()))
+                    .collect();
+                self.caches.prev_status = keys
+                    .iter()
+                    .cloned()
+                    .zip(envs.iter().map(|e| e.status.clone()))
+                    .collect();
 
                 let new_alerts = compute_red_alerts(&envs, |e| self.dlq_depth(e));
                 if should_ring(self.notify_bell, new_alerts, self.caches.prev_alerts) {
