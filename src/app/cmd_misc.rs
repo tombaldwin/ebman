@@ -633,13 +633,15 @@ impl App {
         let target_name = rest.first().copied().map(String::from);
         let env = match target_name.as_ref() {
             Some(name) => {
-                let Some(e) = self.environments.iter().find(|e| &e.name == name) else {
-                    self.error_message = Some(format!(
-                        "no env named '{name}' in the current view — try :envs"
-                    ));
-                    return;
-                };
-                e.clone()
+                // `NAME` or `NAME@REGION`: a bare name listed in two
+                // regions is refused rather than taking the first.
+                match self.env_by_ref(name) {
+                    Ok(e) => e,
+                    Err(message) => {
+                        self.error_message = Some(message);
+                        return;
+                    }
+                }
             }
             None => {
                 let Some(e) = self.selected_env().cloned() else {
@@ -711,13 +713,15 @@ impl App {
         let target_name = rest.first().copied().map(String::from);
         let env = match target_name.as_ref() {
             Some(name) => {
-                let Some(e) = self.environments.iter().find(|e| &e.name == name) else {
-                    self.error_message = Some(format!(
-                        "no env named '{name}' in the current view — try :envs"
-                    ));
-                    return;
-                };
-                e.clone()
+                // `NAME` or `NAME@REGION`: a bare name listed in two
+                // regions is refused rather than taking the first.
+                match self.env_by_ref(name) {
+                    Ok(e) => e,
+                    Err(message) => {
+                        self.error_message = Some(message);
+                        return;
+                    }
+                }
             }
             None => {
                 let Some(e) = self.selected_env().cloned() else {

@@ -444,13 +444,13 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
     ),
     cmd(
         "lint",
-        ":lint [ENV] — run the diagnostic rule engine against the selected env (or named env). Surfaces AllAtOnce-on-multi-instance, missing health-check URL, env Red >4h, batch-size > max-size, single-instance prod, low cooldown. Operator-tunable via lint.disable in config.toml.",
+        ":lint [ENV] — run the diagnostic rule engine against the selected env (or named env; NAME@REGION when listed in two regions). Surfaces AllAtOnce-on-multi-instance, missing health-check URL, env Red >4h, batch-size > max-size, single-instance prod, low cooldown. Operator-tunable via lint.disable in config.toml.",
         Category::Inspection,
         CommandKind::Prefill("lint "),
     ),
     cmd(
         "drift",
-        ":drift [ENV|refresh] — terraform drift report. With ENV (or no arg → selected env), compares live EB state against the tf-declared values in terraform.tfstate. With `refresh`, re-reads tfstate from cwd (run this after `terraform apply` mid-session). Discovery walks up from cwd for `.terraform/terraform.tfstate` (preferred) or a local `terraform.tfstate`. Envs not in tfstate get a clear 'not managed by terraform' message.",
+        ":drift [ENV|refresh] — terraform drift report. With ENV (NAME@REGION when listed in two regions; no arg → selected env), compares live EB state against the tf-declared values in terraform.tfstate. With `refresh`, re-reads tfstate from cwd (run this after `terraform apply` mid-session). Discovery walks up from cwd for `.terraform/terraform.tfstate` (preferred) or a local `terraform.tfstate`. Envs not in tfstate get a clear 'not managed by terraform' message.",
         Category::Inspection,
         CommandKind::Prefill("drift "),
     ),

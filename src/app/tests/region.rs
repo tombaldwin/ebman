@@ -1918,6 +1918,21 @@ async fn promote_env_takes_the_version_of_the_region_it_names() {
 }
 
 #[tokio::test]
+async fn drift_and_lint_refuse_a_name_listed_twice() {
+    // By name they took the first row, so `:lint api-prod` under
+    // `:region all` checked whichever region sorted first.
+    for cmd in ["lint api-prod", "drift api-prod"] {
+        let mut app = twins_and_staging();
+        app.execute_command(cmd);
+        let err = app.error_message.clone().unwrap_or_default();
+        assert!(err.contains("api-prod@eu-west-2"), ":{cmd} — {err}");
+    }
+    let mut app = twins_and_staging();
+    app.execute_command("lint api-prod@eu-west-2");
+    assert_eq!(app.error_message, None);
+}
+
+#[tokio::test]
 async fn diff_compares_the_two_regions_of_one_name() {
     // By name both sides were the first row: "pick two different envs".
     let mut app = twins_and_staging();

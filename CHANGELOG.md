@@ -86,13 +86,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed
 
 - **Commands that type an env name pick the right region.** Under
-  `:region all`, `:promote-env`, `:diff` and `:config-diff` took the first
-  row with that name, so with `api-prod` in two regions they could
-  promote or compare the wrong one. A name listed in two regions is now
-  refused with both regions named; `NAME@REGION` (`api-prod@eu-west-2`)
-  picks one. `:swap` and the action menu's swap picker only offer envs
-  in the selected env's region, since EB swaps CNAMEs within one region.
-  `:config-diff` fetches each side from its own row's region.
+  `:region all`, `:promote-env`, `:diff`, `:config-diff`, `:drift` and
+  `:lint` took the first row with that name, so with `api-prod` in two
+  regions they could promote, compare or check the wrong one. A name
+  listed in two regions is now refused with both regions named;
+  `NAME@REGION` (`api-prod@eu-west-2`) picks one. `:swap` and the action
+  menu's swap picker only offer envs in the selected env's region, since
+  EB swaps CNAMEs within one region. `:config-diff` fetches each side
+  from its own row's region.
 - **`:set-option`-style writes and `:ssm-run` audit their completion in
   the row's region.** Under `:region all` their dispatch line and the
   write itself used the row's region, but the completion line named the
