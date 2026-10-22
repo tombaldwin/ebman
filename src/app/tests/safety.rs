@@ -1969,7 +1969,7 @@ async fn a_write_from_detail_goes_to_detail_s_env_when_the_cursor_has_moved() {
     for cmd in WRITE_COMMANDS
         .iter()
         .chain(APPLICATION_SCOPED_WRITES)
-        .chain(&["delete-version build-1"])
+        .chain(&["delete-version build-1", "capacity", "scaling-triggers"])
     {
         let cmd = cmd
             .replace("api-prod", &twin())
