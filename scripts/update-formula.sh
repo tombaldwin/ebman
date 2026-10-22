@@ -77,10 +77,16 @@ rewrite() {
   if sed --version >/dev/null 2>&1; then
     sed_inplace=(-i)
   fi
+  local old_version
+  old_version="$(sed -nE 's/^  version "([^"]+)"$/\1/p' "$f")"
   sed "${sed_inplace[@]}" -E "s/^  version \"[^\"]+\"$/  version \"${VERSION}\"/" "$f"
   # A new version starts at revision 0: drop any `revision N` a
-  # formula-only fix (e.g. 0.46.0's shell completions) added.
-  sed "${sed_inplace[@]}" -E "/^  revision [0-9]+$/d" "$f"
+  # formula-only fix (e.g. 0.46.0's shell completions) added. Only on a
+  # version change: re-running for the same version (to re-pin the
+  # SHAs) must keep the revision it was published under.
+  if [ "$old_version" != "$VERSION" ]; then
+    sed "${sed_inplace[@]}" -E "/^  revision [0-9]+$/d" "$f"
+  fi
   # Replace each target's sha256. The line preceding the sha256 contains
   # the target triple, so anchor on that with awk for safety rather than
   # relying on sed's address ranges.
