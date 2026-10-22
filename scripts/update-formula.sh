@@ -78,6 +78,9 @@ rewrite() {
     sed_inplace=(-i)
   fi
   sed "${sed_inplace[@]}" -E "s/^  version \"[^\"]+\"$/  version \"${VERSION}\"/" "$f"
+  # A new version starts at revision 0: drop any `revision N` a
+  # formula-only fix (e.g. 0.46.0's shell completions) added.
+  sed "${sed_inplace[@]}" -E "/^  revision [0-9]+$/d" "$f"
   # Replace each target's sha256. The line preceding the sha256 contains
   # the target triple, so anchor on that with awk for safety rather than
   # relying on sed's address ranges.

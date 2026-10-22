@@ -14,6 +14,7 @@ class Ebman < Formula
   homepage "https://github.com/tombaldwin/ebman"
   version "0.46.0"
   license "MIT OR Apache-2.0"
+  revision 1
 
   if OS.mac?
     if Hardware::CPU.arm?
@@ -37,6 +38,7 @@ class Ebman < Formula
 
   def install
     bin.install "ebman"
+    generate_completions_from_executable(bin/"ebman", "completions")
     prefix.install "README.md", "LICENSE-MIT", "LICENSE-APACHE"
   end
 
