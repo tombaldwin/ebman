@@ -449,7 +449,7 @@ pub(crate) fn draw_header(f: &mut Frame, area: Rect, app: &App, merge_pills: boo
             kv("Account", &account, &theme.chrome()),
             kv(
                 "Region",
-                &region_label(&app.context.region, &app.multi_regions),
+                &region_label(&app.context.region, app.regions_beside_home()),
                 &theme.chrome(),
             ),
             kv("Profile", &profile, &theme.chrome()),
@@ -704,13 +704,12 @@ pub(crate) fn breadcrumb_line(app: &App) -> Line<'static> {
 /// and two others. It used to name the home region alone in every
 /// mode, so a fan-out looked like a single-region session. A fan-out
 /// over the home region only lists the same envs, so it reads as that.
-/// The list always holds the home region (`App::rederive_fanout`
-/// keeps it so, and `spawn_refresh` asserts it), so counting the others
-/// is the whole rule.
-pub(crate) fn region_label(home: &str, fanout: &[String]) -> String {
-    match fanout.iter().filter(|r| r.as_str() != home).count() {
+/// `others` is `App::regions_beside_home`, the count the REGION column
+/// reads too.
+pub(crate) fn region_label(home: &str, others: usize) -> String {
+    match others {
         0 => home.to_string(),
-        others => format!("{home} +{others}"),
+        n => format!("{home} +{n}"),
     }
 }
 

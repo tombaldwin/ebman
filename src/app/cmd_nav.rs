@@ -10,22 +10,20 @@
 use super::{parse_toggle, App, PickerKind, SortKey};
 
 impl App {
-    /// `:region <name> | all | off | r <name>`.
-    ///   - `all`  → multi-region fan-out across `extra_regions ∪ current`.
-    ///   - `off` / `single` → return to single-region mode.
-    ///   - `<name>` → switch to that region (rebuilds the AWS client).
-    ///
-    /// The two fan-out arms bump `fanout_epoch`. `spawn_refresh` skips
-    /// while a listing is already in flight, so without it the mode
-    /// change was invisible until the next 15s tick — the old mode's
-    /// rows stayed on screen under the new mode's header. `<name>` goes
-    /// through the picker, which rebuilds the client and bumps
-    /// `generation` instead; that already supersedes the listing.
+    /// How many regions the listing spans besides the home one: 0 outside
+    /// a fan-out, and for a fan-out over the home region alone. The
+    /// header's `+N` and the REGION column both read this one count.
+    pub(crate) fn regions_beside_home(&self) -> usize {
+        self.multi_regions
+            .iter()
+            .filter(|r| *r != &self.context.region)
+            .count()
+    }
+
     /// Does the listing span a region besides the home one? The REGION
-    /// column shows only then, by the same count `region_label` makes
-    /// for the header.
+    /// column shows only then.
     pub(crate) fn fans_beyond_home(&self) -> bool {
-        self.multi_regions.iter().any(|r| r != &self.context.region)
+        self.regions_beside_home() > 0
     }
 
     /// Under a `:region all` fan-out, derive its list again from
@@ -44,6 +42,17 @@ impl App {
         changed
     }
 
+    /// `:region <name> | all | off | r <name>`.
+    ///   - `all`  → multi-region fan-out across `extra_regions ∪ current`.
+    ///   - `off` / `single` → return to single-region mode.
+    ///   - `<name>` → switch to that region (rebuilds the AWS client).
+    ///
+    /// The two fan-out arms bump `fanout_epoch`. `spawn_refresh` skips
+    /// while a listing is already in flight, so without it the mode
+    /// change was invisible until the next 15s tick — the old mode's
+    /// rows stayed on screen under the new mode's header. `<name>` goes
+    /// through the picker, which rebuilds the client and bumps
+    /// `generation` instead; that already supersedes the listing.
     pub(crate) fn cmd_region(&mut self, rest: &[&str]) {
         match rest.first().copied() {
             Some("all") => {

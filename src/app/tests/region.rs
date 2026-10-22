@@ -2356,10 +2356,24 @@ async fn the_region_column_shows_only_when_the_listing_spans_regions() {
     assert!(out.contains("REGION"), "got:\n{out}");
 }
 
+// The guard is a `debug_assert!`: in a release-mode test run there is
+// nothing to panic.
+#[cfg(debug_assertions)]
 #[tokio::test]
 #[should_panic(expected = "lacks the home region")]
 async fn a_fanout_refresh_without_the_home_region_is_a_bug() {
     let mut app = test_app();
     app.multi_regions = vec!["eu-west-2".into()];
     app.spawn_refresh();
+}
+
+#[test]
+fn regions_beside_home_counts_only_the_others() {
+    let mut app = test_app();
+    assert_eq!(app.regions_beside_home(), 0, "outside a fan-out");
+    app.multi_regions = vec!["us-east-1".into()];
+    assert_eq!(app.regions_beside_home(), 0, "a fan-out over home alone");
+    app.multi_regions = vec!["eu-west-2".into(), "us-east-1".into(), "us-west-1".into()];
+    assert_eq!(app.regions_beside_home(), 2);
+    assert!(app.fans_beyond_home());
 }

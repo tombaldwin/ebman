@@ -2359,30 +2359,12 @@ fn sep_width_matches_what_sep_actually_renders() {
 }
 
 #[test]
-fn region_label_names_the_home_region_alone_outside_a_fanout() {
-    assert_eq!(super::header::region_label("us-west-1", &[]), "us-west-1");
+fn region_label_names_the_home_region_alone_when_nothing_is_beside_it() {
+    // `+0` would say a fan-out over the home region listed more.
+    assert_eq!(super::header::region_label("us-west-1", 0), "us-west-1");
 }
 
 #[test]
-fn region_label_counts_the_regions_a_fanout_adds() {
-    let fanout = vec![
-        "eu-west-2".to_string(),
-        "us-east-1".to_string(),
-        "us-west-1".to_string(),
-    ];
-    assert_eq!(
-        super::header::region_label("us-west-1", &fanout),
-        "us-west-1 +2"
-    );
-}
-
-#[test]
-fn region_label_reads_as_home_when_the_fanout_is_only_home() {
-    // `:region all` with no extra_regions lists what single-region mode
-    // did: `+0` would say there was more.
-    let fanout = vec!["us-west-1".to_string()];
-    assert_eq!(
-        super::header::region_label("us-west-1", &fanout),
-        "us-west-1"
-    );
+fn region_label_counts_the_regions_beside_home() {
+    assert_eq!(super::header::region_label("us-west-1", 2), "us-west-1 +2");
 }
