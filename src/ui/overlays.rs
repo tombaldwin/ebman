@@ -1139,6 +1139,7 @@ pub(super) fn format_why_deploy(v: &crate::aws::AppVersion) -> String {
 pub(super) fn draw_why_red_overlay(f: &mut Frame, area: Rect, app: &mut App) {
     let Some(crate::app::Overlay::WhyRed {
         env_name,
+        region,
         tier,
         events,
         alarms,
@@ -1593,10 +1594,10 @@ pub(super) fn draw_why_red_overlay(f: &mut Frame, area: Rect, app: &mut App) {
     )));
     push_close_hint(&mut lines, theme);
 
+    // The row the overlay was opened on, by region too: a same-named env
+    // in another region has its own health.
     let health = app
-        .environments
-        .iter()
-        .find(|e| &e.name == env_name)
+        .env_by_key(&crate::app::EnvKey::new(region.clone(), env_name.clone()))
         .map(|e| e.health.as_str())
         .unwrap_or("");
     let title = why_overlay_title(env_name, health);

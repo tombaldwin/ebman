@@ -2130,3 +2130,18 @@ fn only_action_result_builds_an_action_result() {
         "build it with action_result, which writes the completion line"
     );
 }
+
+#[tokio::test]
+async fn the_why_title_reads_the_health_of_the_env_it_opened_on() {
+    // By name it took the first `jobs` row: here, the Green home one,
+    // so the Red eu-west-2 env's overlay read "recent activity".
+    let mut app = test_app();
+    app.demo_mode = true;
+    let home = mk_env("jobs", "poly", "Worker", "Green");
+    app.environments = vec![home, eu_worker("jobs")];
+    app.rebuild_view();
+    let eu = app.environments[1].clone();
+    app.open_why_red(&eu);
+    let out = render(&mut app, 160, 44);
+    assert!(out.contains("why is jobs red?"), "{out}");
+}
