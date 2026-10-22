@@ -2334,6 +2334,29 @@ async fn a_config_reload_outside_a_fanout_does_not_start_one() {
 }
 
 #[tokio::test]
+async fn the_region_column_shows_only_when_the_listing_spans_regions() {
+    let mut app = test_app();
+    let mut env = mk_env("api-prod", "poly", "Web", "Green");
+    env.region = Some("us-east-1".into());
+    app.environments = vec![env];
+    app.view.invalidate();
+    app.rebuild_view();
+
+    app.extra_regions.clear();
+    app.execute_command("region all");
+    let out = render(&mut app, 200, 30);
+    assert!(
+        !out.contains("REGION"),
+        "a fan-out over the home region alone repeats it on every row:\n{out}"
+    );
+
+    app.extra_regions = vec!["eu-west-2".into()];
+    app.execute_command("region all");
+    let out = render(&mut app, 200, 30);
+    assert!(out.contains("REGION"), "got:\n{out}");
+}
+
+#[tokio::test]
 #[should_panic(expected = "lacks the home region")]
 async fn a_fanout_refresh_without_the_home_region_is_a_bug() {
     let mut app = test_app();

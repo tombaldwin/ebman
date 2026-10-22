@@ -21,6 +21,13 @@ impl App {
     /// rows stayed on screen under the new mode's header. `<name>` goes
     /// through the picker, which rebuilds the client and bumps
     /// `generation` instead; that already supersedes the listing.
+    /// Does the listing span a region besides the home one? The REGION
+    /// column shows only then, by the same count `region_label` makes
+    /// for the header.
+    pub(crate) fn fans_beyond_home(&self) -> bool {
+        self.multi_regions.iter().any(|r| r != &self.context.region)
+    }
+
     /// Under a `:region all` fan-out, derive its list again from
     /// `extra_regions` and the home region; outside one, do nothing.
     /// Returns whether the list changed. A context switch

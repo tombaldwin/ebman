@@ -188,19 +188,14 @@ pub(crate) fn draw_apps_table(f: &mut Frame, area: Rect, app: &mut App) {
 /// column cannot be added to the table and forgotten here — that is how
 /// INST, REGION and COST came to be unhideable.
 pub(crate) fn every_env_column() -> Vec<&'static str> {
-    visible_columns(
-        &["any-region".to_string()],
-        true,
-        &std::collections::BTreeSet::new(),
-        false,
-    )
-    .into_iter()
-    .map(|(label, _)| label)
-    .collect()
+    visible_columns(true, true, &std::collections::BTreeSet::new(), false)
+        .into_iter()
+        .map(|(label, _)| label)
+        .collect()
 }
 
 pub(crate) fn visible_columns(
-    multi_regions: &[String],
+    spans_regions: bool,
     cost_enabled: bool,
     hidden_cols: &std::collections::BTreeSet<String>,
     compact: bool,
@@ -223,8 +218,11 @@ pub(crate) fn visible_columns(
         ("CNAME", SortKey::Name),
         ("AGE", SortKey::Age),
     ];
-    // REGION column only renders when the user has fanned across regions.
-    if !multi_regions.is_empty() {
+    // REGION column only renders when the listing spans more than one
+    // region. A `:region all` with no extra_regions lists the home region
+    // alone, where the column would repeat it on every row; the header
+    // reads as the home region alone then too.
+    if spans_regions {
         full.insert(1, ("REGION", SortKey::App));
     }
     // COST column opt-in via `:cost on`. Inserted before AGE so the
@@ -673,7 +671,7 @@ pub(crate) fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
     let indexes = app.filtered_indexes();
 
     let mut columns = visible_columns(
-        &app.multi_regions,
+        app.fans_beyond_home(),
         app.costs.enabled(),
         &app.view.hidden_cols,
         compact,
@@ -1518,9 +1516,8 @@ mod tests {
     use std::collections::BTreeSet;
 
     fn cols(regions: &[&str], cost: bool, hidden: &[&str], compact: bool) -> Vec<&'static str> {
-        let regions: Vec<String> = regions.iter().map(|s| s.to_string()).collect();
         let hidden: BTreeSet<String> = hidden.iter().map(|s| s.to_string()).collect();
-        visible_columns(&regions, cost, &hidden, compact)
+        visible_columns(!regions.is_empty(), cost, &hidden, compact)
             .into_iter()
             .map(|(l, _)| l)
             .collect()
