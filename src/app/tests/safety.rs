@@ -1850,18 +1850,32 @@ async fn a_refusal_is_audited_under_the_label_its_dispatch_uses() {
 // writes carried their region (the `AmbiguousEnv` refusal); now they are
 // written, so the tests below say where.
 
-/// A name used only here, so the shared test audit log's lines for it
-/// are this file's.
-const TWIN: &str = "twin-route-probe";
-/// Its application, named so its lines are found the same way.
-const TWIN_APP: &str = "twin-route-probe-app";
+/// The env name for this test: the test's own name, so the lines it
+/// finds in the shared test audit log are its own while the other twin
+/// tests run beside it. The `-x` end stops one name matching inside a
+/// longer one.
+fn twin() -> String {
+    let thread = std::thread::current();
+    let test = thread
+        .name()
+        .unwrap_or("main")
+        .rsplit("::")
+        .next()
+        .unwrap_or("main");
+    format!("twin-{test}-x")
+}
 
-/// `TWIN` at home and in eu-west-2, with the eu-west-2 row selected.
+/// Its application, named so its lines are found the same way.
+fn twin_app() -> String {
+    format!("{}-app", twin())
+}
+
+/// `twin()` at home and in eu-west-2, with the eu-west-2 row selected.
 fn app_with_a_name_in_two_regions() -> App {
     let mut app = test_app();
-    let mut home = mk_env(TWIN, TWIN_APP, "Web", "Green");
+    let mut home = mk_env(&twin(), &twin_app(), "Web", "Green");
     home.id = Some("e-home".into());
-    let mut away = mk_env(TWIN, TWIN_APP, "Web", "Green");
+    let mut away = mk_env(&twin(), &twin_app(), "Web", "Green");
     away.region = Some("eu-west-2".into());
     // `:config-save` needs the env's id.
     away.id = Some("e-away".into());
@@ -1883,13 +1897,13 @@ fn audit_log() -> String {
     std::fs::read_to_string(crate::util::cache_dir().join("audit.log")).unwrap_or_default()
 }
 
-/// The `region=` of every line appended since `before` that names `TWIN`.
+/// The `region=` of every line appended since `before` that names `twin()`.
 /// A refusal is not a write: its line also names the region, so one
 /// fails here rather than counting as where the write went.
 fn twin_audit_regions(before: &str) -> Vec<String> {
     let after = audit_log();
     let delta = after.strip_prefix(before).expect("append-only");
-    let lines: Vec<&str> = delta.lines().filter(|l| l.contains(TWIN)).collect();
+    let lines: Vec<&str> = delta.lines().filter(|l| l.contains(&twin())).collect();
     assert!(
         !lines.iter().any(|l| l.contains("stage=refused")),
         "refused, not written: {lines:#?}"
@@ -1924,7 +1938,9 @@ async fn every_write_to_a_name_in_two_regions_goes_to_the_selected_rows_region()
         .chain(APPLICATION_SCOPED_WRITES)
         .chain(&["delete-version build-1"]);
     for cmd in cmds {
-        let cmd = cmd.replace("api-prod", TWIN).replace("poly", TWIN_APP);
+        let cmd = cmd
+            .replace("api-prod", &twin())
+            .replace("poly", &twin_app());
         let mut app = app_with_a_name_in_two_regions();
         let before = audit_log();
         app.execute_command(&cmd);
@@ -1968,7 +1984,7 @@ async fn a_confirmed_action_on_a_name_in_two_regions_is_dispatched_to_its_row() 
 async fn a_batch_over_one_of_two_same_named_envs_writes_only_that_one() {
     for cmd in BATCH_WRITE_COMMANDS {
         let mut app = app_with_a_name_in_two_regions();
-        app.multi_selected = [crate::app::EnvKey::new("eu-west-2", TWIN)]
+        app.multi_selected = [crate::app::EnvKey::new("eu-west-2", twin())]
             .into_iter()
             .collect();
         app.execute_command(cmd);
@@ -2026,7 +2042,7 @@ async fn a_form_on_one_of_two_same_named_envs_submits_to_its_region() {
 async fn alarms_for_one_of_two_same_named_envs_ignore_the_others_answer() {
     let mut app = app_with_a_name_in_two_regions();
     app.execute_command("alarms");
-    let eu = crate::app::EnvKey::new("eu-west-2", TWIN);
+    let eu = crate::app::EnvKey::new("eu-west-2", twin());
     assert!(
         matches!(
             app.current_overlay.as_ref(),
@@ -2038,7 +2054,7 @@ async fn alarms_for_one_of_two_same_named_envs_ignore_the_others_answer() {
     // A late answer for the home twin does not fill the eu overlay.
     app.handle_msg(AppMsg::Alarms {
         gen: app.generation,
-        env: crate::app::EnvKey::new("us-east-1", TWIN),
+        env: crate::app::EnvKey::new("us-east-1", twin()),
         result: Err("CANARY-HOME-TWIN".into()),
     });
     let Some(crate::app::Overlay::Alarms { body, .. }) = app.current_overlay.as_ref() else {
@@ -2052,7 +2068,7 @@ async fn the_events_panel_refetches_when_the_cursor_moves_to_a_same_named_env() 
     let mut app = app_with_a_name_in_two_regions();
     app.event_panel.visible = true;
     app.spawn_events();
-    let eu = crate::app::EnvKey::new("eu-west-2", TWIN);
+    let eu = crate::app::EnvKey::new("eu-west-2", twin());
     assert_eq!(app.event_panel.for_env, Some(eu.clone()));
     let other = app
         .view
@@ -2065,7 +2081,7 @@ async fn the_events_panel_refetches_when_the_cursor_moves_to_a_same_named_env() 
     app.refresh_events_if_selection_changed();
     assert_eq!(
         app.event_panel.for_env,
-        Some(crate::app::EnvKey::new("us-east-1", TWIN))
+        Some(crate::app::EnvKey::new("us-east-1", twin()))
     );
     // And back: a change detected in one direction only is half of it.
     app.table_state.select(eu_row);
@@ -2080,7 +2096,7 @@ async fn a_log_tail_keeps_the_region_it_was_opened_in() {
     app.handle_msg(AppMsg::LogTailOpened {
         gen: app.generation,
         session_id: 1,
-        env_name: TWIN.into(),
+        env_name: twin(),
         region: "eu-west-2".into(),
         log_group: "/aws/elasticbeanstalk/x/var/log/web.stdout.log".into(),
         since_ms: 0,
@@ -2096,15 +2112,15 @@ async fn a_refusal_for_one_of_two_same_named_envs_is_audited_in_its_region() {
     // Pins are by name, so a pin refuses both twins; the refusal is
     // filed under the region of the one the operator aimed at.
     let mut app = app_with_a_name_in_two_regions();
-    app.cfg.safety_envs.insert(TWIN.into(), true);
+    app.cfg.safety_envs.insert(twin(), true);
     let before = audit_log();
-    assert!(app.deny_write(&crate::app::EnvKey::new("eu-west-2", TWIN), "restart"));
+    assert!(app.deny_write(&crate::app::EnvKey::new("eu-west-2", twin()), "restart"));
     let after = audit_log();
     let lines: Vec<&str> = after
         .strip_prefix(&before)
         .expect("append-only")
         .lines()
-        .filter(|l| l.contains(TWIN))
+        .filter(|l| l.contains(&twin()))
         .collect();
     assert_eq!(lines.len(), 1, "{lines:#?}");
     assert!(
