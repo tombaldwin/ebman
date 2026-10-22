@@ -1621,13 +1621,12 @@ pub(super) fn draw_apps_action_menu(
     area: Rect,
     app: &App,
     app_name: &str,
-    env_names: &[String],
+    n_envs: usize,
     cursor: usize,
 ) {
     let theme = &app.theme;
     let popup = overlay_rect(OverlaySize::Small, area);
     f.render_widget(Clear, popup);
-    let n_envs = env_names.len();
     let mut lines: Vec<Line<'static>> = Vec::new();
     lines.push(Line::from(Span::styled(
         format!("application: {app_name}  ·  {n_envs} env(s)"),

@@ -839,7 +839,7 @@ async fn the_apps_action_menu_renders_its_actions() {
     app.rebuild_view();
     app.current_overlay = Some(crate::app::Overlay::AppsActionMenu {
         app_name: "MENUCANARY".into(),
-        env_names: vec!["api-prod".into(), "api-staging".into()],
+        envs: vec![home_key("api-prod"), home_key("api-staging")],
         cursor: 0,
     });
 

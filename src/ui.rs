@@ -234,9 +234,9 @@ pub(crate) fn draw(f: &mut Frame, app: &mut App) {
             Overlay::WhyRed { .. } => {}
             Overlay::AppsActionMenu {
                 app_name,
-                env_names,
+                envs,
                 cursor,
-            } => draw_apps_action_menu(f, f.area(), app, app_name, env_names, *cursor),
+            } => draw_apps_action_menu(f, f.area(), app, app_name, envs.len(), *cursor),
             Overlay::ReportBug { body } => draw_report_bug_overlay(f, f.area(), app, body),
             Overlay::About(opened) => draw_about(f, f.area(), app, *opened),
         }

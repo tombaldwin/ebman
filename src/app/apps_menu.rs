@@ -108,13 +108,13 @@ impl App {
         let Some(app_name) = self.caches.applications.get(idx).map(|a| a.name.clone()) else {
             return;
         };
-        let env_names: Vec<String> = self
+        let envs: Vec<EnvKey> = self
             .environments
             .iter()
             .filter(|e| e.application == app_name)
-            .map(|e| e.name.clone())
+            .map(|e| self.env_key(e))
             .collect();
-        if env_names.is_empty() {
+        if envs.is_empty() {
             self.status_message = Some(format!(
                 "application '{app_name}' has no envs — nothing to act on"
             ));
@@ -122,7 +122,7 @@ impl App {
         }
         self.current_overlay = Some(Overlay::AppsActionMenu {
             app_name,
-            env_names,
+            envs,
             cursor: 0,
         });
     }
@@ -159,7 +159,7 @@ impl App {
     fn dispatch_apps_action_menu(&mut self) {
         let Some(Overlay::AppsActionMenu {
             app_name,
-            env_names,
+            envs,
             cursor,
         }) = self.current_overlay.as_ref().cloned()
         else {
@@ -173,14 +173,9 @@ impl App {
             Some(it) => *it,
             None => return,
         };
-        // The app's envs as keys: under a fan-out the same application,
-        // and the same env names, exist once per region.
-        let env_keys: std::collections::BTreeSet<EnvKey> = self
-            .environments
-            .iter()
-            .filter(|e| e.application == app_name && env_names.contains(&e.name))
-            .map(|e| self.env_key(e))
-            .collect();
+        // The envs captured at open, every region's: not the app's envs
+        // looked up by name again now.
+        let env_keys: std::collections::BTreeSet<EnvKey> = envs.into_iter().collect();
         match item {
             AppsActionItem::Drill => {
                 self.view.set_filter(app_name.clone());

@@ -1841,7 +1841,7 @@ async fn the_apps_action_menu_moves_and_wraps_on_j_and_k() {
         let mut app = test_app();
         app.current_overlay = Some(crate::app::Overlay::AppsActionMenu {
             app_name: "poly".into(),
-            env_names: vec!["api-prod".into()],
+            envs: vec![home_key("api-prod")],
             cursor: 0,
         });
         app

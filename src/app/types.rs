@@ -196,9 +196,10 @@ pub(crate) enum Overlay {
     /// esc / q returns to the Apps table without doing anything.
     AppsActionMenu {
         app_name: String,
-        /// Cached at open time so the action labels can show "N envs"
-        /// without re-walking `app.environments` per frame.
-        env_names: Vec<String>,
+        /// The app's envs, every region's, captured at open time: what
+        /// the batch acts on, and the "N envs" in the labels. By key, so
+        /// a same-named env that appears elsewhere later does not join.
+        envs: Vec<super::EnvKey>,
         cursor: usize,
     },
     /// Streaming CloudWatch Logs view opened by `:logs-tail`. Polling task

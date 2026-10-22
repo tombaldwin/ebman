@@ -1500,7 +1500,7 @@ async fn an_applications_batch_marks_its_env_in_every_region() {
     let mut app = same_named_in_two_regions();
     app.current_overlay = Some(crate::app::Overlay::AppsActionMenu {
         app_name: "poly".into(),
-        env_names: vec!["api-prod".into()],
+        envs: vec![home_key("api-prod"), eu_key("api-prod")],
         cursor: crate::app::APPS_ACTION_ITEMS
             .iter()
             .position(|i| matches!(i, crate::app::AppsActionItem::BatchDeploy))
@@ -2144,4 +2144,40 @@ async fn the_why_title_reads_the_health_of_the_env_it_opened_on() {
     app.open_why_red(&eu);
     let out = render(&mut app, 160, 44);
     assert!(out.contains("why is jobs red?"), "{out}");
+}
+
+#[tokio::test]
+async fn the_apps_menu_acts_on_the_envs_it_captured() {
+    // It promised to keep the env list from when it opened, then
+    // looked the names up again: a same-named env listed after it opened
+    // (another region's) joined the batch.
+    let mut app = same_named_in_two_regions();
+    app.caches.applications = vec![crate::aws::Application {
+        name: "poly".into(),
+        description: String::new(),
+        date_created: None,
+        date_updated: None,
+        version_count: 0,
+        templates: vec![],
+        latest_version_label: None,
+        latest_version_created: None,
+    }];
+    app.app_table_state.select(Some(0));
+    app.open_apps_action_menu();
+    let mut late = mk_env("api-prod", "poly", "Web", "Green");
+    late.region = Some("ap-south-1".into());
+    app.environments.push(late);
+    if let Some(crate::app::Overlay::AppsActionMenu { cursor, .. }) = app.current_overlay.as_mut() {
+        *cursor = crate::app::APPS_ACTION_ITEMS
+            .iter()
+            .position(|i| matches!(i, crate::app::AppsActionItem::BatchDeploy))
+            .unwrap();
+    } else {
+        panic!("menu not open: {:?}", app.status_message);
+    }
+    app.handle_apps_action_menu_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    let want: std::collections::BTreeSet<_> = [home_key("api-prod"), eu_key("api-prod")]
+        .into_iter()
+        .collect();
+    assert_eq!(app.multi_selected, want);
 }
