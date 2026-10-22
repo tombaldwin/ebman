@@ -1149,5 +1149,10 @@ async fn with_under_test_reads_no_aws_config_and_holds_no_credentials() {
         "a test client must hold no credentials"
     );
     assert_eq!(client.context.region, "eu-west-2");
+    assert_eq!(
+        client.config.region().map(|r| r.as_ref()),
+        Some("eu-west-2"),
+        "the SDK config is named for the region too"
+    );
     assert_eq!(client.context.profile.as_deref(), Some("poly-dev"));
 }

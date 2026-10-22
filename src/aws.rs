@@ -398,11 +398,24 @@ impl AwsClient {
     }
 
     /// `with` under `cfg(test)`: the stub, named for what was asked.
+    /// Its SDK clients use that region too, so nothing about it still
+    /// says `us-east-1` when something else was asked for.
     fn offline(profile: Option<String>, region: Option<String>) -> Self {
-        let mut client = Self::stub();
-        if let Some(r) = region {
-            client.context.region = r;
-        }
+        let region = region.unwrap_or_else(|| "us-east-1".to_string());
+        let cfg = aws_config::SdkConfig::builder()
+            .region(Region::new(region.clone()))
+            .behavior_version(aws_config::BehaviorVersion::latest())
+            .build();
+        let mut client = Self::for_tests(
+            Client::new(&cfg),
+            SqsClient::new(&cfg),
+            CwClient::new(&cfg),
+            CwLogsClient::new(&cfg),
+            S3Client::new(&cfg),
+            Ec2Client::new(&cfg),
+        );
+        client.config = cfg;
+        client.context.region = region;
         client.context.profile = profile;
         client
     }
