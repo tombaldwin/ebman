@@ -2167,3 +2167,21 @@ async fn discovery_does_not_run_for_an_env_it_cannot_place() {
     assert!(!app.discovery_running("ghost"));
     assert!(app.caches.app_tab_discovery.discovering.is_empty());
 }
+
+#[tokio::test]
+async fn the_ssh_picker_honours_a_pin_like_the_other_shell_paths() {
+    let mut app = detail_on_an_eu_instance();
+    app.cfg.safety_envs.insert("api-prod".into(), true);
+    app.execute_command("ssh");
+    assert!(app.picker.is_some(), "{:?}", app.error_message);
+    press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    assert_eq!(app.pending_shell_target, None);
+    assert!(
+        app.error_message
+            .as_deref()
+            .unwrap_or_default()
+            .contains("safety.envs"),
+        "{:?}",
+        app.error_message
+    );
+}

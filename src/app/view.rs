@@ -266,6 +266,15 @@ impl App {
                 // handles the TUI suspend/resume + alt-screen dance.
                 // The picker lists Detail's instances: Detail's region.
                 let region = self.detail_region();
+                // A shell is a write surface: the same gate as `:ssh ID`
+                // and Detail's `s`, which this path skipped.
+                let gate = match self.detail.as_ref() {
+                    Some(d) => self.env_key(&d.env_snapshot),
+                    None => EnvKey::new(region.clone(), ""),
+                };
+                if self.deny_write(&gate, "ssm-session") {
+                    return;
+                }
                 crate::audit::append_action_dispatched(
                     self.context.account_id.as_deref(),
                     self.context.profile.as_deref(),
