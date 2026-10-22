@@ -497,6 +497,13 @@ impl App {
         if self.discovery_running(&env) {
             return;
         }
+        // An env we hold no row or snapshot for has no application to
+        // read its env vars from; an empty name made that lookup fail
+        // and the tab report it as a failure of discovery.
+        // Checked before the run begins, or it would show as running.
+        let Some(app_name) = self.discovery_app_name(&key) else {
+            return;
+        };
         let ticket = self
             .caches
             .app_tab_discovery
@@ -504,7 +511,6 @@ impl App {
             .entry(key.clone())
             .or_default()
             .begin();
-        let app_name = self.discovery_app_name(&key);
         let fleet: Vec<String> = self.environments.iter().map(|e| e.name.clone()).collect();
         let dimension_names = crate::app_discover::env_dimension_names(
             &self.cfg.alarm_dimensions,
@@ -589,7 +595,7 @@ impl App {
     /// the Detail view's own env by its snapshot, any other by the row
     /// in `key`'s region. By name alone, a same-named env in another
     /// region of a fan-out could name another application.
-    pub(super) fn discovery_app_name(&self, key: &EnvKey) -> String {
+    pub(super) fn discovery_app_name(&self, key: &EnvKey) -> Option<String> {
         self.detail
             .as_ref()
             .filter(|d| d.env_name == key.name && self.region_for(&d.env_snapshot) == key.region)
@@ -600,7 +606,6 @@ impl App {
                     .find(|e| e.name == key.name && self.region_for(e) == key.region)
                     .map(|e| e.application.clone())
             })
-            .unwrap_or_default()
     }
 
     /// The client discovery for `key` runs on: the key's region, so the

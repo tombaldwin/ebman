@@ -1014,14 +1014,14 @@ async fn a_discovery_is_for_the_envs_own_region_whichever_row_is_first() {
         let key = app.discovery_key("api-prod");
         assert_eq!(key.region, "eu-west-2", "away first: {away_first}");
         assert_eq!(
-            app.discovery_app_name(&key),
-            "away-app",
+            app.discovery_app_name(&key).as_deref(),
+            Some("away-app"),
             "away first: {away_first}"
         );
         let home_key = crate::app::EnvKey::new("us-east-1", "api-prod");
         assert_eq!(
-            app.discovery_app_name(&home_key),
-            "home-app",
+            app.discovery_app_name(&home_key).as_deref(),
+            Some("home-app"),
             "away first: {away_first}"
         );
     }
@@ -2180,4 +2180,15 @@ async fn the_apps_menu_acts_on_the_envs_it_captured() {
         .into_iter()
         .collect();
     assert_eq!(app.multi_selected, want);
+}
+
+#[tokio::test]
+async fn discovery_does_not_run_for_an_env_it_cannot_place() {
+    // With no row or snapshot there is no application to read env vars
+    // from: an empty name made that lookup fail and the tab report a
+    // failed discovery. Nothing starts, so nothing shows as running.
+    let mut app = test_app();
+    app.spawn_app_discovery("ghost".into());
+    assert!(!app.discovery_running("ghost"));
+    assert!(app.caches.app_tab_discovery.discovering.is_empty());
 }
