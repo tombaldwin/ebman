@@ -1377,6 +1377,7 @@ async fn a_form_prefill_for_another_env_is_dropped() {
             },
             summary: "capacity".into(),
             env_name: "api-prod".into(),
+            region: "us-east-1".into(),
             banner: String::new(),
             scroll: 0,
         };
@@ -1979,7 +1980,7 @@ async fn every_tui_alarm_fetch_takes_the_envs_alarm_prefix() {
     assert_eq!(alarm_names(&mut app).await, ["api-prod-db-cpu"], ":why");
 
     let mut app = app_with_alarms();
-    app.spawn_alarms_fetch("api-prod".into());
+    app.spawn_alarms_fetch(&mk_env("api-prod", "poly", "Web", "Green"));
     assert_eq!(alarm_names(&mut app).await, ["api-prod-db-cpu"], ":alarms");
 }
 
@@ -2623,7 +2624,7 @@ async fn the_app_tab_refresh_re_reads_its_config() {
 
     settle(&mut app);
     std::fs::write(&path, "app.api-prod.namespace = \"Alarms\"\n").unwrap();
-    app.spawn_alarms_fetch("api-prod".into());
+    app.spawn_alarms_fetch(&mk_env("api-prod", "poly", "Web", "Green"));
     assert_eq!(namespace(&app).as_deref(), Some("Alarms"), ":alarms");
     assert!(refetched(&app), ":alarms refetched the tab");
 

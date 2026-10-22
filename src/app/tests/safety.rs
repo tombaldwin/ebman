@@ -44,7 +44,7 @@ fn deny_write_refuses_in_demo_mode_even_when_not_read_only() {
     app.demo_mode = true;
     // Sanity: not in read-only mode otherwise.
     assert!(!app.read_only);
-    let denied = app.deny_write("any-env", "rebuild");
+    let denied = app.deny_write(&home_key("any-env"), "rebuild");
     assert!(denied, "demo mode must deny writes");
     let err = app
         .error_message
@@ -70,7 +70,7 @@ fn deny_write_demo_mode_composes_pin_reason_in_toast() {
     let mut app = test_app();
     app.demo_mode = true;
     app.cfg.safety_envs.insert("prod-eu-1".into(), true);
-    let denied = app.deny_write("prod-eu-1", "rebuild");
+    let denied = app.deny_write(&home_key("prod-eu-1"), "rebuild");
     assert!(denied);
     let err = app.error_message.as_deref().unwrap();
     assert!(err.contains("demo mode"), "got: {err}");
@@ -88,7 +88,7 @@ fn deny_write_demo_mode_composes_pin_reason_in_toast() {
 fn deny_write_allows_writes_when_not_demo_and_not_read_only() {
     let mut app = test_app();
     // demo_mode is false by default in test_app.
-    let denied = app.deny_write("any-env", "rebuild");
+    let denied = app.deny_write(&home_key("any-env"), "rebuild");
     assert!(!denied, "non-demo non-readonly path must allow writes");
     assert!(
         app.error_message.is_none(),
@@ -421,7 +421,7 @@ async fn deny_write_batch_refuses_when_any_selected_env_is_pinned() {
     // the whole batch if ANY selected env is pinned.
     let mut app = test_app();
     app.cfg.safety_envs.insert("prod-web".into(), true);
-    let selection = vec!["staging-web".to_string(), "prod-web".to_string()];
+    let selection = vec![home_key("staging-web"), home_key("prod-web")];
     assert!(
         app.deny_write_batch(&selection, "batch action"),
         "a pinned env in the selection must refuse the batch"
@@ -438,7 +438,7 @@ async fn deny_write_batch_refuses_when_any_selected_env_is_pinned() {
 async fn deny_write_batch_allows_when_no_env_pinned() {
     let mut app = test_app();
     app.cfg.safety_envs.insert("other-env".into(), true); // not in selection
-    let selection = vec!["staging-web".to_string(), "dev-web".to_string()];
+    let selection = vec![home_key("staging-web"), home_key("dev-web")];
     assert!(
         !app.deny_write_batch(&selection, "batch action"),
         "no selected env pinned → batch proceeds"
@@ -453,7 +453,7 @@ async fn deny_write_batch_global_flag_uses_fleet_message_not_per_env_list() {
     // than enumerating envs.
     let mut app = test_app();
     app.read_only = true;
-    let selection = vec!["a".to_string(), "b".to_string()];
+    let selection = vec![home_key("a"), home_key("b")];
     assert!(app.deny_write_batch(&selection, "batch action"));
     let msg = app.error_message.clone().unwrap();
     assert!(msg.contains("read-only mode"), "got: {msg}");
@@ -1384,7 +1384,10 @@ async fn a_refused_write_is_recorded_with_its_rule_and_remedy() {
 
     let mut app = test_app();
     app.cfg.safety_envs.insert(env_name.into(), true);
-    assert!(app.deny_write(env_name, "Terminate"), "must refuse");
+    assert!(
+        app.deny_write(&home_key(env_name), "Terminate"),
+        "must refuse"
+    );
 
     let after = std::fs::read_to_string(&path).unwrap_or_default();
     let delta = after
@@ -1426,7 +1429,10 @@ async fn demo_mode_refuses_without_writing_an_audit_line() {
     let mut app = test_app();
     app.demo_mode = true;
     app.cfg.safety_envs.insert(env_name.into(), true);
-    assert!(app.deny_write(env_name, "Terminate"), "demo must refuse");
+    assert!(
+        app.deny_write(&home_key(env_name), "Terminate"),
+        "demo must refuse"
+    );
 
     let after = std::fs::read_to_string(&path).unwrap_or_default();
     let delta = after.strip_prefix(&before).unwrap_or(&after);
@@ -1467,7 +1473,10 @@ async fn an_allowed_write_files_no_refusal() {
     let before = std::fs::read_to_string(&path).unwrap_or_default();
 
     let mut app = test_app();
-    assert!(!app.deny_write(env_name, "Restart"), "must allow");
+    assert!(
+        !app.deny_write(&home_key(env_name), "Restart"),
+        "must allow"
+    );
 
     let after = std::fs::read_to_string(&path).unwrap_or_default();
     let delta = after.strip_prefix(&before).unwrap_or(&after);
@@ -1520,8 +1529,7 @@ async fn an_unreadable_safety_config_announces_itself_at_startup() {
 ///
 /// The joined form (`target=env-a,env-b`) matched no env, so `ebman
 /// audit --env env-a` found nothing — and the region lookup missed too
-/// and fell back to home, which is the wrong-region bug `region_for_name`
-/// carries a comment about.
+/// and fell back to home.
 #[tokio::test]
 async fn a_batch_refusal_files_one_matchable_line_per_env() {
     let a = "batch-refusal-probe-a";
@@ -1539,7 +1547,10 @@ async fn a_batch_refusal_files_one_matchable_line_per_env() {
     app.rebuild_view();
 
     assert!(
-        app.deny_write_batch(&[a.to_string(), b.to_string()], "Terminate"),
+        app.deny_write_batch(
+            &[home_key(a), crate::app::EnvKey::new("ap-south-1", b)],
+            "Terminate"
+        ),
         "both envs are pinned"
     );
 
@@ -1626,7 +1637,7 @@ async fn a_fleet_wide_refusal_is_not_reported_as_per_env_pins() {
     let cfg = crate::config::parse("safety.envs.poly-prod = true\n");
     let mut app = App::for_tests(crate::aws::AwsClient::stub(), cfg);
 
-    let envs = vec!["env-a".to_string(), "env-b".to_string()];
+    let envs = vec![home_key("env-a"), home_key("env-b")];
     assert!(app.deny_write_batch(&envs, "Terminate"), "must refuse");
 
     let msg = app.error_message.as_deref().expect("a refusal toast");
@@ -1789,7 +1800,7 @@ async fn a_refusal_is_audited_under_the_label_its_dispatch_uses() {
     let mut app = test_app();
     app.cfg.safety_envs.insert(env_name.into(), true);
     // "purge" is the toast verb; `spawn_dlq` dispatches it as `dlq-purge`.
-    assert!(app.deny_write(env_name, "purge"), "must refuse");
+    assert!(app.deny_write(&home_key(env_name), "purge"), "must refuse");
 
     let after = std::fs::read_to_string(&path).unwrap_or_default();
     let delta = after
@@ -1816,7 +1827,7 @@ async fn a_refusal_is_audited_under_the_label_its_dispatch_uses() {
     let before = std::fs::read_to_string(&path).unwrap_or_default();
     app.cfg.safety_envs.insert(batch_env.into(), true);
     assert!(
-        app.deny_write_batch(&[batch_env.to_string()], "purge"),
+        app.deny_write_batch(&[home_key(batch_env)], "purge"),
         "must refuse"
     );
     let after = std::fs::read_to_string(&path).unwrap_or_default();
@@ -1833,19 +1844,26 @@ async fn a_refusal_is_audited_under_the_label_its_dispatch_uses() {
 
 // --- a name in two regions ---------------------------------------------
 //
-// Every write reaches its environment by NAME (`client_for_env` →
-// `region_for_name`, first match). Under `:region all` with `api-prod`
-// in two regions, a write aimed at one could land on the other, so a
-// write to an ambiguous name is refused until writes carry the region.
+// Under `:region all` a name can be listed once per region. Every write
+// goes to the region of the row it was aimed at: the twin in the other
+// region is a different environment. These were refused outright until
+// writes carried their region (the `AmbiguousEnv` refusal); now they are
+// written, so the tests below say where.
 
-/// `read_only_app_with_env`'s `api-prod`, writes allowed, plus a second
-/// `api-prod` in eu-west-2, which is the row selected.
-fn app_with_api_prod_in_two_regions() -> App {
-    let mut app = read_only_app_with_env();
-    app.read_only = false;
-    let mut away = mk_env("api-prod", "poly", "Web", "Green");
+/// A name used only here, so the shared test audit log's lines for it
+/// are this file's.
+const TWIN: &str = "twin-route-probe";
+
+/// `TWIN` at home and in eu-west-2, with the eu-west-2 row selected.
+fn app_with_a_name_in_two_regions() -> App {
+    let mut app = test_app();
+    let mut home = mk_env(TWIN, "poly", "Web", "Green");
+    home.id = Some("e-home".into());
+    let mut away = mk_env(TWIN, "poly", "Web", "Green");
     away.region = Some("eu-west-2".into());
-    app.environments.push(away);
+    // `:config-save` needs the env's id.
+    away.id = Some("e-away".into());
+    app.environments = vec![home, away];
     app.multi_regions = vec!["us-east-1".into(), "eu-west-2".into()];
     app.rebuild_view();
     let eu_row = app
@@ -1858,186 +1876,142 @@ fn app_with_api_prod_in_two_regions() -> App {
     app
 }
 
+/// The audit log as it stands, so a test can read what it appended.
+fn audit_log() -> String {
+    std::fs::read_to_string(crate::util::cache_dir().join("audit.log")).unwrap_or_default()
+}
+
+/// The `region=` of every line appended since `before` that names `TWIN`.
+/// A refusal is not a write: its line also names the region, so one
+/// fails here rather than counting as where the write went.
+fn twin_audit_regions(before: &str) -> Vec<String> {
+    let after = audit_log();
+    let delta = after.strip_prefix(before).expect("append-only");
+    let lines: Vec<&str> = delta.lines().filter(|l| l.contains(TWIN)).collect();
+    assert!(
+        !lines.iter().any(|l| l.contains("stage=refused")),
+        "refused, not written: {lines:#?}"
+    );
+    lines
+        .into_iter()
+        .filter_map(|l| {
+            l.split_whitespace()
+                .find_map(|t| t.strip_prefix("region="))
+                .map(|r| r.trim_matches('"').to_string())
+        })
+        .collect()
+}
+
+/// Where `app` sent a write: the region a confirm modal or a form
+/// recorded, and the region of every audit line it appended.
+fn where_it_went(app: &App, before: &str) -> Vec<String> {
+    let mut regions = twin_audit_regions(before);
+    if let Some(ActionFlow::Confirm(modal)) = app.action_flow.as_ref() {
+        regions.push(modal.target_region.clone());
+    }
+    if let Some(form) = app.form.as_ref() {
+        regions.push(form.region.clone());
+    }
+    regions
+}
+
 #[tokio::test]
-async fn every_write_to_a_name_in_two_regions_is_refused() {
+async fn every_write_to_a_name_in_two_regions_goes_to_the_selected_rows_region() {
     for cmd in WRITE_COMMANDS {
-        let mut app = app_with_api_prod_in_two_regions();
-        app.execute_command(cmd);
-        let err = app.error_message.as_deref().unwrap_or_default();
+        let cmd = cmd.replace("api-prod", TWIN);
+        let mut app = app_with_a_name_in_two_regions();
+        let before = audit_log();
+        app.execute_command(&cmd);
+        let went = where_it_went(&app, &before);
         assert!(
-            err.contains("2 regions") && err.contains(":region"),
-            ":{cmd} wrote to a name in two regions — got {err:?}"
+            !went.is_empty(),
+            ":{cmd} left no trace of where it went — {:?}",
+            app.error_message
         );
-    }
-    for cmd in BATCH_WRITE_COMMANDS {
-        let mut app = app_with_api_prod_in_two_regions();
-        app.multi_selected = [home_key("api-prod")].into_iter().collect();
-        app.execute_command(cmd);
-        let err = app.error_message.as_deref().unwrap_or_default();
         assert!(
-            err.contains("api-prod"),
-            ":{cmd} batch-wrote to a name in two regions — got {err:?}"
+            went.iter().all(|r| r == "eu-west-2"),
+            ":{cmd} reached the twin: {went:?}"
         );
     }
 }
 
 #[tokio::test]
-async fn a_name_in_one_region_of_a_multi_region_fleet_can_still_be_written() {
-    let mut app = app_with_api_prod_in_two_regions();
-    let mut other = mk_env("api-staging", "poly", "Web", "Green");
-    other.region = Some("eu-west-2".into());
-    app.environments.push(other);
-    assert!(
-        !app.deny_write("api-staging", "restart"),
-        "{:?}",
-        app.error_message
-    );
-    assert!(app.deny_write("api-prod", "restart"));
-    assert_eq!(
-        app.refusal_for("api-prod").map(|r| r.rule()),
-        Some("ambiguous_env")
-    );
-}
-
-#[tokio::test]
-async fn a_confirmed_action_on_a_name_in_two_regions_is_not_dispatched() {
-    // The confirm-modal actions gate at dispatch (`spawn_action`), where
-    // the env is resolved by name.
-    for cmd in ["restart", "rebuild", "stop", "start"] {
-        let mut app = app_with_api_prod_in_two_regions();
+async fn a_confirmed_action_on_a_name_in_two_regions_is_dispatched_to_its_row() {
+    for cmd in ["restart", "rebuild"] {
+        let mut app = app_with_a_name_in_two_regions();
         app.execute_command(cmd);
-        let modal = match app.action_flow.as_ref() {
-            Some(ActionFlow::Confirm(modal)) => modal.clone(),
-            // Refused before a modal opened is refused too.
-            _ => {
-                let err = app.error_message.as_deref().unwrap_or_default();
-                assert!(err.contains("2 regions"), ":{cmd} — got {err:?}");
-                continue;
-            }
+        let Some(ActionFlow::Confirm(modal)) = app.action_flow.take() else {
+            panic!(":{cmd} opened no confirm modal: {:?}", app.error_message);
         };
-        app.error_message = None;
+        let before = audit_log();
         app.spawn_action(modal);
-        let err = app.error_message.as_deref().unwrap_or_default();
-        assert!(err.contains("2 regions"), ":{cmd} dispatched — got {err:?}");
+        let went = twin_audit_regions(&before);
         assert!(
-            app.pending_actions.is_empty(),
-            ":{cmd} left a pending action"
+            !went.is_empty(),
+            ":{cmd} was not dispatched: {:?}",
+            app.error_message
+        );
+        assert!(
+            went.iter().all(|r| r == "eu-west-2"),
+            ":{cmd} reached the twin: {went:?}"
         );
     }
 }
 
 #[tokio::test]
-async fn a_name_once_seen_in_two_regions_stays_ambiguous_when_a_listing_drops_one() {
-    // The table alone said one region after eu-west-2's listing failed,
-    // while `region_for_name` could still route by Detail's snapshot or
-    // by what was seen before.
-    let mut app = app_with_api_prod_in_two_regions();
-    app.apply_refresh(app.fanout_epoch, Ok(app.environments.clone()), Vec::new());
-    let home_only: Vec<_> = app
-        .environments
-        .iter()
-        .filter(|e| e.region.is_none())
-        .cloned()
+async fn a_batch_over_one_of_two_same_named_envs_writes_only_that_one() {
+    for cmd in BATCH_WRITE_COMMANDS {
+        let mut app = app_with_a_name_in_two_regions();
+        app.multi_selected = [crate::app::EnvKey::new("eu-west-2", TWIN)]
+            .into_iter()
+            .collect();
+        app.execute_command(cmd);
+        let Some(pd) = app.pending_dispatch.as_mut() else {
+            panic!(":{cmd} queued nothing: {:?}", app.error_message);
+        };
+        pd.deadline = std::time::Instant::now();
+        let before = audit_log();
+        app.tick_pending_dispatch();
+        let went = twin_audit_regions(&before);
+        assert!(
+            !went.is_empty(),
+            ":{cmd} was not dispatched: {:?}",
+            app.error_message
+        );
+        assert!(
+            went.iter().all(|r| r == "eu-west-2"),
+            ":{cmd} reached the twin: {went:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_refusal_for_one_of_two_same_named_envs_is_audited_in_its_region() {
+    // Pins are by name, so a pin refuses both twins; the refusal is
+    // filed under the region of the one the operator aimed at.
+    let mut app = app_with_a_name_in_two_regions();
+    app.cfg.safety_envs.insert(TWIN.into(), true);
+    let before = audit_log();
+    assert!(app.deny_write(&crate::app::EnvKey::new("eu-west-2", TWIN), "restart"));
+    let after = audit_log();
+    let lines: Vec<&str> = after
+        .strip_prefix(&before)
+        .expect("append-only")
+        .lines()
+        .filter(|l| l.contains(TWIN))
         .collect();
-    app.apply_refresh(app.fanout_epoch, Ok(home_only), Vec::new());
-    assert_eq!(app.regions_named("api-prod").len(), 1 + 1, "seen in two");
-    assert!(app.deny_write("api-prod", "restart"));
-
-    // Detail's snapshot counts too, even with the remembered set empty.
-    let mut app = app_with_api_prod_in_two_regions();
-    app.open_detail();
-    app.environments.retain(|e| e.region.is_none());
-    app.caches.env_regions.clear();
+    assert_eq!(lines.len(), 1, "{lines:#?}");
     assert!(
-        app.deny_write("api-prod", "restart"),
-        "Detail is on eu-west-2's"
-    );
-}
-
-#[tokio::test]
-async fn a_rollout_names_its_regions_so_a_name_in_two_is_not_refused_but_a_pin_still_is() {
-    // A rollout builds a client per region it was given: the fleet with
-    // `api-prod` in two regions is the one it exists for. Its gate is
-    // every rung but the ambiguous-name one.
-    let mut app = app_with_api_prod_in_two_regions();
-    assert!(
-        app.deny_write("api-prod", "restart"),
-        "routed by name: refused"
-    );
-    app.error_message = None;
-    assert!(
-        !app.deny_write_in_region("api-prod", "rollout"),
-        "{:?}",
-        app.error_message
-    );
-    app.cfg.safety_envs.insert("api-prod".into(), true);
-    assert!(
-        app.deny_write_in_region("api-prod", "rollout"),
-        "a pin still refuses"
-    );
-    app.cfg.safety_envs.clear();
-    app.read_only = true;
-    assert!(
-        app.deny_write_in_region("api-prod", "rollout"),
-        "read-only still refuses"
-    );
-}
-
-/// Both rollout gates are the region-explicit one: planning in
-/// `:rollout` and each per-region dispatch.
-#[test]
-fn both_rollout_gates_skip_only_the_ambiguous_name_rung() {
-    for (file, src) in [
-        ("cmd_action.rs", include_str!("../cmd_action.rs")),
-        ("spawn_rollout.rs", include_str!("../spawn_rollout.rs")),
-    ] {
-        let code = super::scan::statements_of(src).join("\n");
-        assert!(
-            code.contains("deny_write_in_region(&env_name, \"rollout\")")
-                && !code.contains("deny_write(&env_name, \"rollout\")"),
-            "{file}"
-        );
-    }
-}
-
-#[tokio::test]
-async fn a_confirmed_write_whose_env_resolves_to_another_region_by_dispatch_is_refused() {
-    // Confirmed against eu-west-2's `api-prod` while us-east-1's listing
-    // was failing; by dispatch the listings have flipped and the name
-    // resolves to us-east-1's. The write must not follow it there.
-    let mut app = read_only_app_with_env();
-    app.read_only = false;
-    let mut modal = mk_modal(Action::RestartAppServer, "api-prod");
-    modal.target_region = "eu-west-2".into();
-    app.spawn_action(modal);
-    let err = app.error_message.as_deref().unwrap_or_default();
-    assert!(
-        err.contains("when confirmed") && err.contains("eu-west-2") && err.contains("us-east-1"),
-        "{err}"
-    );
-    assert!(app.pending_actions.is_empty());
-
-    // Where it was confirmed is where it resolves: dispatched (as far as
-    // the gate goes; the stub client fails the call itself).
-    let mut app = read_only_app_with_env();
-    app.read_only = false;
-    app.spawn_action(mk_modal(Action::RestartAppServer, "api-prod"));
-    assert!(
-        !app.error_message
-            .as_deref()
-            .unwrap_or_default()
-            .contains("when confirmed"),
-        "{:?}",
-        app.error_message
+        lines[0].contains("stage=refused") && lines[0].contains("region=eu-west-2"),
+        "{}",
+        lines[0]
     );
 }
 
 #[tokio::test]
 async fn a_confirm_modal_records_the_region_of_the_row_it_was_opened_on() {
-    // The dispatch refuses when the name resolves elsewhere by then, so
-    // the modal must carry the ROW's region, not the home one: with the
-    // home region a write to any away row would be refused, and a write
-    // that moved would not be noticed.
+    // The dispatch goes to the region the modal recorded, so the modal
+    // must carry the ROW's region, not the home one.
     for cmd in ["restart", "terminate", "deploy build-1", "swap other-env"] {
         let mut app = test_app();
         let mut away = mk_env("api-eu", "poly", "Web", "Green");
@@ -2081,50 +2055,4 @@ async fn a_swap_picked_from_the_action_menu_records_the_sources_region() {
         Some(ActionFlow::Confirm(modal)) => assert_eq!(modal.target_region, "eu-west-2"),
         _ => panic!("no confirm modal: {:?}", app.error_message),
     }
-}
-
-#[tokio::test]
-async fn region_off_after_region_all_makes_a_once_twinned_name_writable_again() {
-    // The refusal remembers every region a name was seen in; `:region
-    // off` must forget the regions it drops, or the name stays refused
-    // for the session with nothing the operator can do about it.
-    let mut app = app_with_api_prod_in_two_regions();
-    app.apply_refresh(app.fanout_epoch, Ok(app.environments.clone()), Vec::new());
-    assert!(
-        app.deny_write("api-prod", "restart"),
-        "twinned under :region all"
-    );
-    app.execute_command("region off");
-    let mut home = mk_env("api-prod", "poly", "Web", "Green");
-    home.region = Some("us-east-1".into());
-    app.apply_refresh(app.fanout_epoch, Ok(vec![home]), Vec::new());
-    app.error_message = None;
-    assert!(
-        !app.deny_write("api-prod", "restart"),
-        "{:?}",
-        app.error_message
-    );
-}
-
-#[tokio::test]
-async fn a_write_refused_for_a_moved_region_is_audited_like_any_refusal() {
-    let env_name = "region-moved-audit-probe-env";
-    let path = crate::util::cache_dir().join("audit.log");
-    let before = std::fs::read_to_string(&path).unwrap_or_default();
-    let mut app = test_app();
-    app.environments = vec![mk_env(env_name, "poly", "Web", "Green")];
-    app.rebuild_view();
-    let mut modal = mk_modal(Action::RestartAppServer, env_name);
-    modal.target_region = "eu-west-2".into();
-    app.spawn_action(modal);
-    let after = std::fs::read_to_string(&path).unwrap_or_default();
-    let delta = after.strip_prefix(&before).expect("append-only");
-    let line = delta
-        .lines()
-        .find(|l| l.contains(env_name))
-        .unwrap_or_else(|| panic!("no audit line: {delta}"));
-    assert!(
-        line.contains("stage=refused") && line.contains("rule=region_moved"),
-        "{line}"
-    );
 }

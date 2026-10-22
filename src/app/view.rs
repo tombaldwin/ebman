@@ -253,7 +253,9 @@ impl App {
                 // the chosen group, replacing `current_overlay` via the
                 // resulting `AppMsg::LogTailOpened`.
                 let env = match self.current_overlay.as_ref() {
-                    Some(Overlay::LogTail { env_name, .. }) => env_name.clone(),
+                    Some(Overlay::LogTail {
+                        env_name, region, ..
+                    }) => EnvKey::new(region.clone(), env_name.clone()),
                     _ => return,
                 };
                 self.spawn_logs_tail(env, Some(value));

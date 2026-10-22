@@ -117,10 +117,11 @@ pub(crate) enum Overlay {
     Whatsnew(String),
     /// Recent status/error message log shown via `:history`.
     History(String),
-    /// CloudWatch alarms list shown via `:alarms`. `env_name` carries the env
-    /// the fetch was issued for, so a late `AppMsg::Alarms` for a different
-    /// env can be dropped instead of replacing the overlay's contents.
-    Alarms { env_name: String, body: String },
+    /// CloudWatch alarms list shown via `:alarms`. `env` carries the env
+    /// the fetch was issued for, region included, so a late
+    /// `AppMsg::Alarms` for a different env (or a same-named one in
+    /// another region) is dropped instead of replacing the body.
+    Alarms { env: super::EnvKey, body: String },
     /// Side-by-side env comparison shown via `:diff NAME`.
     Diff(String),
     /// Fallback for the `:saved-configs` command when no templates exist.
@@ -208,6 +209,8 @@ pub(crate) enum Overlay {
     LogTail {
         log_group: String,
         env_name: String,
+        /// The env's region: switching group reopens the tail here.
+        region: String,
         events: std::collections::VecDeque<crate::aws::LogEvent>,
         since_ms: i64,
         /// Shared scroll/follow/filter surface (see [`tail::TailView`]).
@@ -962,8 +965,9 @@ pub(crate) struct EventPanel {
     pub time_format: EventTimeFormat,
     /// Env the current `events` list was fetched for. `None` = global. Used
     /// by `refresh_events_if_selection_changed` to detect when the user has
-    /// moved the table cursor to a different env and refetch.
-    pub for_env: Option<String>,
+    /// moved the table cursor to a different env and refetch. Keyed by
+    /// region too: moving between two same-named envs is a different env.
+    pub for_env: Option<super::EnvKey>,
     pub scroll: u16,
     /// Inner Rect of the events panel — captured by the renderer so the
     /// mouse handler can detect drags on the top edge (divider row) for

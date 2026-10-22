@@ -26,6 +26,10 @@ pub(crate) struct Form {
     /// Env name the form was opened against. Captured at open-time so a
     /// later cursor move on the main table doesn't redirect the submit.
     pub env_name: String,
+    /// The env's region, captured with its name: under `:region all` a
+    /// name can be listed once per region. Empty for a `LocalConfig`
+    /// form, which has no AWS target.
+    pub region: String,
     /// The one-line context banner: the AWS target, or the config file
     /// path for `:settings` (which has no AWS target).
     ///
@@ -140,6 +144,7 @@ impl Form {
     pub(crate) fn loading(
         title: impl Into<String>,
         env_name: impl Into<String>,
+        region: impl Into<String>,
         summary: impl Into<String>,
         fields: Vec<FormField>,
         submit: FormSubmit,
@@ -154,6 +159,7 @@ impl Form {
             summary: summary.into(),
             banner: Self::banner_for(&env_name),
             env_name,
+            region: region.into(),
             scroll: 0,
         }
     }
@@ -668,6 +674,7 @@ mod tests {
         let mut f = Form::loading(
             "t",
             "env",
+            "us-east-1",
             "sum",
             vec![
                 int_field("a", false),
@@ -690,6 +697,7 @@ mod tests {
         let mut f = Form::loading(
             "t",
             "env",
+            "us-east-1",
             "sum",
             vec![
                 FormField {
@@ -818,6 +826,7 @@ mod tests {
             submit: FormSubmit::LocalConfig,
             summary: "settings update".into(),
             env_name: "".into(),
+            region: String::new(),
         };
         let updated = f.apply_to_config(&base);
         assert_eq!(updated.theme, "high-contrast");
@@ -852,6 +861,7 @@ mod tests {
             submit: FormSubmit::LocalConfig,
             summary: "x".into(),
             env_name: "".into(),
+            region: String::new(),
         };
         let updated = f.apply_to_config(&base);
         assert_eq!(updated.theme, base.theme);
@@ -870,6 +880,7 @@ mod tests {
             submit: FormSubmit::LocalConfig,
             summary: "x".into(),
             env_name: "".into(),
+            region: String::new(),
         };
         let (set, remove) = f.to_option_settings();
         assert!(set.is_empty());
@@ -880,6 +891,7 @@ mod tests {
     fn form_to_option_settings_drops_empty_optional_integers() {
         let f = Form {
             scroll: 0,
+            region: String::new(),
             banner: String::new(),
             title: "t".into(),
             fields: vec![
@@ -964,6 +976,7 @@ mod tests {
         // edit form — must not be sent as an empty value.
         let f = Form {
             scroll: 0,
+            region: String::new(),
             banner: String::new(),
             title: "t".into(),
             fields: vec![
@@ -1028,6 +1041,7 @@ mod tests {
         let settings = Form::loading(
             "settings",
             String::new(),
+            String::new(),
             "settings",
             Vec::new(),
             FormSubmit::LocalConfig,
@@ -1045,6 +1059,7 @@ mod tests {
         let env = Form::loading(
             "capacity",
             "api-prod",
+            "us-east-1",
             "capacity",
             Vec::new(),
             FormSubmit::LocalConfig,

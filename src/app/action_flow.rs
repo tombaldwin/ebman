@@ -40,7 +40,7 @@ impl App {
             self.armed_watchdogs.remove(&target);
             return;
         };
-        if self.deny_write(&env_name, "auto-rollback") {
+        if self.deny_write(&target, "auto-rollback") {
             self.armed_watchdogs.remove(&target);
             return;
         }
@@ -88,10 +88,7 @@ impl App {
 
     fn target_env_for_action(&self) -> Option<Environment> {
         // Detail view targets the env it was opened on; Normal view targets selection.
-        if let Some(d) = self.detail.as_ref() {
-            return Some(d.env_snapshot.clone());
-        }
-        self.selected_env().cloned()
+        self.pointed_env()
     }
 
     /// Open the per-env action menu. Returns `false` when it refused —
@@ -110,7 +107,7 @@ impl App {
                 Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return false;
         };
-        if self.deny_write(&target.name, "action menu") {
+        if self.deny_write(&self.env_key(&target), "action menu") {
             return false;
         }
         let mut list_state = ListState::default();
@@ -199,10 +196,13 @@ impl App {
                     // swapped onto or off it; you just had to select the
                     // other env first. Gate the target here, where it is
                     // first known.
-                    if self.deny_swap_target(&ParameterisedAction {
-                        swap_with: Some(target.clone()),
-                        ..Default::default()
-                    }) {
+                    if self.deny_swap_target(
+                        &source_region,
+                        &ParameterisedAction {
+                            swap_with: Some(target.clone()),
+                            ..Default::default()
+                        },
+                    ) {
                         self.close_action_flow();
                         return;
                     }
@@ -417,8 +417,8 @@ impl App {
                     loading_lint: false,
                 }));
                 if wants_preflight {
-                    self.spawn_dry_run(env.name.clone());
-                    self.spawn_preflight_events(env.name.clone());
+                    self.spawn_dry_run(&env);
+                    self.spawn_preflight_events(&env);
                 }
             }
             Action::Rebuild => {
@@ -437,7 +437,7 @@ impl App {
             }
             Action::UpgradePlatform => {
                 self.close_action_flow();
-                self.spawn_list_compatible_platforms(env.name.clone());
+                self.spawn_list_compatible_platforms(env.clone());
                 self.mode = Mode::Command;
                 self.command_input = "upgrade ".into();
                 self.status_message =
@@ -552,9 +552,15 @@ impl App {
     /// One helper, called from both swap entry points, so the two cannot
     /// drift. Pinned by `a_read_only_env_cannot_be_swapped_into` and
     /// `swap_cnames_command_also_gates_the_target`.
-    pub(crate) fn deny_swap_target(&mut self, params: &ParameterisedAction) -> bool {
+    ///
+    /// `region` is the source's: a swap stays within one region, so the
+    /// target is the env of that name there.
+    pub(crate) fn deny_swap_target(&mut self, region: &str, params: &ParameterisedAction) -> bool {
         match params.swap_with.as_deref() {
-            Some(target) => self.deny_write(target, "swap-cnames target"),
+            Some(target) => self.deny_write(
+                &EnvKey::new(region.to_string(), target.to_string()),
+                "swap-cnames target",
+            ),
             None => false,
         }
     }
@@ -584,11 +590,12 @@ impl App {
         action: Action,
         params: ParameterisedAction,
     ) {
-        if self.deny_write_as(&env.name, action.label(), &action.audit_label()) {
+        let key = self.env_key(&env);
+        if self.deny_write_as(&key, action.label(), &action.audit_label()) {
             return;
         }
         // A swap also writes to its target; see `deny_swap_target`.
-        if self.deny_swap_target(&params) {
+        if self.deny_swap_target(&key.region, &params) {
             return;
         }
         // The preflight (impact preview + last-3 events) is gated by
@@ -666,28 +673,19 @@ impl App {
         self.action_flow = Some(ActionFlow::Confirm(modal));
         self.mode = Mode::Action;
         if wants_preflight {
-            self.spawn_dry_run(env.name.clone());
-            self.spawn_preflight_events(env.name.clone());
+            self.spawn_dry_run(&env);
+            self.spawn_preflight_events(&env);
         }
         if wants_version_preview {
             if let Some(label) = preview_label {
-                self.spawn_version_preview(
-                    env.application.clone(),
-                    env.name.clone(),
-                    env.version_label.clone(),
-                    label,
-                );
+                self.spawn_version_preview(&env, label);
             }
         }
         if needs_health_check_probe {
-            self.spawn_health_check_probe(
-                env.application.clone(),
-                env.name.clone(),
-                env.cname.clone(),
-            );
+            self.spawn_health_check_probe(&env);
         }
         if needs_unavailability {
-            self.spawn_unavailability_estimate(env.application.clone(), env.name.clone());
+            self.spawn_unavailability_estimate(&env);
         }
         if needs_lint {
             self.spawn_confirm_lint(env.clone());
@@ -696,8 +694,9 @@ impl App {
 
     /// Fetch `list_compatible_platforms` for `env` and surface them in an
     /// overlay so the user can copy the desired ARN into `:upgrade <arn>`.
-    pub(crate) fn spawn_list_compatible_platforms(&mut self, env_name: String) {
-        let client = self.client_for_env(&env_name);
+    pub(crate) fn spawn_list_compatible_platforms(&mut self, env: crate::aws::Environment) {
+        let client = self.client_for(&env);
+        let env_name = env.name;
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         self.status_message = Some(format!(
@@ -888,6 +887,12 @@ impl App {
             return;
         };
         let msg = format!("undone — {} → {} not dispatched", pd.label, pd.target);
+        // A single write was confirmed in its row's region. A batch's
+        // `target` is a count, not a name, and files under home.
+        let region = match &pd.kind {
+            PendingDispatchKind::Single { modal } => modal.target_region.clone(),
+            _ => self.context.region.clone(),
+        };
         let action_for_audit = match &pd.kind {
             PendingDispatchKind::Single { modal } => modal.action.audit_label(),
             PendingDispatchKind::BatchAction { action, .. } => {
@@ -906,7 +911,7 @@ impl App {
         crate::audit::append_action_undone(
             self.context.account_id.as_deref(),
             self.context.profile.as_deref(),
-            &self.region_for_name(&pd.target),
+            &region,
             &action_for_audit,
             &pd.target,
         );
@@ -946,12 +951,6 @@ impl App {
                 .read_only_reason(&modal.target_env)
                 .unwrap_or_else(|| "read-only mode".into());
             self.error_message = Some(format!("{reason} — {} disabled", modal.action.label()));
-            return;
-        }
-        // The env is resolved by name again here, after the undo window.
-        // Where that now lands is not where the operator confirmed it:
-        // refuse rather than write to whichever env the name finds now.
-        if self.deny_region_moved(&modal) {
             return;
         }
         // For Deploy actions: snapshot the env's pre-deploy version
@@ -1053,7 +1052,7 @@ impl App {
         if modal.action == Action::SsmRun {
             let command = modal.params.ssm_run_command.clone().unwrap_or_default();
             let instances = modal.params.ssm_run_instances.clone().unwrap_or_default();
-            self.spawn_ssm_run_impl(modal.target_env.clone(), command, instances);
+            self.spawn_ssm_run_impl(modal.target(), command, instances);
             return;
         }
         // The ROW's region, not the home one. Under a multi-region

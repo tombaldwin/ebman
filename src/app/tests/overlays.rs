@@ -476,6 +476,7 @@ async fn log_tail_poller_reaped_when_overlay_replaced() {
         gen: app.generation,
         session_id: 1,
         env_name: "api-prod".into(),
+        region: "us-east-1".into(),
         log_group: "/aws/elasticbeanstalk/api-prod/web.stdout.log".into(),
         since_ms: 0,
     });
@@ -517,6 +518,7 @@ async fn the_form_overlay_renders_its_fields() {
     let mut form = crate::form::Form::loading(
         "FORM-CANARY-TITLE",
         "api-prod",
+        "us-east-1",
         "resize the ASG",
         vec![
             crate::form::FormField::text("minsize", "MinSize-CANARY", None::<String>),
@@ -563,7 +565,7 @@ async fn every_body_carrying_overlay_renders_its_body() {
         (
             "CANARYALARMS",
             Overlay::Alarms {
-                env_name: "api-prod".into(),
+                env: crate::app::EnvKey::new("us-east-1", "api-prod"),
                 body: "CANARYALARMS".into(),
             },
         ),
@@ -811,6 +813,7 @@ async fn the_log_tail_overlay_renders_its_lines() {
     app.current_overlay = Some(crate::app::Overlay::LogTail {
         log_group: "/aws/elasticbeanstalk/api-prod/var/log/web.stdout.log".into(),
         env_name: "api-prod".into(),
+        region: "us-east-1".into(),
         events,
         since_ms: 0,
         view: Default::default(),

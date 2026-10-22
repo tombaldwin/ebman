@@ -37,7 +37,6 @@ impl App {
                 regions.dedup();
                 self.multi_regions = regions.clone();
                 self.fanout_epoch = self.fanout_epoch.wrapping_add(1);
-                self.forget_regions_out_of_scope();
                 self.status_message = Some(format!(
                     "multi-region: fanning across {} regions ({})",
                     regions.len(),
@@ -48,29 +47,12 @@ impl App {
             Some("off") | Some("single") => {
                 self.multi_regions.clear();
                 self.fanout_epoch = self.fanout_epoch.wrapping_add(1);
-                self.forget_regions_out_of_scope();
                 self.status_message = Some("multi-region off".into());
                 self.spawn_refresh();
             }
             Some(r) => self.apply_picker_choice(PickerKind::Region, r.to_string()),
             None => self.error_message = Some("usage: :region <name> | all | off".into()),
         }
-    }
-
-    /// Forget where names were seen in regions the fleet no longer
-    /// covers. The ambiguous-name refusal counts those memories, so
-    /// without this `:region off` after `:region all` left a name that had
-    /// been in two regions refused for the rest of the session.
-    pub(crate) fn forget_regions_out_of_scope(&mut self) {
-        let in_scope: Vec<String> = if self.multi_regions.is_empty() {
-            vec![self.context.region.clone()]
-        } else {
-            self.multi_regions.clone()
-        };
-        self.caches.env_regions.retain(|_, seen| {
-            seen.retain(|r| in_scope.contains(r));
-            !seen.is_empty()
-        });
     }
 
     /// `:account NAME`. Two paths:

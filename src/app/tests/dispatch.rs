@@ -2523,6 +2523,7 @@ fn a_form(fields: Vec<crate::form::FormField>) -> crate::form::Form {
         submit: crate::form::FormSubmit::OptionSettings { mappings: vec![] },
         summary: "test".into(),
         env_name: "api-prod".into(),
+        region: "us-east-1".into(),
         banner: String::new(),
         scroll: 0,
     }

@@ -91,13 +91,16 @@ impl App {
     /// guard at the top of every `spawn_*`-style destructive helper:
     ///
     /// ```ignore
-    /// if self.deny_write(&env.name, "rollback") { return; }
+    /// if self.deny_write(&self.env_key(&env), "rollback") { return; }
     /// ```
     ///
     /// Saves duplicating the `is_read_only_for` + `read_only_reason`
     /// + `error_message` triplet at every call site (~25 of them).
-    pub(crate) fn deny_write(&mut self, env_name: &str, verb: &str) -> bool {
-        self.deny_write_as(env_name, verb, refusal_action_label(verb))
+    ///
+    /// Takes the env's key, not its name: pins are by name, but a
+    /// refusal is audited in the region of the env it refused.
+    pub(crate) fn deny_write(&mut self, target: &EnvKey, verb: &str) -> bool {
+        self.deny_write_as(target, verb, refusal_action_label(verb))
     }
 
     /// `deny_write` with the audit label given explicitly.
@@ -109,47 +112,19 @@ impl App {
     /// the writes. `AuditFilter` matches exactly, so a refusal filed
     /// under the toast phrase is invisible to a filter that finds the
     /// dispatch.
-    pub(crate) fn deny_write_as(&mut self, env_name: &str, verb: &str, audit_action: &str) -> bool {
-        let refusal = self.refusal_for(env_name);
-        self.deny_with(env_name, verb, audit_action, refusal)
-    }
-
-    /// Refuse a confirmed write whose env, resolved by name again now,
-    /// is not in the region it was confirmed in: a listing that dropped
-    /// one region and brought back another inside the undo window would
-    /// otherwise send it to the other env. Audited like every refusal.
-    pub(crate) fn deny_region_moved(&mut self, modal: &crate::mode_action::ConfirmModal) -> bool {
-        let now = self.region_for_name(&modal.target_env);
-        if now == modal.target_region {
-            return false;
-        }
-        let refusal = crate::write_gate::Refusal::RegionMoved {
-            env: modal.target_env.clone(),
-            confirmed: modal.target_region.clone(),
-            now,
-        };
-        self.deny_with(
-            &modal.target_env,
-            modal.action.label(),
-            &modal.action.audit_label(),
-            Some(refusal),
-        )
-    }
-
-    /// [`deny_write`](Self::deny_write) for a write that names its region
-    /// explicitly rather than routing by name: a `:rollout`, which builds
-    /// a client per region it was given. The ambiguous-name rung is about
-    /// routing by name, so it does not apply; every other rung does.
-    /// Refusing a rollout because its env exists in two regions blocked
-    /// exactly the fleet a cross-region rollout is for.
-    pub(crate) fn deny_write_in_region(&mut self, env_name: &str, verb: &str) -> bool {
-        let refusal = self.gate_refusal(env_name);
-        self.deny_with(env_name, verb, refusal_action_label(verb), refusal)
+    pub(crate) fn deny_write_as(
+        &mut self,
+        target: &EnvKey,
+        verb: &str,
+        audit_action: &str,
+    ) -> bool {
+        let refusal = self.refusal_for(&target.name);
+        self.deny_with(target, verb, audit_action, refusal)
     }
 
     fn deny_with(
         &mut self,
-        env_name: &str,
+        target: &EnvKey,
         verb: &str,
         audit_action: &str,
         refusal: Option<crate::write_gate::Refusal>,
@@ -164,7 +139,7 @@ impl App {
         // before going live shouldn't have to exit demo to confirm
         // the pin is wired correctly. (0.17.4 review)
         if self.demo_mode {
-            let pin_reason = self.read_only_reason(env_name);
+            let pin_reason = self.read_only_reason(&target.name);
             let suffix = match pin_reason {
                 Some(reason) => format!(" — would also refuse: {reason}"),
                 None => String::new(),
@@ -181,7 +156,7 @@ impl App {
         // trace whatsoever — the dispatch never happened, so there was
         // no dispatched/completed pair, and repeated attempts on a
         // pinned env were indistinguishable from nobody trying.
-        self.audit_refusal(env_name, audit_action, &refusal);
+        self.audit_refusal(target, audit_action, &refusal);
         let reason = self.render_refusal(&refusal);
         self.error_message = Some(format!("{reason} — {verb} disabled"));
         true
@@ -200,7 +175,7 @@ impl App {
     /// probe so those produce their normal whole-fleet message, then
     /// scans for per-env / per-account pins. Mirrors the precedence in
     /// [`App::is_read_only_for`]. `verb` names the op for the toast.
-    pub(crate) fn deny_write_batch(&mut self, env_names: &[String], verb: &str) -> bool {
+    pub(crate) fn deny_write_batch(&mut self, envs: &[EnvKey], verb: &str) -> bool {
         // Env-independent gates produce the familiar whole-fleet toast
         // ("demo mode …" / "read-only mode …" / "deploys frozen …")
         // rather than a per-env list. Which rungs those ARE is asked of
@@ -209,14 +184,20 @@ impl App {
         // parser could not read fell through to the per-env scan and
         // reported "N of N selected env(s) locked", which describes
         // pins the operator does not have.
-        let probe = env_names.first().map(|s| s.as_str()).unwrap_or("");
-        if self.demo_mode || self.refusal_for(probe).is_some_and(|r| !r.is_env_scoped()) {
-            return self.deny_write(probe, verb);
-        }
-        let locked: Vec<String> = env_names
-            .iter()
-            .filter(|n| self.is_read_only_for(n))
+        let probe = envs
+            .first()
             .cloned()
+            .unwrap_or_else(|| EnvKey::new(self.context.region.clone(), ""));
+        if self.demo_mode
+            || self
+                .refusal_for(&probe.name)
+                .is_some_and(|r| !r.is_env_scoped())
+        {
+            return self.deny_write(&probe, verb);
+        }
+        let locked: Vec<&EnvKey> = envs
+            .iter()
+            .filter(|k| self.is_read_only_for(&k.name))
             .collect();
         if locked.is_empty() {
             return false;
@@ -225,32 +206,31 @@ impl App {
         // and per-account pins read the same regardless of which env);
         // list the locked names so the operator knows what to deselect.
         let reason = self
-            .read_only_reason(&locked[0])
+            .read_only_reason(&locked[0].name)
             .unwrap_or_else(|| "read-only mode".into());
         // One line PER locked env, not one line naming them all joined.
         //
         // The joined form filed `target=env-a,env-b`, which matches no
         // env — so `ebman audit --env env-a` found nothing, and
         // `audit_refusal`'s region lookup missed too and fell back to
-        // the home region. That is the wrong-region bug `region_for_name`
-        // carries a comment about, reintroduced by a target string that
-        // was never an env name.
+        // the home region: a target string that was never an env name.
         // Through the same mapping as the single-env path. Passing the
         // raw verb here would file a batch `purge` as `action=purge`
         // while a single one files `action=dlq-purge` — the exact
         // correlation defect the table exists to fix, surviving in the
         // sibling path.
         let audit_action = refusal_action_label(verb);
-        for env in &locked {
-            if let Some(refusal) = self.refusal_for(env) {
-                self.audit_refusal(env, audit_action, &refusal);
+        for key in &locked {
+            if let Some(refusal) = self.refusal_for(&key.name) {
+                self.audit_refusal(key, audit_action, &refusal);
             }
         }
+        let names: Vec<&str> = locked.iter().map(|k| k.name.as_str()).collect();
         self.error_message = Some(format!(
             "{reason} — {verb} refused: {} of {} selected env(s) locked ({})",
             locked.len(),
-            env_names.len(),
-            locked.join(", ")
+            envs.len(),
+            names.join(", ")
         ));
         true
     }
@@ -269,26 +249,11 @@ impl App {
     /// Split out from `read_only_reason` because a refusal now has to be
     /// *recorded* as well as shown, and the audit log needs the rule
     /// name — which is precisely what rendering throws away.
+    ///
+    /// By name: safety pins are. Where a write goes is its key's business
+    /// (`ConfirmModal::target`, `EnvKey`), so a name listed in two regions
+    /// is not refused here.
     pub(crate) fn refusal_for(&self, env_name: &str) -> Option<crate::write_gate::Refusal> {
-        self.gate_refusal(env_name)
-            // Then the TUI's own rung. Every write reaches its environment
-            // by NAME (`client_for_env` → `region_for_name`, first match),
-            // so under `:region all` with `api-prod` in two regions a
-            // restart, a deploy or an unattended auto-rollback on one could
-            // land on the other. Refused until writes carry the region they
-            // were aimed at.
-            .or_else(|| {
-                let regions = self.regions_named(env_name);
-                (regions.len() > 1).then(|| crate::write_gate::Refusal::AmbiguousEnv {
-                    env: env_name.to_string(),
-                    regions,
-                })
-            })
-    }
-
-    /// The shared gate (`write_gate::decide`), without the TUI's
-    /// ambiguous-name rung: for a write that names its region.
-    fn gate_refusal(&self, env_name: &str) -> Option<crate::write_gate::Refusal> {
         // The DECISION is `write_gate::decide`, shared with the CLI and
         // MCP paths. The WORDING below is not shared and should not be:
         // a toast can afford the freeze age and the `:incident END`
@@ -307,32 +272,6 @@ impl App {
             safety_envs: &self.cfg.safety_envs,
             safety_accounts: &self.cfg.safety_accounts,
         })
-    }
-
-    /// Every region `env_name` may mean, from the same three sources
-    /// `region_for_name` routes a write by: the table's rows, Detail's
-    /// snapshot, and every region the name was seen in this context.
-    /// Counting the table alone let a refresh that lost one region's
-    /// listing make a name in two look like a name in one, while the
-    /// router still had the other in Detail.
-    pub(crate) fn regions_named(&self, env_name: &str) -> Vec<String> {
-        let mut regions: std::collections::BTreeSet<String> = self
-            .environments
-            .iter()
-            .filter(|e| e.name == env_name)
-            .map(|e| self.region_for(e))
-            .collect();
-        if let Some(d) = self
-            .detail
-            .as_ref()
-            .filter(|d| d.env_snapshot.name == env_name)
-        {
-            regions.insert(self.region_for(&d.env_snapshot));
-        }
-        if let Some(seen) = self.caches.env_regions.get(env_name) {
-            regions.extend(seen.iter().cloned());
-        }
-        regions.into_iter().collect()
     }
 
     /// Render a refusal in the TUI's voice — the freeze age, the
@@ -390,19 +329,6 @@ impl App {
             crate::write_gate::Refusal::AccountPinned { profile } => {
                 format!("read-only mode (account pinned via safety.accounts.{profile})")
             }
-            crate::write_gate::Refusal::RegionMoved {
-                env,
-                confirmed,
-                now,
-            } => format!("{env} was in {confirmed} when confirmed and resolves to {now} now"),
-            crate::write_gate::Refusal::AmbiguousEnv { env, regions } => format!(
-                "{env} is in {} regions ({}), and a write cannot yet tell them \
-                 apart — :region off for the home region only, or :region {} \
-                 to work in that one",
-                regions.len(),
-                regions.join(", "),
-                regions.first().map(String::as_str).unwrap_or("REGION"),
-            ),
         }
     }
 
@@ -443,13 +369,13 @@ impl App {
     /// The region is the ROW's, not home: under a multi-region fan-out
     /// the selected env is usually elsewhere, and an audit line filed
     /// against the wrong region is worse than none.
-    fn audit_refusal(&self, target: &str, verb: &str, refusal: &crate::write_gate::Refusal) {
+    fn audit_refusal(&self, target: &EnvKey, verb: &str, refusal: &crate::write_gate::Refusal) {
         crate::audit::append_action_refused(
             self.context.account_id.as_deref(),
             self.context.profile.as_deref(),
-            &self.region_for_name(target),
+            &target.region,
             verb,
-            target,
+            &target.name,
             refusal.rule(),
             &refusal.remedy(),
         );

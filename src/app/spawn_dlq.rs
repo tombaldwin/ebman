@@ -14,7 +14,7 @@
 //! key handler that sat between these methods stays in `app.rs` (it's
 //! not a spawner). No behaviour change.
 
-use super::{flatten_err, App, AppMsg, DlqOp, QueueView};
+use super::{flatten_err, App, AppMsg, DlqOp, EnvKey, QueueView};
 
 impl App {
     pub(super) fn spawn_dlq_fetch(&mut self) {
@@ -51,7 +51,10 @@ impl App {
         };
         // Same write gate as every sibling DLQ op (resend/purge/replay)
         // — a delete is just as destructive as a purge of one.
-        if self.deny_write(&env_for_guard, "delete") {
+        if self.deny_write(
+            &EnvKey::new(self.dlq_region(), env_for_guard.clone()),
+            "delete",
+        ) {
             return;
         }
         // Resolved before the `as_mut` borrow: it reads `self.dlq`.
@@ -127,7 +130,7 @@ impl App {
             Some(d) => d.env_name.clone(),
             None => return,
         };
-        if self.deny_write(&env_name, "resend") {
+        if self.deny_write(&EnvKey::new(self.dlq_region(), env_name.clone()), "resend") {
             return;
         }
         // Resolved before the `as_mut` borrow: it reads `self.dlq`.
@@ -203,7 +206,7 @@ impl App {
     }
 
     pub(super) fn spawn_dlq_purge(&mut self, env_name: String, dlq_url: String) {
-        if self.deny_write(&env_name, "purge") {
+        if self.deny_write(&EnvKey::new(self.dlq_region(), env_name.clone()), "purge") {
             return;
         }
         crate::audit::append_dlq_op(
@@ -257,7 +260,7 @@ impl App {
             Some(d) => d.env_name.clone(),
             None => return,
         };
-        if self.deny_write(&env_name, "replay") {
+        if self.deny_write(&EnvKey::new(self.dlq_region(), env_name.clone()), "replay") {
             return;
         }
         let Some(dlq) = self.dlq.as_ref() else { return };

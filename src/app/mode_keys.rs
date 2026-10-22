@@ -445,12 +445,12 @@ impl App {
                 // must block it like `:ssm-run`.
                 let target = self.detail.as_ref().and_then(|d| {
                     Some((
-                        d.env_name.clone(),
+                        self.env_key(&d.env_snapshot),
                         d.instances.get(d.instances_cursor)?.id.clone(),
                     ))
                 });
-                if let Some((env_name, instance_id)) = target {
-                    if !self.deny_write(&env_name, "ssm-session") {
+                if let Some((env, instance_id)) = target {
+                    if !self.deny_write(&env, "ssm-session") {
                         self.pending_shell_target = Some(instance_id);
                     }
                 }
@@ -463,8 +463,8 @@ impl App {
                 // group discovery + auto-pick. The snapshot path
                 // stays untouched so esc returns to it.
                 if let Some(d) = self.detail.as_ref() {
-                    let env_name = d.env_name.clone();
-                    self.spawn_logs_tail(env_name, None);
+                    let target = self.env_key(&d.env_snapshot);
+                    self.spawn_logs_tail(target, None);
                 }
             }
             KeyCode::Char('x')

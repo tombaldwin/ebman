@@ -1815,9 +1815,9 @@ fn every_spawn_declares_whether_it_is_per_env() {
     // be named here with a reason, so it's a deliberate choice rather
     // than the path of least resistance.
     //
-    // The per-env accessors are `client_for_env` / `client_for_app` /
-    // `current_env_client` / `detail_client` / `why_red_client` /
-    // `dlq_client`.
+    // The per-env accessors are `client_for` (a row) / `current_env_client`
+    // / `detail_client` / `why_red_client` / `dlq_client`, or
+    // `client_for_region` with a region the caller recorded.
     const HOME_CLIENT_IS_CORRECT_BECAUSE: &[(&str, &str)] = &[
         (
             "spawn_aws",
@@ -1944,7 +1944,7 @@ fn every_spawn_declares_whether_it_is_per_env() {
     assert!(
         offenders.is_empty(),
         "these spawn AWS work on the HOME client without declaring why \
-         that's right for them — use `client_for_env` / `client_for_app` \
+         that's right for them — use `client_for` / `client_for_region` \
          (or `spawn_aws_in`), or add them to HOME_CLIENT_IS_CORRECT_BECAUSE \
          with a reason: {offenders:?}"
     );

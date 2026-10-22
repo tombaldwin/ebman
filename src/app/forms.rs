@@ -25,10 +25,11 @@ impl App {
             return;
         }
         let env_name = form.env_name.clone();
+        let target = super::EnvKey::new(form.region.clone(), env_name.clone());
         // Look up the env's application from the live env list. We need it
         // for DescribeConfigurationSettings; the form itself only knows the
-        // env name.
-        let app_name = match self.environments.iter().find(|e| e.name == env_name) {
+        // env's name and region.
+        let app_name = match self.env_by_key(&target) {
             Some(e) => e.application.clone(),
             None => {
                 self.error_message = Some(format!("env '{env_name}' not in current list"));
@@ -37,7 +38,7 @@ impl App {
         };
         self.form = Some(form);
         self.mode = Mode::Form;
-        let client = self.client_for_env(&env_name);
+        let client = self.client_for_region(&target.region);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let env_for_msg = env_name.clone();
@@ -251,6 +252,8 @@ impl App {
             return;
         }
         let env_name = form.env_name.clone();
+        // The region the form was opened in, not the name looked up again.
+        let region = form.region.clone();
         let summary = form.summary.clone();
         let (to_set, to_remove) = form.to_option_settings();
         form.state = crate::form::FormState::Submitting;
@@ -258,7 +261,10 @@ impl App {
         // reads self.selected_env() for the env_name; the form captured its
         // env at open time so we dispatch by-value here. Inlining keeps the
         // form's env binding authoritative.
-        if self.deny_write(&env_name, "form submit") {
+        if self.deny_write(
+            &super::EnvKey::new(region.clone(), env_name.clone()),
+            "form submit",
+        ) {
             self.form = None;
             self.mode = Mode::Normal;
             return;
@@ -272,7 +278,7 @@ impl App {
         crate::audit::append_action_dispatched(
             self.context.account_id.as_deref(),
             self.context.profile.as_deref(),
-            &self.region_for_name(&env_name),
+            &region,
             crate::verb::Verb::SetOption.audit_label(),
             env_name.as_str(),
             &[("summary", summary.as_str())],
@@ -282,25 +288,22 @@ impl App {
         // header (`⏳ N`) is the truth-source for in-flight work, and a
         // status_message ack would just race with whatever the operator
         // last set there. Completion fires a Success / Error toast.
-        let client = self.client_for_env(&env_name);
+        let client = self.client_for_region(&region);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let env_for_msg = env_name.clone();
         let summary_for_msg = summary.clone();
         let account = self.context.account_id.clone();
         let profile = self.context.profile.clone();
-        let region = self.region_for_name(&env_name);
         // Undo capture — same shape as `spawn_option_settings_update`.
         // The form path lost the env's application name when it
         // stashed only `env_name`; recover it by looking up the
         // env in the cached fleet. Race with context switch leaves
         // `app_for_undo` as None and we silently skip capture.
-        let app_for_undo = self
-            .environments
-            .iter()
-            .find(|e| e.name == env_name)
-            .map(|e| e.application.clone());
         let env_for_undo = crate::app::EnvKey::new(region.clone(), env_name.clone());
+        let app_for_undo = self
+            .env_by_key(&env_for_undo)
+            .map(|e| e.application.clone());
         let summary_for_undo = summary.clone();
         let to_set_for_undo = to_set.clone();
         let to_remove_for_undo = to_remove.clone();
@@ -447,7 +450,7 @@ impl App {
             MultiSelectFlavour::ElbSubnets => ":elb-subnets",
             MultiSelectFlavour::SecurityGroups => ":security-groups",
         };
-        if self.deny_write(&env.name, cmd_label) {
+        if self.deny_write(&self.env_key(&env), cmd_label) {
             return;
         }
         let (title_prefix, summary, field_key, label, ns, opt_name) = match flavour {
@@ -486,6 +489,7 @@ impl App {
         let form = Form::loading(
             format!("{title_prefix} — {}", env.name),
             env.name.clone(),
+            self.region_for(&env),
             summary.to_string(),
             vec![placeholder],
             FormSubmit::OptionSettings {
@@ -497,7 +501,7 @@ impl App {
         // form ourselves and spawn the multi-select-specific loader.
         self.form = Some(form);
         self.mode = Mode::Form;
-        let client = self.client_for_env(&env.name);
+        let client = self.client_for(&env);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let env_for_msg = env.name.clone();
@@ -646,6 +650,7 @@ impl App {
 
         let form = Form::loading(
             "settings",
+            String::new(),
             String::new(),
             "settings".to_string(),
             fields,

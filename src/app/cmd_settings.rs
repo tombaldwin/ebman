@@ -49,7 +49,7 @@ impl App {
                 };
                 let app_name = env.application.clone();
                 let env_name = env.name.clone();
-                let client = self.client_for_env(&env.name);
+                let client = self.client_for(&env);
                 let tx = self.msg_tx.clone();
                 let gen = self.generation;
                 let title = format!("env vars — {env_name}");
@@ -116,7 +116,7 @@ impl App {
         // on a read-only fleet before being told no. `:env-edit` has always
         // refused at open; `:rds-attach` was brought into line, and this is
         // the rest of the class.
-        if self.deny_write(&env.name, ":capacity") {
+        if self.deny_write(&self.env_key(&env), ":capacity") {
             return;
         }
         let fields = vec![
@@ -153,6 +153,7 @@ impl App {
         let form = crate::form::Form::loading(
             format!("capacity — {}", env.name),
             env.name.clone(),
+            self.region_for(&env),
             "capacity update".to_string(),
             fields,
             crate::form::FormSubmit::OptionSettings {
@@ -194,7 +195,7 @@ impl App {
         // on a read-only fleet before being told no. `:env-edit` has always
         // refused at open; `:rds-attach` was brought into line, and this is
         // the rest of the class.
-        if self.deny_write(&env.name, ":scaling-triggers") {
+        if self.deny_write(&self.env_key(&env), ":scaling-triggers") {
             return;
         }
         let ns = "aws:autoscaling:trigger";
@@ -287,6 +288,7 @@ impl App {
         let form = crate::form::Form::loading(
             format!("scaling triggers — {}", env.name),
             env.name.clone(),
+            self.region_for(&env),
             "scaling-triggers update".to_string(),
             fields,
             crate::form::FormSubmit::OptionSettings {
@@ -337,7 +339,7 @@ impl App {
         // `--deny-write` this opened a seven-field form and only refused
         // once the operator had filled it in and pressed submit. The
         // sibling command refuses immediately; this one should too.
-        if self.deny_write(&env.name, ":rds-attach") {
+        if self.deny_write(&self.env_key(&env), ":rds-attach") {
             return;
         }
         let ns = "aws:rds:dbinstance";
@@ -381,6 +383,7 @@ impl App {
         let form = crate::form::Form::loading(
             format!("rds-attach — {}", env.name),
             env.name.clone(),
+            self.region_for(&env),
             "rds attach".to_string(),
             fields,
             crate::form::FormSubmit::OptionSettings {

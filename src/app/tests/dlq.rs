@@ -268,10 +268,7 @@ async fn detail_and_why_and_dlq_use_the_rows_own_region() {
     assert_eq!(app.context.region, "us-east-1", "home region differs");
 
     // The lookup all four accessors share.
-    assert_eq!(app.region_for_name("api-prod"), "eu-west-2");
-    // An env we hold no row for falls back to home — a modal opened
-    // before the refresh landed. That's the pre-fan-out behaviour.
-    assert_eq!(app.region_for_name("not-in-the-table"), "us-east-1");
+    assert_eq!(app.region_for(&env), "eu-west-2");
 
     app.open_detail();
     assert_eq!(

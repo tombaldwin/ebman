@@ -39,8 +39,8 @@ pub(crate) fn draw_events(f: &mut Frame, area: Rect, app: &mut App) {
         body_rows,
         app.event_panel.events.len(),
     );
-    let scope_suffix = match app.event_panel.for_env.as_deref() {
-        Some(env) => format!(" · {env}"),
+    let scope_suffix = match app.event_panel.for_env.as_ref() {
+        Some(env) => format!(" · {}", env.name),
         None => " · all envs".to_string(),
     };
     let title = format!("Events  {}{}", app.event_panel.events.len(), scope_suffix);

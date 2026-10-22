@@ -254,22 +254,15 @@ impl App {
                 }
             }
             "diff" => self.cmd_diff(&rest),
-            "alarms" => {
-                let env_opt = if let Some(d) = self.detail.as_ref() {
-                    Some(d.env_name.clone())
-                } else {
-                    self.selected_env().map(|e| e.name.clone())
-                };
-                match env_opt {
-                    Some(env_name) => self.spawn_alarms_fetch(env_name),
-                    None => {
-                        self.error_message = Some(
-                            "no env selected — press 1-9, click a row, or type ' to jump by name"
-                                .into(),
-                        )
-                    }
+            "alarms" => match self.pointed_env() {
+                Some(env) => self.spawn_alarms_fetch(&env),
+                None => {
+                    self.error_message = Some(
+                        "no env selected — press 1-9, click a row, or type ' to jump by name"
+                            .into(),
+                    )
                 }
-            }
+            },
             "why" | "diagnose" => {
                 let env_opt = if let Some(d) = self.detail.as_ref() {
                     Some(d.env_snapshot.clone())
@@ -374,7 +367,7 @@ impl App {
                     return;
                 };
                 let explicit_group = rest.first().map(|s| s.to_string());
-                self.spawn_logs_tail(env.name.clone(), explicit_group);
+                self.spawn_logs_tail(self.env_key(&env), explicit_group);
             }
             "event-tail" | "tail-events" => {
                 // `:event-tail` — cross-fleet EB event stream. No env

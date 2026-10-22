@@ -99,13 +99,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   write itself used the row's region, but the completion line named the
   home one, so the pair read as an action that started in one region
   and finished in another.
-- **A write to an environment whose name is in two regions is refused.**
-  Under `:region all`, writes found their environment by name and took
-  the first match, so with `api-prod` in two regions a restart, a
-  deploy or an unattended auto-rollback aimed at one could reach the
-  other. Such a write is now refused (audited as `ambiguous_env`) with
-  the regions named and `:region` suggested, until writes carry the
-  region they were aimed at.
+- **A write to an environment whose name is in two regions goes to the
+  one it was aimed at.** Under `:region all`, writes found their
+  environment by name and took the first match, so with `api-prod` in
+  two regions a restart, a deploy or an unattended auto-rollback aimed
+  at one could reach the other. Every write, its audit lines and its
+  refusals now carry the region of the row it was started on: confirm
+  modals, batches, forms, the DLQ viewer, `:undo`, the deploy watchdogs,
+  alarms, templates and the log tail. Reads that named an env the same
+  way (`:alarms`, `:lineage`, `:changes`, the events panel, the confirm
+  modal's preview and lint) read from that region too.
+- **Application-level work goes to the region it is about.**
+  `:delete-version` deleted from whichever region's copy of the
+  application sorted first; it uses the selected row's region, and the
+  `:versions` list it refreshes afterwards is fetched from there (it was
+  fetched from home). Templates picked in `:saved-configs`, and the
+  latest version shown beside each application, come from the home
+  region, where the application catalogue is listed, rather than from
+  another region's copy. `:config-delete APP` uses the selected row's
+  region when that row is in `APP`, else home.
 - **Two environments with the same name in two regions are two rows.**
   Under `:region all`, DLQ depth, instance counts, health history (TREND),
   the newly-Red marker and the red-transition audit line were kept by

@@ -75,11 +75,17 @@ impl App {
     /// `AppMsg::LogTailEvents` every ~2s. The overlay opens immediately in
     /// a "discovering" state and gets replaced with the LogTail variant
     /// once the group is known.
-    pub(crate) fn spawn_logs_tail(&mut self, env_name: String, explicit_group: Option<String>) {
+    pub(crate) fn spawn_logs_tail(
+        &mut self,
+        target: super::EnvKey,
+        explicit_group: Option<String>,
+    ) {
         // Tear down any prior session so we don't have two pollers racing.
         tail::reap_tail_task(&mut self.log_tail_task, &mut self.log_tail_session);
         let session_id = self.log_tail_session;
-        let client = self.client_for_env(&env_name);
+        let client = self.client_for_region(&target.region);
+        let region_for_msg = target.region.clone();
+        let env_name = target.name;
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let env_for_msg = env_name.clone();
@@ -139,6 +145,7 @@ impl App {
                 gen,
                 session_id,
                 env_name: env_for_msg.clone(),
+                region: region_for_msg.clone(),
                 log_group: group.clone(),
                 since_ms,
             });

@@ -111,7 +111,7 @@ impl App {
                     );
                     return;
                 };
-                self.spawn_list_compatible_platforms(env.name);
+                self.spawn_list_compatible_platforms(env);
             }
             Some(arn) => {
                 self.open_parameterised_action(
@@ -302,7 +302,10 @@ impl App {
         // (read-only / :freeze-deploys / incident / safety pins)
         // applies before we even start planning. Re-checked at every
         // per-region dispatch in `spawn_rollout_dispatch`.
-        if self.deny_write_in_region(&env_name, "rollout") {
+        // Audited under home: the plan names several regions, and none
+        // has been dispatched to yet.
+        let home = super::EnvKey::new(self.context.region.clone(), env_name.clone());
+        if self.deny_write(&home, "rollout") {
             return;
         }
 

@@ -113,17 +113,13 @@ impl App {
     /// review — the cut that's currently a manual scan through
     /// `:changes` mixed output.
     pub(crate) fn cmd_lineage(&mut self) {
-        let env_opt = if let Some(d) = self.detail.as_ref() {
-            Some(d.env_name.clone())
-        } else {
-            self.selected_env().map(|e| e.name.clone())
-        };
-        let Some(env_name) = env_opt else {
+        let Some(env) = self.pointed_env() else {
             self.error_message =
                 Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;
         };
-        let client = self.client_for_env(&env_name);
+        let client = self.client_for(&env);
+        let env_name = env.name;
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         self.status_message = Some(format!("fetching deploy lineage for {env_name}…"));
@@ -148,17 +144,13 @@ impl App {
     }
 
     pub(crate) fn cmd_changes(&mut self) {
-        let env_opt = if let Some(d) = self.detail.as_ref() {
-            Some(d.env_name.clone())
-        } else {
-            self.selected_env().map(|e| e.name.clone())
-        };
-        let Some(env_name) = env_opt else {
+        let Some(env) = self.pointed_env() else {
             self.error_message =
                 Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;
         };
-        let client = self.client_for_env(&env_name);
+        let client = self.client_for(&env);
+        let env_name = env.name;
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         self.status_message = Some(format!("fetching change history for {env_name}…"));
@@ -319,7 +311,7 @@ impl App {
                 Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;
         };
-        let client = self.client_for_env(&env.name);
+        let client = self.client_for(&env);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let settings = self.cfg.explain_settings.clone();
@@ -414,7 +406,7 @@ impl App {
             return;
         };
         let filter_ns = rest.first().map(|s| s.to_string());
-        let client = self.client_for_env(&env.name);
+        let client = self.client_for(&env);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let app_name = env.application.clone();
@@ -520,7 +512,7 @@ impl App {
             }
         };
         let local_name = crate::saved_config::saved_config_name(&path);
-        let client = self.client_for_env(&env.name);
+        let client = self.client_for(&env);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let (app_name, env_name) = (env.application.clone(), env.name.clone());
@@ -807,7 +799,7 @@ impl App {
                 Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;
         };
-        let client = self.client_for_env(&env.name);
+        let client = self.client_for(&env);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let app_name = env.application.clone();
@@ -883,7 +875,7 @@ impl App {
             ));
             return;
         }
-        let client = self.client_for_env(&env.name);
+        let client = self.client_for(&env);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let app_name = env.application.clone();
@@ -953,7 +945,7 @@ impl App {
         // on a read-only fleet before being told no. `:env-edit` has always
         // refused at open; `:rds-attach` was brought into line, and this is
         // the rest of the class.
-        if self.deny_write(&env.name, ":listener-edit") {
+        if self.deny_write(&self.env_key(&env), ":listener-edit") {
             return;
         }
         if env.tier.eq_ignore_ascii_case("Worker") {
@@ -981,6 +973,7 @@ impl App {
         let form = Form::loading(
             format!("listener {port} — {}", env.name),
             env.name.clone(),
+            self.region_for(&env),
             format!("listener {port} cert update"),
             vec![placeholder],
             FormSubmit::OptionSettings {
@@ -992,7 +985,7 @@ impl App {
         // cert-specific loader, mirroring the subnet / SG pickers.
         self.form = Some(form);
         self.mode = Mode::Form;
-        let client = self.client_for_env(&env.name);
+        let client = self.client_for(&env);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let env_for_msg = env.name.clone();

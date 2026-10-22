@@ -1346,23 +1346,19 @@ async fn the_per_env_accessors_all_follow_the_row() {
     assert_eq!(app.context.region, "us-east-1", "home region differs");
 
     assert_eq!(
-        app.client_for_env("api-prod").region_for_tests(),
+        app.client_for(&app.environments[0]).region_for_tests(),
         "eu-west-2"
     );
-    assert_eq!(app.client_for_app("poly").region_for_tests(), "eu-west-2");
+    assert_eq!(app.region_for_typed_app("poly"), "eu-west-2");
     assert_eq!(app.current_env_client().region_for_tests(), "eu-west-2");
 
     // Detail wins over the table selection — it's what's on screen.
     app.open_detail();
     assert_eq!(app.detail_client().region_for_tests(), "eu-west-2");
 
-    // An unknown name falls back to home rather than inventing a
-    // region: a modal can outlive the row that opened it.
-    assert_eq!(app.client_for_env("ghost").region_for_tests(), "us-east-1");
-    assert_eq!(
-        app.client_for_app("ghost-app").region_for_tests(),
-        "us-east-1"
-    );
+    // An application the selected row is not in is the home region's,
+    // where the catalogue is listed, rather than a guess.
+    assert_eq!(app.region_for_typed_app("ghost-app"), "us-east-1");
 
     // With nothing selected at all, `current_env_client` is the home
     // client rather than a panic or an empty region.

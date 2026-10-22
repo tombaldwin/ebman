@@ -68,24 +68,6 @@ pub(crate) struct ContextCaches {
     /// `fetch_env_instance_counts` healthy-count input that
     /// EBL012 reads. Independent TTL — same constant.
     pub(crate) env_health_cache: std::collections::BTreeMap<EnvKey, (i64, std::time::Instant)>,
-    /// Last-known region per environment name.
-    ///
-    /// `region_for_name` searches the live table first, but a write can
-    /// outlive its row: the confirm modal carries only a target NAME,
-    /// and there is an undo window between the operator confirming and
-    /// `tick_pending_dispatch` firing. A 15-second refresh landing in
-    /// that window — a terminated env, or a region whose fetch failed
-    /// under a fan-out — used to drop the answer, and the dispatch fell
-    /// back to the home region. Silently, which is the whole class this
-    /// release is named after.
-    ///
-    /// An environment cannot move between regions, so a remembered
-    /// answer can only go stale by the name being reused in a different
-    /// one. The live table always wins, and a context switch clears it.
-    /// Every region a name was seen in: under `:region all` a name can
-    /// be in two, and remembering only the last one let a refresh that
-    /// lost one region's listing make the name look unambiguous.
-    pub(crate) env_regions: std::collections::HashMap<String, std::collections::BTreeSet<String>>,
     pub(crate) applications: Vec<Application>,
     /// `family_key → newest available version` from `ListAvailableSolutionStacks`,
     /// built by `spawn_solution_stacks`. Drives the envs-table stale-platform

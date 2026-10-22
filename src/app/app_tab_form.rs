@@ -396,6 +396,7 @@ impl App {
             return;
         };
         let env = detail.env_name.clone();
+        let region = self.region_for(&detail.env_snapshot);
         // Built from the file as it is now: a hand edit since the last
         // refresh would otherwise be missing from the form, and saving
         // the form replaces the env's lines on disk.
@@ -408,6 +409,7 @@ impl App {
             submit: crate::form::FormSubmit::AppTab,
             summary: "App tab config".into(),
             env_name: env.clone(),
+            region,
             banner: match &self.config_file {
                 Some(path) => format!(
                     "app.{env}.* in {}; finding what this env uses…",
@@ -534,14 +536,17 @@ impl App {
 
     /// The discovery caches' key for `env`: (region, env). The Detail
     /// view's own env by its snapshot's region (it may have left the
-    /// list), any other by its row's.
+    /// list). Every caller asks about Detail's env; any other name is
+    /// read as a typed one, so a name listed in two regions is not
+    /// guessed at and falls back to home with one that is not listed.
     pub(super) fn discovery_key(&self, env: &str) -> EnvKey {
-        let region = self
-            .detail
-            .as_ref()
-            .filter(|d| d.env_name == env)
-            .map(|d| self.region_for(&d.env_snapshot))
-            .unwrap_or_else(|| self.region_for_name(env));
+        let region = match self.detail.as_ref().filter(|d| d.env_name == env) {
+            Some(d) => self.region_for(&d.env_snapshot),
+            None => match self.env_by_ref(env) {
+                Ok(e) => self.region_for(&e),
+                Err(_) => self.context.region.clone(),
+            },
+        };
         EnvKey::new(region, env)
     }
 

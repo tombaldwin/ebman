@@ -212,7 +212,7 @@ impl App {
             return;
         };
         let env_name = env.name.clone();
-        let client = self.client_for_env(&env.name);
+        let client = self.client_for(&env);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let window_label = window_ms_label(window_ms);

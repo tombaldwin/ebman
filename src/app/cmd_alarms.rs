@@ -49,10 +49,11 @@ impl App {
                 Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;
         };
-        if self.deny_write(&env.name, "alarm-create") {
+        if self.deny_write(&self.env_key(&env), "alarm-create") {
             return;
         }
         let env_name = env.name.clone();
+        let region = self.region_for(&env);
         let alarm_name = name.to_string();
         let metric_name = metric_name.to_string();
         let op_str = op.to_string();
@@ -62,7 +63,7 @@ impl App {
         crate::audit::append_action_dispatched(
             self.context.account_id.as_deref(),
             self.context.profile.as_deref(),
-            &self.region_for_name(&env_name),
+            &region,
             "AlarmCreate",
             &target,
             &[
@@ -75,14 +76,13 @@ impl App {
         self.status_message = Some(format!(
             "creating alarm '{alarm_name}' on {env_name}/{metric_name} {op_str} {threshold}…"
         ));
-        let client = self.client_for_env(&env.name);
+        let client = self.client_for(&env);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let env_for_msg = env_name.clone();
         let alarm_for_msg = alarm_name.clone();
         let account = self.context.account_id.clone();
         let profile = self.context.profile.clone();
-        let region = self.region_for_name(&env_name);
         tokio::spawn(async move {
             let result = match client.resolve().await {
                 Ok(aws) => aws
@@ -126,32 +126,39 @@ impl App {
             }
             Some(name) => {
                 let alarm_name = name.to_string();
-                let env_name = self
-                    .selected_env()
+                // Alarms are regional: the selected row's region, or
+                // home with nothing selected.
+                let env = self.selected_env().cloned();
+                let env_name = env
+                    .as_ref()
                     .map(|e| e.name.clone())
                     .unwrap_or_else(|| "?".into());
-                if self.deny_write(&env_name, "alarm-delete") {
+                let region = match env.as_ref() {
+                    Some(e) => self.region_for(e),
+                    None => self.context.region.clone(),
+                };
+                let target = super::EnvKey::new(region.clone(), env_name.clone());
+                if self.deny_write(&target, "alarm-delete") {
                     return;
                 }
                 let target = format!("{env_name}/{alarm_name}");
                 crate::audit::append_action_dispatched(
                     self.context.account_id.as_deref(),
                     self.context.profile.as_deref(),
-                    &self.region_for_name(&env_name),
+                    &region,
                     "AlarmDelete",
                     &target,
                     &[],
                 );
                 self.push_pending("Delete alarm", target.clone());
                 self.status_message = Some(format!("deleting alarm '{alarm_name}'…"));
-                let client = self.client_for_env(&env_name);
+                let client = self.client_for_region(&region);
                 let tx = self.msg_tx.clone();
                 let gen = self.generation;
                 let alarm_for_msg = alarm_name.clone();
                 let env_for_msg = env_name.clone();
                 let account = self.context.account_id.clone();
                 let profile = self.context.profile.clone();
-                let region = self.region_for_name(&env_name);
                 tokio::spawn(async move {
                     let result = match client.resolve().await {
                         Ok(aws) => aws

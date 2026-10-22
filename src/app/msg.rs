@@ -183,9 +183,7 @@ impl App {
             AppMsg::DryRunResult {
                 env_name, result, ..
             } => self.handle_dry_run_result(env_name, result),
-            AppMsg::Alarms {
-                env_name, result, ..
-            } => self.handle_alarms(env_name, result),
+            AppMsg::Alarms { env, result, .. } => self.handle_alarms(env, result),
             AppMsg::WhyRedEvents {
                 session_id, result, ..
             } => self.handle_why_red_events(session_id, result),
@@ -251,10 +249,16 @@ impl App {
             AppMsg::LogTailOpened {
                 session_id,
                 env_name,
+                region,
                 log_group,
                 since_ms,
                 ..
-            } => self.handle_log_tail_opened(session_id, env_name, log_group, since_ms),
+            } => self.handle_log_tail_opened(
+                session_id,
+                EnvKey::new(region, env_name),
+                log_group,
+                since_ms,
+            ),
             AppMsg::LogTailEvents {
                 session_id,
                 next_since_ms,
@@ -316,11 +320,12 @@ impl App {
             } => self.handle_alarm_op(verb, alarm_name, env_name, result),
             AppMsg::DeleteAppVersion {
                 application,
+                region,
                 label,
                 force,
                 result,
                 ..
-            } => self.handle_delete_app_version(application, label, force, result),
+            } => self.handle_delete_app_version(application, region, label, force, result),
             AppMsg::TagUpdate {
                 env_name,
                 summary,
@@ -767,16 +772,16 @@ impl App {
         }
     }
 
-    fn handle_alarms(&mut self, env_name: String, result: Result<Vec<CwAlarm>, String>) {
+    fn handle_alarms(&mut self, env: EnvKey, result: Result<Vec<CwAlarm>, String>) {
         // Drop stale results: the user may have closed the overlay or
         // requested alarms for a different env during the round-trip. The
         // overlay carries the env it was opened for; only replace its body
         // if that still matches the result we just received.
         match self.current_overlay.as_mut() {
             Some(Overlay::Alarms {
-                env_name: requested,
+                env: requested,
                 body,
-            }) if requested == &env_name => {
+            }) if requested == &env => {
                 *body = format_alarms(result);
             }
             _ => (),
@@ -1252,7 +1257,7 @@ impl App {
     fn handle_log_tail_opened(
         &mut self,
         session_id: u64,
-        env_name: String,
+        env: EnvKey,
         log_group: String,
         since_ms: i64,
     ) {
@@ -1261,7 +1266,8 @@ impl App {
         }
         self.current_overlay = Some(Overlay::LogTail {
             log_group,
-            env_name,
+            env_name: env.name,
+            region: env.region,
             events: std::collections::VecDeque::with_capacity(LOG_TAIL_MAX_LINES),
             since_ms,
             view: super::tail::TailView::new(),
@@ -1741,6 +1747,7 @@ impl App {
     fn handle_delete_app_version(
         &mut self,
         application: String,
+        region: String,
         label: String,
         force: bool,
         result: Result<(), String>,
@@ -1771,7 +1778,7 @@ impl App {
                     self.current_overlay.as_ref(),
                     Some(Overlay::TextDump { title, .. }) if title == &want_title
                 ) {
-                    let client = self.client_for_env(&application);
+                    let client = self.client_for_region(&region);
                     let tx = self.msg_tx.clone();
                     let gen = self.generation;
                     let app_name = application.clone();
@@ -1783,7 +1790,7 @@ impl App {
                     let deployed_label = self
                         .environments
                         .iter()
-                        .find(|e| e.application == application)
+                        .find(|e| e.application == application && self.region_for(e) == region)
                         .filter(|e| !e.version_label.is_empty())
                         .map(|e| e.version_label.clone());
                     tokio::spawn(async move {

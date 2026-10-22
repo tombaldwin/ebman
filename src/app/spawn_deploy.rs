@@ -21,7 +21,7 @@ impl App {
                 Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;
         };
-        if self.deny_write(&env.name, &summary) {
+        if self.deny_write(&self.env_key(&env), &summary) {
             return;
         }
         if to_set.is_empty() && to_remove.is_empty() {
@@ -142,7 +142,7 @@ impl App {
                 Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;
         };
-        if self.deny_write(&env.name, "deploy-from-s3") {
+        if self.deny_write(&self.env_key(&env), "deploy-from-s3") {
             return;
         }
         // Derive label from the S3 key's basename if not pinned. Same
@@ -152,6 +152,7 @@ impl App {
             .unwrap_or_else(|| derive_version_label(&key, chrono::Utc::now().timestamp()));
         let env_name = env.name.clone();
         let app_name = env.application.clone();
+        let region = self.region_for(&env);
         let summary = if and_deploy {
             format!("deploy-from-s3 {label}")
         } else {
@@ -162,7 +163,7 @@ impl App {
         crate::audit::append_action_dispatched(
             self.context.account_id.as_deref(),
             self.context.profile.as_deref(),
-            &self.region_for_name(&env_name),
+            &region,
             "DeployFromS3",
             env_name.as_str(),
             &[
@@ -173,7 +174,7 @@ impl App {
         );
         self.push_pending(summary.clone(), env_name.clone());
         // In-flight ack lives on the pending pill; completion toasts.
-        let client = self.client_for_env(&env_name);
+        let client = self.client_for_region(&region);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let env_for_msg = env_name.clone();
@@ -181,7 +182,6 @@ impl App {
         let summary_for_msg = summary.clone();
         let account = self.context.account_id.clone();
         let profile = self.context.profile.clone();
-        let region = self.region_for_name(&env_name);
         let description_owned = description;
         tokio::spawn(async move {
             let aws = match client.resolve().await {
@@ -269,7 +269,7 @@ impl App {
     /// label, age, description, plus a warning when the candidate is
     /// older than what's currently deployed.
     pub(crate) fn spawn_deploy_preview(&self, env: crate::aws::Environment, label: String) {
-        let client = self.client_for_env(&env.name);
+        let client = self.client_for(&env);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let app_name = env.application.clone();
@@ -314,7 +314,7 @@ impl App {
         // Route through `deny_write` (not bare `is_read_only_for`) so the
         // gate picks up the `--demo` refusal alongside read-only / safety
         // pins. Pre-0.17.4 this dispatched real audit lines in --demo.
-        if self.deny_write(&env.name, "deploy-from-local") {
+        if self.deny_write(&self.env_key(&env), "deploy-from-local") {
             return;
         }
         // Path resolution: ~ expansion + check file exists + size.
@@ -340,6 +340,7 @@ impl App {
             .unwrap_or_else(|| derive_version_label(&resolved, chrono::Utc::now().timestamp()));
         let env_name = env.name.clone();
         let app_name = env.application.clone();
+        let region = self.region_for(&env);
         let summary = if and_deploy {
             format!("deploy-from-local {label}")
         } else {
@@ -350,7 +351,7 @@ impl App {
         crate::audit::append_action_dispatched(
             self.context.account_id.as_deref(),
             self.context.profile.as_deref(),
-            &self.region_for_name(&env_name),
+            &region,
             "DeployFromLocal",
             env_name.as_str(),
             &[
@@ -360,7 +361,7 @@ impl App {
             ],
         );
         self.push_pending(summary.clone(), env_name.clone());
-        let client = self.client_for_env(&env_name);
+        let client = self.client_for_region(&region);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let env_for_msg = env_name.clone();
@@ -368,7 +369,6 @@ impl App {
         let summary_for_msg = summary.clone();
         let account = self.context.account_id.clone();
         let profile = self.context.profile.clone();
-        let region = self.region_for_name(&env_name);
         let description_owned = description;
         tokio::spawn(async move {
             let aws = match client.resolve().await {
@@ -493,10 +493,14 @@ impl App {
                 Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;
         };
-        if self.deny_write(&env.name, "delete-version") {
+        if self.deny_write(&self.env_key(&env), "delete-version") {
             return;
         }
         let application = env.application.clone();
+        // The selected row's region. An application has one copy per
+        // region, and the first row of the app by name may be the
+        // other copy.
+        let region = self.region_for(&env);
         // Target carries the optional "(+source bundle)" suffix so a
         // tail of the audit log makes the force flag visible without
         // a separate extras field.
@@ -508,7 +512,7 @@ impl App {
         crate::audit::append_action_dispatched(
             self.context.account_id.as_deref(),
             self.context.profile.as_deref(),
-            &self.region_for_app(&application),
+            &region,
             "DeleteAppVersion",
             &target_label,
             &[],
@@ -521,12 +525,11 @@ impl App {
         };
         let pending_target = format!("{application}/{label}");
         self.push_pending(pending_label, pending_target);
-        let client = self.client_for_app(&application);
+        let client = self.client_for_region(&region);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let account = self.context.account_id.clone();
         let profile = self.context.profile.clone();
-        let region = self.region_for_app(&application);
         let app_for_msg = application.clone();
         let label_for_msg = label.clone();
         let target_label_for_outcome = target_label.clone();
@@ -550,6 +553,7 @@ impl App {
             let _ = tx.send(AppMsg::DeleteAppVersion {
                 gen,
                 application: app_for_msg,
+                region,
                 label: label_for_msg,
                 force,
                 result,
@@ -570,7 +574,7 @@ impl App {
                 Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;
         };
-        if self.deny_write(&env.name, "tag edits") {
+        if self.deny_write(&self.env_key(&env), "tag edits") {
             return;
         }
         let Some(arn) = env.arn.clone() else {
@@ -582,6 +586,7 @@ impl App {
                 Some("nothing to do — provide tags to add or keys to remove".into());
             return;
         }
+        let region = self.region_for(&env);
         let summary = if !to_add.is_empty() {
             let keys: Vec<String> = to_add.iter().map(|(k, _)| k.clone()).collect();
             format!("tag {}", keys.join(","))
@@ -591,7 +596,7 @@ impl App {
         crate::audit::append_action_dispatched(
             self.context.account_id.as_deref(),
             self.context.profile.as_deref(),
-            &self.region_for_name(&env.name),
+            &region,
             "UpdateTags",
             &env.name,
             &[("summary", &summary)],
@@ -601,14 +606,13 @@ impl App {
         // pill in the header is the in-flight truth-source; no
         // status_message ack here (would race with the next operation).
         self.push_pending(summary.clone(), env.name.clone());
-        let client = self.client_for_env(&env.name);
+        let client = self.client_for(&env);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let env_name = env.name.clone();
         let summary_for_msg = summary.clone();
         let account = self.context.account_id.clone();
         let profile = self.context.profile.clone();
-        let region = self.region_for_name(&env.name);
         tokio::spawn(async move {
             let result = match client.resolve().await {
                 Ok(aws) => aws
@@ -635,10 +639,11 @@ impl App {
         });
     }
 
-    pub(crate) fn spawn_preflight_events(&mut self, env_name: String) {
+    pub(crate) fn spawn_preflight_events(&mut self, env: &crate::aws::Environment) {
+        let env_name = env.name.clone();
         let env_for_msg = env_name.clone();
         self.spawn_aws_in(
-            self.client_for_env(&env_for_msg),
+            self.client_for(env),
             "preflight_events",
             move |aws| async move { aws.list_events_for_env(&env_name, 3).await },
             move |gen, result| AppMsg::PreflightEvents {
@@ -649,10 +654,11 @@ impl App {
         );
     }
 
-    pub(crate) fn spawn_dry_run(&mut self, env_name: String) {
+    pub(crate) fn spawn_dry_run(&mut self, env: &crate::aws::Environment) {
+        let env_name = env.name.clone();
         let env_for_msg = env_name.clone();
         self.spawn_aws_in(
-            self.client_for_env(&env_for_msg),
+            self.client_for(env),
             "dry_run_list_instances",
             move |aws| async move { aws.list_instances(&env_name).await },
             move |gen, result| AppMsg::DryRunResult {
@@ -671,16 +677,16 @@ impl App {
     /// deploy) — the formatter handles that gracefully.
     pub(crate) fn spawn_version_preview(
         &mut self,
-        app_name: String,
-        env_name: String,
-        current_label: String,
+        env: &crate::aws::Environment,
         candidate_label: String,
     ) {
-        let env_for_msg = env_name.clone();
-        let env_for_render = env_name.clone();
+        let app_name = env.application.clone();
+        let current_label = env.version_label.clone();
+        let env_for_msg = env.name.clone();
+        let env_for_render = env.name.clone();
         let candidate_for_render = candidate_label.clone();
         self.spawn_aws_in(
-            self.client_for_env(&env_for_msg),
+            self.client_for(env),
             "version_preview",
             move |aws| async move { aws.list_application_versions(&app_name).await },
             move |gen, result| {
@@ -714,14 +720,12 @@ impl App {
     /// free. Output is parsed to an HTTP status code (or classified
     /// as a transport error) so the warning text can surface what
     /// specifically failed.
-    pub(crate) fn spawn_health_check_probe(
-        &mut self,
-        app_name: String,
-        env_name: String,
-        cname: String,
-    ) {
+    pub(crate) fn spawn_health_check_probe(&mut self, env: &crate::aws::Environment) {
+        let app_name = env.application.clone();
+        let env_name = env.name.clone();
+        let cname = env.cname.clone();
         let env_for_msg = env_name.clone();
-        let client = self.client_for_env(&env_name);
+        let client = self.client_for(env);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         tokio::spawn(async move {
@@ -764,10 +768,12 @@ impl App {
     /// DescribeConfigurationSettings calls is fine for a one-shot
     /// modal open, and keeps the two features isolated so failure
     /// of one doesn't taint the other.
-    pub(crate) fn spawn_unavailability_estimate(&mut self, app_name: String, env_name: String) {
+    pub(crate) fn spawn_unavailability_estimate(&mut self, env: &crate::aws::Environment) {
+        let app_name = env.application.clone();
+        let env_name = env.name.clone();
         let env_for_msg = env_name.clone();
         self.spawn_aws_in(
-            self.client_for_env(&env_for_msg),
+            self.client_for(env),
             "unavailability_estimate",
             move |aws| async move { aws.fetch_env_option_settings(&app_name, &env_name).await },
             move |gen, result| {
@@ -799,7 +805,7 @@ impl App {
     /// fails (the operator can still see the rule-output via
     /// `:lint` once the modal closes).
     pub(crate) fn spawn_confirm_lint(&mut self, env: crate::aws::Environment) {
-        let client = self.client_for_env(&env.name);
+        let client = self.client_for(&env);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         // The same snapshot `:lint` and `:explain` take — platform

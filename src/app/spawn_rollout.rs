@@ -76,9 +76,10 @@ impl App {
         // `spawn_action`): read-only / freeze / incident / pins may
         // have changed since the plan was confirmed, and the
         // continuation path re-enters here for every region.
-        // `in_region`: a rollout names each region, so a name that is in
-        // several (the fleet a rollout exists for) is not ambiguous here.
-        if self.deny_write_in_region(&env_name, "rollout") {
+        if self.deny_write(
+            &super::EnvKey::new(region.clone(), env_name.clone()),
+            "rollout",
+        ) {
             if let Some(crate::mode_action::ActionFlow::Rollout(flow)) = self.action_flow.as_mut() {
                 flow.state = crate::mode_action::RolloutState::Done;
             }

@@ -24,8 +24,8 @@ impl App {
         let envs: Vec<EnvKey> = self.multi_selected.iter().cloned().collect();
         // Per-env safety gate: refuse if ANY selected env is pinned
         // read-only (global / demo / freeze / safety.envs / accounts).
-        // Pins are by name, so the gate is too.
-        if self.deny_write_batch(&names_of(&envs), "batch action") {
+        // Pins are by name; each refusal is audited in its key's region.
+        if self.deny_write_batch(&envs, "batch action") {
             return;
         }
         let n = envs.len();
@@ -56,7 +56,7 @@ impl App {
         let envs: Vec<EnvKey> = self.multi_selected.iter().cloned().collect();
         // Per-env safety gate before the app-span check — a pinned env
         // should refuse regardless of whether the selection is valid.
-        if self.deny_write_batch(&names_of(&envs), "batch-deploy") {
+        if self.deny_write_batch(&envs, "batch-deploy") {
             return;
         }
         let apps: std::collections::BTreeSet<String> = envs
@@ -96,7 +96,7 @@ impl App {
         {
             // Per-env safety gate before arg parsing + ARN resolution.
             let keys: Vec<EnvKey> = self.multi_selected.iter().cloned().collect();
-            if self.deny_write_batch(&names_of(&keys), "batch tag/untag") {
+            if self.deny_write_batch(&keys, "batch tag/untag") {
                 return;
             }
         }
@@ -166,7 +166,7 @@ impl App {
         let value = rest[2..].join(" ");
         let envs: Vec<EnvKey> = self.multi_selected.iter().cloned().collect();
         // Per-env safety gate: refuse if any selected env is pinned.
-        if self.deny_write_batch(&names_of(&envs), "batch-set-option") {
+        if self.deny_write_batch(&envs, "batch-set-option") {
             return;
         }
         let n = envs.len();
@@ -182,9 +182,4 @@ impl App {
         );
         self.multi_selected.clear();
     }
-}
-
-/// The names of `envs`, for the safety gate: pins are by name.
-fn names_of(envs: &[EnvKey]) -> Vec<String> {
-    envs.iter().map(|k| k.name.clone()).collect()
 }

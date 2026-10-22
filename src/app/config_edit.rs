@@ -13,11 +13,10 @@ impl App {
     /// list). Refuses in read-only mode so the operator isn't left
     /// typing a value that can't be dispatched.
     pub(crate) fn start_config_edit(&mut self) {
-        let env_name = match self.detail.as_ref() {
-            Some(d) => d.env_name.clone(),
-            None => return,
+        let Some(target) = self.detail.as_ref().map(|d| self.env_key(&d.env_snapshot)) else {
+            return;
         };
-        if self.deny_write(&env_name, "config editing") {
+        if self.deny_write(&target, "config editing") {
             return;
         }
         let Some(detail) = self.detail.as_mut() else {
@@ -177,11 +176,10 @@ impl App {
     /// an env var (the more common edit target). The buffer is typed
     /// as `KEY=VALUE`.
     pub(crate) fn start_config_add(&mut self) {
-        let env_name = match self.detail.as_ref() {
-            Some(d) => d.env_name.clone(),
-            None => return,
+        let Some(target) = self.detail.as_ref().map(|d| self.env_key(&d.env_snapshot)) else {
+            return;
         };
-        if self.deny_write(&env_name, "config editing") {
+        if self.deny_write(&target, "config editing") {
             return;
         }
         let Some(detail) = self.detail.as_mut() else {
@@ -213,11 +211,10 @@ impl App {
     /// commit dispatches a remove-old + set-new (keeping the value)
     /// as one `UpdateOptionSettings` / `UpdateTags` call.
     pub(crate) fn start_config_rename(&mut self) {
-        let env_name = match self.detail.as_ref() {
-            Some(d) => d.env_name.clone(),
-            None => return,
+        let Some(target) = self.detail.as_ref().map(|d| self.env_key(&d.env_snapshot)) else {
+            return;
         };
-        if self.deny_write(&env_name, "config editing") {
+        if self.deny_write(&target, "config editing") {
             return;
         }
         let Some(detail) = self.detail.as_mut() else {
@@ -246,11 +243,10 @@ impl App {
     /// removal waits for the `y` confirmation (see the
     /// `config_delete_confirm` interception in the key handler).
     pub(crate) fn arm_config_delete(&mut self) {
-        let env_name = match self.detail.as_ref() {
-            Some(d) => d.env_name.clone(),
-            None => return,
+        let Some(target) = self.detail.as_ref().map(|d| self.env_key(&d.env_snapshot)) else {
+            return;
         };
-        if self.deny_write(&env_name, "config editing") {
+        if self.deny_write(&target, "config editing") {
             return;
         }
         let Some(detail) = self.detail.as_mut() else {
@@ -307,11 +303,16 @@ impl App {
     /// so callers can pass strings with embedded spaces (the typed-command
     /// parser joins rest with single spaces; the overlay passes the raw
     /// template name).
-    pub(crate) fn spawn_config_apply_template(&mut self, env_name: String, template: String) {
-        if self.deny_write(&env_name, "config-apply") {
+    pub(crate) fn spawn_config_apply_template(
+        &mut self,
+        env: &crate::aws::Environment,
+        template: String,
+    ) {
+        let env_name = env.name.clone();
+        if self.deny_write(&self.env_key(env), "config-apply") {
             return;
         }
-        let region = self.region_for_name(&env_name);
+        let region = self.region_for(env);
         let client = self.client_for_region(&region);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
@@ -347,16 +348,20 @@ impl App {
     /// Dispatch `DeleteConfigurationTemplate`. Same shape as
     /// `spawn_config_apply_template`; bypasses the typed-command parser so
     /// the overlay can pass template names with embedded spaces.
-    pub(crate) fn spawn_config_delete_template(&mut self, app_name: String, template: String) {
+    pub(crate) fn spawn_config_delete_template(
+        &mut self,
+        app_name: String,
+        template: String,
+        region: String,
+    ) {
         // config-delete is app-scoped, not env-scoped — the template
         // lives at the application level. Per-account safety still
         // applies; per-env doesn't. The global / account-pin gate fires
         // via `deny_write` with an empty env name (which never matches
         // any `safety_envs` key).
-        if self.deny_write("", "config-delete") {
+        if self.deny_write(&EnvKey::new(region.clone(), ""), "config-delete") {
             return;
         }
-        let region = self.region_for_app(&app_name);
         let client = self.client_for_region(&region);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
@@ -396,8 +401,13 @@ impl App {
     /// Fetch a template's option settings and surface them as a TextOverlay.
     /// Read-only — no read-only-mode gate. Called by `:config-inspect` and
     /// by the `i` keybind in the interactive saved-configs overlay.
-    pub(crate) fn spawn_config_inspect_template(&mut self, app_name: String, template: String) {
-        let client = self.client_for_app(&app_name);
+    pub(crate) fn spawn_config_inspect_template(
+        &mut self,
+        app_name: String,
+        template: String,
+        region: String,
+    ) {
+        let client = self.client_for_region(&region);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let title = format!("template — {app_name}/{template}");
@@ -517,14 +527,16 @@ impl App {
                     };
                     // Direct call bypasses execute_command's whitespace
                     // split so template names with spaces work.
-                    self.spawn_config_apply_template(env.name, template);
+                    self.spawn_config_apply_template(&env, template);
                 }
             }
             // y/Y/enter under armed-confirm dispatches the delete.
             KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter if confirm_delete => {
                 if let Some((app_name, template)) = selected {
                     self.current_overlay = None;
-                    self.spawn_config_delete_template(app_name, template);
+                    // The list is the home region's catalogue.
+                    let home = self.context.region.clone();
+                    self.spawn_config_delete_template(app_name, template, home);
                 }
             }
             KeyCode::Char('c') => {
@@ -539,7 +551,8 @@ impl App {
                 // execute_command's whitespace-split parser.
                 if let Some((app_name, template)) = selected {
                     self.current_overlay = None;
-                    self.spawn_config_inspect_template(app_name, template);
+                    let home = self.context.region.clone();
+                    self.spawn_config_inspect_template(app_name, template, home);
                 }
             }
             KeyCode::Char('?') => {

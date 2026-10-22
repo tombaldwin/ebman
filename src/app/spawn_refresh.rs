@@ -127,25 +127,26 @@ impl App {
         )
     }
 
-    pub(crate) fn spawn_alarms_fetch(&mut self, env_name: String) {
+    pub(crate) fn spawn_alarms_fetch(&mut self, env: &crate::aws::Environment) {
+        let env_name = env.name.clone();
+        let key = self.env_key(env);
         // `alarm_prefix` may have been edited by hand since.
         self.reload_config_and_refetch();
         // The fetch's env name lives on the Overlay::Alarms variant so a late
         // result for a different env can be dropped at the handler. The body
         // is initially a placeholder until the result arrives.
         self.current_overlay = Some(Overlay::Alarms {
-            env_name: env_name.clone(),
+            env: key.clone(),
             body: format!("fetching alarms for {env_name}…"),
         });
-        let name_for_msg = env_name.clone();
         let matching = self.alarm_match_for(&env_name);
         self.spawn_aws_in(
-            self.client_for_env(&name_for_msg),
+            self.client_for_region(&key.region),
             "list_alarms_for_env",
             move |aws| async move { aws.list_alarms_for_env(&env_name, &matching).await },
             move |gen, result| AppMsg::Alarms {
                 gen,
-                env_name: name_for_msg,
+                env: key,
                 result,
             },
         );
@@ -376,14 +377,17 @@ impl App {
     pub(crate) fn spawn_app_latest_versions(&self) {
         let tx = self.msg_tx.clone();
         let gen = self.generation;
-        // A client per application: EB applications are region-scoped,
-        // so under a fan-out the same name exists once per region and
-        // the home client can only answer for one of them.
+        // The catalogue's own region. `applications` is the home
+        // region's list (`spawn_applications`), so its latest versions
+        // come from there too. Resolving each app through the first row
+        // of that name put another region's version beside the home
+        // region's app whenever the name had a copy in both.
+        let home = self.client_for_region(&self.context.region);
         let names: Vec<(String, RegionClient)> = self
             .caches
             .applications
             .iter()
-            .map(|a| (a.name.clone(), self.client_for_app(&a.name)))
+            .map(|a| (a.name.clone(), home.clone()))
             .collect();
         if names.is_empty() {
             return;
@@ -425,16 +429,7 @@ impl App {
             .environments
             .iter()
             .filter(|e| e.tier.eq_ignore_ascii_case("Worker"))
-            .map(|e| {
-                (
-                    (self.env_key(e), e.application.clone()),
-                    // `region_for(e)`, not `client_for_env(&e.name)`:
-                    // we already hold the row, and the by-name lookup
-                    // scans the whole fleet — quadratic across a
-                    // fan-out that runs on every tick.
-                    self.client_for_region(&self.region_for(e)),
-                )
-            })
+            .map(|e| ((self.env_key(e), e.application.clone()), self.client_for(e)))
             .collect();
         if workers.is_empty() {
             return;
@@ -550,15 +545,16 @@ impl App {
         // the global event stream when no env is selected. The previously-
         // fetched env name is recorded so we can detect selection changes
         // and refetch without firing a request on every j/k.
-        let selected = self.selected_env().map(|e| e.name.clone());
+        let selected = self.selected_env().map(|e| self.env_key(e));
         self.event_panel.for_env = selected.clone();
         // Per-env when a row is selected: under a fan-out the panel
         // would otherwise show the home region's event stream beside
         // the row it claims to be about.
-        let client = match selected.as_deref() {
-            Some(name) => self.client_for_env(name),
+        let client = match selected.as_ref() {
+            Some(key) => self.client_for_region(&key.region),
             None => self.client_for_region(&self.context.region),
         };
+        let selected = selected.map(|key| key.name);
         self.spawn_aws_in(
             client,
             "list_events",
@@ -580,7 +576,7 @@ impl App {
         if !self.event_panel.visible {
             return;
         }
-        let selected = self.selected_env().map(|e| e.name.clone());
+        let selected = self.selected_env().map(|e| self.env_key(e));
         if selected != self.event_panel.for_env {
             self.spawn_events();
         }
@@ -1022,19 +1018,6 @@ impl App {
                 self.caches.prev_alerts = new_alerts;
                 self.alerts = new_alerts;
 
-                // Remember where each env lives before the rows can
-                // leave the table. Only ever added to within a context
-                // — an env doesn't move regions, and a name that stops
-                // appearing is exactly the case this exists for.
-                for e in &envs {
-                    if let Some(r) = e.region.as_ref().filter(|r| !r.is_empty()) {
-                        self.caches
-                            .env_regions
-                            .entry(e.name.clone())
-                            .or_default()
-                            .insert(r.clone());
-                    }
-                }
                 self.environments = envs;
                 self.view.invalidate();
                 self.resort_envs();

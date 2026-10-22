@@ -17,7 +17,7 @@ impl App {
                 Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;
         };
-        if self.deny_write(&env.name, "rollback") {
+        if self.deny_write(&self.env_key(&env), "rollback") {
             return;
         }
         // `--auto-rollback Nm` arms the same watchdog as
@@ -102,7 +102,7 @@ impl App {
             ));
             return;
         }
-        let client = self.client_for_env(&env_name);
+        let client = self.client_for(&env);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         self.status_message = Some(format!("rollback: finding {env_name}'s previous version…"));
@@ -233,11 +233,10 @@ impl App {
                 // `:ssm-run`). The env for pin purposes is the open
                 // Detail env when there is one; global read-only /
                 // freeze / incident apply regardless.
-                let gate_env = self
-                    .detail
-                    .as_ref()
-                    .map(|d| d.env_name.clone())
-                    .unwrap_or_default();
+                let gate_env = match self.detail.as_ref() {
+                    Some(d) => self.env_key(&d.env_snapshot),
+                    None => EnvKey::new(self.context.region.clone(), ""),
+                };
                 if self.deny_write(&gate_env, "ssm-session") {
                     return;
                 }
@@ -324,7 +323,7 @@ impl App {
                 Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;
         };
-        if self.deny_write(&env.name, ":env-edit") {
+        if self.deny_write(&self.env_key(&env), ":env-edit") {
             return;
         }
         if self.pending_env_edit.is_some() {
@@ -332,7 +331,7 @@ impl App {
                 Some("another :env-edit is mid-flight — wait for the editor to close".into());
             return;
         }
-        let client = self.client_for_env(&env.name);
+        let client = self.client_for(&env);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let app_name = env.application.clone();
@@ -366,14 +365,15 @@ impl App {
             return;
         };
         let env_name = d.env_name.clone();
+        let region = self.region_for(&d.env_snapshot);
+        let target = EnvKey::new(region.clone(), env_name.clone());
         // Route through `deny_write` (not bare `is_read_only_for`) so the
         // gate picks up `--demo` mode alongside read-only / safety pins.
         // Pre-0.17.4 this dispatched real audit lines in --demo.
-        if self.deny_write(&env_name, "terminate-instance") {
+        if self.deny_write(&target, "terminate-instance") {
             return;
         }
         let id = inst.id.clone();
-        let region = self.region_for_name(&env_name);
         let client = self.client_for_region(&region);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
@@ -431,10 +431,14 @@ impl App {
     /// fleet" surface the pending pill exists to provide.
     pub(crate) fn spawn_ssm_run_impl(
         &mut self,
-        env_name: String,
+        target: super::EnvKey,
         command: String,
         instances: Vec<String>,
     ) {
+        let super::EnvKey {
+            region: audit_region,
+            name: env_name,
+        } = target;
         if command.is_empty() || instances.is_empty() {
             // Defensive — `cmd_ssm_run` should have refused before
             // opening the modal. If we ever land here with empty
@@ -451,8 +455,8 @@ impl App {
         // quotes don't break the line shape.
         let audit_cmd = command.replace('"', "'");
         let instances_str = instances.len().to_string();
-        // One region for the command and both audit lines.
-        let audit_region = self.region_for_name(&env_name);
+        // One region for the command and both audit lines: the one
+        // the modal was confirmed in.
         crate::audit::append_action_dispatched(
             self.context.account_id.as_deref(),
             self.context.profile.as_deref(),

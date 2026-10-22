@@ -150,7 +150,7 @@ impl App {
         } else {
             Some(env.version_label.clone())
         };
-        let client = self.client_for_env(&env.name);
+        let client = self.client_for(&env);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         self.status_message = Some(format!("fetching application versions for {app_name}…"));
@@ -662,7 +662,7 @@ impl App {
             );
             return;
         }
-        let client = self.client_for_env(&env.name);
+        let client = self.client_for(&env);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let env_name = env.name.clone();
@@ -732,7 +732,7 @@ impl App {
                 e
             }
         };
-        let client = self.client_for_env(&env.name);
+        let client = self.client_for(&env);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let env_name = env.name.clone();
@@ -808,7 +808,7 @@ impl App {
                 Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;
         };
-        let client = self.client_for_env(&env.name);
+        let client = self.client_for(&env);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let env_name = env.name.clone();
@@ -846,7 +846,9 @@ impl App {
                 // Custom platforms are account-scoped, not env-scoped —
                 // an empty env name in deny_write fires the global /
                 // account pin but doesn't match any per-env entry.
-                if self.deny_write("", "custom-platform-delete") {
+                // The catalogue is the home region's (`cmd_custom_platforms`).
+                let home = super::EnvKey::new(self.context.region.clone(), "");
+                if self.deny_write(&home, "custom-platform-delete") {
                     return;
                 }
                 let arn = arn.to_string();

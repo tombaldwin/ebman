@@ -24,7 +24,7 @@ impl App {
                     );
                     return;
                 };
-                if self.deny_write(&env.name, "config-save") {
+                if self.deny_write(&self.env_key(&env), "config-save") {
                     return;
                 }
                 let Some(env_id) = env.id.clone() else {
@@ -33,7 +33,7 @@ impl App {
                 };
                 let template = template.to_string();
                 let app_name = env.application.clone();
-                let region = self.region_for_name(&env.name);
+                let region = self.region_for(&env);
                 let client = self.client_for_region(&region);
                 let tx = self.msg_tx.clone();
                 let gen = self.generation;
@@ -84,7 +84,8 @@ impl App {
                 // after the app name so :config-delete app "Dev config
                 // pre-redis" works as typed.
                 let template = rest[1..].join(" ");
-                self.spawn_config_delete_template(app_name.to_string(), template);
+                let region = self.region_for_typed_app(app_name);
+                self.spawn_config_delete_template(app_name.to_string(), template, region);
             }
             _ => {
                 self.error_message =
@@ -112,7 +113,7 @@ impl App {
                     );
                     return;
                 };
-                self.spawn_config_apply_template(env.name.clone(), template);
+                self.spawn_config_apply_template(&env, template);
             }
         }
     }
@@ -135,6 +136,7 @@ impl App {
                 Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;
         };
-        self.spawn_config_inspect_template(env.application, template);
+        let region = self.region_for(&env);
+        self.spawn_config_inspect_template(env.application, template, region);
     }
 }

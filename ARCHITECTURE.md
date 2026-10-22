@@ -128,9 +128,12 @@ not on an actual edit. If you only want to offer a key to the buffer, use
 `self.aws` is the *home* client — its region is `context.region`. Under a
 multi-region fan-out the selected row is routinely somewhere else, so
 anything about one environment goes through
-[`App::client_for_env`](src/app.rs) (or `client_for_app` /
-`current_env_client` / `detail_client` / `why_red_client` / `dlq_client`),
-which resolves inside the spawned task. `spawn_aws_in` is the per-region
+[`App::client_for`](src/app.rs) with the row (or `current_env_client` /
+`detail_client` / `why_red_client` / `dlq_client`, or `client_for_region`
+with a region the caller recorded), which resolves inside the spawned task.
+Never by name: under `:region all` a name can be listed once per region, so
+a target is an `EnvKey` (region and name) from the moment the operator
+picks the row, and a typed name goes through `env_by_ref` (`NAME@REGION`). `spawn_aws_in` is the per-region
 sibling of `spawn_aws`. Audit lines take the same region, so the journal
 names where the write actually went — and a dispatch and its completion
 have to agree. A test in `app/tests/refresh.rs` requires every remaining

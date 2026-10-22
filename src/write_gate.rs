@@ -60,21 +60,6 @@ pub(crate) enum Refusal {
     AccountPinned {
         profile: String,
     },
-    /// The name belongs to more than one environment in the fleet on
-    /// screen (one per region under `:region all`), and a write is
-    /// routed by name, so it could reach the wrong one. Only the TUI
-    /// fans out across regions; `decide` never returns this.
-    AmbiguousEnv {
-        env: String,
-        regions: Vec<String>,
-    },
-    /// A confirmed write whose env, resolved by name again at dispatch,
-    /// is no longer in the region it was confirmed in. TUI only.
-    RegionMoved {
-        env: String,
-        confirmed: String,
-        now: String,
-    },
 }
 
 impl Refusal {
@@ -91,8 +76,6 @@ impl Refusal {
             Refusal::Frozen => "frozen",
             Refusal::EnvPinned { .. } => "env_pinned",
             Refusal::AccountPinned { .. } => "account_pinned",
-            Refusal::AmbiguousEnv { .. } => "ambiguous_env",
-            Refusal::RegionMoved { .. } => "region_moved",
         }
     }
 
@@ -113,8 +96,6 @@ impl Refusal {
             Refusal::Frozen => false,
             Refusal::EnvPinned { .. } => true,
             Refusal::AccountPinned { .. } => true,
-            Refusal::AmbiguousEnv { .. } => true,
-            Refusal::RegionMoved { .. } => true,
         }
     }
 
@@ -151,12 +132,6 @@ impl Refusal {
             Refusal::AccountPinned { profile } => {
                 format!("clear safety.accounts.{profile}.read_only in config.toml")
             }
-            Refusal::AmbiguousEnv { regions, .. } => format!(
-                "narrow the fleet to one region: :region off for the home region, or \
-                 :region {} for that one",
-                regions.first().map(String::as_str).unwrap_or("REGION")
-            ),
-            Refusal::RegionMoved { .. } => "open the action again on the row you meant".into(),
         }
     }
 }

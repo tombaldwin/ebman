@@ -774,6 +774,8 @@ pub(crate) enum AppMsg {
         gen: u64,
         session_id: u64,
         env_name: String,
+        /// The env's region, so the group picker reopens the tail there.
+        region: String,
         log_group: String,
         since_ms: i64,
     },
@@ -946,7 +948,7 @@ pub(crate) enum AppMsg {
     },
     Alarms {
         gen: u64,
-        env_name: String,
+        env: EnvKey,
         result: Result<Vec<CwAlarm>, String>,
     },
     DlqMessages {
@@ -1056,6 +1058,8 @@ pub(crate) enum AppMsg {
     DeleteAppVersion {
         gen: u64,
         application: String,
+        /// Where the version was deleted; the `:versions` refetch goes there.
+        region: String,
         label: String,
         force: bool,
         result: Result<(), String>,
@@ -3331,6 +3335,24 @@ impl RegionClient {
 }
 
 impl App {
+    /// The client for work about one environment row: its own region.
+    ///
+    /// Takes the row, not its name. Under `:region all` a name can be
+    /// listed once per region, and a lookup by name picks whichever
+    /// comes first.
+    pub(crate) fn client_for(&self, env: &crate::aws::Environment) -> RegionClient {
+        self.client_for_region(&self.region_for(env))
+    }
+
+    /// The environment the operator is pointed at: Detail's, if it is
+    /// open, otherwise the selected row.
+    pub(crate) fn pointed_env(&self) -> Option<crate::aws::Environment> {
+        match self.detail.as_ref() {
+            Some(d) => Some(d.env_snapshot.clone()),
+            None => self.selected_env().cloned(),
+        }
+    }
+
     /// The client to use for work about `region`.
     ///
     /// Resolved the same way the fan-out that produced the row resolved
@@ -3398,12 +3420,6 @@ impl App {
         Some((name, spec))
     }
 
-    /// The region an environment lives in, by name.
-    ///
-    /// Falls back to the home region for a name we don't hold a row
-    /// for — a modal opened before the refresh landed, say. That is
-    /// the pre-fan-out behaviour, so the fallback can't be worse than
-    /// what shipped.
     /// The environment a **cached view index** points at, checked.
     ///
     /// `ViewState`'s derived rows hold indices into `environments`, and
@@ -3421,65 +3437,19 @@ impl App {
         self.environments.get(i)
     }
 
-    pub(crate) fn region_for_name(&self, env_name: &str) -> String {
-        self.environments
-            .iter()
-            .find(|e| e.name == env_name)
-            // Detail's snapshot is taken at open time and is NOT torn
-            // down when a refresh drops the row — a terminated env, or
-            // a region whose fetch failed under a fan-out. Without
-            // this the action menu, which targets Detail's env, fell
-            // back to the home region: the original wrong-region bug
-            // in a narrow window, and silently.
-            .or_else(|| {
-                self.detail
-                    .as_ref()
-                    .map(|d| &d.env_snapshot)
-                    .filter(|e| e.name == env_name)
-            })
-            .map(|e| self.region_for(e))
-            // Then what we last saw. Covers the write whose row left
-            // the table during its own undo window. Only when that is
-            // one region: a write to a name seen in two is refused
-            // (`regions_named`) before it gets here.
-            .or_else(|| {
-                self.caches
-                    .env_regions
-                    .get(env_name)
-                    .filter(|r| r.len() == 1)
-                    .and_then(|r| r.first().cloned())
-            })
-            .unwrap_or_else(|| self.context.region.clone())
-    }
-
-    /// The client for work about one named environment.
+    /// The region for an application the operator typed by name.
     ///
-    /// The accessor per-env spawns should reach for. `self.aws` is
-    /// correct only for work that is genuinely account- or
-    /// region-wide — the fleet listing, identity, the applications
-    /// catalogue, Cost Explorer — and a guard test in `app/tests/refresh.rs`
-    /// requires every spawn site that keeps it to say why.
-    pub(crate) fn client_for_env(&self, env_name: &str) -> RegionClient {
-        self.client_for_region(&self.region_for_name(env_name))
-    }
-
-    /// The region an EB APPLICATION's resources live in.
-    ///
-    /// Applications and their versions are region-scoped in EB, so an
-    /// app under a fan-out has one copy per region. Resolved through
-    /// the first row of that application, which is how it got on
-    /// screen; falls back to the home region when we hold none.
-    pub(crate) fn region_for_app(&self, app_name: &str) -> String {
-        self.environments
-            .iter()
-            .find(|e| e.application == app_name)
-            .map(|e| self.region_for(e))
-            .unwrap_or_else(|| self.context.region.clone())
-    }
-
-    /// The client for work about one EB application.
-    pub(crate) fn client_for_app(&self, app_name: &str) -> RegionClient {
-        self.client_for_region(&self.region_for_app(app_name))
+    /// Applications are region-scoped in EB, so under a fan-out a name
+    /// can have one copy per region. The selected row's region when that
+    /// row belongs to the app, since that is the copy on screen;
+    /// otherwise home, where the applications catalogue is listed. Not
+    /// the first row of the app anywhere in the fleet: that is whichever
+    /// region sorted first.
+    pub(crate) fn region_for_typed_app(&self, app_name: &str) -> String {
+        match self.selected_env().filter(|e| e.application == app_name) {
+            Some(e) => self.region_for(e),
+            None => self.context.region.clone(),
+        }
     }
 
     /// The client for whatever environment the operator is pointed at
@@ -3487,13 +3457,8 @@ impl App {
     /// commands that name a resource belonging to an env without
     /// naming the env (`:alarm-history NAME`, say).
     pub(crate) fn current_env_client(&self) -> RegionClient {
-        match self
-            .detail
-            .as_ref()
-            .map(|d| d.env_name.clone())
-            .or_else(|| self.selected_env().map(|e| e.name.clone()))
-        {
-            Some(name) => self.client_for_env(&name),
+        match self.pointed_env() {
+            Some(env) => self.client_for(&env),
             None => self.client_for_region(&self.context.region),
         }
     }
