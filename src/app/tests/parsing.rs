@@ -519,23 +519,32 @@ fn delta_toast_key_requires_an_alphabetic_bucket() {
 fn app_tab_entries_split_only_where_a_new_entry_starts() {
     use crate::app::app_tab_form::split_entries;
     assert_eq!(
-        split_entries("rps=Requests|Sum; errs=Err;5xx|Sum|Count;  p99=Latency|p99"),
+        split_entries(
+            "rps=Requests|Sum; errs=Err;5xx|Sum|Count;  p99=Latency|p99",
+            true
+        ),
         vec![
             "rps=Requests|Sum",
             "errs=Err;5xx|Sum|Count",
             "p99=Latency|p99"
         ]
     );
-    assert_eq!(split_entries(""), Vec::<String>::new());
-    assert_eq!(split_entries(" ; ;"), Vec::<String>::new());
+    assert_eq!(split_entries("", true), Vec::<String>::new());
+    assert_eq!(split_entries(" ; ;", true), Vec::<String>::new());
     // A piece with no label is part of the entry before it, or, first,
     // an entry of its own that the save then reports.
-    assert_eq!(split_entries("junk; a=b"), vec!["junk", "a=b"]);
+    assert_eq!(split_entries("junk; a=b", true), vec!["junk", "a=b"]);
     // After the name's `|` a `;` ends the entry: a statistic or unit
     // never holds one, so `junk` is reported as the bad entry it is.
     assert_eq!(
-        split_entries("u=users|Avg; junk"),
+        split_entries("u=users|Avg; junk", true),
         vec!["u=users|Avg", "junk"]
+    );
+    // Thresholds hold no name to merge into: `my label=1,2` is its own
+    // (bad) entry, not part of `u`.
+    assert_eq!(
+        split_entries("u=5,10; my label=1,2", false),
+        vec!["u=5,10", "my label=1,2"]
     );
 }
 

@@ -23,8 +23,10 @@ const ENTRY_SEP: char = ';';
 /// Split on `;` except inside a metric name: where the entry so far has
 /// no `|` yet and what follows does not start another entry (a label and
 /// `=`). A CloudWatch metric name may itself contain `;`, and splitting
-/// there refused to save the env's App tab config at all.
-pub(crate) fn split_entries(field: &str) -> Vec<String> {
+/// there refused to save the env's App tab config at all. Only the
+/// metrics field (`metric_names`) merges: a threshold holds no name, so a
+/// stray piece there is reported as the bad entry it is.
+pub(crate) fn split_entries(field: &str, metric_names: bool) -> Vec<String> {
     let starts_entry = |piece: &str| {
         piece
             .trim_start()
@@ -43,7 +45,7 @@ pub(crate) fn split_entries(field: &str) -> Vec<String> {
         match out.last_mut() {
             // Only into the metric name, which is everything before the
             // first `|`: a statistic or unit never holds a `;`.
-            Some(last) if !starts_entry(piece) && !last.contains('|') => {
+            Some(last) if metric_names && !starts_entry(piece) && !last.contains('|') => {
                 last.push(ENTRY_SEP);
                 last.push_str(piece);
             }
@@ -337,7 +339,7 @@ pub(crate) fn lines_from_fields(
     line("instance_dimension", &value("instance_dimension"));
     let mut entry_errors = Vec::new();
     for (family, key) in [("metric", "metrics"), ("threshold", "thresholds")] {
-        for entry in split_entries(&value(key)) {
+        for entry in split_entries(&value(key), family == "metric") {
             let entry = entry.as_str();
             match entry.split_once('=') {
                 Some((label, v)) => line(&format!("{family}.{}", label.trim()), v.trim()),
