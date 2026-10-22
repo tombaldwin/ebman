@@ -91,10 +91,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   landed on another row, and about thirty commands and the Config tab's
   edits wrote to that env, checked its pins and audited it. They act on
   Detail's env. `:env-edit` likewise applies the edit to the env whose
-  vars it opened, not the one on screen when the editor closes.
+  vars it opened, not the one on screen when the editor closes, and
+  `:undo` reverses the change on the env it was made to, including one
+  the current filter hides.
 - **SSM sessions open in their env's region.** `aws ssm start-session`
   was always given the home region, so an instance of an env in another
-  region was not found, and the audit line named the wrong region.
+  region was not found, and the audit line named the wrong region. The `:ssh` instance picker now honours read-only, pins and the deploy
+  freeze, as `:ssh ID` and Detail's `s` did.
 - **Detail and the confirm modal drop another region's answers.** Close
   Detail on `api@us-east-1`, open it on `api@eu-west-1`, and the first
   env's late events, instances, tags and logs filled the second's view;

@@ -78,6 +78,14 @@ Tier definitions:
   the next cycle. *0.46 release review (architecture, Important), with
   the shape from its re-review.*
 
+- [ ] **The App tab editor cannot tell `;label=` inside a metric name
+  from a new entry.** Its metrics field joins entries with `; `, so a
+  metric named `a;b=c` reads back as two entries (`heap=a`, `b=c|…`) and
+  saves both. Pre-existing (the old split on every `;` did the same);
+  0.46 keeps a bare `;` inside a name. Needs `;` and `=` in a CloudWatch
+  metric name. Fix when it matters: one row per metric in the form
+  rather than a `;`-joined field. *0.46 correctness re-review.*
+
 - [ ] **The pending-actions panel is keyed by name.** `complete_pending`
   matches label and target name, so the same action in flight on two
   same-named envs can stamp the wrong row ✓. Display only. *0.46 release
