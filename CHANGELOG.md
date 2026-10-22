@@ -21,7 +21,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **`:region all` with no `extra_regions` says there is nothing to
   add.** It reported "fanning across 1 regions" and listed exactly what
   single-region mode did; the status line now names the home region and
-  points at `extra_regions` in `config.toml`.
+  points at `extra_regions` in `config.toml`. With nothing added, the
+  table no longer shows a REGION column repeating the home region on
+  every row.
+- **A config edit to `extra_regions` reaches a running `:region all`.**
+  The fan-out kept the regions it started with until `:region all` was
+  run again; it now lists the new set on the next refresh.
+- **Homebrew installs shell completions** for bash, zsh and fish, so
+  `ebman --re<Tab>` completes `--read-only`. The formula installed the
+  binary only. Shipped to 0.46.0 installs as formula revision 1.
+- **The release workflow's crates.io publish no longer fails on its own
+  notes check**, which left a file in the checkout that `cargo publish`
+  refused. 0.46.0 was published by re-running it.
 
 ## [0.46.0] - 2026-10-22
 

@@ -138,7 +138,7 @@ other than the session's. Since 0.30 everything about an environment —
 Detail, `:why`, the DLQ viewer, `:lint`, `:drift`, and every write —
 goes to *that environment's* region, and the audit line says so.
 
-- `:region NAME` / `:region all` / `:r NAME` — switch region, or fan out across configured regions: the home region plus `extra_regions` from `config.toml`. The header then reads `Region: us-west-1 +2`; with no `extra_regions` there is nothing to add, and the status line says so. A `:region NAME`, `:profile` or `:account` switch while fanned out keeps fanning out, across `extra_regions` plus the new home region.
+- `:region NAME` / `:region all` / `:r NAME` — switch region, or fan out across configured regions: the home region plus `extra_regions` from `config.toml`. The header then reads `Region: us-west-1 +2`; with no `extra_regions` there is nothing to add, and the status line says so. A `:region NAME`, `:profile` or `:account` switch while fanned out keeps fanning out, across `extra_regions` plus the new home region, and an edit to `extra_regions` applies on the next refresh. The REGION column shows only when more than one region is listed.
 - `:profile NAME` / `:p NAME` — switch AWS profile.
 - `:account NAME` — switch to an AssumeRole account (`accounts.NAME` in `config.toml`). Falls back to `:profile` aliasing when no `accounts.` entry exists.
 - `:accounts` — list AWS-Organizations child accounts; rows matching a configured `accounts.NAME` get a `:account NAME` switch hint.
