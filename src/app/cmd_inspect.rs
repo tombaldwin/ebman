@@ -631,11 +631,7 @@ impl App {
             // compared against the named arg. Preserves the existing
             // behaviour every operator already knows.
             (Some(target), None) => {
-                let left_opt = if let Some(d) = self.detail.as_ref() {
-                    Some(d.env_snapshot.clone())
-                } else {
-                    self.selected_env().cloned()
-                };
+                let left_opt = self.pointed_env();
                 let Some(left) = left_opt else {
                     self.error_message = Some(
                         "no env selected — press 1-9, click a row, or type ' to jump by name"
@@ -712,11 +708,7 @@ impl App {
             return;
         };
         let ignore_keys: Vec<String> = parse_ignore_keys(ignore_csv.as_deref());
-        let left = if let Some(d) = self.detail.as_ref() {
-            Some(d.env_snapshot.clone())
-        } else {
-            self.selected_env().cloned()
-        };
+        let left = self.pointed_env();
         let Some(left) = left else {
             self.error_message =
                 Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());

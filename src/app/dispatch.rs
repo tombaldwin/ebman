@@ -264,11 +264,7 @@ impl App {
                 }
             },
             "why" | "diagnose" => {
-                let env_opt = if let Some(d) = self.detail.as_ref() {
-                    Some(d.env_snapshot.clone())
-                } else {
-                    self.selected_env().cloned()
-                };
+                let env_opt = self.pointed_env();
                 match env_opt {
                     Some(env) => self.open_why_red(&env),
                     None => {
@@ -412,11 +408,7 @@ impl App {
     }
 
     fn run_plugin_command(&mut self, name: &str, plugin: &crate::plugins::Plugin) {
-        let env_opt = if let Some(d) = self.detail.as_ref() {
-            Some(d.env_snapshot.clone())
-        } else {
-            self.selected_env().cloned()
-        };
+        let env_opt = self.pointed_env();
         let Some(env) = env_opt else {
             self.error_message = Some(format!(":{name} — no env selected"));
             return;

@@ -70,11 +70,7 @@ impl App {
 
 impl App {
     pub(crate) fn yank_cli(&mut self) {
-        let env_opt = if let Some(d) = self.detail.as_ref() {
-            Some(d.env_snapshot.clone())
-        } else {
-            self.selected_env().cloned()
-        };
+        let env_opt = self.pointed_env();
         let Some(env) = env_opt else {
             self.status_message =
                 Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
@@ -185,11 +181,7 @@ impl App {
     }
 
     pub(crate) fn open_describe_overlay(&mut self) {
-        let env = if let Some(d) = self.detail.as_ref() {
-            Some(d.env_snapshot.clone())
-        } else {
-            self.selected_env().cloned()
-        };
+        let env = self.pointed_env();
         let Some(env) = env else {
             self.status_message =
                 Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
@@ -199,11 +191,7 @@ impl App {
     }
 
     pub(crate) fn open_in_console(&mut self) {
-        let env_opt = if let Some(d) = self.detail.as_ref() {
-            Some(d.env_snapshot.clone())
-        } else {
-            self.selected_env().cloned()
-        };
+        let env_opt = self.pointed_env();
         let Some(env) = env_opt else {
             self.status_message =
                 Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());

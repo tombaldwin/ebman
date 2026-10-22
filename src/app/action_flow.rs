@@ -86,11 +86,6 @@ impl App {
         });
     }
 
-    fn target_env_for_action(&self) -> Option<Environment> {
-        // Detail view targets the env it was opened on; Normal view targets selection.
-        self.pointed_env()
-    }
-
     /// Open the per-env action menu. Returns `false` when it refused —
     /// no env selected, or `deny_write` said no.
     ///
@@ -102,7 +97,7 @@ impl App {
     /// switched to `Action`, and undispatchable — but enough to make
     /// `?` open the Action help instead of the global one.
     pub(crate) fn open_action_menu(&mut self) -> bool {
-        let Some(target) = self.target_env_for_action() else {
+        let Some(target) = self.pointed_env() else {
             self.status_message =
                 Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return false;
@@ -348,7 +343,7 @@ impl App {
     }
 
     pub(crate) fn advance_action_flow(&mut self, action: Action) {
-        let Some(env) = self.target_env_for_action() else {
+        let Some(env) = self.pointed_env() else {
             self.close_action_flow();
             return;
         };
