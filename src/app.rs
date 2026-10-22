@@ -2179,6 +2179,14 @@ impl App {
         // written back. Reflecting those onto the running view would
         // surprise the operator.
         self.extra_regions = cfg.extra_regions.clone();
+        // A fan-out lists `extra_regions`: an edit to it takes effect now,
+        // not at the next `:region all`. No context switch here, so no
+        // generation bump supersedes the listing in flight; the fan-out
+        // epoch does.
+        if self.rederive_fanout() {
+            self.fanout_epoch = self.fanout_epoch.wrapping_add(1);
+            self.spawn_refresh();
+        }
         self.notify_bell = cfg.notify_bell;
         self.cfg.required_tags = cfg.required_tags.clone();
         self.set_alarm_dimensions(cfg.alarm_dimensions.clone());

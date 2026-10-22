@@ -2296,3 +2296,47 @@ async fn a_context_switch_outside_a_fanout_stays_single_region() {
         app.multi_regions
     );
 }
+
+#[tokio::test]
+async fn a_config_reload_while_fanned_out_lists_the_new_extra_regions() {
+    // `apply_config_live` replaced extra_regions and left the fan-out
+    // list alone: a removed region stayed listed, an added one was not,
+    // until the next `:region all`.
+    let mut app = test_app();
+    app.extra_regions = vec!["eu-west-2".into()];
+    app.execute_command("region all");
+    let epoch = app.fanout_epoch;
+
+    let cfg = crate::config::Config {
+        extra_regions: vec!["ap-south-1".into()],
+        ..crate::config::Config::default()
+    };
+    app.apply_config_live(&cfg);
+
+    assert_eq!(app.multi_regions, vec!["ap-south-1", "us-east-1"]);
+    assert_ne!(
+        app.fanout_epoch, epoch,
+        "the listing in flight for the old set must be superseded"
+    );
+}
+
+#[tokio::test]
+async fn a_config_reload_outside_a_fanout_does_not_start_one() {
+    let mut app = test_app();
+    let epoch = app.fanout_epoch;
+    let cfg = crate::config::Config {
+        extra_regions: vec!["ap-south-1".into()],
+        ..crate::config::Config::default()
+    };
+    app.apply_config_live(&cfg);
+    assert!(app.multi_regions.is_empty());
+    assert_eq!(app.fanout_epoch, epoch);
+}
+
+#[tokio::test]
+#[should_panic(expected = "lacks the home region")]
+async fn a_fanout_refresh_without_the_home_region_is_a_bug() {
+    let mut app = test_app();
+    app.multi_regions = vec!["eu-west-2".into()];
+    app.spawn_refresh();
+}

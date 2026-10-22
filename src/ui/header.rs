@@ -704,9 +704,9 @@ pub(crate) fn breadcrumb_line(app: &App) -> Line<'static> {
 /// and two others. It used to name the home region alone in every
 /// mode, so a fan-out looked like a single-region session. A fan-out
 /// over the home region only lists the same envs, so it reads as that.
-/// The list always holds the home region (`fanout_regions`, derived
-/// again on every context switch), so counting the others is the whole
-/// rule.
+/// The list always holds the home region (`App::rederive_fanout`
+/// keeps it so, and `spawn_refresh` asserts it), so counting the others
+/// is the whole rule.
 pub(crate) fn region_label(home: &str, fanout: &[String]) -> String {
     match fanout.iter().filter(|r| r.as_str() != home).count() {
         0 => home.to_string(),

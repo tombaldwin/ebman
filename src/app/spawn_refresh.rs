@@ -280,6 +280,14 @@ impl App {
                 });
             });
         } else {
+            // The header counts the regions beside the home one; a list
+            // without it would list envs the header does not name.
+            debug_assert!(
+                self.multi_regions.contains(&self.context.region),
+                "fan-out {:?} lacks the home region {}",
+                self.multi_regions,
+                self.context.region
+            );
             let regions = self.multi_regions.clone();
             let profile = self
                 .override_profile
@@ -753,10 +761,7 @@ impl App {
                 // `:region NAME` moved the header to a region the listing
                 // did not cover. The refresh below goes out under the new
                 // generation, which already supersedes the old listing.
-                if !self.multi_regions.is_empty() {
-                    self.multi_regions =
-                        super::cmd_nav::fanout_regions(&self.extra_regions, &self.context.region);
-                }
+                self.rederive_fanout();
                 self.aws_built_at = Instant::now();
                 self.maybe_apply_profile_theme();
                 self.environments.clear();

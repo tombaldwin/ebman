@@ -21,6 +21,22 @@ impl App {
     /// rows stayed on screen under the new mode's header. `<name>` goes
     /// through the picker, which rebuilds the client and bumps
     /// `generation` instead; that already supersedes the listing.
+    /// Under a `:region all` fan-out, derive its list again from
+    /// `extra_regions` and the home region; outside one, do nothing.
+    /// Returns whether the list changed. A context switch
+    /// (`apply_rebuild`) and a config reload (`apply_config_live`) both
+    /// change an input, so both call this: the list kept as it was named
+    /// regions the operator had left or removed.
+    pub(crate) fn rederive_fanout(&mut self) -> bool {
+        if self.multi_regions.is_empty() {
+            return false;
+        }
+        let next = fanout_regions(&self.extra_regions, &self.context.region);
+        let changed = next != self.multi_regions;
+        self.multi_regions = next;
+        changed
+    }
+
     pub(crate) fn cmd_region(&mut self, rest: &[&str]) {
         match rest.first().copied() {
             Some("all") => {
@@ -154,8 +170,8 @@ impl App {
 }
 
 /// What `:region all` lists: the configured extra regions plus the home
-/// region, sorted, once each. A context switch while fanned out derives
-/// it again (`apply_rebuild`), so the list always holds the home region
+/// region, sorted, once each. `App::rederive_fanout` applies it again
+/// whenever an input changes, so the list always holds the home region
 /// the header names.
 pub(crate) fn fanout_regions(extra: &[String], home: &str) -> Vec<String> {
     let mut regions = extra.to_vec();
