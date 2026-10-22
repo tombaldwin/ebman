@@ -4,7 +4,7 @@ expression: out
 ---
 ┌[ ebman [version] ]┐┌──────────────────────────────────────────────────────────────┐
 │us-east-1 / shop / shop-prod                                                                  ││                                     Elastic Beanstalk   Envs │
-│Account: —  |  Region: us-east-1  |  Profile: default                                         ││      <tab> scope  <?> help  <:> command  </> filter  <q> quit│
+│Account: —  |  Region: us-east-1 +1  |  Profile: default                                      ││      <tab> scope  <?> help  <:> command  </> filter  <q> quit│
 │Sort: app^  |  Status: idle        |  Envs: 5  |  Last: — · next 15s  |  Caller: —            ││                                                              │
 └──────────────────────────────────────────────────────────────────────────────────────────────┘└──────────────────────────────────────────────────────────────┘
 ┌[ Environments  5/5 ]─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐

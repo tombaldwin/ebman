@@ -28,20 +28,11 @@ impl App {
                 if !regions.iter().any(|r| r == &self.context.region) {
                     regions.push(self.context.region.clone());
                 }
-                if regions.is_empty() {
-                    self.error_message =
-                        Some("no regions configured — set extra_regions in config.toml".into());
-                    return;
-                }
                 regions.sort();
                 regions.dedup();
                 self.multi_regions = regions.clone();
                 self.fanout_epoch = self.fanout_epoch.wrapping_add(1);
-                self.status_message = Some(format!(
-                    "multi-region: fanning across {} regions ({})",
-                    regions.len(),
-                    regions.join(", ")
-                ));
+                self.status_message = Some(fanout_message(&regions));
                 self.spawn_refresh();
             }
             Some("off") | Some("single") => {
@@ -164,5 +155,22 @@ impl App {
         } else {
             "redact mode off".into()
         });
+    }
+}
+
+/// `:region all`'s status line. With no `extra_regions` the fan-out is
+/// the home region alone and lists what single-region mode did, so it
+/// says that and where more regions go. It read "fanning across 1
+/// regions", as though the command had widened something.
+pub(crate) fn fanout_message(regions: &[String]) -> String {
+    match regions {
+        [only] => format!(
+            "multi-region: only {only} configured — add more to extra_regions in config.toml"
+        ),
+        _ => format!(
+            "multi-region: fanning across {} regions ({})",
+            regions.len(),
+            regions.join(", ")
+        ),
     }
 }

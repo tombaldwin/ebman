@@ -548,6 +548,16 @@ Three gates added to CI. Two of them found something on the first run, which is 
 
 #### Minor
 
+- [ ] **`:region NAME` while fanned out keeps the old region list.** The
+  picker moves the home region (`override_region`, then a rebuild) but
+  leaves `multi_regions` alone, so the listing still covers the old set
+  and may not include the new home region at all. The header no longer
+  hides this (it shows `2 regions` instead of naming a home region with
+  nothing listed for it), but the behaviour is a choice nobody made:
+  either `:region NAME` ends the fan-out, or it re-derives the list as
+  `extra_regions` plus the new home region. Found 2026-10-22 while
+  making the header show fan-out mode.
+
 - [ ] **Per-tool AWS client dedup in the MCP server.** `Server::client`
   (`src/cli/mcp/tools.rs:781`) builds a fresh `AwsClient` — twelve SDK
   clients plus `aws_config::load()` — on EVERY tool call, while the TUI

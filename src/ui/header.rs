@@ -447,7 +447,11 @@ pub(crate) fn draw_header(f: &mut Frame, area: Rect, app: &App, merge_pills: boo
     let line1 = join_fields_to_fit(
         vec![
             kv("Account", &account, &theme.chrome()),
-            kv("Region", &app.context.region, &theme.chrome()),
+            kv(
+                "Region",
+                &region_label(&app.context.region, &app.multi_regions),
+                &theme.chrome(),
+            ),
             kv("Profile", &profile, &theme.chrome()),
         ],
         &theme.chrome(),
@@ -693,6 +697,26 @@ pub(crate) fn breadcrumb_line(app: &App) -> Line<'static> {
         ));
     }
     Line::from(spans)
+}
+
+/// The header's Region value. Under `:region all` it says the list
+/// covers more than the home region: `us-west-1 +2` is the home region
+/// and two others. It used to name the home region alone in every
+/// mode, so a fan-out looked like a single-region session. A fan-out
+/// over the home region only lists the same envs, so it reads as that.
+/// One that leaves the home region out (`:region NAME` while fanned
+/// out keeps the old list) counts what is listed rather than name a
+/// region whose envs are not there.
+pub(crate) fn region_label(home: &str, fanout: &[String]) -> String {
+    let others = fanout.iter().filter(|r| r.as_str() != home).count();
+    if others == fanout.len() && others > 0 {
+        return format!("{others} region{}", if others == 1 { "" } else { "s" });
+    }
+    if others == 0 {
+        home.to_string()
+    } else {
+        format!("{home} +{others}")
+    }
 }
 
 pub(crate) fn short_caller(arn: &str) -> String {

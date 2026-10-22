@@ -2185,3 +2185,54 @@ async fn the_ssh_picker_honours_a_pin_like_the_other_shell_paths() {
         app.error_message
     );
 }
+
+// ---------------------------------------------------------------
+// `:region all` — the header and status line say what was listed
+// ---------------------------------------------------------------
+
+#[tokio::test]
+async fn the_header_says_a_fanout_lists_more_than_the_home_region() {
+    // The header named the home region in every mode, so a fan-out
+    // read as a single-region session.
+    let mut app = test_app();
+    app.extra_regions = vec!["eu-west-2".into(), "ap-south-1".into()];
+    app.execute_command("region all");
+
+    let out = render(&mut app, 160, 40);
+    assert!(out.contains("Region: us-east-1 +2"), "got:\n{out}");
+
+    app.execute_command("region off");
+    let out = render(&mut app, 160, 40);
+    assert!(out.contains("Region: us-east-1"), "got:\n{out}");
+    assert!(
+        !out.contains("us-east-1 +"),
+        "off is single-region again:\n{out}"
+    );
+}
+
+#[tokio::test]
+async fn region_all_with_no_extra_regions_says_there_is_nothing_to_add() {
+    let mut app = test_app();
+    app.extra_regions.clear();
+    app.execute_command("region all");
+
+    let msg = app.status_message.clone().unwrap_or_default();
+    assert_eq!(
+        msg,
+        "multi-region: only us-east-1 configured — add more to extra_regions in config.toml"
+    );
+    assert!(!msg.contains("1 regions"), "{msg}");
+    let out = render(&mut app, 160, 40);
+    assert!(!out.contains("us-east-1 +"), "nothing was added:\n{out}");
+}
+
+#[tokio::test]
+async fn region_all_names_the_regions_it_fans_across() {
+    let mut app = test_app();
+    app.extra_regions = vec!["eu-west-2".into()];
+    app.execute_command("region all");
+    assert_eq!(
+        app.status_message.as_deref(),
+        Some("multi-region: fanning across 2 regions (eu-west-2, us-east-1)")
+    );
+}

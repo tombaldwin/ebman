@@ -8,7 +8,8 @@ ebman reads from a few files under `~/.config/ebman/` and `<repo>/.ebman/`. None
 # Refresh interval in seconds (default 15).
 refresh_interval_secs = 15
 
-# Extra regions to expose in the region picker, comma-separated.
+# Extra regions, comma-separated: offered in the region picker, and
+# listed with the home region under `:region all`.
 extra_regions = ""
 
 # Theme: "dark" (default), "light", or "high-contrast".

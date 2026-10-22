@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **The header says when `:region all` lists more than the home
+  region.** Its Region field named the home region in every mode, so a
+  fan-out read as a single-region session. It now reads
+  `us-west-1 +2`, the home region and two others. A fan-out that leaves
+  the home region out (`:region NAME` while fanned out keeps the old
+  list) shows the count, `2 regions`, rather than name a region whose
+  envs are not listed.
+- **`:region all` with no `extra_regions` says there is nothing to
+  add.** It reported "fanning across 1 regions" and listed exactly what
+  single-region mode did; the status line now names the home region and
+  points at `extra_regions` in `config.toml`.
+
 ## [0.46.0] - 2026-10-22
 
 ### Added
