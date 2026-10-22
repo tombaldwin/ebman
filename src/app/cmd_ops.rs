@@ -247,12 +247,15 @@ impl App {
                 crate::audit::append_action_dispatched(
                     self.context.account_id.as_deref(),
                     self.context.profile.as_deref(),
-                    &self.context.region,
+                    &gate_env.region,
                     "SsmSession",
                     id,
                     &[("via", "cmd_ssh")],
                 );
-                self.pending_shell_target = Some(id.to_string());
+                self.pending_shell_target = Some(super::ShellTarget {
+                    instance_id: id.to_string(),
+                    region: gate_env.region.clone(),
+                });
                 self.status_message = Some(format!("opening SSM session to {id}…"));
             }
             None => {

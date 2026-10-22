@@ -477,7 +477,7 @@ pub struct App {
     /// targeting this instance ID into `current_shell`. Keystrokes in
     /// `Mode::Shell` are forwarded to the PTY rather than dispatched as
     /// ebman key bindings.
-    pub(crate) pending_shell_target: Option<String>,
+    pub(crate) pending_shell_target: Option<ShellTarget>,
     /// Set when `:env-edit` is mid-flight: the `fetch_env_vars`
     /// result arrived but the main loop hasn't yet shelled out to
     /// `$EDITOR` (which needs the `Tui` handle to leave + re-enter
@@ -1946,7 +1946,7 @@ impl App {
             self.tick_pending_dispatch();
             // Pending embedded shell — allocate a PTY and switch mode.
             if let Some(target) = self.pending_shell_target.take() {
-                self.open_embedded_shell(terminal, &target)?;
+                self.open_embedded_shell(terminal, &target.instance_id, &target.region)?;
             }
             // Pending env-edit — shell out to `$EDITOR` against a
             // temp file holding the current env vars. Same
@@ -3338,7 +3338,25 @@ impl RegionClient {
     }
 }
 
+/// An SSM session waiting for the run loop: the instance, and the region
+/// of the env it belongs to. `aws ssm start-session` needs the region,
+/// and an instance in another region of a fan-out is not found at home.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ShellTarget {
+    pub instance_id: String,
+    pub region: String,
+}
+
 impl App {
+    /// The region of Detail's env, or home with Detail closed: where an
+    /// instance picked from Detail lives.
+    pub(crate) fn detail_region(&self) -> String {
+        match self.detail.as_ref() {
+            Some(d) => self.region_for(&d.env_snapshot),
+            None => self.context.region.clone(),
+        }
+    }
+
     /// The client for work about one environment row: its own region.
     ///
     /// Takes the row, not its name. Under `:region all` a name can be

@@ -354,7 +354,9 @@ async fn ssh_with_instance_id_arg_queues_pending_shell_target() {
     let mut app = test_app();
     app.execute_command("ssh i-0abc1234567890def");
     assert_eq!(
-        app.pending_shell_target.as_deref(),
+        app.pending_shell_target
+            .as_ref()
+            .map(|t| t.instance_id.as_str()),
         Some("i-0abc1234567890def")
     );
     assert!(

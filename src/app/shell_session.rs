@@ -18,6 +18,7 @@ impl App {
         &mut self,
         terminal: &mut Tui,
         instance_id: &str,
+        region: &str,
     ) -> Result<()> {
         // Demo-mode short-circuit. The fixture's instance IDs are
         // synthetic, the AwsClient is a stub, and `aws ssm start-
@@ -40,7 +41,7 @@ impl App {
             self.mode = Mode::Shell;
             return Ok(());
         }
-        let region = self.context.region.clone();
+        let region = region.to_string();
         let profile = self
             .override_profile
             .clone()

@@ -451,7 +451,10 @@ impl App {
                 });
                 if let Some((env, instance_id)) = target {
                     if !self.deny_write(&env, "ssm-session") {
-                        self.pending_shell_target = Some(instance_id);
+                        self.pending_shell_target = Some(super::ShellTarget {
+                            instance_id,
+                            region: env.region.clone(),
+                        });
                     }
                 }
             }

@@ -1948,3 +1948,58 @@ async fn the_palette_jumps_to_the_twin_it_lists() {
         assert_eq!(selected.region.as_deref(), want, "picked {region}");
     }
 }
+
+/// Detail open on an eu-west-2 row, on its Instances tab, with one
+/// instance. Fetches it spawns are never polled: the test never awaits.
+fn detail_on_an_eu_instance() -> App {
+    let mut app = test_app();
+    let mut env = mk_env("api-prod", "poly", "Web", "Green");
+    env.region = Some("eu-west-2".into());
+    app.environments = vec![env];
+    app.rebuild_view();
+    app.table_state.select(Some(0));
+    app.open_detail();
+    let d = app.detail.as_mut().expect("detail");
+    d.tab_idx = d
+        .tabs
+        .iter()
+        .position(|t| *t == crate::app::DetailTab::Instances)
+        .expect("instances tab");
+    d.loading_instances = false;
+    d.instances = vec![crate::aws::Instance {
+        id: "i-0eu".into(),
+        health: "Ok".into(),
+        color: "Green".into(),
+        causes: vec![],
+        instance_type: "t3.small".into(),
+        availability_zone: "eu-west-2a".into(),
+        launched_at: None,
+        app_stats: None,
+    }];
+    app
+}
+
+#[tokio::test]
+async fn an_ssm_session_opens_in_the_region_of_its_env() {
+    // It always passed the home region to `aws ssm start-session`, so an
+    // instance in another region of a fan-out was not found, and the
+    // audit line named the wrong region.
+    let want = Some(crate::app::ShellTarget {
+        instance_id: "i-0eu".into(),
+        region: "eu-west-2".into(),
+    });
+
+    let mut app = detail_on_an_eu_instance();
+    press(&mut app, KeyCode::Char('s'), KeyModifiers::NONE);
+    assert_eq!(app.pending_shell_target, want, "Detail `s`");
+
+    let mut app = detail_on_an_eu_instance();
+    app.execute_command("ssh i-0eu");
+    assert_eq!(app.pending_shell_target, want, ":ssh ID");
+
+    let mut app = detail_on_an_eu_instance();
+    app.execute_command("ssh");
+    assert!(app.picker.is_some(), "{:?}", app.error_message);
+    press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    assert_eq!(app.pending_shell_target, want, ":ssh picker");
+}

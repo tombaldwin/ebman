@@ -264,15 +264,20 @@ impl App {
                 // Same flow as pressing `s` on Detail/Instances — the
                 // main loop tick consumes `pending_shell_target` and
                 // handles the TUI suspend/resume + alt-screen dance.
+                // The picker lists Detail's instances: Detail's region.
+                let region = self.detail_region();
                 crate::audit::append_action_dispatched(
                     self.context.account_id.as_deref(),
                     self.context.profile.as_deref(),
-                    &self.context.region,
+                    &region,
                     "SsmSession",
                     value.as_str(),
                     &[("via", "cmd_ssh_picker")],
                 );
-                self.pending_shell_target = Some(value.clone());
+                self.pending_shell_target = Some(super::ShellTarget {
+                    instance_id: value.clone(),
+                    region,
+                });
                 self.status_message = Some(format!("opening SSM session to {value}…"));
             }
         }
