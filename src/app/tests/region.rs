@@ -2003,3 +2003,42 @@ async fn an_ssm_session_opens_in_the_region_of_its_env() {
     press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
     assert_eq!(app.pending_shell_target, want, ":ssh picker");
 }
+
+#[tokio::test]
+async fn a_rollback_result_is_cancelled_when_the_cursor_moved_to_a_same_named_env() {
+    // By name, the eu-west-2 env's previous version would have been
+    // offered for deploy onto the home `api-prod` the cursor moved to.
+    let mut app = same_named_in_two_regions();
+    let row_of = |app: &App, eu: bool| {
+        app.view
+            .filtered()
+            .iter()
+            .position(|&i| app.environments[i].region.is_some() == eu)
+            .unwrap()
+    };
+    app.table_state.select(Some(row_of(&app, false)));
+    let ev = |vl: &str| crate::aws::Event {
+        at: None,
+        env: "api-prod".into(),
+        application: "poly".into(),
+        message: "Deploying new version".into(),
+        severity: "INFO".into(),
+        version_label: Some(vl.into()),
+    };
+    app.handle_msg(AppMsg::RollbackTarget {
+        gen: app.generation,
+        env_name: "api-prod".into(),
+        region: "eu-west-2".into(),
+        current_version: "v2".into(),
+        result: Ok(vec![ev("v2"), ev("v1")]),
+    });
+    assert!(app.action_flow.is_none(), "opened on the home twin");
+    assert!(
+        app.error_message
+            .as_deref()
+            .unwrap_or_default()
+            .contains("moved"),
+        "{:?}",
+        app.error_message
+    );
+}

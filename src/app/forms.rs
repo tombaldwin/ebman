@@ -258,9 +258,9 @@ impl App {
         let (to_set, to_remove) = form.to_option_settings();
         form.state = crate::form::FormState::Submitting;
         // We can't reuse spawn_option_settings_update directly because it
-        // reads self.selected_env() for the env_name; the form captured its
-        // env at open time so we dispatch by-value here. Inlining keeps the
-        // form's env binding authoritative.
+        // reads the env on screen now; the form captured its env at open
+        // time so we dispatch by-value here. Inlining keeps the form's env
+        // binding authoritative.
         if self.deny_write(
             &super::EnvKey::new(region.clone(), env_name.clone()),
             "form submit",
@@ -438,7 +438,7 @@ impl App {
     /// `field_key` to populate the form.
     pub(crate) fn open_multi_select_form(&mut self, flavour: MultiSelectFlavour) {
         use crate::form::{Form, FormField, FormSubmit};
-        let Some(env) = self.selected_env().cloned() else {
+        let Some(env) = self.pointed_env() else {
             self.error_message =
                 Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;

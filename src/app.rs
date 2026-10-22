@@ -943,6 +943,8 @@ pub(crate) enum AppMsg {
     RollbackTarget {
         gen: u64,
         env_name: String,
+        /// The env's region: a same-named env elsewhere is another env.
+        region: String,
         current_version: String,
         result: Result<Vec<EbEvent>, String>,
     },
@@ -3468,8 +3470,8 @@ impl App {
     /// the first row of the app anywhere in the fleet: that is whichever
     /// region sorted first.
     pub(crate) fn region_for_typed_app(&self, app_name: &str) -> String {
-        match self.selected_env().filter(|e| e.application == app_name) {
-            Some(e) => self.region_for(e),
+        match self.pointed_env().filter(|e| e.application == app_name) {
+            Some(e) => self.region_for(&e),
             None => self.context.region.clone(),
         }
     }

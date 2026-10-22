@@ -16,7 +16,7 @@ impl App {
         to_set: Vec<(String, String, String)>,
         to_remove: Vec<(String, String)>,
     ) {
-        let Some(env) = self.selected_env().cloned() else {
+        let Some(env) = self.pointed_env() else {
             self.error_message =
                 Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;
@@ -137,7 +137,7 @@ impl App {
         description: Option<String>,
         and_deploy: bool,
     ) {
-        let Some(env) = self.selected_env().cloned() else {
+        let Some(env) = self.pointed_env() else {
             self.error_message =
                 Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;
@@ -306,7 +306,7 @@ impl App {
         description: Option<String>,
         and_deploy: bool,
     ) {
-        let Some(env) = self.selected_env().cloned() else {
+        let Some(env) = self.pointed_env() else {
             self.error_message =
                 Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;
@@ -488,7 +488,7 @@ impl App {
     /// `force` also requests `DeleteSourceBundle=true` so the underlying
     /// `.zip` is removed from the env's storage bucket.
     pub(crate) fn spawn_delete_app_version(&mut self, label: String, force: bool) {
-        let Some(env) = self.selected_env().cloned() else {
+        let Some(env) = self.pointed_env() else {
             self.error_message =
                 Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;
@@ -569,7 +569,7 @@ impl App {
         to_add: Vec<(String, String)>,
         to_remove: Vec<String>,
     ) {
-        let Some(env) = self.selected_env().cloned() else {
+        let Some(env) = self.pointed_env() else {
             self.error_message =
                 Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;

@@ -137,7 +137,7 @@ impl App {
     }
 
     pub(crate) fn cmd_versions(&mut self) {
-        let Some(env) = self.selected_env().cloned() else {
+        let Some(env) = self.pointed_env() else {
             self.error_message =
                 Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;
@@ -644,7 +644,7 @@ impl App {
                 }
             }
             None => {
-                let Some(e) = self.selected_env().cloned() else {
+                let Some(e) = self.pointed_env() else {
                     self.error_message =
                         Some("no env selected — pass an env name: `:drift <env-name>`".into());
                     return;
@@ -724,7 +724,7 @@ impl App {
                 }
             }
             None => {
-                let Some(e) = self.selected_env().cloned() else {
+                let Some(e) = self.pointed_env() else {
                     self.error_message =
                         Some("no env selected — pass an env name: `:lint <env-name>`".into());
                     return;
@@ -803,7 +803,7 @@ impl App {
     }
 
     pub(crate) fn cmd_resources(&mut self) {
-        let Some(env) = self.selected_env().cloned() else {
+        let Some(env) = self.pointed_env() else {
             self.error_message =
                 Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;

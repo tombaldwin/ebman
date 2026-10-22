@@ -306,7 +306,7 @@ impl App {
     /// the env-var holding the provider API key. Without consent
     /// the overlay just says so with a config-file pointer.
     fn cmd_explain_issue(&mut self, issue_id: &str) {
-        let Some(env) = self.selected_env().cloned() else {
+        let Some(env) = self.pointed_env() else {
             self.error_message =
                 Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;
@@ -400,7 +400,7 @@ impl App {
     /// to one family (e.g. `:options aws:elbv2:listener`,
     /// `:options aws:autoscaling:asg`).
     pub(crate) fn cmd_options(&mut self, rest: &[&str]) {
-        let Some(env) = self.selected_env().cloned() else {
+        let Some(env) = self.pointed_env() else {
             self.error_message =
                 Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;
@@ -443,7 +443,7 @@ impl App {
     /// committed still what's deployed" without rerunning
     /// `eb config get` and eyeballing the diff.
     pub(crate) fn cmd_config_diff_local(&mut self, rest: &[&str]) {
-        let Some(env) = self.selected_env().cloned() else {
+        let Some(env) = self.pointed_env() else {
             self.error_message =
                 Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;
@@ -786,7 +786,7 @@ impl App {
     /// explicit message rather than "no config" so the operator
     /// isn't left wondering whether the fetch failed silently.
     pub(crate) fn cmd_rds(&mut self) {
-        let Some(env) = self.selected_env().cloned() else {
+        let Some(env) = self.pointed_env() else {
             self.error_message =
                 Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;
@@ -855,7 +855,7 @@ impl App {
     /// `:set-option aws:elbv2:listener:<PORT> KEY VAL` already
     /// works for one-off updates.
     pub(crate) fn cmd_listeners(&mut self) {
-        let Some(env) = self.selected_env().cloned() else {
+        let Some(env) = self.pointed_env() else {
             self.error_message =
                 Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;
@@ -926,7 +926,7 @@ impl App {
     /// path. `PORT` is `443` / a numeric port / `default` (HTTP/80).
     pub(crate) fn cmd_listener_edit(&mut self, rest: &[&str]) {
         use crate::form::{Form, FormField, FormSubmit};
-        let Some(env) = self.selected_env().cloned() else {
+        let Some(env) = self.pointed_env() else {
             self.error_message =
                 Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;

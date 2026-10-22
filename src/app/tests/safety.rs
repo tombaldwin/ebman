@@ -926,6 +926,7 @@ async fn a_rollback_result_does_not_target_whatever_env_is_selected_now() {
     app.handle_msg(crate::app::AppMsg::RollbackTarget {
         gen,
         env_name: "api-prod".to_string(),
+        region: "us-east-1".to_string(),
         current_version: "v2".to_string(),
         result: Ok(events),
     });
@@ -964,6 +965,7 @@ async fn a_rollback_result_opens_the_modal_when_the_cursor_stayed_put() {
     app.handle_msg(crate::app::AppMsg::RollbackTarget {
         gen,
         env_name: "api-prod".to_string(),
+        region: "us-east-1".to_string(),
         current_version: "v2".to_string(),
         result: Ok(vec![ev(Some("v2")), ev(Some("v1"))]),
     });
@@ -1953,6 +1955,46 @@ async fn every_write_to_a_name_in_two_regions_goes_to_the_selected_rows_region()
         assert!(
             went.iter().all(|r| r == "eu-west-2"),
             ":{cmd} reached the twin: {went:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_write_from_detail_goes_to_detail_s_env_when_the_cursor_has_moved() {
+    // Detail can outlive its row's place in the table: a refresh that
+    // drops the env (its region failed this tick, or it terminated)
+    // leaves the cursor on whatever row now holds that index. Commands
+    // read the table cursor, so a write typed in Detail went to that
+    // other env, audited as it.
+    for cmd in WRITE_COMMANDS
+        .iter()
+        .chain(APPLICATION_SCOPED_WRITES)
+        .chain(&["delete-version build-1"])
+    {
+        let cmd = cmd
+            .replace("api-prod", &twin())
+            .replace("poly", &twin_app());
+        let mut app = app_with_a_name_in_two_regions();
+        app.open_detail();
+        // The cursor drifts to the home twin; Detail stays on eu-west-2.
+        let home_row = app
+            .view
+            .filtered()
+            .iter()
+            .position(|&i| app.environments[i].region.is_none())
+            .expect("home row");
+        app.table_state.select(Some(home_row));
+        let before = audit_log();
+        app.execute_command(&cmd);
+        let went = where_it_went(&app, &before);
+        assert!(
+            !went.is_empty(),
+            ":{cmd} left no trace of where it went — {:?}",
+            app.error_message
+        );
+        assert!(
+            went.iter().all(|r| r == "eu-west-2"),
+            ":{cmd} from Detail went to the cursor's env: {went:?}"
         );
     }
 }

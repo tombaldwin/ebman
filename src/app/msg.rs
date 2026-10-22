@@ -232,10 +232,13 @@ impl App {
             AppMsg::UndoCaptured { entry, .. } => self.handle_undo_captured(entry),
             AppMsg::RollbackTarget {
                 env_name,
+                region,
                 current_version,
                 result,
                 ..
-            } => self.handle_rollback_target(env_name, current_version, result),
+            } => {
+                self.handle_rollback_target(EnvKey::new(region, env_name), current_version, result)
+            }
             AppMsg::DetailTags {
                 env_name, result, ..
             } => self.handle_detail_tags(env_name, result),
@@ -1165,10 +1168,11 @@ impl App {
 
     fn handle_rollback_target(
         &mut self,
-        env_name: String,
+        target: EnvKey,
         current_version: String,
         result: Result<Vec<EbEvent>, String>,
     ) {
+        let env_name = target.name.clone();
         match result {
             Err(e) => self.error_message = Some(format!("rollback: {e}")),
             Ok(events) => match previous_version_label(&events, &current_version) {
@@ -1177,12 +1181,12 @@ impl App {
                         "rollback: no prior version in {env_name}'s recent events — use :versions then :deploy"
                     ));
                 }
-                // The deploy-confirm modal targets the *selected* env; if
-                // the cursor moved off the env `:rollback` was issued for,
-                // bail rather than roll back the wrong one.
-                Some(_)
-                    if self.selected_env().map(|e| e.name.as_str()) != Some(env_name.as_str()) =>
-                {
+                // The deploy-confirm modal targets the env on screen
+                // (Detail's, else the selected row); if that moved off the
+                // env `:rollback` was issued for, bail rather than roll
+                // back the wrong one. By key: the same name in another
+                // region is another env.
+                Some(_) if self.pointed_env().map(|e| self.env_key(&e)) != Some(target) => {
                     self.error_message =
                         Some("rollback cancelled — selection moved off the target env".into());
                 }

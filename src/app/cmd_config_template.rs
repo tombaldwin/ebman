@@ -17,7 +17,7 @@ impl App {
                     Some("usage: :config-save <template-name>  (uses selected env)".into());
             }
             Some(template) => {
-                let Some(env) = self.selected_env().cloned() else {
+                let Some(env) = self.pointed_env() else {
                     self.error_message = Some(
                         "no env selected — press 1-9, click a row, or type ' to jump by name"
                             .into(),
@@ -106,7 +106,7 @@ impl App {
                 // as typed. The overlay's `a`/enter keys bypass this
                 // parser and call spawn_config_apply_template directly.
                 let template = rest.join(" ");
-                let Some(env) = self.selected_env().cloned() else {
+                let Some(env) = self.pointed_env() else {
                     self.error_message = Some(
                         "no env selected — press 1-9, click a row, or type ' to jump by name"
                             .into(),
@@ -131,7 +131,7 @@ impl App {
             return;
         }
         let template = rest.join(" ");
-        let Some(env) = self.selected_env().cloned() else {
+        let Some(env) = self.pointed_env() else {
             self.error_message =
                 Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;

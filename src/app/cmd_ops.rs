@@ -12,7 +12,7 @@ impl App {
     /// confirm modal for it — so the operator sees + confirms the
     /// target, and the 5s undo window still applies.
     pub(crate) fn cmd_rollback(&mut self, rest: &[&str]) {
-        let Some(env) = self.selected_env().cloned() else {
+        let Some(env) = self.pointed_env() else {
             self.error_message =
                 Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;
@@ -103,6 +103,7 @@ impl App {
             return;
         }
         let client = self.client_for(&env);
+        let region = self.region_for(&env);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         self.status_message = Some(format!("rollback: finding {env_name}'s previous version…"));
@@ -117,6 +118,7 @@ impl App {
             let _ = tx.send(AppMsg::RollbackTarget {
                 gen,
                 env_name,
+                region,
                 current_version,
                 result,
             });
@@ -321,7 +323,7 @@ impl App {
     /// multiple env vars in one update — and saving an unchanged
     /// file is a clean no-op.
     pub(crate) fn cmd_env_edit(&mut self) {
-        let Some(env) = self.selected_env().cloned() else {
+        let Some(env) = self.pointed_env() else {
             self.error_message =
                 Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;

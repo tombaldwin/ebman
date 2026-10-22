@@ -355,7 +355,7 @@ impl App {
                 // present, else the first by name). The polling task is
                 // tracked on App.log_tail_task so subsequent calls / close
                 // can abort cleanly.
-                let Some(env) = self.selected_env().cloned() else {
+                let Some(env) = self.pointed_env() else {
                     self.error_message = Some(
                         "no env selected — press 1-9, click a row, or type ' to jump by name"
                             .into(),

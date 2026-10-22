@@ -518,7 +518,7 @@ impl App {
             KeyCode::Char('a') | KeyCode::Enter if !confirm_delete => {
                 if let Some((_app, template)) = selected {
                     self.current_overlay = None;
-                    let Some(env) = self.selected_env().cloned() else {
+                    let Some(env) = self.pointed_env() else {
                         self.error_message = Some(
                             "no env selected — press 1-9, click a row, or type ' to jump by name"
                                 .into(),

@@ -206,7 +206,7 @@ impl App {
                 Some("usage: :logs-insights [--window 30m|1h|6h|24h|7d] <query>".into());
             return;
         }
-        let Some(env) = self.selected_env().cloned() else {
+        let Some(env) = self.pointed_env() else {
             self.error_message =
                 Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;

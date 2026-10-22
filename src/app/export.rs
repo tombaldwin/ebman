@@ -277,7 +277,7 @@ impl App {
     }
 
     pub(crate) fn yank_selected(&mut self, kind: YankKind) {
-        let Some(env) = self.selected_env() else {
+        let Some(env) = self.pointed_env() else {
             self.status_message = Some("nothing to yank".into());
             return;
         };

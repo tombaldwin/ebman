@@ -45,7 +45,7 @@ impl App {
             Some(version) => {
                 let preview = rest.contains(&"--preview");
                 if preview {
-                    let Some(env) = self.selected_env().cloned() else {
+                    let Some(env) = self.pointed_env() else {
                         self.error_message = Some(
                             "no env selected — press 1-9, click a row, or type ' to jump by name"
                                 .into(),
@@ -104,7 +104,7 @@ impl App {
     pub(crate) fn cmd_upgrade(&mut self, rest: &[&str]) {
         match rest.first().copied() {
             None => {
-                let Some(env) = self.selected_env().cloned() else {
+                let Some(env) = self.pointed_env() else {
                     self.error_message = Some(
                         "no env selected — press 1-9, click a row, or type ' to jump by name"
                             .into(),
@@ -270,7 +270,7 @@ impl App {
         // has the target env selected when they fire :rollout.
         let env_name = match parse_named_arg::<String>(rest, "--env") {
             Some(name) => name,
-            None => match self.selected_env() {
+            None => match self.pointed_env() {
                 Some(env) => env.name.clone(),
                 None => {
                     self.error_message = Some(
@@ -439,7 +439,7 @@ impl App {
                 Some("usage: :swap <target-env>  (must be in same application)".into());
             return;
         };
-        let Some(env) = self.selected_env().cloned() else {
+        let Some(env) = self.pointed_env() else {
             self.error_message =
                 Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;

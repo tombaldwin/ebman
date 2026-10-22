@@ -44,7 +44,7 @@ impl App {
             return;
         };
         let op = op_override.unwrap_or(default_op);
-        let Some(env) = self.selected_env().cloned() else {
+        let Some(env) = self.pointed_env() else {
             self.error_message =
                 Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;
@@ -128,7 +128,7 @@ impl App {
                 let alarm_name = name.to_string();
                 // Alarms are regional: the selected row's region, or
                 // home with nothing selected.
-                let env = self.selected_env().cloned();
+                let env = self.pointed_env();
                 let env_name = env
                     .as_ref()
                     .map(|e| e.name.clone())

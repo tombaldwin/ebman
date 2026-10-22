@@ -565,7 +565,7 @@ impl App {
         action: Action,
         params: ParameterisedAction,
     ) {
-        let Some(env) = self.selected_env().cloned() else {
+        let Some(env) = self.pointed_env() else {
             self.error_message =
                 Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;
@@ -577,7 +577,7 @@ impl App {
     /// explicit env rather than the currently-selected one. Used by
     /// commands like `:promote-env SOURCE TARGET` where the
     /// destination is named in the command itself, not implied by
-    /// the table cursor. The `selected_env()`-based wrapper is the
+    /// the table cursor. The `pointed_env()`-based wrapper is the
     /// common path; this is the cursor-independent escape hatch.
     pub(crate) fn open_parameterised_action_on(
         &mut self,
