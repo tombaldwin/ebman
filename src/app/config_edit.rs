@@ -327,6 +327,7 @@ impl App {
         );
         self.push_pending(Action::ConfigApply.label(), env_name.clone());
         let env_for_msg = env_name.clone();
+        let ident = self.audit_ident();
         tokio::spawn(async move {
             let result = match client.resolve().await {
                 Ok(aws) => aws
@@ -335,13 +336,14 @@ impl App {
                     .map_err(|e| flatten_err("apply_config_template", e)),
                 Err(e) => Err(flatten_err("cached_client", e)),
             };
-            let _ = tx.send(AppMsg::ActionResult {
+            let _ = tx.send(super::action_result(
+                &ident,
                 gen,
-                action: Action::ConfigApply,
-                env_name: env_for_msg,
+                Action::ConfigApply,
+                env_for_msg,
                 region,
                 result,
-            });
+            ));
         });
     }
 
@@ -379,6 +381,7 @@ impl App {
         );
         self.push_pending(Action::ConfigDelete.label(), target.clone());
         let template_for_msg = template.clone();
+        let ident = self.audit_ident();
         tokio::spawn(async move {
             let result = match client.resolve().await {
                 Ok(aws) => aws
@@ -388,13 +391,14 @@ impl App {
                 Err(e) => Err(flatten_err("cached_client", e)),
             }
             .map_err(|e| format!("config-delete '{template_for_msg}': {e}"));
-            let _ = tx.send(AppMsg::ActionResult {
+            let _ = tx.send(super::action_result(
+                &ident,
                 gen,
-                action: Action::ConfigDelete,
-                env_name: target,
+                Action::ConfigDelete,
+                target,
                 region,
                 result,
-            });
+            ));
         });
     }
 

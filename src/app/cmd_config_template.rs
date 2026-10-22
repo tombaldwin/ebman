@@ -7,7 +7,7 @@
 //! Ninth slice of the `execute_command` split. Same parent-module
 //! visibility pattern as the other `cmd_*` sub-modules.
 
-use super::{flatten_err, Action, App, AppMsg};
+use super::{flatten_err, Action, App};
 
 impl App {
     pub(crate) fn cmd_config_save(&mut self, rest: &[&str]) {
@@ -54,6 +54,7 @@ impl App {
                     &[("template", template.as_str())],
                 );
                 self.push_pending(action.label(), display_env.clone());
+                let ident = self.audit_ident();
                 tokio::spawn(async move {
                     let result = match client.resolve().await {
                         Ok(aws) => aws
@@ -65,13 +66,14 @@ impl App {
                     let labelled = result
                         .map(|_| ())
                         .map_err(|e| format!("config-save '{template_for_msg}': {e}"));
-                    let _ = tx.send(AppMsg::ActionResult {
+                    let _ = tx.send(super::action_result(
+                        &ident,
                         gen,
                         action,
-                        env_name: display_env,
+                        display_env,
                         region,
-                        result: labelled,
-                    });
+                        labelled,
+                    ));
                 });
             }
         }

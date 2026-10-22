@@ -35,6 +35,7 @@ impl App {
         let env_for_msg = env.clone();
         // Per-env: a multi-selection can span regions, and these are
         // rebuild / restart / terminate.
+        let ident = self.audit_ident();
         self.spawn_aws_in(
             self.client_for_region(&region),
             "batch_action",
@@ -47,12 +48,8 @@ impl App {
                     )),
                 }
             },
-            move |gen, result| AppMsg::ActionResult {
-                gen,
-                action,
-                env_name: env_for_msg,
-                region,
-                result,
+            move |gen, result| {
+                super::action_result(&ident, gen, action, env_for_msg, region, result)
             },
         );
     }
@@ -75,6 +72,7 @@ impl App {
         );
         self.push_pending(Action::Deploy.label(), env.clone());
         let env_for_msg = env.clone();
+        let ident = self.audit_ident();
         tokio::spawn(async move {
             let result = match client.resolve().await {
                 Ok(aws) => aws
@@ -83,13 +81,14 @@ impl App {
                     .map_err(|e| flatten_err("deploy_version", e)),
                 Err(e) => Err(flatten_err("cached_client", e)),
             };
-            let _ = tx.send(AppMsg::ActionResult {
+            let _ = tx.send(super::action_result(
+                &ident,
                 gen,
-                action: Action::Deploy,
-                env_name: env_for_msg,
+                Action::Deploy,
+                env_for_msg,
                 region,
                 result,
-            });
+            ));
         });
     }
 

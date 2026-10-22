@@ -400,6 +400,7 @@ impl App {
         self.push_pending(Action::TerminateInstance.label(), target.clone());
         // In-flight ack lives on the pending pill; completion toasts.
         let _ = id;
+        let ident = self.audit_ident();
         tokio::spawn(async move {
             let result = match client.resolve().await {
                 Ok(aws) => aws
@@ -408,13 +409,14 @@ impl App {
                     .map_err(|e| flatten_err("terminate_instance", e)),
                 Err(e) => Err(flatten_err("cached_client", e)),
             };
-            let _ = tx.send(AppMsg::ActionResult {
+            let _ = tx.send(super::action_result(
+                &ident,
                 gen,
-                action: Action::TerminateInstance,
-                env_name: target,
+                Action::TerminateInstance,
+                target,
                 region,
                 result,
-            });
+            ));
         });
     }
 

@@ -384,13 +384,19 @@ async fn a_dispatch_and_its_completion_agree_on_the_region() {
     let path = crate::util::cache_dir().join("audit.log");
     let before = std::fs::read_to_string(&path).unwrap_or_default();
 
-    app.handle_msg(AppMsg::ActionResult {
-        gen: app.generation,
-        action: crate::app::Action::RestartAppServer,
-        env_name: env_name.into(),
-        region: "eu-west-2".into(),
-        result: Ok(()),
-    });
+    // The task writes the completion as it builds the result. A context
+    // switch while the write was in flight makes the result stale, and
+    // the handler that used to write the line never runs for it.
+    let msg = crate::app::action_result(
+        &app.audit_ident(),
+        app.generation,
+        crate::app::Action::RestartAppServer,
+        env_name.into(),
+        "eu-west-2".into(),
+        Ok(()),
+    );
+    app.generation += 1;
+    app.handle_msg(msg);
 
     let after = std::fs::read_to_string(&path).unwrap_or_default();
     // Strict: the log is append-only, so `before` must still be a prefix.

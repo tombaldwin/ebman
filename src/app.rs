@@ -999,11 +999,6 @@ pub(crate) enum AppMsg {
         gen: u64,
         action: Action,
         env_name: String,
-        /// The region the write was sent to, decided once when the client
-        /// was built: the completion audit line names it, rather than
-        /// resolving `env_name` again (which for a target like
-        /// `env/i-123` found no env and named the home region).
-        region: String,
         result: Result<(), String>,
     },
     /// Intermediate progress for the tail-logs pipeline (`Requesting` →
@@ -3101,6 +3096,52 @@ fn write_audit_entry(
 
 /// Log the outcome of a dispatched action. Thin wrapper around
 /// [`crate::audit::append_action_completed`].
+/// Who a write is audited as, captured when it is dispatched: a context
+/// switch while it is in flight changes `context`, and the completion
+/// line belongs to the account the write went to.
+#[derive(Debug, Clone)]
+pub(crate) struct AuditIdent {
+    account: Option<String>,
+    profile: Option<String>,
+}
+
+impl App {
+    pub(crate) fn audit_ident(&self) -> AuditIdent {
+        AuditIdent {
+            account: self.context.account_id.clone(),
+            profile: self.context.profile.clone(),
+        }
+    }
+}
+
+/// A write's completion, from inside its task: the audit line is written
+/// here, not by the `ActionResult` handler, because the handler never
+/// runs for a result the generation guard drops after a context switch,
+/// and the line would be lost.
+pub(crate) fn action_result(
+    ident: &AuditIdent,
+    gen: u64,
+    action: Action,
+    env_name: String,
+    region: String,
+    result: Result<(), String>,
+) -> AppMsg {
+    write_audit_outcome(
+        ident.account.as_deref(),
+        ident.profile.as_deref(),
+        &region,
+        action,
+        &env_name,
+        result.as_ref().map(|_| ()).map_err(|e| e.as_str()),
+    );
+    AppMsg::ActionResult {
+        gen,
+        action,
+        env_name,
+        result,
+    }
+}
+
 fn write_audit_outcome(
     account: Option<&str>,
     profile: Option<&str>,

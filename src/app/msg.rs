@@ -129,10 +129,9 @@ impl App {
             AppMsg::ActionResult {
                 action,
                 env_name,
-                region,
                 result,
                 ..
-            } => self.handle_action_result(action, env_name, region, result),
+            } => self.handle_action_result(action, env_name, result),
             AppMsg::DetailInstances {
                 env_name,
                 result,
@@ -636,22 +635,11 @@ impl App {
         &mut self,
         action: Action,
         env_name: String,
-        region: String,
         result: Result<(), String>,
     ) {
-        // The COMPLETION line has to name the same region as the
-        // dispatch line it closes, or a grep across the pair reports
-        // an action that started in one region and finished in
-        // another. The region the dispatch used, carried on the result,
-        // not the name resolved again now.
-        write_audit_outcome(
-            self.context.account_id.as_deref(),
-            self.context.profile.as_deref(),
-            &region,
-            action,
-            &env_name,
-            result.as_ref().map(|_| ()).map_err(|e| e.as_str()),
-        );
+        // No audit line here: `action_result` wrote it in the task, so a
+        // result the generation guard drops after a context switch still
+        // has one.
         // Stamp the matching pending-actions entry with the outcome so the
         // panel shows ✓ / ✗ instead of "in flight".
         self.complete_pending(

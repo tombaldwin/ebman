@@ -68,6 +68,7 @@ impl App {
             "auto-rollback for {env_name}: redeploying {label} (env was {health})"
         ));
         let env_for_msg = env_name.clone();
+        let ident = self.audit_ident();
         tokio::spawn(async move {
             let result = match client.resolve().await {
                 Ok(aws) => aws
@@ -76,13 +77,14 @@ impl App {
                     .map_err(|e| flatten_err("deploy_version", e)),
                 Err(e) => Err(flatten_err("cached_client", e)),
             };
-            let _ = tx.send(AppMsg::ActionResult {
+            let _ = tx.send(super::action_result(
+                &ident,
                 gen,
-                action: Action::Deploy,
-                env_name: env_for_msg,
+                Action::Deploy,
+                env_for_msg,
                 region,
                 result,
-            });
+            ));
         });
     }
 
@@ -1078,17 +1080,19 @@ impl App {
             swap_with.as_deref(),
         );
         self.push_pending(action.label(), env.clone());
+        let ident = self.audit_ident();
         tokio::spawn(async move {
             let aws = match client.resolve().await {
                 Ok(aws) => aws,
                 Err(e) => {
-                    let _ = tx.send(AppMsg::ActionResult {
+                    let _ = tx.send(super::action_result(
+                        &ident,
                         gen,
                         action,
-                        env_name: env,
+                        env,
                         region,
-                        result: Err(flatten_err("cached_client", e)),
-                    });
+                        Err(flatten_err("cached_client", e)),
+                    ));
                     return;
                 }
             };
@@ -1136,13 +1140,9 @@ impl App {
                 )),
             }
             .map_err(|e| flatten_err("action", e));
-            let _ = tx.send(AppMsg::ActionResult {
-                gen,
-                action,
-                env_name: env,
-                region,
-                result,
-            });
+            let _ = tx.send(super::action_result(
+                &ident, gen, action, env, region, result,
+            ));
         });
     }
 }
