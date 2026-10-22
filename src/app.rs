@@ -3094,8 +3094,6 @@ fn write_audit_entry(
     );
 }
 
-/// Log the outcome of a dispatched action. Thin wrapper around
-/// [`crate::audit::append_action_completed`].
 /// Who a write is audited as, captured when it is dispatched: a context
 /// switch while it is in flight changes `context`, and the completion
 /// line belongs to the account the write went to.
@@ -3142,6 +3140,8 @@ pub(crate) fn action_result(
     }
 }
 
+/// Log the outcome of a dispatched action, for `action_result`: its
+/// audit label from the `Action`, no extras.
 fn write_audit_outcome(
     account: Option<&str>,
     profile: Option<&str>,
@@ -3595,12 +3595,7 @@ impl App {
 
     /// The client for whichever environment Detail currently has open.
     pub(crate) fn detail_client(&self) -> RegionClient {
-        let region = self
-            .detail
-            .as_ref()
-            .map(|d| self.region_for(&d.env_snapshot))
-            .unwrap_or_else(|| self.context.region.clone());
-        self.client_for_region(&region)
+        self.client_for_region(&self.detail_region())
     }
 }
 

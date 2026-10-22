@@ -2106,31 +2106,6 @@ async fn the_confirm_modal_ignores_an_answer_for_its_name_in_another_region() {
     }
 }
 
-#[test]
-fn only_action_result_builds_an_action_result() {
-    // A write's completion line is written by `action_result`, in the
-    // task. A sender that built `AppMsg::ActionResult` itself would write
-    // none: the handler no longer does, so the journal would show the
-    // write dispatched and never finished.
-    let mut builders = Vec::new();
-    for (path, text) in super::scan::source_files() {
-        if super::scan::is_test_path(&path) || !path.contains("src/app") {
-            continue;
-        }
-        for (name, body) in super::scan::fn_bodies(&super::scan::production_half(&text)) {
-            // `handle_msg` matches on it; that is not building one.
-            if body.contains("AppMsg::ActionResult {") && name != "handle_msg" {
-                builders.push(format!("{path}: fn {name}"));
-            }
-        }
-    }
-    assert_eq!(
-        builders,
-        vec!["src/app.rs: fn action_result".to_string()],
-        "build it with action_result, which writes the completion line"
-    );
-}
-
 #[tokio::test]
 async fn the_why_title_reads_the_health_of_the_env_it_opened_on() {
     // By name it took the first `jobs` row: here, the Green home one,

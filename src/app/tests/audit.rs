@@ -63,3 +63,33 @@ fn the_clipboard_is_only_reached_through_yank() {
     );
     assert!(sites[0].starts_with("src/app.rs:"), "{sites:?}");
 }
+
+#[test]
+fn only_action_result_builds_an_action_result() {
+    // A write's completion line is written by `action_result`, in the
+    // task. A sender that built `AppMsg::ActionResult` itself would write
+    // none: the handler no longer does, so the journal would show the
+    // write dispatched and never finished.
+    let mut builders = Vec::new();
+    for (path, text) in super::scan::source_files() {
+        if super::scan::is_test_path(&path) || !path.contains("src/app") {
+            continue;
+        }
+        for (name, body) in super::scan::fn_bodies(&super::scan::production_half(&text)) {
+            // `handle_msg` matches on it; that is not building one.
+            // `::ActionResult {` catches `AppMsg::` and `Self::` alike, and
+            // not `DlqActionResult`. A bare `ActionResult {` after a glob
+            // import would get past it; it also reads like the enum's own
+            // definition and every match pattern, so it is not matched.
+            let builds = body.contains("::ActionResult {");
+            if builds && name != "handle_msg" {
+                builders.push(format!("{path}: fn {name}"));
+            }
+        }
+    }
+    assert_eq!(
+        builders,
+        vec!["src/app.rs: fn action_result".to_string()],
+        "build it with action_result, which writes the completion line"
+    );
+}
