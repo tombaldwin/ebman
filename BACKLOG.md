@@ -61,14 +61,22 @@ Tier definitions:
   rather than in more `Fetch<()>`s. *Architecture re-review,
   2026-10-21.*
 
-- [ ] **The App tab's API is keyed by name.** `discovery_key(&str)`,
-  `app_tab_source`, `discovered_for`, `discovery_running`,
-  `spawn_app_discovery(String)` and `spawn_detail_app(String)` take a
-  name and rebuild the region (Detail's snapshot, else `env_by_ref`, else
-  home). Every caller asks about Detail's env, so none misroutes today,
-  but the next caller that isn't Detail's would. Take `&EnvKey` with an
-  `App::detail_key()`; `cfg.app_tabs.envs` stays by name. ~2 h. *0.46
-  release review (architecture, Important); deferred for a ruling.*
+- [ ] **Detail and the App tab carry an `EnvKey`, not a name.** Detail
+  answers are matched to Detail's env in two halves (region by the
+  `detail_takes` / `modal_takes` guards in `handle_msg`, name inside
+  `apply_detail_msg`), five `Detail*` messages use per-open `Ticket`s
+  instead, and the App tab's functions take a name and rebuild the
+  region (`discovery_key(&str)`): three patterns for a new `Detail*`
+  message to copy, and a variant with `region` but no guarded arm falls
+  into the drop arm silently. **Recommended fix:** `DetailState` gains
+  `key: EnvKey` at open; `Detail*` messages carry `key` instead of
+  `(env_name, region)`; `apply_detail_msg` compares the key, which
+  deletes `detail_takes` and its drop arm; the App tab functions take
+  `&EnvKey`, which deletes `discovery_key(&str)` and gives
+  `App::detail_key()`. `cfg.app_tabs.envs` stays by name. Touches
+  app_tab_form, spawn_detail, detail_nav, msg and ui, so it waits for
+  the next cycle. *0.46 release review (architecture, Important), with
+  the shape from its re-review.*
 
 - [ ] **The pending-actions panel is keyed by name.** `complete_pending`
   matches label and target name, so the same action in flight on two
@@ -84,7 +92,8 @@ Tier definitions:
     `split_env_ref`;
   - `EnvKey` lives in `polled.rs` but is the crate-wide target identity:
     move it to `env_ref.rs`;
-  - Detail's key is recomputed at ~17 sites: `App::detail_key()`;
+  - Detail's key is recomputed at ~17 sites (absorbed by the `EnvKey`
+    item above);
   - four region-wide writes use `EnvKey::new(region, "")`: a named
     constructor;
   - `AppTabDiscovered`, `LogTailOpened`, `DeleteAppVersion` carry
@@ -93,8 +102,9 @@ Tier definitions:
 - [ ] **Audit-line boilerplate.** ~30 `append_action_dispatched` and ~11
   `append_action_completed` sites pass account / profile / region by
   hand, and the profile is already inconsistent: `shell_session.rs`
-  honours `override_profile`, the rest don't. `App::audit_dispatched` /
-  `audit_completed` wrappers that pick it one way. ~1 h. *0.46 release
+  honours `override_profile`, the rest don't, and `AuditIdent` (0.46)
+  holds `context.profile`. `App::audit_dispatched` / `audit_completed`
+  wrappers that pick it one way, through `AuditIdent`. ~1 h. *0.46 release
   review.*
 
 - [ ] **`app_tab.rs` holds four concerns** (config parsing, CloudWatch
