@@ -2058,6 +2058,34 @@ async fn a_pin_set_after_the_confirm_is_audited_when_it_stops_the_dispatch() {
 }
 
 #[tokio::test]
+async fn undo_writes_to_its_captured_env_with_detail_open_on_another() {
+    // The undo entry is the eu-west-2 env's; Detail is open on the home
+    // one. Writes follow Detail's env, so undo must not reach its env
+    // through the cursor: the reverse diff went to the home env.
+    let mut app = app_with_a_name_in_two_regions();
+    let home_row = app
+        .view
+        .filtered()
+        .iter()
+        .position(|&i| app.environments[i].region.is_none())
+        .expect("home row");
+    app.table_state.select(Some(home_row));
+    app.open_detail();
+    app.undo_history.push_back(crate::app::UndoEntry {
+        env: crate::app::EnvKey::new("eu-west-2", twin()),
+        to_set: vec![("ns".into(), "k".into(), "v".into())],
+        to_remove: vec![],
+        original_summary: "keypair foo".into(),
+        captured_at: chrono::Utc::now(),
+    });
+    let before = audit_log();
+    app.execute_command("undo");
+    let went = twin_audit_regions(&before);
+    assert!(!went.is_empty(), "not dispatched: {:?}", app.error_message);
+    assert!(went.iter().all(|r| r == "eu-west-2"), "{went:?}");
+}
+
+#[tokio::test]
 async fn a_confirmed_action_on_a_name_in_two_regions_is_dispatched_to_its_row() {
     for cmd in ["restart", "rebuild"] {
         let mut app = app_with_a_name_in_two_regions();

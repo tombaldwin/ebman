@@ -554,33 +554,11 @@ impl App {
         }
         // The captured env may no longer exist (context switch,
         // terminated mid-undo). Refuse early with a clear message.
-        if self.env_by_key(&entry.env).is_none() {
+        let Some(env) = self.env_by_key(&entry.env).cloned() else {
             self.error_message = Some(format!(
                 "undo: env '{}' is no longer in the current view",
                 entry.env.name
             ));
-            return;
-        }
-        // Find the env's index in the *display rows* (filtered +
-        // grouped view), not in `self.environments` —
-        // `selected_env` reads from `display_rows()`, so setting
-        // `table_state` using the env-vec index would target the
-        // wrong row whenever a filter is active or grouping
-        // inserts separators. If the env exists but is filtered
-        // out, refuse with a hint and put the entry back on the
-        // deque so the operator can retry after clearing.
-        let display_idx = self.display_rows().iter().position(|row| match row {
-            super::DisplayRow::Env(i) => {
-                self.environments.get(*i).map(|e| self.env_key(e)).as_ref() == Some(&entry.env)
-            }
-            super::DisplayRow::Separator => false,
-        });
-        let Some(display_idx) = display_idx else {
-            self.error_message = Some(format!(
-                "undo: env '{}' is filtered out of the current view — clear the filter and retry",
-                entry.env.name
-            ));
-            self.undo_history.push_back(entry);
             return;
         };
         let age_secs = (chrono::Utc::now() - entry.captured_at)
@@ -588,13 +566,10 @@ impl App {
             .max(0) as u64;
         let age = humanize_short_age(std::time::Duration::from_secs(age_secs));
         let summary = format!("undo: {} (captured {age} ago)", entry.original_summary);
-        // Set the cursor on the captured env via the display-row
-        // index so `spawn_option_settings_update`'s `selected_env`
-        // lookup hits the right destination, then restore.
-        let prior_selection = self.table_state.selected();
-        self.table_state.select(Some(display_idx));
-        self.spawn_option_settings_update(summary, entry.to_set, entry.to_remove);
-        self.table_state.select(prior_selection);
+        // Straight to the captured env. Steering the write by moving the
+        // table cursor onto its row stopped working once writes followed
+        // Detail's env: with Detail open, the reverse diff went there.
+        self.spawn_option_settings_update_on(env, summary, entry.to_set, entry.to_remove);
     }
 
     /// `:lint [ENV]` — run the rule engine against the selected env

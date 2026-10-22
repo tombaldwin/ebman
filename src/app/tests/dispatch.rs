@@ -332,35 +332,36 @@ async fn cmd_undo_uses_display_row_index_not_envs_vec_index() {
 }
 
 #[tokio::test]
-async fn cmd_undo_refuses_with_hint_when_env_filtered_out() {
-    // Captured env exists in self.environments but is hidden
-    // by the active filter. Refuse with a hint pointing at
-    // the filter, and keep the entry on the deque so the
-    // operator can retry after clearing.
+async fn cmd_undo_reaches_an_env_the_filter_hides() {
+    // Undo once steered its write by putting the cursor on the env's
+    // row, so a filter that hid the row refused it. It writes to the
+    // captured env directly; the filter is not the env's business.
+    let env = "undo-filtered-probe-env";
     let mut app = test_app();
     app.environments = vec![
-        mk_env("prod-api", "shop", "Web", "Green"),
+        mk_env(env, "shop", "Web", "Green"),
         mk_env("staging-api", "shop", "Web", "Green"),
     ];
     app.view.set_filter("staging-");
     app.rebuild_view();
     app.undo_history.push_back(crate::app::UndoEntry {
-        env: home_key("prod-api"),
+        env: home_key(env),
         to_set: vec![("ns".into(), "k".into(), "v".into())],
         to_remove: vec![],
         original_summary: "keypair foo".into(),
         captured_at: chrono::Utc::now(),
     });
+    let path = crate::util::cache_dir().join("audit.log");
+    let before = std::fs::read_to_string(&path).unwrap_or_default();
     app.execute_command("undo");
-    let err = app.error_message.as_deref().unwrap_or("");
+    let after = std::fs::read_to_string(&path).unwrap_or_default();
+    let delta = after.strip_prefix(&before).expect("append-only");
     assert!(
-        err.contains("filtered out") && err.contains("clear the filter"),
-        "expected filter hint, got: {err}"
-    );
-    assert_eq!(
-        app.undo_history.len(),
-        1,
-        "entry must be put back on the deque so the operator can retry"
+        delta
+            .lines()
+            .any(|l| l.contains(env) && l.contains("stage=dispatched")),
+        "not dispatched: {:?}\n{delta}",
+        app.error_message
     );
 }
 
