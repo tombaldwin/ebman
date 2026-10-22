@@ -2042,3 +2042,60 @@ async fn a_rollback_result_is_cancelled_when_the_cursor_moved_to_a_same_named_en
         app.error_message
     );
 }
+
+#[tokio::test]
+async fn detail_ignores_an_answer_for_its_name_in_another_region() {
+    // Detail on the eu-west-2 env, after the home one's events were
+    // asked for: those land in the eu view by name.
+    let mut app = detail_on_an_eu_instance();
+    let ev = |msg: &str| crate::aws::Event {
+        at: None,
+        env: "api-prod".into(),
+        application: "poly".into(),
+        message: msg.into(),
+        severity: "INFO".into(),
+        version_label: None,
+    };
+    // Its own answer first: the handler replaces the list, so a twin's
+    // arriving last is what would show.
+    for (region, msg) in [("eu-west-2", "EU-OWN"), ("us-east-1", "HOME-TWIN")] {
+        app.handle_msg(AppMsg::DetailEvents {
+            gen: app.generation,
+            env_name: "api-prod".into(),
+            region: region.into(),
+            result: Ok(vec![ev(msg)]),
+        });
+    }
+    let events = &app.detail.as_ref().unwrap().events;
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0].message, "EU-OWN");
+}
+
+#[tokio::test]
+async fn the_confirm_modal_ignores_an_answer_for_its_name_in_another_region() {
+    let mut app = same_named_in_two_regions();
+    let eu_row = app
+        .view
+        .filtered()
+        .iter()
+        .position(|&i| app.environments[i].region.is_some())
+        .unwrap();
+    app.table_state.select(Some(eu_row));
+    app.execute_command("deploy build-1");
+    for (region, body) in [("eu-west-2", "EU-OWN"), ("us-east-1", "HOME-TWIN")] {
+        app.handle_msg(AppMsg::VersionPreview {
+            gen: app.generation,
+            env_name: "api-prod".into(),
+            region: region.into(),
+            result: Ok(body.into()),
+        });
+        let Some(crate::app::ActionFlow::Confirm(modal)) = app.action_flow.as_ref() else {
+            panic!("no modal: {:?}", app.error_message);
+        };
+        assert_eq!(
+            modal.version_preview.as_deref(),
+            Some("EU-OWN"),
+            "after the {region} answer"
+        );
+    }
+}

@@ -121,8 +121,11 @@ impl App {
             }
             AppMsg::Events { result, .. } => self.handle_events(result),
             AppMsg::DetailEvents {
-                env_name, result, ..
-            } => self.handle_detail_events(env_name, result),
+                env_name,
+                result,
+                region,
+                ..
+            } if self.detail_takes(&region) => self.handle_detail_events(env_name, result),
             AppMsg::ActionResult {
                 action,
                 env_name,
@@ -131,8 +134,11 @@ impl App {
                 ..
             } => self.handle_action_result(action, env_name, region, result),
             AppMsg::DetailInstances {
-                env_name, result, ..
-            } => self.handle_detail_instances(env_name, result),
+                env_name,
+                result,
+                region,
+                ..
+            } if self.detail_takes(&region) => self.handle_detail_instances(env_name, result),
             AppMsg::DetailMetrics {
                 env_name,
                 ticket,
@@ -166,11 +172,17 @@ impl App {
                 env_name,
                 stage,
                 attempt,
+                region,
                 ..
-            } => self.handle_detail_logs_progress(env_name, stage, attempt),
+            } if self.detail_takes(&region) => {
+                self.handle_detail_logs_progress(env_name, stage, attempt)
+            }
             AppMsg::DetailLogs {
-                env_name, result, ..
-            } => self.handle_detail_logs(env_name, result),
+                env_name,
+                result,
+                region,
+                ..
+            } if self.detail_takes(&region) => self.handle_detail_logs(env_name, result),
             AppMsg::TextOverlay { title, body, .. } => self.handle_text_overlay(title, body),
             AppMsg::AppVersions {
                 application,
@@ -181,8 +193,11 @@ impl App {
             AppMsg::UpdateCheck(latest) => self.handle_update_check(latest),
             AppMsg::AutoRollbackCheck { env, .. } => self.handle_auto_rollback_check(env),
             AppMsg::DryRunResult {
-                env_name, result, ..
-            } => self.handle_dry_run_result(env_name, result),
+                env_name,
+                result,
+                region,
+                ..
+            } if self.modal_takes(&region) => self.handle_dry_run_result(env_name, result),
             AppMsg::Alarms { env, result, .. } => self.handle_alarms(env, result),
             AppMsg::WhyRedEvents {
                 session_id, result, ..
@@ -203,23 +218,38 @@ impl App {
                 session_id, result, ..
             } => self.handle_why_red_dlq_messages(session_id, result),
             AppMsg::PreflightEvents {
-                env_name, result, ..
-            } => self.handle_preflight_events(env_name, result),
+                env_name,
+                result,
+                region,
+                ..
+            } if self.modal_takes(&region) => self.handle_preflight_events(env_name, result),
             AppMsg::VersionPreview {
-                env_name, result, ..
-            } => self.handle_version_preview(env_name, result),
+                env_name,
+                result,
+                region,
+                ..
+            } if self.modal_takes(&region) => self.handle_version_preview(env_name, result),
             AppMsg::HealthCheckProbe {
-                env_name, result, ..
-            } => self.handle_health_check_probe(env_name, result),
-            AppMsg::UnavailabilityEstimate { env_name, line, .. } => {
-                self.handle_unavailability_estimate(env_name, line)
-            }
+                env_name,
+                result,
+                region,
+                ..
+            } if self.modal_takes(&region) => self.handle_health_check_probe(env_name, result),
+            AppMsg::UnavailabilityEstimate {
+                env_name,
+                line,
+                region,
+                ..
+            } if self.modal_takes(&region) => self.handle_unavailability_estimate(env_name, line),
             AppMsg::ConfirmModalLint {
                 env_name,
                 issues,
                 not_run,
+                region,
                 ..
-            } => self.handle_confirm_modal_lint(env_name, issues, not_run),
+            } if self.modal_takes(&region) => {
+                self.handle_confirm_modal_lint(env_name, issues, not_run)
+            }
             AppMsg::LintInputsCached {
                 key, tags, healthy, ..
             } => self.handle_lint_inputs_cached(key, tags, healthy),
@@ -240,8 +270,11 @@ impl App {
                 self.handle_rollback_target(EnvKey::new(region, env_name), current_version, result)
             }
             AppMsg::DetailTags {
-                env_name, result, ..
-            } => self.handle_detail_tags(env_name, result),
+                env_name,
+                result,
+                region,
+                ..
+            } if self.detail_takes(&region) => self.handle_detail_tags(env_name, result),
             AppMsg::DeployFromLocal {
                 env_name,
                 label,
@@ -273,8 +306,11 @@ impl App {
                 session_id, result, ..
             } => self.handle_event_tail_events(session_id, result),
             AppMsg::DetailLogGroups {
-                env_name, groups, ..
-            } => self.handle_detail_log_groups(env_name, groups),
+                env_name,
+                groups,
+                region,
+                ..
+            } if self.detail_takes(&region) => self.handle_detail_log_groups(env_name, groups),
             AppMsg::DetailAlarms {
                 env_name,
                 ticket,
@@ -309,8 +345,11 @@ impl App {
                 ..
             } => self.handle_form_multi_select_loaded(env_name, field_key, result),
             AppMsg::DetailEnvVars {
-                env_name, result, ..
-            } => self.handle_detail_env_vars(env_name, result),
+                env_name,
+                result,
+                region,
+                ..
+            } if self.detail_takes(&region) => self.handle_detail_env_vars(env_name, result),
             AppMsg::OptionSettingsUpdate {
                 env_name,
                 summary,
@@ -339,8 +378,29 @@ impl App {
                 ..
             } => self.handle_tag_update(env_name, summary, result),
             AppMsg::DetailQueues {
-                env_name, result, ..
-            } => self.handle_detail_queues(env_name, result),
+                env_name,
+                result,
+                region,
+                ..
+            } if self.detail_takes(&region) => self.handle_detail_queues(env_name, result),
+            // An answer for the modal's env name in another region: a
+            // same-named env's modal, since closed.
+            AppMsg::DryRunResult { .. }
+            | AppMsg::PreflightEvents { .. }
+            | AppMsg::VersionPreview { .. }
+            | AppMsg::HealthCheckProbe { .. }
+            | AppMsg::UnavailabilityEstimate { .. }
+            | AppMsg::ConfirmModalLint { .. } => {}
+            // An answer from Detail's env name in another region: the
+            // same-named env Detail was on before, not this one.
+            AppMsg::DetailEvents { .. }
+            | AppMsg::DetailInstances { .. }
+            | AppMsg::DetailQueues { .. }
+            | AppMsg::DetailTags { .. }
+            | AppMsg::DetailEnvVars { .. }
+            | AppMsg::DetailLogGroups { .. }
+            | AppMsg::DetailLogs { .. }
+            | AppMsg::DetailLogsProgress { .. } => {}
             AppMsg::DlqMessages {
                 env_name,
                 queue_url,

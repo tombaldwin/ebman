@@ -275,6 +275,7 @@ async fn handle_confirm_modal_lint_stuffs_issues_into_modal() {
     app.handle_msg(AppMsg::ConfirmModalLint {
         gen: app.generation,
         env_name: "prod".into(),
+        region: "us-east-1".into(),
         issues: vec![],
         not_run: vec![],
     });
@@ -304,6 +305,7 @@ async fn a_lint_that_could_not_run_reaches_the_modal_as_a_reason() {
     app.handle_msg(AppMsg::ConfirmModalLint {
         gen: app.generation,
         env_name: "prod".into(),
+        region: "us-east-1".into(),
         issues: vec![],
         not_run: vec![
             "lint could not run: DescribeConfigurationSettings failed: AccessDenied".into(),
@@ -343,6 +345,7 @@ async fn handle_confirm_modal_lint_drops_stale_target_results() {
     app.handle_msg(AppMsg::ConfirmModalLint {
         gen: app.generation,
         env_name: "prod".into(),
+        region: "us-east-1".into(),
         issues: vec![crate::lint::Issue {
             rule_id: "EBL001".into(),
             severity: crate::lint::Severity::Warn,

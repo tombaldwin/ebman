@@ -849,6 +849,7 @@ async fn a_successful_fetch_does_not_erase_another_fetchs_error() {
     app.handle_msg(crate::app::AppMsg::DetailEvents {
         gen,
         env_name: "wk-prod".to_string(),
+        region: "us-east-1".into(),
         result: Err("AccessDenied: DescribeEvents".to_string()),
     });
     let after_failure = app
@@ -865,6 +866,7 @@ async fn a_successful_fetch_does_not_erase_another_fetchs_error() {
     app.handle_msg(crate::app::AppMsg::DetailInstances {
         gen,
         env_name: "wk-prod".to_string(),
+        region: "us-east-1".into(),
         result: Ok(Vec::new()),
     });
 
@@ -1193,6 +1195,7 @@ async fn detail_results_for_another_env_are_dropped() {
     app.handle_msg(AppMsg::DetailLogGroups {
         gen: app.generation,
         env_name: "worker-prod".into(),
+        region: "us-east-1".into(),
         groups: vec!["wrong-env-group".into()],
     });
     assert_eq!(
@@ -1335,6 +1338,7 @@ async fn detail_results_for_another_env_are_dropped() {
     app.handle_msg(AppMsg::DetailLogGroups {
         gen: app.generation,
         env_name: "api-prod".into(),
+        region: "us-east-1".into(),
         groups: vec!["right-env-group".into()],
     });
     assert_eq!(
@@ -1596,6 +1600,7 @@ async fn a_failed_config_fetch_is_shown_not_just_logged() {
             AppMsg::DetailTags {
                 gen: 0,
                 env_name: "api-prod".into(),
+                region: "us-east-1".into(),
                 result: Err("AccessDenied: elasticbeanstalk:ListTagsForResource".into()),
             },
             "ListTagsForResource",
@@ -1604,6 +1609,7 @@ async fn a_failed_config_fetch_is_shown_not_just_logged() {
             AppMsg::DetailEnvVars {
                 gen: 0,
                 env_name: "api-prod".into(),
+                region: "us-east-1".into(),
                 result: Err("AccessDenied: DescribeConfigurationSettings".into()),
             },
             "DescribeConfigurationSettings",
@@ -1642,6 +1648,7 @@ async fn a_successful_config_refetch_clears_only_its_own_error() {
     app.handle_msg(AppMsg::DetailTags {
         gen: 0,
         env_name: "api-prod".into(),
+        region: "us-east-1".into(),
         result: Err("tags boom".into()),
     });
     assert!(app.detail.as_ref().unwrap().error.is_some());
@@ -1652,6 +1659,7 @@ async fn a_successful_config_refetch_clears_only_its_own_error() {
     app.handle_msg(AppMsg::DetailEnvVars {
         gen: 0,
         env_name: "api-prod".into(),
+        region: "us-east-1".into(),
         result: Ok(vec![("K".into(), "V".into())]),
     });
     assert!(
@@ -1668,6 +1676,7 @@ async fn a_successful_config_refetch_clears_only_its_own_error() {
     app.handle_msg(AppMsg::DetailTags {
         gen: 0,
         env_name: "api-prod".into(),
+        region: "us-east-1".into(),
         result: Ok(vec![("t".into(), "v".into())]),
     });
     assert!(

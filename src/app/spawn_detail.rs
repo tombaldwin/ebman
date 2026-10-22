@@ -113,6 +113,7 @@ impl App {
     }
 
     pub(super) fn spawn_detail_log_groups(&mut self) {
+        let region = self.detail_region();
         let Some(d) = self.detail.as_ref() else {
             return;
         };
@@ -135,12 +136,14 @@ impl App {
             let _ = tx.send(AppMsg::DetailLogGroups {
                 gen,
                 env_name,
+                region: region.clone(),
                 groups,
             });
         });
     }
 
     pub(super) fn spawn_detail_env_vars(&mut self) {
+        let region = self.detail_region();
         let Some(d) = self.detail.as_ref() else {
             return;
         };
@@ -157,12 +160,14 @@ impl App {
             move |gen, result| AppMsg::DetailEnvVars {
                 gen,
                 env_name: env_for_msg,
+                region: region.clone(),
                 result,
             },
         );
     }
 
     pub(super) fn spawn_detail_tags(&mut self) {
+        let region = self.detail_region();
         let Some(d) = self.detail.as_ref() else {
             return;
         };
@@ -180,12 +185,14 @@ impl App {
             move |gen, result| AppMsg::DetailTags {
                 gen,
                 env_name,
+                region: region.clone(),
                 result,
             },
         );
     }
 
     pub(super) fn spawn_detail_logs(&mut self, env_name: String) {
+        let region = self.detail_region();
         if let Some(d) = self.detail.as_mut() {
             // Re-entering an in-flight tail is a refresh; reset state. Existing
             // content is retained until the new fetch lands so the user keeps
@@ -200,12 +207,15 @@ impl App {
         let env_for_msg = env_name.clone();
         tokio::spawn(async move {
             let result = match client.resolve().await {
-                Ok(aws) => collect_tail_logs(aws, env_name.clone(), tx.clone(), gen).await,
+                Ok(aws) => {
+                    collect_tail_logs(aws, env_name.clone(), region.clone(), tx.clone(), gen).await
+                }
                 Err(e) => Err(flatten_err("cached_client", e)),
             };
             let _ = tx.send(AppMsg::DetailLogs {
                 gen,
                 env_name: env_for_msg,
+                region: region.clone(),
                 result,
             });
         });
@@ -390,6 +400,7 @@ impl App {
     }
 
     pub(super) fn spawn_detail_queues(&mut self, application_name: String, env_name: String) {
+        let region = self.detail_region();
         if let Some(d) = self.detail.as_mut() {
             d.loading_queues = true;
             // Only its own: a sibling's failure stays on screen.
@@ -401,6 +412,7 @@ impl App {
             let _ = self.msg_tx.send(AppMsg::DetailQueues {
                 gen,
                 env_name,
+                region: region.clone(),
                 result,
             });
             return;
@@ -416,12 +428,14 @@ impl App {
             move |gen, result| AppMsg::DetailQueues {
                 gen,
                 env_name: env_for_msg,
+                region: region.clone(),
                 result,
             },
         );
     }
 
     pub(super) fn spawn_detail_events(&mut self, env_name: String) {
+        let region = self.detail_region();
         if let Some(d) = self.detail.as_mut() {
             d.loading_events = true;
             // Only its own: a sibling's failure stays on screen.
@@ -438,6 +452,7 @@ impl App {
             let _ = self.msg_tx.send(AppMsg::DetailEvents {
                 gen,
                 env_name,
+                region: region.clone(),
                 result,
             });
             return;
@@ -450,12 +465,14 @@ impl App {
             move |gen, result| AppMsg::DetailEvents {
                 gen,
                 env_name: env_for_msg,
+                region: region.clone(),
                 result,
             },
         );
     }
 
     pub(super) fn spawn_detail_instances(&mut self, env_name: String) {
+        let region = self.detail_region();
         if let Some(d) = self.detail.as_mut() {
             d.loading_instances = true;
             // Only its own: a sibling's failure stays on screen.
@@ -471,6 +488,7 @@ impl App {
             let _ = self.msg_tx.send(AppMsg::DetailInstances {
                 gen,
                 env_name,
+                region: region.clone(),
                 result,
             });
             return;
@@ -483,6 +501,7 @@ impl App {
             move |gen, result| AppMsg::DetailInstances {
                 gen,
                 env_name: env_for_msg,
+                region: region.clone(),
                 result,
             },
         );

@@ -592,6 +592,24 @@ impl App {
     /// behaviour — most clear `detail.error` on the Ok branch, but tags /
     /// env-vars use `tracing::warn!` instead since their failures
     /// shouldn't tint the whole tab red.
+    /// Whether an answer fetched for Detail in `region` is Detail's:
+    /// with Detail open on a same-named env in another region, it is
+    /// not. With Detail closed the handlers drop it themselves.
+    pub(crate) fn detail_takes(&self, region: &str) -> bool {
+        self.detail
+            .as_ref()
+            .is_none_or(|d| self.region_for(&d.env_snapshot) == region)
+    }
+
+    /// Whether an answer fetched for the confirm modal in `region` is
+    /// the open modal's. With no modal open the handlers drop it.
+    pub(crate) fn modal_takes(&self, region: &str) -> bool {
+        match self.action_flow.as_ref() {
+            Some(crate::mode_action::ActionFlow::Confirm(m)) => m.target_region == region,
+            _ => true,
+        }
+    }
+
     pub(crate) fn apply_detail_msg<T, F>(
         &mut self,
         env_name: &str,

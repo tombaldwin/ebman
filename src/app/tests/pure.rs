@@ -815,6 +815,7 @@ async fn handle_unavailability_estimate_silent_on_fetch_failure() {
     app.handle_msg(AppMsg::UnavailabilityEstimate {
         gen: app.generation,
         env_name: "prod".into(),
+        region: "us-east-1".into(),
         line: None,
     });
     match &app.action_flow {
@@ -838,6 +839,7 @@ async fn handle_health_check_probe_renders_warning_on_failure() {
     app.handle_msg(AppMsg::HealthCheckProbe {
         gen: app.generation,
         env_name: "prod".into(),
+        region: "us-east-1".into(),
         result: Err("HTTP 404".into()),
     });
     match &app.action_flow {
@@ -865,6 +867,7 @@ async fn handle_health_check_probe_silent_on_ok() {
     app.handle_msg(AppMsg::HealthCheckProbe {
         gen: app.generation,
         env_name: "prod".into(),
+        region: "us-east-1".into(),
         result: Ok(()),
     });
     match &app.action_flow {

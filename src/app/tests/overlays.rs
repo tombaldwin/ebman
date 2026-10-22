@@ -268,6 +268,7 @@ async fn handle_unavailability_estimate_stuffs_line_into_modal() {
     app.handle_msg(AppMsg::UnavailabilityEstimate {
         gen: app.generation,
         env_name: "prod".into(),
+        region: "us-east-1".into(),
         line: Some((
             "deploy plan: Rolling → max 1/4 instance unavailable".into(),
             true,
@@ -320,6 +321,7 @@ async fn deploy_modal_handle_version_preview_stuffs_body_in_slot() {
     app.handle_msg(AppMsg::VersionPreview {
         gen: app.generation,
         env_name: "prod".into(),
+        region: "us-east-1".into(),
         result: Ok(body.clone()),
     });
     match &app.action_flow {
@@ -343,6 +345,7 @@ async fn deploy_modal_handle_version_preview_error_renders_inline() {
     app.handle_msg(AppMsg::VersionPreview {
         gen: app.generation,
         env_name: "prod".into(),
+        region: "us-east-1".into(),
         result: Err("ListApplicationVersions throttled".into()),
     });
     match &app.action_flow {

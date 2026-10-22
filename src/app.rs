@@ -624,16 +624,22 @@ pub(crate) enum AppMsg {
     DetailEvents {
         gen: u64,
         env_name: String,
+        /// Detail's region at dispatch: a same-named env's answer is dropped.
+        region: String,
         result: Result<Vec<EbEvent>, String>,
     },
     DetailInstances {
         gen: u64,
         env_name: String,
+        /// Detail's region at dispatch: a same-named env's answer is dropped.
+        region: String,
         result: Result<Vec<Instance>, String>,
     },
     DetailQueues {
         gen: u64,
         env_name: String,
+        /// Detail's region at dispatch: a same-named env's answer is dropped.
+        region: String,
         result: Result<WorkerQueues, String>,
     },
     DetailMetrics {
@@ -678,6 +684,8 @@ pub(crate) enum AppMsg {
     DetailTags {
         gen: u64,
         env_name: String,
+        /// Detail's region at dispatch: a same-named env's answer is dropped.
+        region: String,
         result: Result<Vec<(String, String)>, String>,
     },
     /// Env vars for the Config tab — same shape as DetailTags but pulled
@@ -686,6 +694,8 @@ pub(crate) enum AppMsg {
     DetailEnvVars {
         gen: u64,
         env_name: String,
+        /// Detail's region at dispatch: a same-named env's answer is dropped.
+        region: String,
         result: Result<Vec<(String, String)>, String>,
     },
     /// CloudWatch Logs groups discovered for an env. Sent once on Detail
@@ -694,6 +704,8 @@ pub(crate) enum AppMsg {
     DetailLogGroups {
         gen: u64,
         env_name: String,
+        /// Detail's region at dispatch: a same-named env's answer is dropped.
+        region: String,
         groups: Vec<String>,
     },
     /// CW alarms attached to an env. Populates the Detail-Health-tab
@@ -838,6 +850,8 @@ pub(crate) enum AppMsg {
     DryRunResult {
         gen: u64,
         env_name: String,
+        /// The modal's region: an answer for a same-named env is dropped.
+        region: String,
         result: Result<Vec<Instance>, String>,
     },
     /// `fetch_env_vars` result for `:env-edit`. The handler stashes
@@ -856,6 +870,8 @@ pub(crate) enum AppMsg {
     PreflightEvents {
         gen: u64,
         env_name: String,
+        /// The modal's region: an answer for a same-named env is dropped.
+        region: String,
         result: Result<Vec<EbEvent>, String>,
     },
     /// Pre-deploy version preview for the confirm modal. Carries
@@ -864,6 +880,8 @@ pub(crate) enum AppMsg {
     VersionPreview {
         gen: u64,
         env_name: String,
+        /// The modal's region: an answer for a same-named env is dropped.
+        region: String,
         result: Result<String, String>,
     },
     /// Pre-deploy health-check probe outcome. `Ok(())` means the
@@ -874,6 +892,8 @@ pub(crate) enum AppMsg {
     HealthCheckProbe {
         gen: u64,
         env_name: String,
+        /// The modal's region: an answer for a same-named env is dropped.
+        region: String,
         result: Result<(), String>,
     },
     /// Pre-deploy unavailability estimate. `line` is the rendered
@@ -884,6 +904,8 @@ pub(crate) enum AppMsg {
     UnavailabilityEstimate {
         gen: u64,
         env_name: String,
+        /// The modal's region: an answer for a same-named env is dropped.
+        region: String,
         line: Option<(String, bool)>,
     },
     /// Lint findings against the confirm-modal's target env,
@@ -893,6 +915,8 @@ pub(crate) enum AppMsg {
     ConfirmModalLint {
         gen: u64,
         env_name: String,
+        /// The modal's region: an answer for a same-named env is dropped.
+        region: String,
         issues: Vec<crate::lint::Issue>,
         /// The checks that could not run, each with why: the whole lint
         /// (client or option fetch failed) or one rule's input. Listed
@@ -989,6 +1013,8 @@ pub(crate) enum AppMsg {
     DetailLogsProgress {
         gen: u64,
         env_name: String,
+        /// Detail's region at dispatch: a same-named env's answer is dropped.
+        region: String,
         stage: LogTailStage,
         attempt: u32,
     },
@@ -996,6 +1022,8 @@ pub(crate) enum AppMsg {
     DetailLogs {
         gen: u64,
         env_name: String,
+        /// Detail's region at dispatch: a same-named env's answer is dropped.
+        region: String,
         result: Result<Vec<(String, String)>, String>,
     },
     /// Generic text overlay payload. Used by several commands that all
@@ -2305,6 +2333,7 @@ pub(crate) enum DisplayRow {
 async fn collect_tail_logs(
     aws: Arc<AwsClient>,
     env_name: String,
+    region: String,
     tx: mpsc::UnboundedSender<AppMsg>,
     gen: u64,
 ) -> std::result::Result<Vec<(String, String)>, String> {
@@ -2317,6 +2346,7 @@ async fn collect_tail_logs(
     let _ = tx.send(AppMsg::DetailLogsProgress {
         gen,
         env_name: env_name.clone(),
+        region: region.clone(),
         stage: LogTailStage::Polling,
         attempt: 0,
     });
@@ -2334,6 +2364,7 @@ async fn collect_tail_logs(
         let _ = tx.send(AppMsg::DetailLogsProgress {
             gen,
             env_name: env_name.clone(),
+            region: region.clone(),
             stage: LogTailStage::Polling,
             attempt,
         });
@@ -2347,6 +2378,7 @@ async fn collect_tail_logs(
     let _ = tx.send(AppMsg::DetailLogsProgress {
         gen,
         env_name: env_name.clone(),
+        region: region.clone(),
         stage: LogTailStage::Fetching,
         attempt: 0,
     });

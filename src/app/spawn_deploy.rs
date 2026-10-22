@@ -653,6 +653,7 @@ impl App {
     }
 
     pub(crate) fn spawn_preflight_events(&mut self, env: &crate::aws::Environment) {
+        let region = self.region_for(env);
         let env_name = env.name.clone();
         let env_for_msg = env_name.clone();
         self.spawn_aws_in(
@@ -662,12 +663,14 @@ impl App {
             move |gen, result| AppMsg::PreflightEvents {
                 gen,
                 env_name: env_for_msg,
+                region: region.clone(),
                 result,
             },
         );
     }
 
     pub(crate) fn spawn_dry_run(&mut self, env: &crate::aws::Environment) {
+        let region = self.region_for(env);
         let env_name = env.name.clone();
         let env_for_msg = env_name.clone();
         self.spawn_aws_in(
@@ -677,6 +680,7 @@ impl App {
             move |gen, result| AppMsg::DryRunResult {
                 gen,
                 env_name: env_for_msg,
+                region: region.clone(),
                 result,
             },
         );
@@ -693,6 +697,7 @@ impl App {
         env: &crate::aws::Environment,
         candidate_label: String,
     ) {
+        let region = self.region_for(env);
         let app_name = env.application.clone();
         let current_label = env.version_label.clone();
         let env_for_msg = env.name.clone();
@@ -715,6 +720,7 @@ impl App {
                 AppMsg::VersionPreview {
                     gen,
                     env_name: env_for_msg,
+                    region: region.clone(),
                     result: body,
                 }
             },
@@ -734,6 +740,7 @@ impl App {
     /// as a transport error) so the warning text can surface what
     /// specifically failed.
     pub(crate) fn spawn_health_check_probe(&mut self, env: &crate::aws::Environment) {
+        let region = self.region_for(env);
         let app_name = env.application.clone();
         let env_name = env.name.clone();
         let cname = env.cname.clone();
@@ -768,6 +775,7 @@ impl App {
             let _ = tx.send(AppMsg::HealthCheckProbe {
                 gen,
                 env_name: env_for_msg,
+                region: region.clone(),
                 result,
             });
         });
@@ -782,6 +790,7 @@ impl App {
     /// modal open, and keeps the two features isolated so failure
     /// of one doesn't taint the other.
     pub(crate) fn spawn_unavailability_estimate(&mut self, env: &crate::aws::Environment) {
+        let region = self.region_for(env);
         let app_name = env.application.clone();
         let env_name = env.name.clone();
         let env_for_msg = env_name.clone();
@@ -798,6 +807,7 @@ impl App {
                 AppMsg::UnavailabilityEstimate {
                     gen,
                     env_name: env_for_msg,
+                    region: region.clone(),
                     line,
                 }
             },
@@ -818,6 +828,7 @@ impl App {
     /// fails (the operator can still see the rule-output via
     /// `:lint` once the modal closes).
     pub(crate) fn spawn_confirm_lint(&mut self, env: crate::aws::Environment) {
+        let region = self.region_for(&env);
         let client = self.client_for(&env);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
@@ -864,6 +875,7 @@ impl App {
                     let _ = tx.send(AppMsg::ConfirmModalLint {
                         gen,
                         env_name: env_for_msg,
+                        region: region.clone(),
                         issues: Vec::new(),
                         not_run: vec![format!("lint could not run: {e}")],
                     });
@@ -945,6 +957,7 @@ impl App {
             let _ = tx.send(AppMsg::ConfirmModalLint {
                 gen,
                 env_name: env_for_msg,
+                region: region.clone(),
                 issues,
                 not_run,
             });
