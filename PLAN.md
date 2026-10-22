@@ -245,6 +245,14 @@ now head the list.*
 
 ### Released
 
+**0.46.0 (2026-10-22)**: firing alarms and the platform version on the
+fleet view (and in `ebman envs` / `list_environments`); the App tab with
+in-UI editing and discovery; writes, audit lines and Detail routed by
+`EnvKey`, so a name in two regions is two envs. The first crates.io
+publish failed on the new notes scan leaving `notes.md` in the checkout;
+fixed in `release.yml` and re-run from `main`. Not live-checked against
+real AWS before the tag.
+
 **0.45.2 (2026-09-30)**: the MCP server instructions are one text,
 pinned whole under Claude Code's 2048-character cut (longest 1693); the
 long form is gone and its rules folded in. `requiresUserInteraction`
