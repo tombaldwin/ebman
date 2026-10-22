@@ -4940,3 +4940,12 @@ From `PLAN.md`, retired with it:
    agent, whose seven-slice plan Tom approved; a typed name resolves
    only when unique, `NAME@REGION` picks one. All seven slices landed by
    2026-10-22 (entry above).
+
+## `:region all` says what it lists, 2026-10-22
+
+- [x] **`:region NAME` while fanned out keeps the old region list.**
+  Found while making the header show fan-out mode (`us-west-1 +2`). Any
+  context switch under `:region all` now derives the list again from
+  `extra_regions` plus the new home region (`fanout_regions`,
+  `apply_rebuild`). Chosen over ending the fan-out: the operator picked
+  multi-region mode, and a region switch is not a request to leave it.

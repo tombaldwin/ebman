@@ -24,12 +24,7 @@ impl App {
     pub(crate) fn cmd_region(&mut self, rest: &[&str]) {
         match rest.first().copied() {
             Some("all") => {
-                let mut regions = self.extra_regions.clone();
-                if !regions.iter().any(|r| r == &self.context.region) {
-                    regions.push(self.context.region.clone());
-                }
-                regions.sort();
-                regions.dedup();
+                let regions = fanout_regions(&self.extra_regions, &self.context.region);
                 self.multi_regions = regions.clone();
                 self.fanout_epoch = self.fanout_epoch.wrapping_add(1);
                 self.status_message = Some(fanout_message(&regions));
@@ -156,6 +151,18 @@ impl App {
             "redact mode off".into()
         });
     }
+}
+
+/// What `:region all` lists: the configured extra regions plus the home
+/// region, sorted, once each. A context switch while fanned out derives
+/// it again (`apply_rebuild`), so the list always holds the home region
+/// the header names.
+pub(crate) fn fanout_regions(extra: &[String], home: &str) -> Vec<String> {
+    let mut regions = extra.to_vec();
+    regions.push(home.to_string());
+    regions.sort();
+    regions.dedup();
+    regions
 }
 
 /// `:region all`'s status line. With no `extra_regions` the fan-out is

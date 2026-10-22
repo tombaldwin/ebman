@@ -748,6 +748,15 @@ impl App {
                 crate::aws::clear_client_cache();
                 self.context = client.context.clone();
                 self.aws = Arc::new(*client);
+                // A `:region all` fan-out survives the switch, but its list
+                // was derived from the old home region. Kept as it was,
+                // `:region NAME` moved the header to a region the listing
+                // did not cover. The refresh below goes out under the new
+                // generation, which already supersedes the old listing.
+                if !self.multi_regions.is_empty() {
+                    self.multi_regions =
+                        super::cmd_nav::fanout_regions(&self.extra_regions, &self.context.region);
+                }
                 self.aws_built_at = Instant::now();
                 self.maybe_apply_profile_theme();
                 self.environments.clear();

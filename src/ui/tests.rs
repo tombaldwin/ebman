@@ -2386,15 +2386,3 @@ fn region_label_reads_as_home_when_the_fanout_is_only_home() {
         "us-west-1"
     );
 }
-
-#[test]
-fn region_label_does_not_name_a_home_region_the_fanout_left_out() {
-    // `:region NAME` while fanned out moves home but keeps the old list.
-    let fanout = vec!["eu-west-2".to_string(), "us-east-1".to_string()];
-    assert_eq!(
-        super::header::region_label("ap-south-1", &fanout),
-        "2 regions"
-    );
-    let one = vec!["eu-west-2".to_string()];
-    assert_eq!(super::header::region_label("ap-south-1", &one), "1 region");
-}

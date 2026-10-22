@@ -2236,3 +2236,63 @@ async fn region_all_names_the_regions_it_fans_across() {
         Some("multi-region: fanning across 2 regions (eu-west-2, us-east-1)")
     );
 }
+
+#[test]
+fn fanout_regions_is_the_extras_plus_home_sorted_once_each() {
+    use crate::app::cmd_nav::fanout_regions;
+    assert_eq!(fanout_regions(&[], "us-west-1"), vec!["us-west-1"]);
+    let extra = vec!["us-west-1".to_string(), "eu-west-2".to_string()];
+    assert_eq!(
+        fanout_regions(&extra, "us-west-1"),
+        vec!["eu-west-2", "us-west-1"],
+        "home listed in extra_regions too is listed once"
+    );
+    assert_eq!(
+        fanout_regions(&extra, "ap-south-1"),
+        vec!["ap-south-1", "eu-west-2", "us-west-1"]
+    );
+}
+
+fn switched_to(region: &str) -> Box<crate::aws::AwsClient> {
+    let mut client = crate::aws::AwsClient::stub();
+    client.context.region = region.to_string();
+    Box::new(client)
+}
+
+#[tokio::test]
+async fn a_context_switch_while_fanned_out_lists_the_new_home_region() {
+    // `:region NAME` moved the home region and kept the fan-out list
+    // derived from the old one, so the new home's envs were not listed
+    // while the header named it.
+    let mut app = test_app();
+    app.extra_regions = vec!["eu-west-2".into()];
+    app.execute_command("region all");
+    assert_eq!(app.multi_regions, vec!["eu-west-2", "us-east-1"]);
+
+    let _cache_guard = crate::aws::CACHE_TEST_LOCK.lock().await;
+    app.apply_rebuild(app.rebuild_epoch, Ok(switched_to("ap-south-1")));
+
+    assert_eq!(app.context.region, "ap-south-1");
+    assert_eq!(
+        app.multi_regions,
+        vec!["ap-south-1", "eu-west-2"],
+        "the list is what `:region all` would give now"
+    );
+    let out = render(&mut app, 160, 40);
+    assert!(out.contains("Region: ap-south-1 +1"), "got:\n{out}");
+}
+
+#[tokio::test]
+async fn a_context_switch_outside_a_fanout_stays_single_region() {
+    let mut app = test_app();
+    app.extra_regions = vec!["eu-west-2".into()];
+
+    let _cache_guard = crate::aws::CACHE_TEST_LOCK.lock().await;
+    app.apply_rebuild(app.rebuild_epoch, Ok(switched_to("ap-south-1")));
+
+    assert!(
+        app.multi_regions.is_empty(),
+        "a switch must not turn a fan-out on: {:?}",
+        app.multi_regions
+    );
+}

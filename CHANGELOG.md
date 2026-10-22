@@ -11,10 +11,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **The header says when `:region all` lists more than the home
   region.** Its Region field named the home region in every mode, so a
   fan-out read as a single-region session. It now reads
-  `us-west-1 +2`, the home region and two others. A fan-out that leaves
-  the home region out (`:region NAME` while fanned out keeps the old
-  list) shows the count, `2 regions`, rather than name a region whose
-  envs are not listed.
+  `us-west-1 +2`, the home region and two others.
+- **`:region NAME` while fanned out lists the new home region.** The
+  switch kept the fan-out list derived from the old home region, so the
+  header could name a region whose envs were not listed. Any context
+  switch under `:region all` now derives the list again, as
+  `extra_regions` plus the new home region; a switch outside a fan-out
+  stays single-region.
 - **`:region all` with no `extra_regions` says there is nothing to
   add.** It reported "fanning across 1 regions" and listed exactly what
   single-region mode did; the status line now names the home region and
