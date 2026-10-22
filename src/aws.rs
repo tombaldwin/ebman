@@ -208,7 +208,17 @@ impl AwsClient {
     }
 
     /// Build the SDK client without making any network calls.
+    ///
+    /// Under `cfg(test)` it never reads `~/.aws` and builds no
+    /// credentials, so a request through it fails before it is sent.
+    /// Tests reach this through spawned work (a `:region all` refresh
+    /// builds one client per region) and nothing stopped that task
+    /// running a real `ListEnvironments` with the developer's
+    /// credentials whenever the test happened to yield.
     pub(crate) async fn with(profile: Option<String>, region: Option<String>) -> Result<Self> {
+        if cfg!(test) {
+            return Ok(Self::offline(profile, region));
+        }
         let mut builder = aws_config::defaults(aws_config::BehaviorVersion::latest());
         if let Some(p) = profile.clone() {
             builder = builder.profile_name(p);
@@ -385,6 +395,16 @@ impl AwsClient {
             S3Client::new(&cfg),
             Ec2Client::new(&cfg),
         )
+    }
+
+    /// `with` under `cfg(test)`: the stub, named for what was asked.
+    fn offline(profile: Option<String>, region: Option<String>) -> Self {
+        let mut client = Self::stub();
+        if let Some(r) = region {
+            client.context.region = r;
+        }
+        client.context.profile = profile;
+        client
     }
 
     /// Build a fully-mocked `AwsClient` for unit tests. The caller supplies

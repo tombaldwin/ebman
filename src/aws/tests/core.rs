@@ -1135,3 +1135,19 @@ fn seeding_a_lazy_client_wins_over_get_or_init() {
     let stored = client.iam.get().unwrap() as *const _;
     assert_eq!(got, stored);
 }
+
+#[tokio::test]
+async fn with_under_test_reads_no_aws_config_and_holds_no_credentials() {
+    // A spawned `:region all` refresh reaches `AwsClient::with` from a
+    // test. Built from `~/.aws` it would carry the developer's
+    // credentials, and a yield in the test would let it call AWS.
+    let client = crate::aws::AwsClient::with(Some("poly-dev".into()), Some("eu-west-2".into()))
+        .await
+        .expect("offline client");
+    assert!(
+        client.config.credentials_provider().is_none(),
+        "a test client must hold no credentials"
+    );
+    assert_eq!(client.context.region, "eu-west-2");
+    assert_eq!(client.context.profile.as_deref(), Some("poly-dev"));
+}
