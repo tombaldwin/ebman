@@ -4853,3 +4853,90 @@ review.
   Metrics tab onto `Fetch<Vec<MetricSeries>>` with a ticket is the
   larger half. *App tab re-review, 2026-10-21.*
   **Done 2026-10-21:** the Metrics tab settles through `metrics_request: Fetch<()>` and discovery through a `Fetch<()>` per env (its key is now `EnvKey`); both drop an older answer by ticket.
+
+## Write routing by region, finished 2026-10-22
+
+- [x] **Writes carry the region they were aimed at** *(found 2026-10-21, done 2026-10-22)*
+
+  Every per-env client and audit line resolves its environment by
+  NAME: `client_for_env` → `region_for_name`, first match in the
+  fleet (about 90 call sites, every write and the unattended
+  auto-rollback among them). Under `:region all` with `api-prod` in
+  two regions, a write aimed at one could land on the other. Since
+  2026-10-21 the write gate refuses a name the fleet holds in more than
+  one region (`Refusal::AmbiguousEnv`), which is safe but means those
+  envs cannot be written without `:region` narrowing. The fix is for
+  the target to be an `EnvKey { region, name }` from the moment the
+  operator picks the row: confirm modals, pending dispatch, the
+  watchdogs and deploy snapshots, `multi_selected`, the Detail and DLQ
+  targets, and `ActionResult`. Reads by name (`:why`, `:alarms`,
+  Detail's own fetches use the snapshot already) have the same shape
+  and can show the other region's data. `env_regions` (name → last
+  region seen, the fallback for a write whose row left the table) moves
+  in the same pass; the fleet-view caches already moved to `EnvKey`.
+  **Plan (2026-10-21, seven slices):** 1 results carry the dispatch
+  region (done, 3c1db24); 2 the confirm modal routes by its recorded
+  region (done, c7498b6); 3 batch writes by `EnvKey` (done, 1d116a3);
+  4 the deploy lifecycle by key (done, 84125e3: snapshots, both
+  watchdog maps, `AutoRollbackCheck`, both disarm passes, `state.toml`
+  as `REGION/NAME` with name-only entries dropped); 5 DLQ and undo by
+  key (done, 0f756a6: the DLQ viewer and `:why` record their region,
+  undo entries carry an `EnvKey`); 6 `NAME@REGION` (done, 1185bf6:
+  `:promote-env`, `:diff`, `:config-diff` resolve through
+  `env_ref::resolve_env_ref`; `:swap` and its picker stay in the row's
+  region; `:why` and `:ssm-run` take their row. `:rds-detach`'s name is
+  a confirmation of the selected row and `:rollout --env` names its
+  regions, so neither changed; there is no env-name completion); 7 remove
+  `client_for_env` / `region_for_name` / `env_regions` and both
+  stopgaps, with a guard. Safety pins stay name-keyed.
+  Done so far: the ambiguous-name refusal counts every source the router
+  uses, a rollout (which names its regions) is exempt from it, and a
+  confirm modal records its row's region and refuses a dispatch that
+  resolves elsewhere. Still by name: ~17 sites that hold a row and
+  rebuild its client with `client_for_env(&env.name)` (slice 7 deletes
+  that function, so the compiler lists them), the form submit path, `spawn_events`, `:alarms`, and the confirm modal's lint fetch (`spawn_confirm_lint`
+  fetches by name and caches by `EnvKey`); and `costs` and
+  `stale_platforms` are keyed by name. Slices 2-5 route by key but are
+  not yet observable against same-named twins: the ambiguous-name
+  refusal stops those writes first, so their guards against reverting
+  to by-name routing land with slice 7. Anything that
+  stores an `EnvKey` outside `ContextCaches` must be cleared in
+  `apply_rebuild` itself: the key carries no account.
+  **Slice 7 done (00c8428):** `client_for_env`, `region_for_name`,
+  `region_for_app` / `client_for_app` and `env_regions` are gone, and
+  so are both stopgaps (`AmbiguousEnv`, `RegionMoved`; neither shipped).
+  The write gate takes an `EnvKey`. The twin tests in
+  `app/tests/safety.rs` write to a name listed in two regions and check
+  where it went (every single-env write, the modal dispatch, every
+  batch, a pinned refusal, undo, a form, `:alarms`, the events panel,
+  the log tail). Found on the way and fixed separately: the
+  red-transition line's empty region (8561ef5) and `:drift` / `:lint`
+  typed names (d9cab3b), and palette jumps by name (4410c73). Left open as their own items: the stale-platform
+  tint and the restored cursor, both by name. `costs` stays by name:
+  Cost Explorer reports by the env-name tag.
+
+From `PLAN.md`, retired with it:
+
+0. **The 2026-10-21 quality review** *(ruled "do all of them"; done)*
+
+   Three agents (bugs, architecture, engineering process) reviewed
+   v0.45.2..HEAD, and re-reviewed the fixes. Everything they found is
+   fixed in its own commit with mutation-checked tests, or is a BACKLOG
+   item with its reason: the rest of the CLI behind a testable body
+   (needs a client factory, and lint waits on item 2's ruling), the
+   Detail view's five remaining loading flags, `PolledByEnv` as one map
+   of states.
+
+   **Needs the maintainer:** writes still route by env NAME
+   (`client_for_env` → `region_for_name`). Under `:region all` a name in
+   two regions is refused for writes (rollouts excepted, since they name
+   their regions), and a confirmed modal refuses a dispatch that
+   resolves elsewhere; the full fix (an `EnvKey` from the row on every
+   write path) is the BACKLOG item "Writes carry the region they were
+   aimed at", and needs a ruling on what a typed `:restart NAME` does
+   when the name is ambiguous.
+
+   **Ruled 2026-10-21:** the write-routing decision went to a separate
+   agent, whose seven-slice plan Tom approved; a typed name resolves
+   only when unique, `NAME@REGION` picks one. All seven slices landed by
+   2026-10-22 (entry above).

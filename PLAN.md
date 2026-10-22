@@ -106,25 +106,6 @@ now head the list.*
 
 ### Now
 
-0. **The 2026-10-21 quality review** *(ruled "do all of them"; done, one decision left)*
-
-   Three agents (bugs, architecture, engineering process) reviewed
-   v0.45.2..HEAD, and re-reviewed the fixes. Everything they found is
-   fixed in its own commit with mutation-checked tests, or is a BACKLOG
-   item with its reason: the rest of the CLI behind a testable body
-   (needs a client factory, and lint waits on item 2's ruling), the
-   Detail view's five remaining loading flags, `PolledByEnv` as one map
-   of states.
-
-   **Needs the maintainer:** writes still route by env NAME
-   (`client_for_env` → `region_for_name`). Under `:region all` a name in
-   two regions is refused for writes (rollouts excepted, since they name
-   their regions), and a confirmed modal refuses a dispatch that
-   resolves elsewhere; the full fix (an `EnvKey` from the row on every
-   write path) is the BACKLOG item "Writes carry the region they were
-   aimed at", and needs a ruling on what a typed `:restart NAME` does
-   when the name is ambiguous.
-
 1. **No `stage=asked` line has ever landed in the real audit log** *(measurement — needs Tom at the keyboard, ~5 min)*
 
    Found on 2026-09-25 while setting up the live typed-confirm

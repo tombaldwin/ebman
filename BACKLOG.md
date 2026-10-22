@@ -61,52 +61,20 @@ Tier definitions:
   rather than in more `Fetch<()>`s. *Architecture re-review,
   2026-10-21.*
 
-- [ ] **Writes carry the region they were aimed at** *(architecture — needs a design note; found 2026-10-21)*
+- [ ] **The stale-platform tint is keyed by env name.**
+  `ViewState::stale_platforms` is a `HashMap<String, String>`, so under
+  `:region all` two same-named envs on different platform versions share
+  one answer: the newer twin can be tinted stale, or the stale one not.
+  Display only (no write reads it). Key it by `EnvKey` like the other
+  fleet-view caches. *Write-routing slice 7, 2026-10-22.*
 
-  Every per-env client and audit line resolves its environment by
-  NAME: `client_for_env` → `region_for_name`, first match in the
-  fleet (about 90 call sites, every write and the unattended
-  auto-rollback among them). Under `:region all` with `api-prod` in
-  two regions, a write aimed at one could land on the other. Since
-  2026-10-21 the write gate refuses a name the fleet holds in more than
-  one region (`Refusal::AmbiguousEnv`), which is safe but means those
-  envs cannot be written without `:region` narrowing. The fix is for
-  the target to be an `EnvKey { region, name }` from the moment the
-  operator picks the row: confirm modals, pending dispatch, the
-  watchdogs and deploy snapshots, `multi_selected`, the Detail and DLQ
-  targets, and `ActionResult`. Reads by name (`:why`, `:alarms`,
-  Detail's own fetches use the snapshot already) have the same shape
-  and can show the other region's data. `env_regions` (name → last
-  region seen, the fallback for a write whose row left the table) moves
-  in the same pass; the fleet-view caches already moved to `EnvKey`.
-  **Plan (2026-10-21, seven slices):** 1 results carry the dispatch
-  region (done, 3c1db24); 2 the confirm modal routes by its recorded
-  region (done, c7498b6); 3 batch writes by `EnvKey` (done, 1d116a3);
-  4 the deploy lifecycle by key (done, 84125e3: snapshots, both
-  watchdog maps, `AutoRollbackCheck`, both disarm passes, `state.toml`
-  as `REGION/NAME` with name-only entries dropped); 5 DLQ and undo by
-  key (done, 0f756a6: the DLQ viewer and `:why` record their region,
-  undo entries carry an `EnvKey`); 6 `NAME@REGION` (done, 1185bf6:
-  `:promote-env`, `:diff`, `:config-diff` resolve through
-  `env_ref::resolve_env_ref`; `:swap` and its picker stay in the row's
-  region; `:why` and `:ssm-run` take their row. `:rds-detach`'s name is
-  a confirmation of the selected row and `:rollout --env` names its
-  regions, so neither changed; there is no env-name completion); 7 remove
-  `client_for_env` / `region_for_name` / `env_regions` and both
-  stopgaps, with a guard. Safety pins stay name-keyed.
-  Done so far: the ambiguous-name refusal counts every source the router
-  uses, a rollout (which names its regions) is exempt from it, and a
-  confirm modal records its row's region and refuses a dispatch that
-  resolves elsewhere. Still by name: ~17 sites that hold a row and
-  rebuild its client with `client_for_env(&env.name)` (slice 7 deletes
-  that function, so the compiler lists them), the form submit path, `spawn_events`, `:alarms`, and the confirm modal's lint fetch (`spawn_confirm_lint`
-  fetches by name and caches by `EnvKey`); and `costs` and
-  `stale_platforms` are keyed by name. Slices 2-5 route by key but are
-  not yet observable against same-named twins: the ambiguous-name
-  refusal stops those writes first, so their guards against reverting
-  to by-name routing land with slice 7. Anything that
-  stores an `EnvKey` outside `ContextCaches` must be cleared in
-  `apply_rebuild` itself: the key carries no account.
+- [ ] **The restored cursor is by env name.** `state.toml`'s
+  `selected_env` is a name, and `pending_select` restores the cursor to
+  the first row with it, so a session that ended on the eu-west-2 twin
+  reopens on the home one. A cursor, not a write (every write takes the
+  row it is started on), but the operator can act on the wrong twin
+  without noticing. Persist `REGION/NAME` as the deploy snapshots do.
+  *Write-routing slice 7, 2026-10-22.*
 
 - [ ] **A test cannot reach AWS through a remote-region client.**
   Under `cfg(test)` nothing stops `RegionClient::resolve` for a region
