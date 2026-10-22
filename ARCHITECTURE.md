@@ -40,11 +40,12 @@ src/lib.rs       module list + the `Tui` / `LogReloadHandle` aliases
 ├── app/         the TUI: state, event loop, everything it can do
 ├── ui/          rendering only — takes &App, returns nothing. One
 │                module per surface (chrome / header / table / events /
-│                footer / detail / overlays / action / dlq / shell /
-│                help); `src/ui.rs` is the dispatcher and the map
+│                footer / detail / app_tab / overlays / action / dlq /
+│                shell / help); `src/ui.rs` is the dispatcher and the map
 ├── aws/         every AWS SDK call, behind plain Rust types — one
 │                module per service, so `aws/eb.rs` (the domain) is
-│                separable from the twelve generic ones
+│                separable from the twelve generic ones; `discover.rs`
+│                composes several of them for the App tab's discovery
 ├── cli/         headless subcommands (`ebman envs`, `action`, `ctl`, `mcp`)
 ├── lint/        the environment lint engine — `mod.rs` is the framework
 │                (Rule / Issue / LintContext / run_rules / baseline),
@@ -72,8 +73,9 @@ without constructing an `App`.
    maps each surface to the module that owns it; `draw` picks the
    layout for the current `Mode` and hands each region on.
 6. **[`src/aws.rs`](src/aws.rs)** — the AWS boundary. Its module doc maps
-   the per-service split; `aws/eb.rs` is the Elastic Beanstalk domain and
-   the other twelve are generic AWS surface.
+   the per-service split; `aws/eb.rs` is the Elastic Beanstalk domain,
+   twelve are generic AWS surface, and `aws/discover.rs` composes several
+   services for the App tab's discovery.
 
 ## How a keystroke becomes an AWS call
 

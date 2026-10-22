@@ -65,7 +65,8 @@ Built for operators who triage EB envs daily and don't want the AWS console roun
 ## Highlights
 
 - **Live env table** with sort / filter / group-by-app / health sparkline / severity tints / mouse support.
-- **Per-env drill-down** — tabs for Health / Events / Instances / Metrics / Queue / Logs / Config.
+- **Per-env drill-down** — tabs for Health / Events / Instances / Metrics / Queue / Logs / Config / App.
+- **Your own metrics** — the App tab shows an env's CloudWatch metrics, RDS / ElastiCache rows and top log errors from `app.ENV.*` in `config.toml`; with no config it shows what discovery found, and `e` edits the config in a form, no restart needed.
 - **Red-env triage** — `:why` opens a one-screen diagnostic: recent events + alarms + instance health + last deploys, with a DLQ peek for Worker envs.
 - **Incident mode** — `:incident START "headline"` freezes deploys fleet-wide, pins a header banner with a running clock, and audit-logs the window; `:event-tail` streams EB events across every env in one overlay; `ebman audit replay <line-id>` re-runs an audited action for post-incident review.
 - **Honest health** — envs with alarms in ALARM, DLQs with messages, or stale platforms surface on the row itself, not behind a tab.
@@ -73,7 +74,7 @@ Built for operators who triage EB envs daily and don't want the AWS console roun
 - **Daily-driver writes** — env vars, tags, deploys (label / local zip / S3, with `--preview`), saved configs, CW alarms CRUD, ALB scheme, instance type, capacity, deployment policy, plus a generic `:set-option` escape hatch.
 - **Worker / SQS** — DLQ viewer with resend, typed-name purge, bulk delete, peek-and-tail.
 - **SSM** — `:ssh i-abc` opens an embedded session; `:ssm-run "<cmd>"` fans a shell command across the env's instances.
-- **Multi-account / multi-region** — `:region all` parallel queries, `:account NAME` via `sts:AssumeRole`, `:find-env` / `:org-health` walk every `~/.aws` profile + configured account.
+- **Multi-account / multi-region** — `:region all` parallel queries (every read and write goes to the row's own region; `NAME@REGION` picks one of two same-named envs), `:account NAME` via `sts:AssumeRole`, `:find-env` / `:org-health` walk every `~/.aws` profile + configured account.
 - **Bulk ops** — `space` multi-selects, then `:batch-*` fans out in parallel with audit + pending-pill rows.
 - **Safety + audit** — `--read-only` flag, typed-name confirms, per-env / per-account read-only pins, full audit log at `~/.cache/ebman/audit.log`.
 - **Headless / scriptable** — `--control-socket PATH`, `ebman envs --json`, `ebman action rebuild --env NAME`, `ebman ctl screen / state / cmd <:cmd>`.
