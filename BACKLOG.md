@@ -61,6 +61,48 @@ Tier definitions:
   rather than in more `Fetch<()>`s. *Architecture re-review,
   2026-10-21.*
 
+- [ ] **The App tab's API is keyed by name.** `discovery_key(&str)`,
+  `app_tab_source`, `discovered_for`, `discovery_running`,
+  `spawn_app_discovery(String)` and `spawn_detail_app(String)` take a
+  name and rebuild the region (Detail's snapshot, else `env_by_ref`, else
+  home). Every caller asks about Detail's env, so none misroutes today,
+  but the next caller that isn't Detail's would. Take `&EnvKey` with an
+  `App::detail_key()`; `cfg.app_tabs.envs` stays by name. ~2 h. *0.46
+  release review (architecture, Important); deferred for a ruling.*
+
+- [ ] **The pending-actions panel is keyed by name.** `complete_pending`
+  matches label and target name, so the same action in flight on two
+  same-named envs can stamp the wrong row ✓. Display only. *0.46 release
+  review.*
+
+- [ ] **Region and key plumbing, tidy-ups.** From the 0.46 architecture
+  review, none a defect:
+  - the "row's region, empty means home" rule is written three times
+    (`App::region_for`, `EnvKey::of`, `env_ref`'s `region_of`): one helper
+    beside `EnvKey`;
+  - `NAME@REGION` is parsed twice (`env_ref`, `cmd_swap`): expose
+    `split_env_ref`;
+  - `EnvKey` lives in `polled.rs` but is the crate-wide target identity:
+    move it to `env_ref.rs`;
+  - Detail's key is recomputed at ~17 sites: `App::detail_key()`;
+  - four region-wide writes use `EnvKey::new(region, "")`: a named
+    constructor;
+  - `AppTabDiscovered`, `LogTailOpened`, `DeleteAppVersion` carry
+    `(env_name, region)` pairs where an `EnvKey` would do.
+
+- [ ] **Audit-line boilerplate.** ~30 `append_action_dispatched` and ~11
+  `append_action_completed` sites pass account / profile / region by
+  hand, and the profile is already inconsistent: `shell_session.rs`
+  honours `override_profile`, the rest don't. `App::audit_dispatched` /
+  `audit_completed` wrappers that pick it one way. ~1 h. *0.46 release
+  review.*
+
+- [ ] **`app_tab.rs` holds four concerns** (config parsing, CloudWatch
+  queries, series assembly, top errors, ~1,000 production lines): split
+  into `app_tab/{config,query,series,top_errors}.rs`; `app_tab_form.rs`
+  also hosts discovery orchestration. Pure moves, 1–2 h. *0.46 release
+  review.*
+
 - [ ] **The stale-platform tint is keyed by env name.**
   `ViewState::stale_platforms` is a `HashMap<String, String>`, so under
   `:region all` two same-named envs on different platform versions share

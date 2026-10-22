@@ -85,6 +85,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- **A command typed in Detail acts on the env Detail shows.** Detail
+  can outlive its row's place in the table: when a refresh dropped the
+  env (its region failed a fan-out tick, or it terminated), the cursor
+  landed on another row, and about thirty commands and the Config tab's
+  edits wrote to that env, checked its pins and audited it. They act on
+  Detail's env. `:env-edit` likewise applies the edit to the env whose
+  vars it opened, not the one on screen when the editor closes.
+- **SSM sessions open in their env's region.** `aws ssm start-session`
+  was always given the home region, so an instance of an env in another
+  region was not found, and the audit line named the wrong region.
+- **Detail and the confirm modal drop another region's answers.** Close
+  Detail on `api@us-east-1`, open it on `api@eu-west-1`, and the first
+  env's late events, instances, tags and logs filled the second's view;
+  the confirm modal's preview, dry run and lint had the same gap.
+- **A write's completion is audited across a context switch.** Switching
+  `:region`, `:profile` or `:account` while a write was in flight left
+  its audit line `dispatched` with no completion.
+- **A write stopped at dispatch by a pin set after the confirm** is now
+  audited as refused, like every other refusal.
+- **The apps action menu acts on the envs it listed when it opened**,
+  not on whatever envs of that name exist when it dispatches.
+- **The `:why` title reads the health of the env it opened on**, not of a
+  same-named env in another region.
+- **The App tab editor saves a metric whose name contains `;`.** It
+  refused to save that env's config at all.
+- **App-tab discovery does not report a failure for an env it cannot
+  place** (no row and no Detail snapshot); it does not start.
 - **Commands that type an env name pick the right region.** Under
   `:region all`, `:promote-env`, `:diff`, `:config-diff`, `:drift` and
   `:lint` took the first row with that name, so with `api-prod` in two
