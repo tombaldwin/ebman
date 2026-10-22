@@ -514,3 +514,43 @@ fn delta_toast_key_requires_an_alphabetic_bucket() {
     assert_eq!(k("▲Red"), None, "no count");
     assert_eq!(k("Red 2"), None, "no arrow");
 }
+
+#[test]
+fn app_tab_entries_split_only_where_a_new_entry_starts() {
+    use crate::app::app_tab_form::split_entries;
+    assert_eq!(
+        split_entries("rps=Requests|Sum; errs=Err;5xx|Sum|Count;  p99=Latency|p99"),
+        vec![
+            "rps=Requests|Sum",
+            "errs=Err;5xx|Sum|Count",
+            "p99=Latency|p99"
+        ]
+    );
+    assert_eq!(split_entries(""), Vec::<String>::new());
+    assert_eq!(split_entries(" ; ;"), Vec::<String>::new());
+    // A piece with no label is part of the entry before it, or, first,
+    // an entry of its own that the save then reports.
+    assert_eq!(split_entries("junk; a=b"), vec!["junk", "a=b"]);
+    // After the name's `|` a `;` ends the entry: a statistic or unit
+    // never holds one, so `junk` is reported as the bad entry it is.
+    assert_eq!(
+        split_entries("u=users|Avg; junk"),
+        vec!["u=users|Avg", "junk"]
+    );
+}
+
+#[test]
+fn a_metric_name_with_a_semicolon_round_trips_through_the_editor() {
+    let cfg = crate::config::parse(
+        "app.api.namespace = \"Shop\"\napp.api.metric.errs = \"Err;5xx|Sum\"\n",
+    );
+    let spec = cfg.app_tabs.envs.get("api").expect("app tab");
+    let fields = crate::app::app_tab_form::fields(Some(spec));
+    let lines = crate::app::app_tab_form::lines_from_fields("api", &fields).expect("saves");
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("metric.errs") && l.contains("Err;5xx|Sum")),
+        "{lines:?}"
+    );
+}

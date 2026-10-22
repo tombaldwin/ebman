@@ -18,6 +18,44 @@ const NO_LOG_GROUP: &str = "(none)";
 /// Separates the entries of the metrics and thresholds fields.
 const ENTRY_SEP: char = ';';
 
+/// The `label=value` entries of a metrics or thresholds field.
+///
+/// Split on `;` except inside a metric name: where the entry so far has
+/// no `|` yet and what follows does not start another entry (a label and
+/// `=`). A CloudWatch metric name may itself contain `;`, and splitting
+/// there refused to save the env's App tab config at all.
+pub(crate) fn split_entries(field: &str) -> Vec<String> {
+    let starts_entry = |piece: &str| {
+        piece
+            .trim_start()
+            .split_once('=')
+            .is_some_and(|(label, _)| {
+                let label = label.trim();
+                !label.is_empty() && !label.contains(|c: char| c == '|' || c.is_whitespace())
+            })
+    };
+    let mut out: Vec<String> = Vec::new();
+    for piece in field.split(ENTRY_SEP) {
+        // An empty entry (`a=b; ; c=d`, a trailing `;`) is nothing.
+        if piece.trim().is_empty() {
+            continue;
+        }
+        match out.last_mut() {
+            // Only into the metric name, which is everything before the
+            // first `|`: a statistic or unit never holds a `;`.
+            Some(last) if !starts_entry(piece) && !last.contains('|') => {
+                last.push(ENTRY_SEP);
+                last.push_str(piece);
+            }
+            _ => out.push(piece.to_string()),
+        }
+    }
+    out.into_iter()
+        .map(|e| e.trim().to_string())
+        .filter(|e| !e.is_empty())
+        .collect()
+}
+
 /// The form's fields, filled from `spec` (the env's config, if any).
 pub(crate) fn fields(spec: Option<&AppTabSpec>) -> Vec<FormField> {
     let spec = spec.cloned().unwrap_or_default();
@@ -299,11 +337,8 @@ pub(crate) fn lines_from_fields(
     line("instance_dimension", &value("instance_dimension"));
     let mut entry_errors = Vec::new();
     for (family, key) in [("metric", "metrics"), ("threshold", "thresholds")] {
-        for entry in value(key)
-            .split(ENTRY_SEP)
-            .map(str::trim)
-            .filter(|e| !e.is_empty())
-        {
+        for entry in split_entries(&value(key)) {
+            let entry = entry.as_str();
             match entry.split_once('=') {
                 Some((label, v)) => line(&format!("{family}.{}", label.trim()), v.trim()),
                 None => entry_errors.push(format!("{key}: {entry:?} is not label=value")),
