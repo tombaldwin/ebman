@@ -1926,3 +1926,25 @@ async fn swap_stays_within_the_selected_rows_region() {
     let err = app.error_message.clone().unwrap_or_default();
     assert!(err.contains("no swap candidates"), "{err}");
 }
+
+#[tokio::test]
+async fn the_palette_jumps_to_the_twin_it_lists() {
+    // By name, picking the eu-west-2 `api-prod` jumped to whichever
+    // `api-prod` row came first.
+    for (region, want) in [("eu-west-2", Some("eu-west-2")), ("us-east-1", None)] {
+        let mut app = same_named_in_two_regions();
+        app.open_palette();
+        let pos = app
+            .palette_filtered
+            .iter()
+            .position(|&i| {
+                let item = &app.palette_items[i];
+                item.kind_tag == "env" && item.detail.contains(region)
+            })
+            .expect("a palette item per twin");
+        app.palette_state.select(Some(pos));
+        app.palette_execute();
+        let selected = app.selected_env().expect("a row");
+        assert_eq!(selected.region.as_deref(), want, "picked {region}");
+    }
+}

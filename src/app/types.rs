@@ -534,7 +534,8 @@ pub(crate) enum PaletteAction {
     /// Switch to command mode with this prefix typed.
     PrefillCommand(String),
     /// Jump table cursor to this env.
-    JumpEnv(String),
+    /// The env's row by region and name: twins in two regions are two items.
+    JumpEnv(super::EnvKey),
     /// Run `:view NAME`.
     LoadView(String),
 }

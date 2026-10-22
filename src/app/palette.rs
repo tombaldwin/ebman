@@ -177,9 +177,10 @@ impl App {
                 self.command_input = prefix.into();
                 self.mode = Mode::Command;
             }
-            PaletteAction::JumpEnv(name) => {
+            PaletteAction::JumpEnv(key) => {
+                let name = key.name.clone();
                 if let Some(pos) = self.view.display().iter().position(|r| match r {
-                    DisplayRow::Env(i) => self.env_at(*i).is_some_and(|e| e.name == name),
+                    DisplayRow::Env(i) => self.env_at(*i).is_some_and(|e| self.env_key(e) == key),
                     DisplayRow::Separator => false,
                 }) {
                     self.table_state.select(Some(pos));

@@ -2893,11 +2893,15 @@ fn build_palette_items(app: &App) -> Vec<PaletteItem> {
             .get(&e.name)
             .map(|a| format!("  ({a})"))
             .unwrap_or_default();
+        let key = app.env_key(e);
         out.push(PaletteItem {
             label: e.name.clone(),
-            detail: format!("env in {}{alias}  ·  {}", e.application, e.health),
+            detail: format!(
+                "env in {} · {}{alias}  ·  {}",
+                e.application, key.region, e.health
+            ),
             kind_tag: "env",
-            action: PaletteAction::JumpEnv(e.name.clone()),
+            action: PaletteAction::JumpEnv(key),
         });
     }
 
