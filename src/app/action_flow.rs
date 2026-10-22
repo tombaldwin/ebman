@@ -938,16 +938,15 @@ impl App {
             ));
             return;
         }
-        // Per-env / per-account read-only locks short-circuit the
-        // dispatch before any AWS call. `read_only_reason` returns
-        // the specific cause (global toggle vs. config-pinned env vs.
-        // pinned account) so the toast tells the operator exactly
-        // which knob is keeping them safe.
-        if self.is_read_only_for(&modal.target_env) {
-            let reason = self
-                .read_only_reason(&modal.target_env)
-                .unwrap_or_else(|| "read-only mode".into());
-            self.error_message = Some(format!("{reason} — {} disabled", modal.action.label()));
+        // Per-env / per-account read-only locks, a freeze or an incident
+        // set since the confirm short-circuit the dispatch before any AWS
+        // call, and are audited like every other refusal: a write stopped
+        // here left no trace.
+        if self.deny_write_as(
+            &modal.target(),
+            modal.action.label(),
+            &modal.action.audit_label(),
+        ) {
             return;
         }
         // For Deploy actions: snapshot the env's pre-deploy version

@@ -2032,6 +2032,32 @@ async fn env_edit_writes_to_the_env_its_vars_came_from() {
 }
 
 #[tokio::test]
+async fn a_pin_set_after_the_confirm_is_audited_when_it_stops_the_dispatch() {
+    let mut app = app_with_a_name_in_two_regions();
+    app.execute_command("restart");
+    let Some(ActionFlow::Confirm(modal)) = app.action_flow.take() else {
+        panic!("no confirm modal: {:?}", app.error_message);
+    };
+    // Pinned during the undo window.
+    app.cfg.safety_envs.insert(twin(), true);
+    let before = audit_log();
+    app.spawn_action(modal);
+    let after = audit_log();
+    let lines: Vec<&str> = after
+        .strip_prefix(&before)
+        .expect("append-only")
+        .lines()
+        .filter(|l| l.contains(&twin()))
+        .collect();
+    assert_eq!(lines.len(), 1, "{lines:#?}");
+    assert!(
+        lines[0].contains("stage=refused") && lines[0].contains("region=eu-west-2"),
+        "{}",
+        lines[0]
+    );
+}
+
+#[tokio::test]
 async fn a_confirmed_action_on_a_name_in_two_regions_is_dispatched_to_its_row() {
     for cmd in ["restart", "rebuild"] {
         let mut app = app_with_a_name_in_two_regions();
