@@ -1853,13 +1853,15 @@ async fn a_refusal_is_audited_under_the_label_its_dispatch_uses() {
 /// A name used only here, so the shared test audit log's lines for it
 /// are this file's.
 const TWIN: &str = "twin-route-probe";
+/// Its application, named so its lines are found the same way.
+const TWIN_APP: &str = "twin-route-probe-app";
 
 /// `TWIN` at home and in eu-west-2, with the eu-west-2 row selected.
 fn app_with_a_name_in_two_regions() -> App {
     let mut app = test_app();
-    let mut home = mk_env(TWIN, "poly", "Web", "Green");
+    let mut home = mk_env(TWIN, TWIN_APP, "Web", "Green");
     home.id = Some("e-home".into());
-    let mut away = mk_env(TWIN, "poly", "Web", "Green");
+    let mut away = mk_env(TWIN, TWIN_APP, "Web", "Green");
     away.region = Some("eu-west-2".into());
     // `:config-save` needs the env's id.
     away.id = Some("e-away".into());
@@ -1917,8 +1919,12 @@ fn where_it_went(app: &App, before: &str) -> Vec<String> {
 
 #[tokio::test]
 async fn every_write_to_a_name_in_two_regions_goes_to_the_selected_rows_region() {
-    for cmd in WRITE_COMMANDS {
-        let cmd = cmd.replace("api-prod", TWIN);
+    let cmds = WRITE_COMMANDS
+        .iter()
+        .chain(APPLICATION_SCOPED_WRITES)
+        .chain(&["delete-version build-1"]);
+    for cmd in cmds {
+        let cmd = cmd.replace("api-prod", TWIN).replace("poly", TWIN_APP);
         let mut app = app_with_a_name_in_two_regions();
         let before = audit_log();
         app.execute_command(&cmd);
@@ -1983,6 +1989,106 @@ async fn a_batch_over_one_of_two_same_named_envs_writes_only_that_one() {
             ":{cmd} reached the twin: {went:?}"
         );
     }
+}
+
+#[tokio::test]
+async fn undoing_a_write_to_one_of_two_same_named_envs_is_audited_in_its_region() {
+    let mut app = app_with_a_name_in_two_regions();
+    app.execute_command("restart");
+    let Some(ActionFlow::Confirm(modal)) = app.action_flow.take() else {
+        panic!("no confirm modal: {:?}", app.error_message);
+    };
+    app.queue_action_dispatch(modal);
+    let before = audit_log();
+    app.cancel_pending_dispatch();
+    assert_eq!(twin_audit_regions(&before), vec!["eu-west-2".to_string()]);
+}
+
+#[tokio::test]
+async fn a_form_on_one_of_two_same_named_envs_submits_to_its_region() {
+    let mut app = app_with_a_name_in_two_regions();
+    app.execute_command("capacity");
+    let Some(form) = app.form.as_mut() else {
+        panic!("no form: {:?}", app.error_message);
+    };
+    assert_eq!(form.region, "eu-west-2");
+    form.state = crate::form::FormState::Ready;
+    form.fields[0].value = "2".into();
+    form.fields[1].value = "7".into();
+    let before = audit_log();
+    press(&mut app, KeyCode::Char('s'), KeyModifiers::CONTROL);
+    let went = twin_audit_regions(&before);
+    assert!(!went.is_empty(), "not submitted: {:?}", app.error_message);
+    assert!(went.iter().all(|r| r == "eu-west-2"), "{went:?}");
+}
+
+#[tokio::test]
+async fn alarms_for_one_of_two_same_named_envs_ignore_the_others_answer() {
+    let mut app = app_with_a_name_in_two_regions();
+    app.execute_command("alarms");
+    let eu = crate::app::EnvKey::new("eu-west-2", TWIN);
+    assert!(
+        matches!(
+            app.current_overlay.as_ref(),
+            Some(crate::app::Overlay::Alarms { env, .. }) if *env == eu
+        ),
+        "{:?}",
+        app.current_overlay.is_some()
+    );
+    // A late answer for the home twin does not fill the eu overlay.
+    app.handle_msg(AppMsg::Alarms {
+        gen: app.generation,
+        env: crate::app::EnvKey::new("us-east-1", TWIN),
+        result: Err("CANARY-HOME-TWIN".into()),
+    });
+    let Some(crate::app::Overlay::Alarms { body, .. }) = app.current_overlay.as_ref() else {
+        panic!("overlay gone");
+    };
+    assert!(!body.contains("CANARY-HOME-TWIN"), "{body}");
+}
+
+#[tokio::test]
+async fn the_events_panel_refetches_when_the_cursor_moves_to_a_same_named_env() {
+    let mut app = app_with_a_name_in_two_regions();
+    app.event_panel.visible = true;
+    app.spawn_events();
+    let eu = crate::app::EnvKey::new("eu-west-2", TWIN);
+    assert_eq!(app.event_panel.for_env, Some(eu.clone()));
+    let other = app
+        .view
+        .filtered()
+        .iter()
+        .position(|&i| app.environments[i].region.is_none())
+        .expect("home row");
+    let eu_row = app.table_state.selected();
+    app.table_state.select(Some(other));
+    app.refresh_events_if_selection_changed();
+    assert_eq!(
+        app.event_panel.for_env,
+        Some(crate::app::EnvKey::new("us-east-1", TWIN))
+    );
+    // And back: a change detected in one direction only is half of it.
+    app.table_state.select(eu_row);
+    app.refresh_events_if_selection_changed();
+    assert_eq!(app.event_panel.for_env, Some(eu));
+}
+
+#[tokio::test]
+async fn a_log_tail_keeps_the_region_it_was_opened_in() {
+    let mut app = test_app();
+    app.log_tail_session = 1;
+    app.handle_msg(AppMsg::LogTailOpened {
+        gen: app.generation,
+        session_id: 1,
+        env_name: TWIN.into(),
+        region: "eu-west-2".into(),
+        log_group: "/aws/elasticbeanstalk/x/var/log/web.stdout.log".into(),
+        since_ms: 0,
+    });
+    assert!(matches!(
+        app.current_overlay.as_ref(),
+        Some(crate::app::Overlay::LogTail { region, .. }) if region == "eu-west-2"
+    ));
 }
 
 #[tokio::test]
