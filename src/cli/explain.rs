@@ -105,22 +105,88 @@ pub async fn run(args: &[String]) -> Result<()> {
 
     let cfg = config::load();
     let settings = llm::Settings::from_config(&cfg);
-
     let mut disabled: Vec<String> = config::load_lint_disables();
     disabled.extend(project::load_lint_disables_from_cwd());
-    let rules = lint::default_rules(&disabled);
-
     let aws_client = aws::AwsClient::with(None, None).await?;
-    let envs = aws_client
-        .list_environments()
-        .await
-        .map_err(|e| color_eyre::eyre::eyre!("list_environments: {e}"))?;
-    let targets: Vec<&aws::Environment> = match env_name.as_deref() {
+    let settings = &settings;
+    let code = explain_body(
+        &ExplainRun {
+            issue_id,
+            env_name,
+            json,
+            dry_run,
+        },
+        &aws_client,
+        &disabled,
+        &cfg.required_tags,
+        // The cache, then the provider: the one part of this that leaves
+        // the machine, so a test passes its own.
+        |issue: lint::Issue, prompt: String| async move {
+            if !no_cache {
+                if let Some(cached) = llm::read_cache(&issue) {
+                    return Ok(cached);
+                }
+            }
+            let response = llm::dispatch(settings, &prompt)
+                .await
+                .map_err(|e| e.to_string())?;
+            if !no_cache {
+                llm::write_cache(&issue, &response);
+            }
+            Ok(response)
+        },
+        &mut std::io::stdout().lock(),
+        &mut std::io::stderr().lock(),
+    )
+    .await;
+    if code != 0 {
+        std::process::exit(code);
+    }
+    Ok(())
+}
+
+/// The flags the explanation itself reads.
+pub(crate) struct ExplainRun {
+    pub issue_id: String,
+    pub env_name: Option<String>,
+    pub json: bool,
+    pub dry_run: bool,
+}
+
+/// `ebman explain`'s whole behaviour against any client, any `ask`
+/// (the cache and the LLM: `issue, prompt -> response`) and any
+/// writers. Returns the exit code.
+pub(crate) async fn explain_body<A, Fut>(
+    o: &ExplainRun,
+    aws_client: &aws::AwsClient,
+    disabled: &[String],
+    required_tags: &[String],
+    ask: A,
+    out: &mut dyn std::io::Write,
+    err: &mut dyn std::io::Write,
+) -> i32
+where
+    A: Fn(lint::Issue, String) -> Fut,
+    Fut: std::future::Future<Output = std::result::Result<String, String>>,
+{
+    let issue_id = &o.issue_id;
+    let rules = lint::default_rules(disabled);
+    let envs = match aws_client.list_environments().await {
+        Ok(envs) => envs,
+        Err(e) => {
+            let _ = writeln!(err, "ebman explain: list_environments: {e}");
+            return 1;
+        }
+    };
+    let targets: Vec<&aws::Environment> = match o.env_name.as_deref() {
         Some(name) => match envs.iter().find(|e| e.name == name) {
             Some(env) => vec![env],
             None => {
-                eprintln!("ebman explain: env '{name}' not found in current context");
-                std::process::exit(2);
+                let _ = writeln!(
+                    err,
+                    "ebman explain: env '{name}' not found in current context"
+                );
+                return 2;
             }
         },
         None => envs.iter().collect(),
@@ -134,7 +200,6 @@ pub async fn run(args: &[String]) -> Result<()> {
     // never ran. The TUI's `:explain` had the same defect and was fixed
     // first; this sibling was missed by a guard that looked only inside
     // the functions it named.
-    let required_tags = cfg.required_tags.clone();
     // A failed listing is EBL008's missing input: the assembly reports
     // it per env, so `explain EBL008` exits 1, not the clean 3. It used
     // to warn here and carry on with an empty map — "no env has it".
@@ -147,12 +212,12 @@ pub async fn run(args: &[String]) -> Result<()> {
     let mut not_evaluated: Vec<String> = Vec::new();
     for env in targets {
         let inputs = match lint::inputs::fetch_env_lint_inputs(
-            &aws_client,
+            aws_client,
             env,
             &platforms,
             false,
-            &disabled,
-            &required_tags,
+            disabled,
+            required_tags,
         )
         .await
         {
@@ -162,15 +227,15 @@ pub async fn run(args: &[String]) -> Result<()> {
                 continue;
             }
         };
-        let issues = lint::inputs::run_rules_for_env(&rules, env, &inputs, &required_tags);
-        match lint::inputs::explain_verdict(&issue_id, &issues, &inputs.coverage_warnings) {
+        let issues = lint::inputs::run_rules_for_env(&rules, env, &inputs, required_tags);
+        match lint::inputs::explain_verdict(issue_id, &issues, &inputs.coverage_warnings) {
             lint::inputs::ExplainVerdict::Fires(issue) => matched.push(issue.clone()),
             lint::inputs::ExplainVerdict::NotEvaluated(why) => not_evaluated.push(why.to_string()),
             lint::inputs::ExplainVerdict::DoesNotFire => {}
         }
     }
     for why in &not_evaluated {
-        eprintln!("warning: {why}");
+        let _ = writeln!(err, "warning: {why}");
     }
 
     if matched.is_empty() {
@@ -178,21 +243,26 @@ pub async fn run(args: &[String]) -> Result<()> {
             // Not "no env has it": some could not be checked. Exit 1,
             // the code `lint` uses for a run that did not see
             // everything — never the clean-result 3.
-            eprintln!(
+            let _ = writeln!(
+                err,
                 "ebman explain: '{issue_id}' could not be evaluated for {} env(s) — this is not a clean result",
                 not_evaluated.len()
             );
-            std::process::exit(1);
+            return 1;
         }
-        eprintln!("ebman explain: no env in scope has issue '{issue_id}' — nothing to explain");
-        std::process::exit(3);
+        let _ = writeln!(
+            err,
+            "ebman explain: no env in scope has issue '{issue_id}' — nothing to explain"
+        );
+        return 3;
     }
 
     let mut json_blocks: Vec<String> = Vec::new();
     for issue in &matched {
         let prompt = llm::build_prompt(issue);
-        if dry_run {
-            if json {
+        let env_label = issue.env_name.as_deref().unwrap_or("-");
+        if o.dry_run {
+            if o.json {
                 json_blocks.push(format!(
                     "{{\"rule_id\":{},\"env\":{},\"dry_run\":true,\"prompt\":{}}}",
                     json_string(&issue.rule_id),
@@ -200,38 +270,19 @@ pub async fn run(args: &[String]) -> Result<()> {
                     json_string(&prompt),
                 ));
             } else {
-                println!(
-                    "── {} ({}) — DRY RUN ──",
-                    issue.rule_id,
-                    issue.env_name.as_deref().unwrap_or("-")
-                );
-                println!("{prompt}\n");
+                let _ = writeln!(out, "── {} ({env_label}) — DRY RUN ──", issue.rule_id);
+                let _ = writeln!(out, "{prompt}\n");
             }
             continue;
         }
-
-        let cached = if no_cache {
-            None
-        } else {
-            llm::read_cache(issue)
+        let response = match ask(issue.clone(), prompt).await {
+            Ok(r) => r,
+            Err(e) => {
+                let _ = writeln!(err, "ebman explain: {e}");
+                return 1;
+            }
         };
-        let response = match cached {
-            Some(c) => c,
-            None => match llm::dispatch(&settings, &prompt).await {
-                Ok(r) => {
-                    if !no_cache {
-                        llm::write_cache(issue, &r);
-                    }
-                    r
-                }
-                Err(e) => {
-                    eprintln!("ebman explain: {e}");
-                    std::process::exit(1);
-                }
-            },
-        };
-
-        if json {
+        if o.json {
             json_blocks.push(format!(
                 "{{\"rule_id\":{},\"env\":{},\"response\":{}}}",
                 json_string(&issue.rule_id),
@@ -239,23 +290,19 @@ pub async fn run(args: &[String]) -> Result<()> {
                 json_string(&response),
             ));
         } else {
-            println!(
-                "── {} ({}) ──",
-                issue.rule_id,
-                issue.env_name.as_deref().unwrap_or("-")
-            );
-            println!("{}\n", response.trim());
+            let _ = writeln!(out, "── {} ({env_label}) ──", issue.rule_id);
+            let _ = writeln!(out, "{}\n", response.trim());
         }
     }
 
-    if json {
+    if o.json {
         if json_blocks.len() == 1 {
-            println!("{}", json_blocks[0]);
+            let _ = writeln!(out, "{}", json_blocks[0]);
         } else {
-            println!("[{}]", json_blocks.join(","));
+            let _ = writeln!(out, "[{}]", json_blocks.join(","));
         }
     }
-    Ok(())
+    0
 }
 
 #[cfg(test)]
@@ -313,5 +360,155 @@ mod tests {
         // not an unknown-flag error (here it then fails the EBL check).
         let err = parse_explain_args(&argv(&["explain", "notaflag"])).unwrap_err();
         assert!(err.contains("must be an EBL### rule id"), "got: {err}");
+    }
+}
+
+#[cfg(test)]
+mod body {
+    use super::*;
+    use crate::cli::lint::cycle_wiring::{mock_client_inner, MockFaults};
+
+    fn opts(issue: &str, env: Option<&str>, json: bool, dry_run: bool) -> ExplainRun {
+        ExplainRun {
+            issue_id: issue.into(),
+            env_name: env.map(Into::into),
+            json,
+            dry_run,
+        }
+    }
+
+    /// Run against the mock fleet `api` (EBL001 fires on it under
+    /// `update_rejected`, which also serves its `AllAtOnce` settings),
+    /// answering every prompt with `answer`. Returns the code, both
+    /// streams, and the prompts that were asked.
+    async fn run(
+        o: &ExplainRun,
+        faults: MockFaults,
+        answer: Result<&'static str, &'static str>,
+    ) -> (i32, String, String, Vec<String>) {
+        let client = mock_client_inner(vec!["api".into()], faults);
+        let asked = std::sync::Mutex::new(Vec::new());
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let code = explain_body(
+            o,
+            &client,
+            &[],
+            &[],
+            |_issue, prompt| {
+                asked.lock().unwrap().push(prompt);
+                async move { answer.map(String::from).map_err(String::from) }
+            },
+            &mut out,
+            &mut err,
+        )
+        .await;
+        (
+            code,
+            String::from_utf8(out).unwrap(),
+            String::from_utf8(err).unwrap(),
+            asked.into_inner().unwrap(),
+        )
+    }
+
+    fn fires() -> MockFaults {
+        MockFaults {
+            update_rejected: true,
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn a_firing_issue_is_asked_about_and_answered() {
+        let (code, out, err, asked) = run(
+            &opts("EBL001", None, false, false),
+            fires(),
+            Ok("Use Rolling."),
+        )
+        .await;
+        assert_eq!(code, 0, "{err}");
+        assert_eq!(asked.len(), 1);
+        assert!(
+            asked[0].contains("EBL001"),
+            "the prompt names the rule: {}",
+            asked[0]
+        );
+        assert!(
+            out.contains("── EBL001 (api) ──") && out.contains("Use Rolling."),
+            "{out}"
+        );
+
+        let (_, out, _, _) = run(
+            &opts("EBL001", None, true, false),
+            fires(),
+            Ok("Use Rolling."),
+        )
+        .await;
+        let v: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
+        assert_eq!(v["env"], "api");
+        assert_eq!(v["response"], "Use Rolling.");
+    }
+
+    #[tokio::test]
+    async fn a_dry_run_prints_the_prompt_and_asks_nothing() {
+        let (code, out, _, asked) = run(
+            &opts("EBL001", None, false, true),
+            fires(),
+            Err("must not be asked"),
+        )
+        .await;
+        assert_eq!(code, 0);
+        assert!(asked.is_empty());
+        assert!(out.contains("DRY RUN"), "{out}");
+    }
+
+    #[tokio::test]
+    async fn exit_codes_follow_the_table() {
+        let (code, _, err, _) = run(
+            &opts("EBL001", None, false, false),
+            fires(),
+            Err("HTTP 529"),
+        )
+        .await;
+        assert_eq!(code, 1, "provider failure");
+        assert!(err.contains("HTTP 529"), "{err}");
+
+        let (code, _, _, asked) = run(
+            &opts("EBL001", None, false, false),
+            MockFaults::default(),
+            Ok("x"),
+        )
+        .await;
+        assert_eq!(code, 3, "fires nowhere");
+        assert!(asked.is_empty());
+
+        let (code, _, err, _) = run(
+            &opts("EBL012", None, false, false),
+            MockFaults {
+                health_rejected: true,
+                ..Default::default()
+            },
+            Ok("x"),
+        )
+        .await;
+        assert_eq!(code, 1, "could not be evaluated is not clean: {err}");
+
+        let (code, _, _, _) = run(
+            &opts("EBL001", None, false, false),
+            MockFaults {
+                listing_rejected: true,
+                ..Default::default()
+            },
+            Ok("x"),
+        )
+        .await;
+        assert_eq!(code, 1, "the fleet would not list");
+
+        let (code, _, _, _) = run(
+            &opts("EBL001", Some("nope"), false, false),
+            fires(),
+            Ok("x"),
+        )
+        .await;
+        assert_eq!(code, 2, "no such env");
     }
 }

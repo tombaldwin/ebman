@@ -2728,28 +2728,28 @@ async fn apply_fixes_for_env(
 }
 
 #[cfg(test)]
-mod cycle_wiring {
+pub(crate) mod cycle_wiring {
     use super::*;
 
     /// Which failure the mock fleet injects. Default: none — a clean
     /// fleet the cycle reads end to end, which is what lets a
     /// `degraded()` assertion discriminate at all.
     #[derive(Default, Clone, Copy)]
-    struct MockFaults {
+    pub(crate) struct MockFaults {
         /// `UpdateEnvironment` is rejected — the shape a `--fix` run
         /// hits when the role can read the fleet and not change it.
-        update_rejected: bool,
+        pub(crate) update_rejected: bool,
         /// One custom platform exists and its `DescribePlatformVersion`
         /// is rejected: EBL015 coverage that PARTLY failed.
-        platform_date_rejected: bool,
+        pub(crate) platform_date_rejected: bool,
         /// `ListTagsForResource` is rejected: EBL010's input is lost.
-        tags_rejected: bool,
+        pub(crate) tags_rejected: bool,
         /// `DescribeEnvironmentHealth` is rejected: EBL012's input is lost.
-        health_rejected: bool,
+        pub(crate) health_rejected: bool,
         /// `ListAvailableSolutionStacks` is rejected: EBL008's input is lost.
-        stacks_rejected: bool,
+        pub(crate) stacks_rejected: bool,
         /// `DescribeEnvironments` is rejected: the region does not answer.
-        listing_rejected: bool,
+        pub(crate) listing_rejected: bool,
     }
 
     /// The branch whose platform dates the mock refuses to report.
@@ -2785,7 +2785,7 @@ mod cycle_wiring {
         mock_client_inner(envs, MockFaults::default())
     }
 
-    fn mock_client_inner(envs: Vec<String>, faults: MockFaults) -> aws::AwsClient {
+    pub(crate) fn mock_client_inner(envs: Vec<String>, faults: MockFaults) -> aws::AwsClient {
         let failing_update = faults.update_rejected;
         use aws_sdk_elasticbeanstalk::operation::describe_environments::DescribeEnvironmentsOutput;
         use aws_sdk_elasticbeanstalk::types::EnvironmentDescription;
