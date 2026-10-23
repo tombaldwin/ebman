@@ -460,6 +460,25 @@ mod body {
         assert!(out.contains("── EBL001 (api) ──"), "{out}");
     }
 
+    /// A rule the operator disabled does not fire, so there is nothing
+    /// to explain: 3, and no prompt.
+    #[tokio::test]
+    async fn a_disabled_rule_is_not_explained() {
+        let client = mock_client_inner(vec!["api".into()], fires());
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let code = explain_body(
+            &opts("EBL001", None, false, false),
+            &client,
+            &["EBL001".to_string()],
+            &[],
+            |_, _| async { Err::<String, String>("must not be asked".into()) },
+            &mut out,
+            &mut err,
+        )
+        .await;
+        assert_eq!(code, 3, "{}", String::from_utf8_lossy(&err));
+    }
+
     #[tokio::test]
     async fn a_dry_run_prints_the_prompt_and_asks_nothing() {
         let (code, out, _, asked) = run(

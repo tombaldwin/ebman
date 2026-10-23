@@ -3796,6 +3796,13 @@ mod body {
     }
 
     #[tokio::test]
+    async fn quiet_prints_nothing_and_still_exits_with_the_finding() {
+        let r = lint(&["--quiet"], findings(), None).await;
+        assert_eq!(r.code, 3, "{}", r.err);
+        assert!(r.out.is_empty(), "{}", r.out);
+    }
+
+    #[tokio::test]
     async fn a_freeze_stops_a_fix_but_not_a_read() {
         let r = lint(
             &["--fix", "--yes"],

@@ -1298,6 +1298,8 @@ mod body {
         deployed: aws_smithy_mocks::Rule,
         rolled_back: aws_smithy_mocks::Rule,
         restarted: aws_smithy_mocks::Rule,
+        rebuilt: aws_smithy_mocks::Rule,
+        terminated: aws_smithy_mocks::Rule,
     }
 
     fn fleet(version: &'static str, states: &'static [(&'static str, &'static str)]) -> Fleet {
@@ -1348,10 +1350,27 @@ mod body {
             .then_output(|| {
                 aws_sdk_elasticbeanstalk::operation::restart_app_server::RestartAppServerOutput::builder().build()
             });
+        let rebuilt = aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::rebuild_environment)
+            .match_requests(move |r| r.environment_name() == Some(name))
+            .then_output(|| {
+                aws_sdk_elasticbeanstalk::operation::rebuild_environment::RebuildEnvironmentOutput::builder().build()
+            });
+        let terminated = aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::terminate_environment)
+            .match_requests(move |r| r.environment_name() == Some(name))
+            .then_output(|| {
+                aws_sdk_elasticbeanstalk::operation::terminate_environment::TerminateEnvironmentOutput::builder().build()
+            });
         let eb = aws_smithy_mocks::mock_client!(
             aws_sdk_elasticbeanstalk,
             aws_smithy_mocks::RuleMode::MatchAny,
-            [&listing, &deployed, &rolled_back, &restarted]
+            [
+                &listing,
+                &deployed,
+                &rolled_back,
+                &restarted,
+                &rebuilt,
+                &terminated
+            ]
         );
         let cfg = aws_config::SdkConfig::builder()
             .region(aws_config::Region::new("us-east-1"))
@@ -1370,6 +1389,8 @@ mod body {
             deployed,
             rolled_back,
             restarted,
+            rebuilt,
+            terminated,
         }
     }
 
@@ -1477,6 +1498,37 @@ mod body {
             rollback[1].contains("stage=completed") && rollback[1].contains("outcome=ok"),
             "{lines:#?}"
         );
+    }
+
+    /// Each verb reaches its own call, once, and no other: a swapped
+    /// mapping would rebuild what was meant to restart, or terminate
+    /// what was meant to rebuild.
+    #[tokio::test]
+    async fn each_verb_dispatches_its_own_call() {
+        for verb in ["restart", "rebuild", "terminate"] {
+            let f = fleet("build-1", STUCK);
+            let r = action(&[verb, "--env", "api", "--yes"], None, Some(f.client)).await;
+            assert_eq!(r.code, 0, "{verb}: {}", r.err);
+            let calls = (
+                f.restarted.num_calls(),
+                f.rebuilt.num_calls(),
+                f.terminated.num_calls(),
+            );
+            let want = match verb {
+                "restart" => (1, 0, 0),
+                "rebuild" => (0, 1, 0),
+                _ => (0, 0, 1),
+            };
+            assert_eq!(calls, want, "{verb}");
+        }
+    }
+
+    /// An unknown verb is a usage error before the gate or a client.
+    #[tokio::test]
+    async fn an_unknown_verb_asks_nothing() {
+        let r = action(&["reboot", "--env", "api"], None, None).await;
+        assert_eq!(r.code, 2, "{}", r.err);
+        assert!(r.asked.is_none() && !r.client_built);
     }
 
     #[tokio::test]
@@ -2425,6 +2477,57 @@ mod rollout {
         assert!(
             rows.iter().all(|r| r["err"] == "skipped (rollout halted)"),
             "{rows:?}"
+        );
+    }
+
+    /// `--staggered` waits between regions (not before the first), and a
+    /// region that misses `--wait-for-green` fails and halts the rest.
+    #[tokio::test(start_paused = true)]
+    async fn staggered_waits_and_a_slow_region_times_out() {
+        let start = tokio::time::Instant::now();
+        let r = rollout(
+            &with(&["--yes", "--wait-for-green", "5m", "--staggered", "2m"]),
+            THREE,
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(r.code, 0, "{}", r.err);
+        assert_eq!(
+            r.err.matches("staggering 120s before next region").count(),
+            2,
+            "{}",
+            r.err
+        );
+        assert!(
+            start.elapsed() >= std::time::Duration::from_secs(240),
+            "{:?}",
+            start.elapsed()
+        );
+
+        let slow_first: &[(&str, Region)] = &[
+            ("us-east-1", Region::Slow),
+            ("eu-west-2", Region::Ok),
+            ("ap-south-1", Region::Ok),
+        ];
+        let r = rollout(
+            &with(&["--yes", "--wait-for-green", "10s"]),
+            slow_first,
+            None,
+            None,
+        )
+        .await;
+        assert_eq!((r.code, r.dispatched), (3, 1), "{}", r.err);
+        assert!(
+            r.out
+                .contains("us-east-1\terr\tdid not reach Green within 10s"),
+            "{}",
+            r.out
+        );
+        assert!(
+            r.out.contains("eu-west-2\tskipped (rollout halted)"),
+            "{}",
+            r.out
         );
     }
 
