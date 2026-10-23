@@ -184,7 +184,7 @@ impl App {
         let Some((env_name, key)) = self
             .detail
             .as_ref()
-            .map(|d| (d.env_name.clone(), self.env_key(&d.env_snapshot)))
+            .map(|d| (d.env_name.clone(), d.key.clone()))
         else {
             return;
         };
@@ -235,10 +235,9 @@ impl App {
                 // `:ssm-run`). The env for pin purposes is the open
                 // Detail env when there is one; global read-only /
                 // freeze / incident apply regardless.
-                let gate_env = match self.detail.as_ref() {
-                    Some(d) => self.env_key(&d.env_snapshot),
-                    None => EnvKey::new(self.context.region.clone(), ""),
-                };
+                let gate_env = self
+                    .detail_key()
+                    .unwrap_or_else(|| EnvKey::new(self.context.region.clone(), ""));
                 if self.deny_write(&gate_env, "ssm-session") {
                     return;
                 }
@@ -372,8 +371,8 @@ impl App {
             return;
         };
         let env_name = d.env_name.clone();
-        let region = self.region_for(&d.env_snapshot);
-        let target = EnvKey::new(region.clone(), env_name.clone());
+        let target = d.key.clone();
+        let region = target.region.clone();
         // Route through `deny_write` (not bare `is_read_only_for`) so the
         // gate picks up `--demo` mode alongside read-only / safety pins.
         // Pre-0.17.4 this dispatched real audit lines in --demo.

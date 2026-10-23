@@ -56,8 +56,10 @@ impl App {
         tabs.push(DetailTab::Config);
         // A previous env's outstanding fetch must not gate this one.
         self.detail_fetch_started = None;
+        let key = self.env_key(&env);
         let detail = DetailState {
             env_name: env.name.clone(),
+            key,
             env_snapshot: env,
             tabs,
             tab_idx: 0,

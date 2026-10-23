@@ -445,7 +445,7 @@ impl App {
                 // must block it like `:ssm-run`.
                 let target = self.detail.as_ref().and_then(|d| {
                     Some((
-                        self.env_key(&d.env_snapshot),
+                        d.key.clone(),
                         d.instances.get(d.instances_cursor)?.id.clone(),
                     ))
                 });
@@ -465,8 +465,7 @@ impl App {
                 // existing snapshot view. spawn_logs_tail handles
                 // group discovery + auto-pick. The snapshot path
                 // stays untouched so esc returns to it.
-                if let Some(d) = self.detail.as_ref() {
-                    let target = self.env_key(&d.env_snapshot);
+                if let Some(target) = self.detail_key() {
                     self.spawn_logs_tail(target, None);
                 }
             }

@@ -227,7 +227,7 @@ impl App {
     pub(crate) fn instance_console_target(&self) -> Option<(String, String)> {
         let d = self.detail.as_ref()?;
         let inst = d.instances.get(d.instances_cursor)?;
-        Some((self.region_for(&d.env_snapshot), inst.id.clone()))
+        Some((d.key.region.clone(), inst.id.clone()))
     }
 
     pub(crate) fn open_instance_in_console(&mut self) {

@@ -425,6 +425,10 @@ pub(crate) struct AppTabState {
 pub(crate) struct DetailState {
     pub env_name: String,
     pub env_snapshot: Environment, // taken at open-time; not refreshed
+    /// The env Detail is on, region included, fixed at open. Every
+    /// question about "Detail's env" asks this rather than rebuilding
+    /// it from `env_snapshot`.
+    pub key: crate::app::EnvKey,
     pub tabs: Vec<DetailTab>,
     pub tab_idx: usize,
     pub events: Vec<EbEvent>,
@@ -753,6 +757,7 @@ mod tests {
         DetailState {
             env_name: "poly-prod".into(),
             env_snapshot: mk_env(tier),
+            key: crate::app::EnvKey::new("us-east-1", "poly-prod"),
             tabs: vec![DetailTab::Health],
             tab_idx: 0,
             events: vec![],

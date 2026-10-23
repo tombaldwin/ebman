@@ -660,7 +660,7 @@ pub(crate) fn breadcrumb_line(app: &App) -> Line<'static> {
         (Mode::Detail, Some(d)) => Some((
             d.env_snapshot.application.clone(),
             d.env_name.clone(),
-            app.region_for(&d.env_snapshot),
+            d.key.region.clone(),
         )),
         _ => app
             .selected_env()

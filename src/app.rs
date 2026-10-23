@@ -3464,9 +3464,14 @@ impl App {
     /// instance picked from Detail lives.
     pub(crate) fn detail_region(&self) -> String {
         match self.detail.as_ref() {
-            Some(d) => self.region_for(&d.env_snapshot),
+            Some(d) => d.key.region.clone(),
             None => self.context.region.clone(),
         }
+    }
+
+    /// The env Detail is on, region included; `None` with Detail closed.
+    pub(crate) fn detail_key(&self) -> Option<EnvKey> {
+        self.detail.as_ref().map(|d| d.key.clone())
     }
 
     /// The client for work about one environment row: its own region.

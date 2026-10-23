@@ -13,7 +13,7 @@ impl App {
     /// list). Refuses in read-only mode so the operator isn't left
     /// typing a value that can't be dispatched.
     pub(crate) fn start_config_edit(&mut self) {
-        let Some(target) = self.detail.as_ref().map(|d| self.env_key(&d.env_snapshot)) else {
+        let Some(target) = self.detail_key() else {
             return;
         };
         if self.deny_write(&target, "config editing") {
@@ -176,7 +176,7 @@ impl App {
     /// an env var (the more common edit target). The buffer is typed
     /// as `KEY=VALUE`.
     pub(crate) fn start_config_add(&mut self) {
-        let Some(target) = self.detail.as_ref().map(|d| self.env_key(&d.env_snapshot)) else {
+        let Some(target) = self.detail_key() else {
             return;
         };
         if self.deny_write(&target, "config editing") {
@@ -211,7 +211,7 @@ impl App {
     /// commit dispatches a remove-old + set-new (keeping the value)
     /// as one `UpdateOptionSettings` / `UpdateTags` call.
     pub(crate) fn start_config_rename(&mut self) {
-        let Some(target) = self.detail.as_ref().map(|d| self.env_key(&d.env_snapshot)) else {
+        let Some(target) = self.detail_key() else {
             return;
         };
         if self.deny_write(&target, "config editing") {
@@ -243,7 +243,7 @@ impl App {
     /// removal waits for the `y` confirmation (see the
     /// `config_delete_confirm` interception in the key handler).
     pub(crate) fn arm_config_delete(&mut self) {
-        let Some(target) = self.detail.as_ref().map(|d| self.env_key(&d.env_snapshot)) else {
+        let Some(target) = self.detail_key() else {
             return;
         };
         if self.deny_write(&target, "config editing") {

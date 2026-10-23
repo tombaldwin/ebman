@@ -268,10 +268,9 @@ impl App {
                 let region = self.detail_region();
                 // A shell is a write surface: the same gate as `:ssh ID`
                 // and Detail's `s`, which this path skipped.
-                let gate = match self.detail.as_ref() {
-                    Some(d) => self.env_key(&d.env_snapshot),
-                    None => EnvKey::new(region.clone(), ""),
-                };
+                let gate = self
+                    .detail_key()
+                    .unwrap_or_else(|| EnvKey::new(region.clone(), ""));
                 if self.deny_write(&gate, "ssm-session") {
                     return;
                 }

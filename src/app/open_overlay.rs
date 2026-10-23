@@ -260,7 +260,7 @@ impl App {
         }
         let dlq = DlqState {
             env_name: detail.env_name.clone(),
-            region: self.region_for(&detail.env_snapshot),
+            region: detail.key.region.clone(),
             main_queue_url: main_url,
             dlq_url,
             messages: Vec::new(),
