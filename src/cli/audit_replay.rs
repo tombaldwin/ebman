@@ -190,24 +190,84 @@ fn replay_plan(entry: &audit_log::AuditEntry) -> Result<ReplayPlan, String> {
 }
 
 pub(crate) async fn run_replay(args: &[String]) -> Result<()> {
+    let code = audit_replay_body(
+        args,
+        &util::cache_dir().join("audit.log"),
+        // Safety pins gate every dispatch site, CLI included (house
+        // rule), through the audited funnel, freeze included.
+        |env: &str, profile: Option<&str>, region: Option<&str>, label: &str| {
+            crate::cli::write_refusal(
+                &crate::config::load(),
+                env,
+                &profile.map(str::to_string),
+                crate::freeze::FreezeStore::real().active(),
+                region,
+                label,
+            )
+        },
+        std::env::var("AWS_PROFILE").ok(),
+        aws::AwsClient::with,
+        &mut std::io::stdout().lock(),
+        &mut std::io::stderr().lock(),
+    )
+    .await;
+    // Every exit drains: a refusal's or a dispatch's audit line may
+    // have a webhook POST in flight.
+    if code != 0 {
+        crate::cli::exit_after_drain(code).await;
+    }
+    crate::cli::drain_before_return().await;
+    Ok(())
+}
+
+/// What decides whether a write may go: `(env, profile, region, verb)`
+/// to the refusal, if any. [`crate::cli::write_refusal`] in production.
+pub(crate) trait Refusal:
+    Fn(&str, Option<&str>, Option<&str>, &str) -> Option<String>
+{
+}
+impl<T: Fn(&str, Option<&str>, Option<&str>, &str) -> Option<String>> Refusal for T {}
+
+/// `ebman audit replay`'s whole behaviour against any log, safety
+/// decision, client factory (`profile, region`) and writers. Returns the
+/// exit code. `ambient_profile` is `AWS_PROFILE`: the profile a line
+/// written under default creds (`profile=-`) replays under.
+pub(crate) async fn audit_replay_body<F, Fut>(
+    args: &[String],
+    log: &std::path::Path,
+    refusal: impl Refusal,
+    ambient_profile: Option<String>,
+    client_for: F,
+    out: &mut dyn std::io::Write,
+    err: &mut dyn std::io::Write,
+) -> i32
+where
+    F: FnOnce(Option<String>, Option<String>) -> Fut,
+    Fut: std::future::Future<Output = Result<aws::AwsClient>>,
+{
     let ReplayArgs { id, yes } = match parse_replay_args(args) {
         Ok(parsed) => parsed,
         Err(ReplayArgError { msg, code }) => {
-            eprintln!("{msg}");
-            std::process::exit(code);
+            let _ = writeln!(err, "{msg}");
+            return code;
         }
     };
 
-    let path = util::cache_dir().join("audit.log");
-    if !path.exists() {
-        eprintln!(
+    if !log.exists() {
+        let _ = writeln!(
+            err,
             "ebman audit replay: no audit log at {} — nothing to replay",
-            path.display()
+            log.display()
         );
-        std::process::exit(2);
+        return 2;
     }
-    let bytes = std::fs::read(&path)
-        .map_err(|e| color_eyre::eyre::eyre!("read {}: {e}", path.display()))?;
+    let bytes = match std::fs::read(log) {
+        Ok(b) => b,
+        Err(e) => {
+            let _ = writeln!(err, "ebman audit replay: read {}: {e}", log.display());
+            return 1;
+        }
+    };
     let text = String::from_utf8_lossy(&bytes);
     let entries: Vec<audit_log::AuditEntry> = text
         .lines()
@@ -217,17 +277,19 @@ pub(crate) async fn run_replay(args: &[String]) -> Result<()> {
     let matches = select_replay_matches(&entries, &id);
     let entry = match matches.as_slice() {
         [] => {
-            eprintln!("ebman audit replay: no audit line matches '{id}'");
-            std::process::exit(2);
+            let _ = writeln!(err, "ebman audit replay: no audit line matches '{id}'");
+            return 2;
         }
         [one] => *one,
         many => {
-            eprintln!(
+            let _ = writeln!(
+                err,
                 "ebman audit replay: '{id}' is ambiguous — {} lines match; give a longer timestamp prefix:",
                 many.len()
             );
             for e in many.iter().take(10) {
-                eprintln!(
+                let _ = writeln!(
+                    err,
                     "  {}\t{}\t{}\t{}",
                     e.when,
                     e.stage.as_deref().unwrap_or("-"),
@@ -236,24 +298,25 @@ pub(crate) async fn run_replay(args: &[String]) -> Result<()> {
                 );
             }
             if many.len() > 10 {
-                eprintln!("  … and {} more", many.len() - 10);
+                let _ = writeln!(err, "  … and {} more", many.len() - 10);
             }
-            std::process::exit(2);
+            return 2;
         }
     };
 
     let plan = match replay_plan(entry) {
         Ok(p) => p,
         Err(msg) => {
-            eprintln!("ebman audit replay: {msg}");
-            std::process::exit(2);
+            let _ = writeln!(err, "ebman audit replay: {msg}");
+            return 2;
         }
     };
 
     // Replaying a known failure is legitimate (retry after fixing the
     // cause) but shouldn't be silent about it.
     if entry.outcome.as_deref() == Some("err") {
-        eprintln!(
+        let _ = writeln!(
+            err,
             "note: the original run ended outcome=err{} — replaying anyway",
             entry
                 .err
@@ -263,31 +326,33 @@ pub(crate) async fn run_replay(args: &[String]) -> Result<()> {
         );
     }
 
-    // Safety pins gate every dispatch site, CLI included (house
-    // rule). Checked against the profile the replay will run under:
-    // the one on the audited line, or — when the line was written
-    // under default creds (`profile=-`) — the ambient AWS_PROFILE,
-    // which is what `AwsClient::with(None, …)` will resolve to.
-    // Same fallback `lint --fix` uses.
-    let pin_profile = plan
-        .profile
-        .clone()
-        .or_else(|| std::env::var("AWS_PROFILE").ok());
-    crate::cli::refuse_write(
-        "ebman audit replay",
-        &format!("{} on {}", plan.verb.label(), plan.env),
+    // Checked against the profile the replay will run under: the one
+    // on the audited line, or — when the line was written under default
+    // creds (`profile=-`) — the ambient AWS_PROFILE, which is what
+    // `AwsClient::with(None, …)` will resolve to. Same fallback
+    // `lint --fix` uses.
+    let pin_profile = plan.profile.clone().or(ambient_profile);
+    if let Some(reason) = refusal(
         &plan.env,
         pin_profile.as_deref(),
         plan.region.as_deref(),
         plan.verb.label(),
-    )
-    .await;
+    ) {
+        let subject = format!("{} on {}", plan.verb.label(), plan.env);
+        let _ = writeln!(
+            err,
+            "ebman audit replay: {}",
+            crate::cli::refusal_naming(reason, &plan.env, &subject)
+        );
+        return 3;
+    }
     if plan.verb.requires_yes() && !yes {
-        eprintln!(
+        let _ = writeln!(
+            err,
             "ebman audit replay: '{}' is destructive; re-run with --yes to confirm",
             plan.verb.label()
         );
-        std::process::exit(3);
+        return 3;
     }
 
     // Replay writes its own audit lines (unlike ad-hoc single-env
@@ -296,13 +361,20 @@ pub(crate) async fn run_replay(args: &[String]) -> Result<()> {
     // init wires the notify_webhook fan-out for those lines.
     audit_log::init_from_config_disk();
 
-    let aws = aws::AwsClient::with(plan.profile.clone(), plan.region.clone()).await?;
+    let aws = match client_for(plan.profile.clone(), plan.region.clone()).await {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = writeln!(err, "ebman audit replay: {e}");
+            return 1;
+        }
+    };
     let version_note = plan
         .version
         .as_deref()
         .map(|v| format!(" (version={v})"))
         .unwrap_or_default();
-    println!(
+    let _ = writeln!(
+        out,
         "replaying {}: {} on {}{version_note}",
         entry.when,
         plan.verb.label(),
@@ -333,39 +405,33 @@ pub(crate) async fn run_replay(args: &[String]) -> Result<()> {
         }
     };
 
-    match result {
-        Ok(()) => {
-            audit_log::append_action_completed(
-                entry.account.as_deref(),
-                plan.profile.as_deref(),
-                region,
-                plan.verb.label(),
-                &plan.env,
-                Ok(()),
-                &extras,
-            );
-            println!(
+    let err_text = result.as_ref().err().map(|e| e.to_string());
+    audit_log::append_action_completed(
+        entry.account.as_deref(),
+        plan.profile.as_deref(),
+        region,
+        plan.verb.label(),
+        &plan.env,
+        match err_text.as_deref() {
+            None => Ok(()),
+            Some(e) => Err(e),
+        },
+        &extras,
+    );
+    match err_text {
+        None => {
+            let _ = writeln!(
+                out,
                 "ok: {} on {} dispatched (replay of {})",
                 plan.verb.label(),
                 plan.env,
                 entry.when
             );
-            crate::cli::drain_before_return().await;
-            Ok(())
+            0
         }
-        Err(e) => {
-            let err_text = e.to_string();
-            audit_log::append_action_completed(
-                entry.account.as_deref(),
-                plan.profile.as_deref(),
-                region,
-                plan.verb.label(),
-                &plan.env,
-                Err(&err_text),
-                &extras,
-            );
-            eprintln!("err: {err_text}");
-            crate::cli::exit_after_drain(1).await;
+        Some(e) => {
+            let _ = writeln!(err, "err: {e}");
+            1
         }
     }
 }
@@ -609,5 +675,190 @@ mod tests {
         assert_eq!(plan.region.as_deref(), Some("eu-west-1"));
         assert_eq!(plan.profile.as_deref(), Some("staging"));
         assert_eq!(plan.verb.label(), "RestartAppServer");
+    }
+}
+
+#[cfg(test)]
+mod body {
+    use super::*;
+    use std::sync::Mutex;
+
+    const RESTART: &str = "2026-07-15T10:11:12+00:00\taccount=123\tprofile=-\tregion=eu-west-1\tstage=dispatched action=Restart target=api-prod";
+    const TERMINATE: &str = "2026-07-15T11:00:00+00:00\taccount=123\tprofile=staging\tregion=eu-west-1\tstage=dispatched action=Terminate target=old-env";
+
+    /// A log holding `lines`, in a directory of its own.
+    fn log(lines: &[&str]) -> std::path::PathBuf {
+        static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("ebman-replay-{}-{n}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("audit.log");
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        path
+    }
+
+    /// A client whose `RestartAppServer` for `api-prod` succeeds, or is
+    /// refused when `fails`; the rule, to count what reached AWS.
+    fn client(fails: bool) -> (aws::AwsClient, aws_smithy_mocks::Rule) {
+        let restart = if fails {
+            aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::restart_app_server)
+                .match_requests(|r| r.environment_name() == Some("api-prod"))
+                .then_error(|| {
+                    aws_sdk_elasticbeanstalk::operation::restart_app_server::RestartAppServerError::generic(
+                        aws_smithy_types::error::ErrorMetadata::builder()
+                            .code("AccessDeniedException")
+                            .message("not authorized")
+                            .build(),
+                    )
+                })
+        } else {
+            aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::restart_app_server)
+                .match_requests(|r| r.environment_name() == Some("api-prod"))
+                .then_output(|| {
+                    aws_sdk_elasticbeanstalk::operation::restart_app_server::RestartAppServerOutput::builder().build()
+                })
+        };
+        let eb = aws_smithy_mocks::mock_client!(
+            aws_sdk_elasticbeanstalk,
+            aws_smithy_mocks::RuleMode::MatchAny,
+            [&restart]
+        );
+        let cfg = aws_config::SdkConfig::builder()
+            .region(aws_config::Region::new("eu-west-1"))
+            .behavior_version(aws_config::BehaviorVersion::latest())
+            .build();
+        let c = aws::AwsClient::for_tests(
+            eb,
+            aws_sdk_sqs::Client::new(&cfg),
+            aws_sdk_cloudwatch::Client::new(&cfg),
+            aws_sdk_cloudwatchlogs::Client::new(&cfg),
+            aws_sdk_s3::Client::new(&cfg),
+            aws_sdk_ec2::Client::new(&cfg),
+        );
+        (c, restart)
+    }
+
+    struct Outcome {
+        code: i32,
+        out: String,
+        err: String,
+        /// The profile the safety decision was asked about, if it was.
+        asked_profile: Option<Option<String>>,
+        /// The `(profile, region)` a client was built for, if one was.
+        built: Option<(Option<String>, Option<String>)>,
+    }
+
+    async fn replay(
+        args: &[&str],
+        lines: &[&str],
+        refuse: Option<&str>,
+        aws: Option<aws::AwsClient>,
+    ) -> Outcome {
+        let argv: Vec<String> = ["audit", "replay"]
+            .iter()
+            .chain(args)
+            .map(|s| s.to_string())
+            .collect();
+        let path = log(lines);
+        let asked = Mutex::new(None);
+        let built = Mutex::new(None);
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let code = audit_replay_body(
+            &argv,
+            &path,
+            |env: &str, profile: Option<&str>, _region: Option<&str>, _verb: &str| {
+                *asked.lock().unwrap() = Some(profile.map(String::from));
+                refuse.map(|why| format!("refusing {env} — {why}"))
+            },
+            Some("ambient".into()),
+            |profile, region| {
+                *built.lock().unwrap() = Some((profile, region));
+                async move { aws.ok_or_else(|| color_eyre::eyre::eyre!("no credentials")) }
+            },
+            &mut out,
+            &mut err,
+        )
+        .await;
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        Outcome {
+            code,
+            out: String::from_utf8(out).unwrap(),
+            err: String::from_utf8(err).unwrap(),
+            asked_profile: asked.into_inner().unwrap(),
+            built: built.into_inner().unwrap(),
+        }
+    }
+
+    #[tokio::test]
+    async fn the_audited_action_is_dispatched_again_where_it_ran() {
+        let (aws, restart) = client(false);
+        let r = replay(
+            &["2026-07-15T10:11"],
+            &[RESTART, TERMINATE],
+            None,
+            Some(aws),
+        )
+        .await;
+        assert_eq!(r.code, 0, "{}", r.err);
+        assert_eq!(restart.num_calls(), 1);
+        assert!(
+            r.out
+                .contains("ok: RestartAppServer on api-prod dispatched"),
+            "{}",
+            r.out
+        );
+        // `profile=-`: the client resolves default creds, and the pins
+        // are checked against the ambient profile that will mean.
+        assert_eq!(r.built, Some((None, Some("eu-west-1".into()))));
+        assert_eq!(r.asked_profile, Some(Some("ambient".into())));
+    }
+
+    #[tokio::test]
+    async fn a_refusal_or_a_missing_yes_reaches_no_client() {
+        let r = replay(
+            &["2026-07-15T10:11"],
+            &[RESTART],
+            Some("pinned read-only"),
+            None,
+        )
+        .await;
+        assert_eq!(r.code, 3);
+        assert!(r.built.is_none());
+        assert!(
+            r.err
+                .contains("refusing RestartAppServer on api-prod — pinned read-only"),
+            "names the action: {}",
+            r.err
+        );
+
+        let r = replay(&["2026-07-15T11"], &[TERMINATE], None, None).await;
+        assert_eq!(r.code, 3, "{}", r.err);
+        assert!(r.built.is_none());
+        assert!(r.err.contains("--yes"), "{}", r.err);
+        assert_eq!(
+            r.asked_profile,
+            Some(Some("staging".into())),
+            "the line's own profile"
+        );
+    }
+
+    #[tokio::test]
+    async fn exit_codes_follow_the_table() {
+        let (aws, restart) = client(true);
+        let r = replay(&["2026-07-15T10:11"], &[RESTART], None, Some(aws)).await;
+        assert_eq!((r.code, restart.num_calls()), (1, 1), "AWS refused");
+        assert!(r.err.contains("err:"), "{}", r.err);
+
+        let r = replay(&["2026-07-15T10:11"], &[RESTART], None, None).await;
+        assert_eq!(r.code, 1, "no client: {}", r.err);
+
+        let r = replay(&["2026-07-16"], &[RESTART], None, None).await;
+        assert_eq!(r.code, 2, "matches nothing");
+        let r = replay(&["2026-07-15"], &[RESTART, TERMINATE], None, None).await;
+        assert_eq!(r.code, 2, "ambiguous");
+        assert!(r.err.contains("ambiguous"), "{}", r.err);
+        assert!(r.asked_profile.is_none());
+        let r = replay(&[], &[RESTART], None, None).await;
+        assert_eq!(r.code, 2, "usage");
     }
 }

@@ -230,6 +230,16 @@ pub(crate) fn write_refusal_unaudited(
     Some((refusal, message, pin_profile))
 }
 
+/// A refusal from [`write_refusal`] naming `subject` rather than the
+/// bare env: it phrases the pin case as "refusing ENV — …", and a
+/// caller dispatching something richer ("Restart on ENV") says that.
+pub(crate) fn refusal_naming(reason: String, env: &str, subject: &str) -> String {
+    reason
+        .strip_prefix(&format!("refusing {env} — "))
+        .map(|r| format!("refusing {subject} — {r}"))
+        .unwrap_or(reason)
+}
+
 /// CLI wrapper over [`write_refusal`]: read the world, print, exit 3.
 ///
 /// `subject` is what the message names — usually the env, but
@@ -252,13 +262,7 @@ pub(crate) async fn refuse_write(
         region,
         action_label,
     ) {
-        // `write_refusal` phrases the pin case as "refusing ENV — …";
-        // for a caller naming something richer, say that instead.
-        let reason = reason
-            .strip_prefix(&format!("refusing {env} — "))
-            .map(|r| format!("refusing {subject} — {r}"))
-            .unwrap_or(reason);
-        eprintln!("{prog}: {reason}");
+        eprintln!("{prog}: {}", refusal_naming(reason, env, subject));
         // Same reason as `refuse_if_frozen`: without the drain the
         // refusal's webhook POST dies with the process.
         exit_after_drain(3).await;
