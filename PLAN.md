@@ -245,6 +245,11 @@ now head the list.*
 
 ### Released
 
+**0.46.2 (2026-10-23)**: lockfile-only rebuild for RUSTSEC-2026-0385
+(`ctutils` 0.4.5, reached through the SDK's `digest`/`hmac`) and the
+yanked `clipboard-win` 5.4.1. Both landed upstream after 0.46.1's CI
+and failed cargo-deny on the next push.
+
 **0.46.1 (2026-10-23)**: the header shows `+N` under `:region all`;
 `:region NAME` and a config edit to `extra_regions` re-derive a running
 fan-out; `:region all` with no extras says so and drops the REGION
