@@ -582,6 +582,44 @@ mod write_refusal_tests {
 
 #[cfg(test)]
 mod write_gate_input_guard {
+    /// Every write shell hands its body the real gate and the ambient
+    /// profile.
+    ///
+    /// The bodies take both as parameters so a test can stand them in,
+    /// which means nothing the tests drive can see what production
+    /// passes: a shell handing `|_, _, _, _| None` gates nothing, and one
+    /// handing `None` for `AWS_PROFILE` checks every account pin against
+    /// no account — the defect the deleted rollout `--profile` scan
+    /// existed for. Pinned by source because the shells exit the process.
+    #[test]
+    fn write_shells_pass_the_real_gate_and_the_ambient_profile() {
+        for (module, f, gate) in [
+            ("cli/action.rs", "run", "crate::cli::real_refusal,"),
+            ("cli/action.rs", "run_rollout", "crate::cli::real_refusal,"),
+            (
+                "cli/audit_replay.rs",
+                "run_replay",
+                "crate::cli::real_refusal,",
+            ),
+            ("cli/lint.rs", "run", "crate::cli::frozen_refusal,"),
+        ] {
+            let src = crate::app::tests::scan::production_source(module);
+            let body = crate::app::tests::scan::fn_bodies(&src)
+                .into_iter()
+                .find(|(name, _)| name == f)
+                .unwrap_or_else(|| panic!("{module}: `{f}` is defined"))
+                .1;
+            assert!(
+                body.contains(gate),
+                "{module}: `{f}` must pass `{gate}` to its body: {body}"
+            );
+            assert!(
+                body.contains("std::env::var(\"AWS_PROFILE\").ok()"),
+                "{module}: `{f}` must pass the ambient AWS_PROFILE: {body}"
+            );
+        }
+    }
+
     /// Every process-exiting refusal path must drain webhooks first.
     ///
     /// `fire_webhook` is spawned fire-and-forget and `process::exit`
