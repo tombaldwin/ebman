@@ -523,7 +523,7 @@ impl App {
             DetailTab::Health => {
                 self.spawn_detail_events(env_name.clone());
                 self.spawn_detail_alarms(env_name.clone());
-                self.spawn_detail_recent_versions(app_name.clone(), env_name.clone());
+                self.spawn_detail_recent_versions(app_name.clone());
                 if is_worker {
                     self.spawn_detail_queues(app_name, env_name);
                 }

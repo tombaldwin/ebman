@@ -2080,7 +2080,6 @@ async fn detail_ignores_an_answer_for_its_name_in_another_region() {
     for (ticket, msg) in [(own, "EU-OWN"), (twin, "HOME-TWIN")] {
         app.handle_msg(AppMsg::DetailEvents {
             gen: app.generation,
-            env_name: "api-prod".into(),
             ticket,
             result: Ok(vec![ev(msg)]),
         });

@@ -631,7 +631,6 @@ pub(crate) enum AppMsg {
     },
     DetailEvents {
         gen: u64,
-        env_name: String,
         /// The request it answers. Only the latest of Detail's settles,
         /// so a same-named env's answer, or one from before a `^R`, is
         /// dropped.
@@ -640,7 +639,6 @@ pub(crate) enum AppMsg {
     },
     DetailInstances {
         gen: u64,
-        env_name: String,
         /// The request it answers. Only the latest of Detail's settles,
         /// so a same-named env's answer, or one from before a `^R`, is
         /// dropped.
@@ -649,7 +647,6 @@ pub(crate) enum AppMsg {
     },
     DetailQueues {
         gen: u64,
-        env_name: String,
         /// The request it answers. Only the latest of Detail's settles,
         /// so a same-named env's answer, or one from before a `^R`, is
         /// dropped.
@@ -658,7 +655,6 @@ pub(crate) enum AppMsg {
     },
     DetailMetrics {
         gen: u64,
-        env_name: String,
         /// The request it answers: `[` `]` pressed twice fires two
         /// fetches, and only the latest's answer may land.
         ticket: crate::app::Ticket,
@@ -678,7 +674,6 @@ pub(crate) enum AppMsg {
     /// The App tab's top errors for one env.
     DetailTopErrors {
         gen: u64,
-        env_name: String,
         /// Which query this answers: after the stuck escape a second can
         /// run beside the first, and only the latest may settle the tab.
         ticket: Ticket,
@@ -687,7 +682,6 @@ pub(crate) enum AppMsg {
     /// The App tab's series for one env.
     DetailAppMetrics {
         gen: u64,
-        env_name: String,
         /// Which fetch this answers: a range change or a config edit
         /// starts another, and only the latest may settle the tab (a
         /// preview's rows must not be drawn as the config's).
@@ -696,7 +690,6 @@ pub(crate) enum AppMsg {
     },
     DetailTags {
         gen: u64,
-        env_name: String,
         /// The request it answers. Only the latest of Detail's settles,
         /// so a same-named env's answer, or one from before a `^R`, is
         /// dropped.
@@ -708,7 +701,6 @@ pub(crate) enum AppMsg {
     /// namespace.
     DetailEnvVars {
         gen: u64,
-        env_name: String,
         /// The request it answers. Only the latest of Detail's settles,
         /// so a same-named env's answer, or one from before a `^R`, is
         /// dropped.
@@ -730,7 +722,6 @@ pub(crate) enum AppMsg {
     /// destinations.
     DetailAlarms {
         gen: u64,
-        env_name: String,
         /// Which fetch this answers: an `alarm_prefix` edit starts
         /// another, and an answer matched under the old prefix must not
         /// settle the panel.
@@ -758,7 +749,6 @@ pub(crate) enum AppMsg {
     /// Populates the Detail-Health-tab "recent deploys" section.
     DetailRecentVersions {
         gen: u64,
-        env_name: String,
         /// Which fetch this answers (`Fetch::settle_ticket`).
         ticket: Ticket,
         result: Result<Vec<crate::aws::AppVersion>, String>,

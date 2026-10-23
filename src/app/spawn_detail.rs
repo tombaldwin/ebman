@@ -60,13 +60,11 @@ impl App {
             let gen = self.generation;
             let _ = self.msg_tx.send(AppMsg::DetailAlarms {
                 gen,
-                env_name,
                 ticket,
                 result,
             });
             return;
         }
-        let env_for_msg = env_name.clone();
         let matching = self.alarm_match_for(&env_name);
         self.spawn_aws_in(
             self.detail_client(),
@@ -74,7 +72,6 @@ impl App {
             move |aws| async move { aws.list_alarms_for_env(&env_name, &matching).await },
             move |gen, result| AppMsg::DetailAlarms {
                 gen,
-                env_name: env_for_msg,
                 ticket,
                 result,
             },
@@ -83,7 +80,7 @@ impl App {
 
     /// Detail-Health-tab recent-versions fetch. Same shape as
     /// `spawn_why_red_deploys` but lands on `AppMsg::DetailRecentVersions`.
-    pub(super) fn spawn_detail_recent_versions(&mut self, app_name: String, env_name: String) {
+    pub(super) fn spawn_detail_recent_versions(&mut self, app_name: String) {
         // No Detail view: nothing would take the answer.
         let Some(ticket) = self.detail.as_mut().map(|d| d.recent_versions.begin()) else {
             return;
@@ -93,7 +90,6 @@ impl App {
             let gen = self.generation;
             let _ = self.msg_tx.send(AppMsg::DetailRecentVersions {
                 gen,
-                env_name,
                 ticket,
                 result,
             });
@@ -105,7 +101,6 @@ impl App {
             move |aws| async move { aws.list_application_versions(&app_name).await },
             move |gen, result| AppMsg::DetailRecentVersions {
                 gen,
-                env_name,
                 ticket,
                 result,
             },
@@ -147,14 +142,12 @@ impl App {
             return;
         };
         let ticket = d.env_vars_request.begin();
-        let env_for_msg = env_name.clone();
         self.spawn_aws_in(
             self.detail_client(),
             "fetch_env_vars",
             move |aws| async move { aws.fetch_env_vars(&app_name, &env_name).await },
             move |gen, result| AppMsg::DetailEnvVars {
                 gen,
-                env_name: env_for_msg,
                 ticket,
                 result,
             },
@@ -168,7 +161,6 @@ impl App {
         let Some(arn) = d.env_snapshot.arn.clone() else {
             return;
         };
-        let env_name = d.env_name.clone();
         let Some(d) = self.detail.as_mut() else {
             return;
         };
@@ -179,7 +171,6 @@ impl App {
             move |aws| async move { aws.list_tags(&arn).await },
             move |gen, result| AppMsg::DetailTags {
                 gen,
-                env_name,
                 ticket,
                 result,
             },
@@ -251,7 +242,6 @@ impl App {
                 Err(e) => {
                     let _ = tx.send(AppMsg::DetailMetrics {
                         gen,
-                        env_name,
                         ticket,
                         result: Err(flatten_err("cached_client", e)),
                     });
@@ -272,7 +262,6 @@ impl App {
             );
             let _ = tx.send(AppMsg::DetailMetrics {
                 gen,
-                env_name,
                 ticket,
                 result,
             });
@@ -306,20 +295,17 @@ impl App {
             let gen = self.generation;
             let _ = self.msg_tx.send(AppMsg::DetailAppMetrics {
                 gen,
-                env_name,
                 ticket,
                 result: Ok(demo_rows.unwrap_or_default()),
             });
             return;
         };
-        let env_for_msg = env_name.clone();
         self.spawn_aws_in(
             self.detail_client(),
             "fetch_app_metrics",
             move |aws| async move { aws.fetch_app_metrics(&env_name, range, &spec).await },
             move |gen, result| AppMsg::DetailAppMetrics {
                 gen,
-                env_name: env_for_msg,
                 ticket,
                 result,
             },
@@ -375,7 +361,6 @@ impl App {
             .envs
             .get(&env_name)
             .and_then(|s| s.error_fingerprint.clone());
-        let env_for_msg = env_name.clone();
         self.spawn_aws_in(
             self.detail_client(),
             "run_insights_query",
@@ -389,7 +374,6 @@ impl App {
             },
             move |gen, result| AppMsg::DetailTopErrors {
                 gen,
-                env_name: env_for_msg,
                 ticket,
                 result,
             },
@@ -409,13 +393,11 @@ impl App {
             let gen = self.generation;
             let _ = self.msg_tx.send(AppMsg::DetailQueues {
                 gen,
-                env_name,
                 ticket,
                 result,
             });
             return;
         }
-        let env_for_msg = env_name.clone();
         self.spawn_aws_in(
             self.detail_client(),
             "describe_worker_queues",
@@ -425,7 +407,6 @@ impl App {
             },
             move |gen, result| AppMsg::DetailQueues {
                 gen,
-                env_name: env_for_msg,
                 ticket,
                 result,
             },
@@ -450,20 +431,17 @@ impl App {
             let gen = self.generation;
             let _ = self.msg_tx.send(AppMsg::DetailEvents {
                 gen,
-                env_name,
                 ticket,
                 result,
             });
             return;
         }
-        let env_for_msg = env_name.clone();
         self.spawn_aws_in(
             self.detail_client(),
             "list_events_for_env",
             move |aws| async move { aws.list_events_for_env(&env_name, 50).await },
             move |gen, result| AppMsg::DetailEvents {
                 gen,
-                env_name: env_for_msg,
                 ticket,
                 result,
             },
@@ -487,20 +465,17 @@ impl App {
             let gen = self.generation;
             let _ = self.msg_tx.send(AppMsg::DetailInstances {
                 gen,
-                env_name,
                 ticket,
                 result,
             });
             return;
         }
-        let env_for_msg = env_name.clone();
         self.spawn_aws_in(
             self.detail_client(),
             "list_instances",
             move |aws| async move { aws.list_instances(&env_name).await },
             move |gen, result| AppMsg::DetailInstances {
                 gen,
-                env_name: env_for_msg,
                 ticket,
                 result,
             },

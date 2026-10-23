@@ -599,28 +599,27 @@ impl App {
         }
     }
 
-    /// Apply a Detail-tab AppMsg payload. Handles the boilerplate every
-    /// `Detail*` variant shares: drop when no Detail view is open, drop
-    /// when the user switched to a different env mid-fetch. The stale-
-    /// generation drop is handled upstream by `handle_msg`'s central guard.
+    /// Apply an answer to one of Detail's requests (`pick` names it).
+    /// Dropped with Detail closed, or when `ticket` is not that request's
+    /// latest: an earlier request's, a closed Detail's, or a same-named
+    /// env's in another region (tickets are process-wide). The request is
+    /// finished before `apply` sees the answer, so no handler can apply
+    /// one without the check.
     ///
-    /// The closure runs against `&mut DetailState` + the raw
+    /// `apply` runs against `&mut DetailState` + the raw
     /// `Result<T, String>` so the caller picks its own success / error
-    /// behaviour — most clear `detail.error` on the Ok branch, but tags /
-    /// env-vars use `tracing::warn!` instead since their failures
-    /// shouldn't tint the whole tab red.
-    pub(crate) fn apply_detail_msg<T, F>(
+    /// behaviour.
+    pub(crate) fn apply_detail_answer<T>(
         &mut self,
-        env_name: &str,
+        ticket: crate::app::Ticket,
+        pick: impl FnOnce(&mut DetailState) -> &mut crate::app::Request,
         result: Result<T, String>,
-        apply: F,
-    ) where
-        F: FnOnce(&mut DetailState, Result<T, String>),
-    {
+        apply: impl FnOnce(&mut DetailState, Result<T, String>),
+    ) {
         let Some(detail) = self.detail.as_mut() else {
             return;
         };
-        if detail.env_name != env_name {
+        if !pick(detail).finish(ticket) {
             return;
         }
         apply(detail, result);

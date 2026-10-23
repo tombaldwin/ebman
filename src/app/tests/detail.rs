@@ -855,7 +855,6 @@ async fn a_successful_fetch_does_not_erase_another_fetchs_error() {
     let ticket = detail_ticket(&mut app, |d| &mut d.events_request);
     app.handle_msg(crate::app::AppMsg::DetailEvents {
         gen,
-        env_name: "wk-prod".to_string(),
         ticket,
         result: Err("AccessDenied: DescribeEvents".to_string()),
     });
@@ -873,7 +872,6 @@ async fn a_successful_fetch_does_not_erase_another_fetchs_error() {
     let ticket = detail_ticket(&mut app, |d| &mut d.instances_request);
     app.handle_msg(crate::app::AppMsg::DetailInstances {
         gen,
-        env_name: "wk-prod".to_string(),
         ticket,
         result: Ok(Vec::new()),
     });
@@ -1187,8 +1185,10 @@ async fn detail_search_with_nothing_to_find_is_inert() {
 async fn detail_results_for_another_env_are_dropped() {
     use crate::app::AppMsg;
 
-    // Each case: a message naming `worker-prod` arriving while Detail is
-    // open on `api-prod`, and what it would have overwritten.
+    // Each case: an answer to another env's request (`worker-prod`, or a
+    // same-named env in another region) arriving while Detail is open on
+    // `api-prod`, and what it would have overwritten. Those carry a ticket
+    // this Detail never issued; the log groups carry the other env's key.
     let armed = || {
         let mut app = detail_on("api-prod");
         {
@@ -1213,11 +1213,10 @@ async fn detail_results_for_another_env_are_dropped() {
 
     // Alarms.
     let mut app = armed();
-    let ticket = app.detail.as_mut().unwrap().cw_alarms.begin();
+    let _ = app.detail.as_mut().unwrap().cw_alarms.begin();
     app.handle_msg(AppMsg::DetailAlarms {
         gen: app.generation,
-        env_name: "worker-prod".into(),
-        ticket,
+        ticket: crate::app::Request::stray_ticket(),
         result: Ok(Vec::new()),
     });
     assert!(
@@ -1227,11 +1226,10 @@ async fn detail_results_for_another_env_are_dropped() {
 
     // Recent versions.
     let mut app = armed();
-    let ticket = app.detail.as_mut().unwrap().recent_versions.begin();
+    let _ = app.detail.as_mut().unwrap().recent_versions.begin();
     app.handle_msg(AppMsg::DetailRecentVersions {
         gen: app.generation,
-        env_name: "worker-prod".into(),
-        ticket,
+        ticket: crate::app::Request::stray_ticket(),
         result: Ok(vec![]),
     });
     assert!(
@@ -1254,8 +1252,7 @@ async fn detail_results_for_another_env_are_dropped() {
     let ticket = app.detail.as_mut().unwrap().app_tab.metrics.begin();
     app.handle_msg(AppMsg::DetailAppMetrics {
         gen: app.generation,
-        env_name: "worker-prod".into(),
-        ticket,
+        ticket: crate::app::Request::stray_ticket(),
         result: Ok(app_metrics()),
     });
     assert!(
@@ -1270,7 +1267,6 @@ async fn detail_results_for_another_env_are_dropped() {
     );
     app.handle_msg(AppMsg::DetailAppMetrics {
         gen: app.generation,
-        env_name: "api-prod".into(),
         ticket,
         result: Ok(app_metrics()),
     });
@@ -1296,8 +1292,7 @@ async fn detail_results_for_another_env_are_dropped() {
     let ticket = app.detail.as_mut().unwrap().app_tab.top_errors.begin();
     app.handle_msg(AppMsg::DetailTopErrors {
         gen: app.generation,
-        env_name: "worker-prod".into(),
-        ticket,
+        ticket: crate::app::Request::stray_ticket(),
         result: Ok(top()),
     });
     assert!(app
@@ -1310,7 +1305,6 @@ async fn detail_results_for_another_env_are_dropped() {
         .is_none());
     app.handle_msg(AppMsg::DetailTopErrors {
         gen: app.generation,
-        env_name: "api-prod".into(),
         ticket: earlier,
         result: Ok(top()),
     });
@@ -1330,7 +1324,6 @@ async fn detail_results_for_another_env_are_dropped() {
     );
     app.handle_msg(AppMsg::DetailTopErrors {
         gen: app.generation,
-        env_name: "api-prod".into(),
         ticket,
         result: Ok(top()),
     });
@@ -1614,14 +1607,12 @@ async fn a_failed_config_fetch_is_shown_not_just_logged() {
         let msg = if tags {
             AppMsg::DetailTags {
                 gen: 0,
-                env_name: "api-prod".into(),
                 ticket: detail_ticket(&mut app, |d| &mut d.tags_request),
                 result: Err("AccessDenied: elasticbeanstalk:ListTagsForResource".into()),
             }
         } else {
             AppMsg::DetailEnvVars {
                 gen: 0,
-                env_name: "api-prod".into(),
                 ticket: detail_ticket(&mut app, |d| &mut d.env_vars_request),
                 result: Err("AccessDenied: DescribeConfigurationSettings".into()),
             }
@@ -1653,7 +1644,6 @@ async fn a_successful_config_refetch_clears_only_its_own_error() {
     let ticket = detail_ticket(&mut app, |d| &mut d.tags_request);
     app.handle_msg(AppMsg::DetailTags {
         gen: 0,
-        env_name: "api-prod".into(),
         ticket,
         result: Err("tags boom".into()),
     });
@@ -1665,7 +1655,6 @@ async fn a_successful_config_refetch_clears_only_its_own_error() {
     let ticket = detail_ticket(&mut app, |d| &mut d.env_vars_request);
     app.handle_msg(AppMsg::DetailEnvVars {
         gen: 0,
-        env_name: "api-prod".into(),
         ticket,
         result: Ok(vec![("K".into(), "V".into())]),
     });
@@ -1683,7 +1672,6 @@ async fn a_successful_config_refetch_clears_only_its_own_error() {
     let ticket = detail_ticket(&mut app, |d| &mut d.tags_request);
     app.handle_msg(AppMsg::DetailTags {
         gen: 0,
-        env_name: "api-prod".into(),
         ticket,
         result: Ok(vec![("t".into(), "v".into())]),
     });
@@ -2339,13 +2327,11 @@ async fn a_metrics_result_for_a_range_left_behind_is_dropped() {
     // The old range's answers land: dropped, still loading.
     app.handle_msg(AppMsg::DetailMetrics {
         gen: app.generation,
-        env_name: "api-prod".into(),
         ticket: old_metrics,
         result: Ok((vec![series("old")], None)),
     });
     app.handle_msg(AppMsg::DetailAppMetrics {
         gen: app.generation,
-        env_name: "api-prod".into(),
         ticket: old,
         result: Ok(app_metrics("old")),
     });
@@ -2362,13 +2348,11 @@ async fn a_metrics_result_for_a_range_left_behind_is_dropped() {
     // The current range's answers apply.
     app.handle_msg(AppMsg::DetailMetrics {
         gen: app.generation,
-        env_name: "api-prod".into(),
         ticket: new_metrics,
         result: Ok((vec![series("new")], None)),
     });
     app.handle_msg(AppMsg::DetailAppMetrics {
         gen: app.generation,
-        env_name: "api-prod".into(),
         ticket: new,
         result: Ok(app_metrics("new")),
     });
@@ -2402,7 +2386,6 @@ async fn an_older_metrics_answer_for_the_same_range_is_dropped() {
     };
     app.handle_msg(AppMsg::DetailMetrics {
         gen: app.generation,
-        env_name: "api-prod".into(),
         ticket: first,
         result: Ok((vec![series("first")], None)),
     });
@@ -2414,7 +2397,6 @@ async fn an_older_metrics_answer_for_the_same_range_is_dropped() {
     );
     app.handle_msg(AppMsg::DetailMetrics {
         gen: app.generation,
-        env_name: "api-prod".into(),
         ticket: second,
         result: Ok((vec![series("second")], None)),
     });
@@ -2518,7 +2500,6 @@ async fn a_partial_metrics_result_draws_and_reports_its_failure() {
     let ticket = app.detail.as_mut().unwrap().metrics_request.begin();
     app.handle_msg(AppMsg::DetailMetrics {
         gen: app.generation,
-        env_name: "api-prod".into(),
         ticket,
         result: Ok((vec![series], Some("custom metrics: AccessDenied".into()))),
     });
@@ -2945,7 +2926,6 @@ async fn a_preview_result_landing_after_a_save_is_dropped() {
     app.set_app_tabs(crate::config::parse("app.api-prod.rds = \"db\"\n").app_tabs);
     app.handle_msg(AppMsg::DetailAppMetrics {
         gen: app.generation,
-        env_name: "api-prod".into(),
         ticket: preview,
         result: Ok(marked("preview")),
     });
@@ -2958,7 +2938,6 @@ async fn a_preview_result_landing_after_a_save_is_dropped() {
     let config = app.detail.as_mut().unwrap().app_tab.metrics.begin();
     app.handle_msg(AppMsg::DetailAppMetrics {
         gen: app.generation,
-        env_name: "api-prod".into(),
         ticket: config,
         result: Ok(marked("config")),
     });
@@ -3187,7 +3166,6 @@ async fn an_emptied_app_tab_on_screen_is_fetched_again() {
     );
     app.handle_msg(AppMsg::DetailAlarms {
         gen: app.generation,
-        env_name: "api-prod".into(),
         ticket: old,
         result: Ok(Vec::new()),
     });

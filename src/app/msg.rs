@@ -120,12 +120,9 @@ impl App {
                 self.handle_env_instance_counts(round, results)
             }
             AppMsg::Events { result, .. } => self.handle_events(result),
-            AppMsg::DetailEvents {
-                env_name,
-                ticket,
-                result,
-                ..
-            } => self.handle_detail_events(env_name, ticket, result),
+            AppMsg::DetailEvents { ticket, result, .. } => {
+                self.handle_detail_events(ticket, result)
+            }
             AppMsg::ActionResult {
                 pending,
                 action,
@@ -133,37 +130,27 @@ impl App {
                 result,
                 ..
             } => self.handle_action_result(pending, action, env_name, result),
-            AppMsg::DetailInstances {
-                env_name,
-                ticket,
-                result,
-                ..
-            } => self.handle_detail_instances(env_name, ticket, result),
-            AppMsg::DetailMetrics {
-                env_name,
-                ticket,
-                result,
-                ..
-            } => self.handle_detail_metrics(env_name, ticket, result),
-            AppMsg::DetailAppMetrics {
-                env_name,
-                ticket,
-                result,
-                ..
-            } => self.apply_detail_msg(&env_name, result, |d, r| {
-                d.app_tab.metrics.settle_ticket(ticket, r);
-            }),
+            AppMsg::DetailInstances { ticket, result, .. } => {
+                self.handle_detail_instances(ticket, result)
+            }
+            AppMsg::DetailMetrics { ticket, result, .. } => {
+                self.handle_detail_metrics(ticket, result)
+            }
+            // Settled by ticket: a closed Detail's, or a same-named env's,
+            // matches nothing (tickets are process-wide).
+            AppMsg::DetailAppMetrics { ticket, result, .. } => {
+                if let Some(d) = self.detail.as_mut() {
+                    d.app_tab.metrics.settle_ticket(ticket, result);
+                }
+            }
             AppMsg::AppTabDiscovered {
                 key, ticket, found, ..
             } => self.handle_app_tab_discovered(key, ticket, *found),
-            AppMsg::DetailTopErrors {
-                env_name,
-                ticket,
-                result,
-                ..
-            } => self.apply_detail_msg(&env_name, result, |d, r| {
-                d.app_tab.top_errors.settle_ticket(ticket, r);
-            }),
+            AppMsg::DetailTopErrors { ticket, result, .. } => {
+                if let Some(d) = self.detail.as_mut() {
+                    d.app_tab.top_errors.settle_ticket(ticket, result);
+                }
+            }
             AppMsg::DetailLogsProgress {
                 ticket,
                 stage,
@@ -257,12 +244,7 @@ impl App {
             } => {
                 self.handle_rollback_target(EnvKey::new(region, env_name), current_version, result)
             }
-            AppMsg::DetailTags {
-                env_name,
-                ticket,
-                result,
-                ..
-            } => self.handle_detail_tags(env_name, ticket, result),
+            AppMsg::DetailTags { ticket, result, .. } => self.handle_detail_tags(ticket, result),
             AppMsg::DeployFromLocal {
                 pending,
                 env_name,
@@ -297,12 +279,9 @@ impl App {
             AppMsg::DetailLogGroups { key, groups, .. } => {
                 self.handle_detail_log_groups(key, groups)
             }
-            AppMsg::DetailAlarms {
-                env_name,
-                ticket,
-                result,
-                ..
-            } => self.handle_detail_alarms(env_name, ticket, result),
+            AppMsg::DetailAlarms { ticket, result, .. } => {
+                self.handle_detail_alarms(ticket, result)
+            }
             AppMsg::EnvVarsForEdit {
                 env_name,
                 region,
@@ -315,12 +294,9 @@ impl App {
                 result,
                 ..
             } => self.handle_costs_fetched(account, region, result),
-            AppMsg::DetailRecentVersions {
-                env_name,
-                ticket,
-                result,
-                ..
-            } => self.handle_detail_recent_versions(env_name, ticket, result),
+            AppMsg::DetailRecentVersions { ticket, result, .. } => {
+                self.handle_detail_recent_versions(ticket, result)
+            }
             AppMsg::FormPrefilled { key, settings, .. } => {
                 self.handle_form_prefilled(key, settings)
             }
@@ -330,12 +306,9 @@ impl App {
                 result,
                 ..
             } => self.handle_form_multi_select_loaded(key, field_key, result),
-            AppMsg::DetailEnvVars {
-                env_name,
-                ticket,
-                result,
-                ..
-            } => self.handle_detail_env_vars(env_name, ticket, result),
+            AppMsg::DetailEnvVars { ticket, result, .. } => {
+                self.handle_detail_env_vars(ticket, result)
+            }
             AppMsg::OptionSettingsUpdate {
                 pending,
                 env_name,
@@ -366,12 +339,9 @@ impl App {
                 result,
                 ..
             } => self.handle_tag_update(pending, env_name, summary, result),
-            AppMsg::DetailQueues {
-                env_name,
-                ticket,
-                result,
-                ..
-            } => self.handle_detail_queues(env_name, ticket, result),
+            AppMsg::DetailQueues { ticket, result, .. } => {
+                self.handle_detail_queues(ticket, result)
+            }
             // An answer for the modal's env name in another region: a
             // same-named env's modal, since closed.
             AppMsg::DryRunResult { .. }
@@ -600,22 +570,21 @@ impl App {
 
     fn handle_detail_events(
         &mut self,
-        env_name: String,
         ticket: crate::app::Ticket,
         result: Result<Vec<EbEvent>, String>,
     ) {
-        self.apply_detail_msg(&env_name, result, |d, r| {
-            if !d.events_request.finish(ticket) {
-                return;
-            }
-            match r {
+        self.apply_detail_answer(
+            ticket,
+            |d| &mut d.events_request,
+            result,
+            |d, r| match r {
                 Ok(events) => {
                     d.events = events;
                     d.clear_error(crate::mode_detail::DetailFetch::Events);
                 }
                 Err(msg) => d.set_error(crate::mode_detail::DetailFetch::Events, msg),
-            }
-        });
+            },
+        );
     }
 
     fn handle_action_result(
@@ -651,22 +620,21 @@ impl App {
 
     fn handle_detail_instances(
         &mut self,
-        env_name: String,
         ticket: crate::app::Ticket,
         result: Result<Vec<Instance>, String>,
     ) {
-        self.apply_detail_msg(&env_name, result, |d, r| {
-            if !d.instances_request.finish(ticket) {
-                return;
-            }
-            match r {
+        self.apply_detail_answer(
+            ticket,
+            |d| &mut d.instances_request,
+            result,
+            |d, r| match r {
                 Ok(instances) => {
                     d.instances = instances;
                     d.clear_error(crate::mode_detail::DetailFetch::Instances);
                 }
                 Err(msg) => d.set_error(crate::mode_detail::DetailFetch::Instances, msg),
-            }
-        });
+            },
+        );
     }
 
     /// Only the latest request's answer lands: one for a range the
@@ -676,15 +644,14 @@ impl App {
     /// window under the right title.
     fn handle_detail_metrics(
         &mut self,
-        env_name: String,
         ticket: crate::app::Ticket,
         result: super::spawn_detail::MetricsResult,
     ) {
-        self.apply_detail_msg(&env_name, result, |d, r| {
-            if !d.metrics_request.finish(ticket) {
-                return;
-            }
-            match r {
+        self.apply_detail_answer(
+            ticket,
+            |d| &mut d.metrics_request,
+            result,
+            |d, r| match r {
                 Ok((metrics, partial)) => {
                     d.metrics = metrics;
                     match partial {
@@ -693,8 +660,8 @@ impl App {
                     }
                 }
                 Err(msg) => d.set_error(crate::mode_detail::DetailFetch::Metrics, msg),
-            }
-        });
+            },
+        );
     }
 
     fn handle_detail_logs_progress(&mut self, ticket: Ticket, stage: LogTailStage, attempt: u32) {
@@ -1255,29 +1222,30 @@ impl App {
 
     fn handle_detail_tags(
         &mut self,
-        env_name: String,
         ticket: crate::app::Ticket,
         result: Result<Vec<(String, String)>, String>,
     ) {
-        self.apply_detail_msg(&env_name, result, |d, r| {
-            if !d.tags_request.finish(ticket) {
-                return;
-            }
-            match r {
-                Ok(tags) => {
-                    d.tags = tags;
-                    // A delete may have shrunk the list / removed the row
-                    // mid-edit.
-                    d.clamp_config_cursor();
-                    d.revalidate_config_edit();
-                    d.clear_error(crate::mode_detail::DetailFetch::Tags);
+        self.apply_detail_answer(
+            ticket,
+            |d| &mut d.tags_request,
+            result,
+            |d, r| {
+                match r {
+                    Ok(tags) => {
+                        d.tags = tags;
+                        // A delete may have shrunk the list / removed the row
+                        // mid-edit.
+                        d.clamp_config_cursor();
+                        d.revalidate_config_edit();
+                        d.clear_error(crate::mode_detail::DetailFetch::Tags);
+                    }
+                    Err(msg) => {
+                        tracing::warn!(error = %msg, "tags fetch failed");
+                        d.set_error(crate::mode_detail::DetailFetch::Tags, msg);
+                    }
                 }
-                Err(msg) => {
-                    tracing::warn!(error = %msg, "tags fetch failed");
-                    d.set_error(crate::mode_detail::DetailFetch::Tags, msg);
-                }
-            }
-        });
+            },
+        );
     }
 
     fn handle_deploy_from_local(
@@ -1470,19 +1438,16 @@ impl App {
         detail.cw_log_groups = Some(groups);
     }
 
+    /// Settled by ticket: a closed Detail's, or a same-named env's,
+    /// matches nothing.
     fn handle_detail_alarms(
         &mut self,
-        env_name: String,
         ticket: Ticket,
         result: Result<Vec<crate::aws::CwAlarm>, String>,
     ) {
-        let Some(detail) = self.detail.as_mut() else {
-            return;
-        };
-        if detail.env_name != env_name {
-            return;
+        if let Some(detail) = self.detail.as_mut() {
+            detail.cw_alarms.settle_ticket(ticket, result);
         }
-        detail.cw_alarms.settle_ticket(ticket, result);
     }
 
     fn handle_env_vars_for_edit(
@@ -1577,19 +1542,16 @@ impl App {
         }
     }
 
+    /// Settled by ticket: a closed Detail's, or a same-named env's,
+    /// matches nothing.
     fn handle_detail_recent_versions(
         &mut self,
-        env_name: String,
         ticket: Ticket,
         result: Result<Vec<crate::aws::AppVersion>, String>,
     ) {
-        let Some(detail) = self.detail.as_mut() else {
-            return;
-        };
-        if detail.env_name != env_name {
-            return;
+        if let Some(detail) = self.detail.as_mut() {
+            detail.recent_versions.settle_ticket(ticket, result);
         }
-        detail.recent_versions.settle_ticket(ticket, result);
     }
 
     fn handle_form_prefilled(
@@ -1690,29 +1652,30 @@ impl App {
 
     fn handle_detail_env_vars(
         &mut self,
-        env_name: String,
         ticket: crate::app::Ticket,
         result: Result<Vec<(String, String)>, String>,
     ) {
-        self.apply_detail_msg(&env_name, result, |d, r| {
-            if !d.env_vars_request.finish(ticket) {
-                return;
-            }
-            match r {
-                Ok(vars) => {
-                    d.env_vars = vars;
-                    // A delete may have shrunk the list / removed the row
-                    // mid-edit.
-                    d.clamp_config_cursor();
-                    d.revalidate_config_edit();
-                    d.clear_error(crate::mode_detail::DetailFetch::EnvVars);
+        self.apply_detail_answer(
+            ticket,
+            |d| &mut d.env_vars_request,
+            result,
+            |d, r| {
+                match r {
+                    Ok(vars) => {
+                        d.env_vars = vars;
+                        // A delete may have shrunk the list / removed the row
+                        // mid-edit.
+                        d.clamp_config_cursor();
+                        d.revalidate_config_edit();
+                        d.clear_error(crate::mode_detail::DetailFetch::EnvVars);
+                    }
+                    Err(msg) => {
+                        tracing::warn!(error = %msg, "env vars fetch failed");
+                        d.set_error(crate::mode_detail::DetailFetch::EnvVars, msg);
+                    }
                 }
-                Err(msg) => {
-                    tracing::warn!(error = %msg, "env vars fetch failed");
-                    d.set_error(crate::mode_detail::DetailFetch::EnvVars, msg);
-                }
-            }
-        });
+            },
+        );
     }
 
     fn handle_option_settings_update(
@@ -1881,22 +1844,21 @@ impl App {
 
     fn handle_detail_queues(
         &mut self,
-        env_name: String,
         ticket: crate::app::Ticket,
         result: Result<WorkerQueues, String>,
     ) {
-        self.apply_detail_msg(&env_name, result, |d, r| {
-            if !d.queues_request.finish(ticket) {
-                return;
-            }
-            match r {
+        self.apply_detail_answer(
+            ticket,
+            |d| &mut d.queues_request,
+            result,
+            |d, r| match r {
                 Ok(queues) => {
                     d.queues = queues;
                     d.clear_error(crate::mode_detail::DetailFetch::Queues);
                 }
                 Err(msg) => d.set_error(crate::mode_detail::DetailFetch::Queues, msg),
-            }
-        });
+            },
+        );
     }
 
     fn handle_dlq_messages(
