@@ -1968,14 +1968,14 @@ mod docs_drift {
         out
     }
 
-    /// The `*_body` functions in `src` that return an exit code: their
-    /// signature returns `i32` or `(i32, ...)`.
-    fn exit_bodies(src: &str) -> Vec<String> {
+    /// The functions in `src` that return an exit code: their signature
+    /// returns `i32` or `(i32, ...)`.
+    fn exit_fns(src: &str) -> Vec<String> {
         super::super::scan::fn_bodies(src)
             .into_iter()
-            .filter(|(name, body)| {
+            .filter(|(_, body)| {
                 let sig = body.split('{').next().unwrap_or_default();
-                name.ends_with("_body") && (sig.contains("-> i32") || sig.contains("-> (i32"))
+                sig.contains("-> i32") || sig.contains("-> (i32")
             })
             .map(|(name, _)| name)
             .collect()
@@ -2003,6 +2003,13 @@ fn y_body() -> (i32, Option<u8>) {
 fn z_body() -> String {
     String::new()
 }
+pub(crate) fn exit_code(failed: bool) -> i32 {
+    if failed {
+        6
+    } else {
+        0
+    }
+}
 ";
         assert_eq!(
             body_return_codes(src, "x_body"),
@@ -2012,7 +2019,11 @@ fn z_body() -> String {
             body_return_codes(src, "y_body"),
             [0, 5].into_iter().collect()
         );
-        assert_eq!(exit_bodies(src), ["x_body", "y_body"]);
+        assert_eq!(exit_fns(src), ["x_body", "y_body", "exit_code"]);
+        assert_eq!(
+            body_return_codes(src, "exit_code"),
+            [0, 6].into_iter().collect()
+        );
     }
 
     /// The codes a subcommand's help block lists after "Exit codes:".
@@ -2131,9 +2142,7 @@ fn z_body() -> String {
     #[test]
     fn every_exit_code_is_documented() {
         let docs = std::fs::read_to_string("docs/headless.md").expect("read headless.md");
-        let mut subs_by_module: std::collections::BTreeMap<&str, Vec<String>> =
-            std::collections::BTreeMap::new();
-        for (sub, module) in [
+        let table = [
             ("envs", "cli/envs.rs"),
             ("action", "cli/action.rs"),
             ("lint", "cli/lint.rs"),
@@ -2147,15 +2156,26 @@ fn z_body() -> String {
             ("mcp", "cli/mcp/mod.rs"),
             ("freeze", "cli/freeze.rs"),
             ("thaw", "cli/freeze.rs"),
-        ] {
+        ];
+        let body_of = |sub: &str| format!("{}_body", sub.replace(' ', "_"));
+        for (sub, module) in table {
             let src = super::super::scan::production_source(module);
-            // What the module exits with, and what the subcommand's
-            // testable body returns for its shell to exit with.
-            let body_fn = format!("{}_body", sub.replace(' ', "_"));
-            let mut used = body_return_codes(&src, &body_fn);
-            // Only the module's own exits: freeze.rs holds `thaw` too,
-            // and its body's codes are not `freeze`'s.
-            if sub != "thaw" {
+            // Another subcommand's body in the same module (freeze.rs
+            // holds `thaw` too): its codes are not this one's.
+            let others: Vec<String> = table
+                .iter()
+                .filter(|(s, m)| *m == module && *s != sub)
+                .map(|(s, _)| body_of(s))
+                .collect();
+            // What the module exits with, and what every function that
+            // hands back an exit code returns: the subcommand's testable
+            // body, and any helper it returns through (`lint_exit_code`).
+            // By signature, not by name, so no helper is out of sight.
+            let mut used = std::collections::BTreeSet::new();
+            for f in exit_fns(&src).iter().filter(|f| !others.contains(f)) {
+                used.extend(body_return_codes(&src, f));
+            }
+            if others.is_empty() {
                 used.extend(exit_codes_in(&super::super::scan::statements_of(&src)));
             }
             let listed = documented_codes(&docs, sub)
@@ -2165,19 +2185,6 @@ fn z_body() -> String {
                 missing.is_empty(),
                 "`ebman {sub}` can exit {missing:?}, which docs/headless.md's table does not list"
             );
-            subs_by_module.entry(module).or_default().push(body_fn);
-        }
-        // A body named for no subcommand returns codes the loop above
-        // never reads: name it `<subcommand>_body`.
-        for (module, bodies) in subs_by_module {
-            let src = super::super::scan::production_source(module);
-            for body in exit_bodies(&src) {
-                assert!(
-                    bodies.contains(&body),
-                    "{module}: `{body}` returns exit codes but is named for no subcommand \
-                     in this table, so they are never checked against the docs"
-                );
-            }
         }
     }
 
