@@ -62,6 +62,19 @@ And one found while reading the code:
   that ends cleanly (`:thaw-deploys`, `:incident END`, quit) removes its
   own file and records nothing: that was a decision.
 
+## Known limits
+
+- **A reader in another pid namespace** (an MCP server in a container
+  sharing `~/.cache`, a home directory on NFS) cannot see a live TUI's
+  pid, judges its session file stale, removes it and records an ended
+  freeze that has not ended. The same was true of the single marker
+  since 0.28; `ebman freeze`, which no pid owns, is the freeze to use
+  across such boundaries.
+- **A reaper racing a declare** can record an ended freeze just after a
+  new freeze cleared the record. The TUI and `doctor` show the note only
+  with no freeze in force, so it cannot tell an operator to declare a
+  freeze that holds.
+
 ## Not doing
 
 - **An MCP tool to declare a freeze.** Declaring one only restricts, so
