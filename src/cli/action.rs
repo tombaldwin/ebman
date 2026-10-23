@@ -1112,6 +1112,15 @@ where
         let cap = max_concurrency.unwrap_or(per_region.len()).max(1);
         let mut queue: std::collections::VecDeque<(String, std::sync::Arc<aws::AwsClient>)> =
             per_region.into_iter().collect();
+        // A freeze declared during the pre-flight stops the first wave,
+        // as the sequential loop's check before its first region does.
+        // Only the check after each join existed, so a freeze that
+        // landed while regions were being listed reached all of them.
+        if let Some(reason) = freeze_halt() {
+            let _ = writeln!(err, "ebman action rollout: halting — {reason}");
+            queue.clear();
+            halted_by_freeze = true;
+        }
         // Seed initial batch.
         for _ in 0..cap.min(queue.len()) {
             if let Some(next) = queue.pop_front() {
@@ -2529,6 +2538,17 @@ mod rollout {
             "{}",
             r.out
         );
+    }
+
+    /// A freeze declared during the pre-flight stops the first wave too:
+    /// the sequential loop checks before every region, and the parallel
+    /// one must check before it seeds.
+    #[tokio::test]
+    async fn a_freeze_before_the_first_wave_dispatches_nothing() {
+        for extra in [&["--yes"][..], &["--yes", "--parallel"][..]] {
+            let r = rollout(&with(extra), THREE, None, Some(0)).await;
+            assert_eq!((r.code, r.dispatched), (3, 0), "{extra:?}: {}", r.err);
+        }
     }
 
     #[tokio::test]
