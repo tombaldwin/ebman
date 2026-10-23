@@ -321,15 +321,15 @@ impl App {
                 result,
                 ..
             } => self.handle_detail_recent_versions(env_name, ticket, result),
-            AppMsg::FormPrefilled {
-                env_name, settings, ..
-            } => self.handle_form_prefilled(env_name, settings),
+            AppMsg::FormPrefilled { key, settings, .. } => {
+                self.handle_form_prefilled(key, settings)
+            }
             AppMsg::FormMultiSelectLoaded {
-                env_name,
+                key,
                 field_key,
                 result,
                 ..
-            } => self.handle_form_multi_select_loaded(env_name, field_key, result),
+            } => self.handle_form_multi_select_loaded(key, field_key, result),
             AppMsg::DetailEnvVars {
                 env_name,
                 ticket,
@@ -1592,13 +1592,16 @@ impl App {
 
     fn handle_form_prefilled(
         &mut self,
-        env_name: String,
+        key: EnvKey,
         settings: Result<Vec<(String, String, String)>, String>,
     ) {
         let Some(form) = self.form.as_mut() else {
             return;
         };
-        if form.env_name != env_name {
+        // By key: under `:region all` a form closed on one twin and
+        // opened on the other would otherwise take the first one's
+        // settings, and Submit would write them to the second.
+        if form.key() != key {
             return;
         }
         match settings {
@@ -1643,14 +1646,16 @@ impl App {
 
     fn handle_form_multi_select_loaded(
         &mut self,
-        env_name: String,
+        key: EnvKey,
         field_key: String,
         result: Result<MultiSelectOptions, String>,
     ) {
         let Some(form) = self.form.as_mut() else {
             return;
         };
-        if form.env_name != env_name {
+        // By key: another region's subnets, security groups or
+        // certificates do not exist in this one's.
+        if form.key() != key {
             return;
         }
         let Some(field) = form.fields.iter_mut().find(|f| f.key == field_key) else {

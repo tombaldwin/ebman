@@ -56,6 +56,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   for the writes; a DLQ batch could be cut off after its deletes went
   out, with no completed audit lines and "timed out" told to the agent.
   The dispatch now gets the usual 30 seconds after the ask's window.
+- **A form takes only its own env's pre-fill and options.** The
+  option-settings forms (`:capacity` and the rest), the subnet and
+  security-group pickers and `:listener-edit`'s certificates matched
+  their answer by env name, so under `:region all` a form closed on one
+  twin and opened on the other could be filled with the first one's
+  settings, or offered subnets and certificates from the wrong region,
+  and Submit would write them.
 - **A TUI honours another TUI's freeze.** The TUI's write gate read
   only its own session's freeze, so a second TUI could deploy through
   the first one's `:incident START`. It now reads the marker every

@@ -1399,7 +1399,7 @@ async fn a_form_prefill_for_another_env_is_dropped() {
     let mut app = armed();
     app.handle_msg(AppMsg::FormPrefilled {
         gen: app.generation,
-        env_name: "worker-prod".into(),
+        key: home_key("worker-prod"),
         settings: Ok(vec![(
             "aws:autoscaling:asg".into(),
             "MinSize".into(),
@@ -1417,7 +1417,7 @@ async fn a_form_prefill_for_another_env_is_dropped() {
     let mut app = armed();
     app.handle_msg(AppMsg::FormPrefilled {
         gen: app.generation,
-        env_name: "api-prod".into(),
+        key: home_key("api-prod"),
         settings: Ok(vec![(
             "aws:autoscaling:asg".into(),
             "MinSize".into(),

@@ -769,7 +769,9 @@ pub(crate) enum AppMsg {
     /// switch) are dropped.
     FormPrefilled {
         gen: u64,
-        env_name: String,
+        /// The env the settings were read from: a same-named env's
+        /// answer must not fill this form.
+        key: EnvKey,
         settings: Result<Vec<(String, String, String)>, String>,
     },
     /// Load `MultiSelect` options for the named field of an open form.
@@ -780,7 +782,9 @@ pub(crate) enum AppMsg {
     /// suffixes (AZ + CIDR for subnets; group name + description for SGs).
     FormMultiSelectLoaded {
         gen: u64,
-        env_name: String,
+        /// The env the options were listed for: another region's subnets
+        /// or certificates do not exist in this one's.
+        key: EnvKey,
         field_key: String,
         result: Result<MultiSelectOptions, String>,
     },

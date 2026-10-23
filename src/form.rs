@@ -139,6 +139,11 @@ pub(crate) enum FormSubmit {
 }
 
 impl Form {
+    /// The env the form was opened for, region included.
+    pub(crate) fn key(&self) -> crate::app::EnvKey {
+        crate::app::EnvKey::new(self.region.clone(), self.env_name.clone())
+    }
+
     /// Build a form in the `Loading` state. Caller spawns the pre-fill fetch
     /// and replaces `state` with `Ready` once values land.
     pub(crate) fn loading(

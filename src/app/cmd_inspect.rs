@@ -981,6 +981,7 @@ impl App {
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let env_for_msg = env.name.clone();
+        let key = self.env_key(&env);
         let app_name = env.application.clone();
         tokio::spawn(async move {
             // ACM certificates are region-scoped, and this form writes
@@ -992,7 +993,7 @@ impl App {
             };
             let _ = tx.send(AppMsg::FormMultiSelectLoaded {
                 gen,
-                env_name: env_for_msg,
+                key,
                 field_key: "cert".to_string(),
                 result,
             });

@@ -42,6 +42,7 @@ impl App {
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let env_for_msg = env_name.clone();
+        let key = target.clone();
         tokio::spawn(async move {
             let settings = match client.resolve().await {
                 Ok(aws) => aws
@@ -50,11 +51,7 @@ impl App {
                     .map_err(|e| flatten_err("fetch_env_option_settings", e)),
                 Err(e) => Err(flatten_err("cached_client", e)),
             };
-            let _ = tx.send(AppMsg::FormPrefilled {
-                gen,
-                env_name: env_for_msg,
-                settings,
-            });
+            let _ = tx.send(AppMsg::FormPrefilled { gen, key, settings });
         });
     }
 
@@ -507,6 +504,7 @@ impl App {
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let env_for_msg = env.name.clone();
+        let key = self.env_key(&env);
         let app_name = env.application.clone();
         let field_key_for_msg = field_key.to_string();
         tokio::spawn(async move {
@@ -520,7 +518,7 @@ impl App {
             };
             let _ = tx.send(AppMsg::FormMultiSelectLoaded {
                 gen,
-                env_name: env_for_msg,
+                key,
                 field_key: field_key_for_msg,
                 result,
             });

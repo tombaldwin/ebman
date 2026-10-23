@@ -643,7 +643,7 @@ impl App {
         let Some(form) = self.form.as_mut() else {
             return;
         };
-        if form.env_name != key.name || !matches!(form.submit, crate::form::FormSubmit::AppTab) {
+        if form.key() != *key || !matches!(form.submit, crate::form::FormSubmit::AppTab) {
             return;
         }
         let env_name = key.name.as_str();

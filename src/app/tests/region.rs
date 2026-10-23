@@ -2598,3 +2598,92 @@ async fn detail_ignores_log_groups_for_its_name_in_another_region() {
         Some(vec!["/eu-own".to_string()])
     );
 }
+
+/// A form open on the eu-west-2 twin, loading.
+fn form_on_the_eu_twin() -> App {
+    let mut app = test_app();
+    let field = crate::form::FormField::text("subnets", "Subnets", None::<String>);
+    app.form = Some(crate::form::Form::loading(
+        "subnets",
+        "api-prod",
+        "eu-west-2",
+        "subnets",
+        vec![field],
+        crate::form::FormSubmit::OptionSettings { mappings: vec![] },
+    ));
+    app.mode = Mode::Form;
+    app
+}
+
+#[tokio::test]
+async fn a_form_takes_only_its_own_twins_prefill() {
+    let mut app = form_on_the_eu_twin();
+    for (region, still_loading) in [("us-east-1", true), ("eu-west-2", false)] {
+        app.handle_msg(AppMsg::FormPrefilled {
+            gen: app.generation,
+            key: EnvKey::new(region, "api-prod"),
+            settings: Ok(vec![]),
+        });
+        let state = app.form.as_ref().unwrap().state.clone();
+        assert_eq!(
+            state == crate::form::FormState::Loading,
+            still_loading,
+            "{region}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_form_takes_only_its_own_twins_options() {
+    let mut app = form_on_the_eu_twin();
+    let opts = |id: &str| crate::app::MultiSelectOptions {
+        options: vec![id.into()],
+        annotations: vec![],
+        initial: vec![],
+    };
+    // Its own first: the twin's, arriving last, is what would show.
+    for (region, id) in [("eu-west-2", "subnet-eu"), ("us-east-1", "subnet-home")] {
+        app.handle_msg(AppMsg::FormMultiSelectLoaded {
+            gen: app.generation,
+            key: EnvKey::new(region, "api-prod"),
+            field_key: "subnets".into(),
+            result: Ok(opts(id)),
+        });
+    }
+    let field = &app.form.as_ref().unwrap().fields[0];
+    assert_eq!(
+        field.kind,
+        crate::form::FieldKind::MultiSelect {
+            options: vec!["subnet-eu".into()]
+        },
+        "only eu-west-2's subnets are offered"
+    );
+}
+
+/// The three senders put the row's own key on their answer: driven
+/// through the commands on the eu-west-2 twin, so a sender that rebuilt
+/// the key from the name (home first) fails here.
+#[tokio::test]
+async fn form_answers_carry_the_twin_they_were_fetched_for() {
+    for command in ["capacity", "subnets", "listener-edit 443"] {
+        let mut app = twins_and_staging();
+        let eu = app
+            .view
+            .display()
+            .iter()
+            .position(|r| matches!(r, DisplayRow::Env(1)))
+            .expect("eu twin shown");
+        app.table_state.select(Some(eu));
+        app.execute_command(command);
+        assert!(app.form.is_some(), "{command}: {:?}", app.error_message);
+        let key = loop {
+            match next_msg(&mut app).await {
+                AppMsg::FormPrefilled { key, .. } | AppMsg::FormMultiSelectLoaded { key, .. } => {
+                    break key
+                }
+                _ => {}
+            }
+        };
+        assert_eq!(key, EnvKey::new("eu-west-2", "api-prod"), "{command}");
+    }
+}
