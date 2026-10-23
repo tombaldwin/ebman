@@ -329,7 +329,7 @@ fn read_tool_table() -> Value {
         super::app_metrics::schema(),
         {
             "name": "fleet_cost",
-            "description": "Cached Cost Explorer summary per environment ($/month). Reads ebman's local cost cache only (populated by `:cost on` in the TUI) — never calls Cost Explorer itself. `by_env` keys are `NAME@REGION`, the form the write tools take. `stale: true` means the cache is older than 24h, or was written by ebman 0.46.2 or earlier, before costs were split by region; an empty result means cost tracking hasn't been enabled.",
+            "description": "Cached Cost Explorer summary per environment ($/month). Reads ebman's local cost cache only (populated by `:cost on` in the TUI) — never calls Cost Explorer itself. `by_env` keys are `NAME@REGION`, as one name can be an env in two regions; to act on one, pass NAME as a write tool's `env` and REGION as its `region`. `stale: true` means the cache is older than 24h, or was written by ebman 0.46.2 or earlier, before costs were split by region; an empty result means cost tracking hasn't been enabled.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1932,7 +1932,8 @@ impl Server {
 }
 
 /// `fleet_cost`'s rows from the cache's `REGION/NAME` keys, as
-/// `NAME@REGION` (the form the write tools take) and sorted. Cost
+/// `NAME@REGION` and sorted (the write tools take the two parts as `env`
+/// and `region`). Cost
 /// Explorer is account-wide, so one name can be an env in each of two
 /// regions. A key with no region (0.46.2 or earlier) is skipped. With
 /// their total, summed from the same entries so the two agree: a key
