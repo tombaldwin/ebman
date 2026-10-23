@@ -26,9 +26,9 @@ use crate::cli::{cli_esc, decide_poll, PollDecision};
 struct ActionArgs {
     action: String,
     env: String,
-    version: Option<String>,
-    wait_for_green: Option<String>,
-    auto_rollback: Option<String>,
+    /// `deploy`'s flags, validated: `Some` exactly when the action is
+    /// `deploy`.
+    deploy: Option<DeployFlags>,
     yes: bool,
 }
 
@@ -209,6 +209,31 @@ fn parse_action_args(args: &[String]) -> Result<ActionArgs, ActionArgError> {
             code: 2,
         });
     };
+    // A deploy's own usage errors are decided here, with the rest, so
+    // they beat the gate: a malformed deploy on a frozen fleet is a
+    // usage error (2), not a refusal (3) with an audit line.
+    let deploy = if action_name == "deploy" {
+        let usage = |msg: String| ActionArgError { msg, code: 2 };
+        let version = version
+            .ok_or_else(|| usage("ebman action deploy: --version LABEL is required".into()))?;
+        let secs = |flag: &str, value: Option<String>| match value {
+            Some(s) => aws::parse_window_ms(&s)
+                .map(|ms| Some((ms / 1000) as u64))
+                .ok_or_else(|| {
+                    usage(format!(
+                        "ebman action deploy: {flag} expects a duration like `5m` / `30m` / `1h`"
+                    ))
+                }),
+            None => Ok(None),
+        };
+        Some(DeployFlags {
+            version,
+            wait_for_green_secs: secs("--wait-for-green", wait_for_green)?,
+            auto_rollback_secs: secs("--auto-rollback", auto_rollback)?,
+        })
+    } else {
+        None
+    };
     let destructive = matches!(action_name, "terminate");
     if destructive && !yes {
         return Err(ActionArgError {
@@ -221,9 +246,7 @@ fn parse_action_args(args: &[String]) -> Result<ActionArgs, ActionArgError> {
     Ok(ActionArgs {
         action: action_name.to_string(),
         env,
-        version,
-        wait_for_green,
-        auto_rollback,
+        deploy,
         yes,
     })
 }
@@ -275,9 +298,7 @@ where
     let ActionArgs {
         action: action_name,
         env,
-        version,
-        wait_for_green,
-        auto_rollback,
+        deploy: deploy_flags,
         ..
     } = match parse_action_args(args) {
         Ok(parsed) => parsed,
@@ -320,10 +341,8 @@ where
 
     let verb = match action {
         CliAction::Deploy => {
-            let flags = DeployFlags {
-                version,
-                wait_for_green,
-                auto_rollback,
+            let Some(flags) = deploy_flags else {
+                unreachable!("the parser fills `deploy` for a deploy");
             };
             return deploy(&aws, &env, flags, profile, out, err).await;
         }
@@ -360,11 +379,12 @@ where
     }
 }
 
-/// `ebman action deploy`'s flags, unparsed.
+/// `ebman action deploy`'s flags, parsed and validated.
+#[derive(Debug, PartialEq, Eq)]
 struct DeployFlags {
-    version: Option<String>,
-    wait_for_green: Option<String>,
-    auto_rollback: Option<String>,
+    version: String,
+    wait_for_green_secs: Option<u64>,
+    auto_rollback_secs: Option<u64>,
 }
 
 /// `ebman action deploy --env X --version Y [--wait-for-green Nm]
@@ -383,29 +403,11 @@ async fn deploy(
     out: &mut dyn std::io::Write,
     err: &mut dyn std::io::Write,
 ) -> i32 {
-    let Some(version) = flags.version else {
-        let _ = writeln!(err, "ebman action deploy: --version LABEL is required");
-        return 2;
-    };
-    let window = |flag: &str, value: Option<String>| match value {
-        Some(s) => match aws::parse_window_ms(&s) {
-            Some(ms) => Ok(Some((ms / 1000) as u64)),
-            None => Err(format!(
-                "ebman action deploy: {flag} expects a duration like `5m` / `30m` / `1h`"
-            )),
-        },
-        None => Ok(None),
-    };
-    let (wait_for_green_secs, auto_rollback_secs) = match (
-        window("--wait-for-green", flags.wait_for_green),
-        window("--auto-rollback", flags.auto_rollback),
-    ) {
-        (Ok(w), Ok(a)) => (w, a),
-        (Err(msg), _) | (_, Err(msg)) => {
-            let _ = writeln!(err, "{msg}");
-            return 2;
-        }
-    };
+    let DeployFlags {
+        version,
+        wait_for_green_secs,
+        auto_rollback_secs,
+    } = flags;
 
     let envs = match aws.list_environments().await {
         Ok(envs) => envs,
@@ -1667,6 +1669,37 @@ mod body {
         );
     }
 
+    /// A malformed deploy is a usage error before the gate: on a frozen
+    /// fleet it exits 2 and writes no refusal, rather than 3.
+    #[tokio::test]
+    async fn a_malformed_deploy_is_usage_before_the_gate() {
+        for args in [
+            &["deploy", "--env", "api"][..],
+            &[
+                "deploy",
+                "--env",
+                "api",
+                "--version",
+                "build-2",
+                "--wait-for-green",
+                "soon",
+            ][..],
+            &[
+                "deploy",
+                "--env",
+                "api",
+                "--version",
+                "build-2",
+                "--auto-rollback",
+                "soon",
+            ][..],
+        ] {
+            let r = action(args, Some("deploys frozen"), None).await;
+            assert_eq!(r.code, 2, "{args:?}: {}", r.err);
+            assert!(r.asked.is_none() && !r.client_built, "{args:?}");
+        }
+    }
+
     #[tokio::test]
     async fn a_deploy_that_cannot_be_judged_is_not_sent() {
         for (args, version, why) in [
@@ -1737,7 +1770,7 @@ mod tests {
         let p = parse_action_args(&argv(&["action", "rebuild", "--env", "prod"])).unwrap();
         assert_eq!(p.action, "rebuild");
         assert_eq!(p.env, "prod");
-        assert!(!p.yes && p.version.is_none());
+        assert!(!p.yes && p.deploy.is_none());
     }
 
     #[test]
@@ -1756,9 +1789,14 @@ mod tests {
         ]))
         .unwrap();
         assert_eq!(p.action, "deploy");
-        assert_eq!(p.version.as_deref(), Some("build-900"));
-        assert_eq!(p.wait_for_green.as_deref(), Some("5m"));
-        assert_eq!(p.auto_rollback.as_deref(), Some("10m"));
+        assert_eq!(
+            p.deploy,
+            Some(DeployFlags {
+                version: "build-900".into(),
+                wait_for_green_secs: Some(300),
+                auto_rollback_secs: Some(600),
+            })
+        );
     }
 
     #[test]
