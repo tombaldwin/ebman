@@ -1939,9 +1939,10 @@ mod docs_drift {
     }
 
     /// The codes a `*_body` function returns (`freeze_body`,
-    /// `thaw_body`): a subcommand whose body is testable returns its
-    /// code rather than exiting, so its codes are its `return N;` and
-    /// bare-literal tails.
+    /// `drift_body`, ...): a subcommand whose body is testable returns
+    /// its code rather than exiting, so its codes are its `return N;`
+    /// and bare-literal tails, or the first field of `(N, ...)` for a
+    /// body that hands back more than its code (`audit_body`).
     fn body_return_codes(src: &str, body_fn: &str) -> std::collections::BTreeSet<u8> {
         let mut out = std::collections::BTreeSet::new();
         for (name, body) in super::super::scan::fn_bodies(src) {
@@ -1953,6 +1954,10 @@ mod docs_drift {
                     .trim()
                     .trim_start_matches("return ")
                     .trim_end_matches(';');
+                let t = match t.strip_prefix('(') {
+                    Some(tuple) => tuple.split(',').next().unwrap_or_default(),
+                    None => t,
+                };
                 if t.len() == 1 {
                     if let Some(d) = t.chars().next().and_then(|c| c.to_digit(10)) {
                         out.insert(d as u8);
@@ -1961,6 +1966,53 @@ mod docs_drift {
             }
         }
         out
+    }
+
+    /// The `*_body` functions in `src` that return an exit code: their
+    /// signature returns `i32` or `(i32, ...)`.
+    fn exit_bodies(src: &str) -> Vec<String> {
+        super::super::scan::fn_bodies(src)
+            .into_iter()
+            .filter(|(name, body)| {
+                let sig = body.split('{').next().unwrap_or_default();
+                name.ends_with("_body") && (sig.contains("-> i32") || sig.contains("-> (i32"))
+            })
+            .map(|(name, _)| name)
+            .collect()
+    }
+
+    #[test]
+    fn the_body_reader_sees_every_return_form() {
+        let src = "\
+pub(crate) async fn x_body(a: u8) -> i32 {
+    if a == 0 {
+        return 2;
+    }
+    if a == 1 {
+        4
+    } else {
+        0
+    }
+}
+fn y_body() -> (i32, Option<u8>) {
+    if true {
+        return (5, None);
+    }
+    (0, Some(1))
+}
+fn z_body() -> String {
+    String::new()
+}
+";
+        assert_eq!(
+            body_return_codes(src, "x_body"),
+            [0, 2, 4].into_iter().collect()
+        );
+        assert_eq!(
+            body_return_codes(src, "y_body"),
+            [0, 5].into_iter().collect()
+        );
+        assert_eq!(exit_bodies(src), ["x_body", "y_body"]);
     }
 
     /// The codes a subcommand's help block lists after "Exit codes:".
@@ -2079,6 +2131,8 @@ mod docs_drift {
     #[test]
     fn every_exit_code_is_documented() {
         let docs = std::fs::read_to_string("docs/headless.md").expect("read headless.md");
+        let mut subs_by_module: std::collections::BTreeMap<&str, Vec<String>> =
+            std::collections::BTreeMap::new();
         for (sub, module) in [
             ("envs", "cli/envs.rs"),
             ("action", "cli/action.rs"),
@@ -2095,11 +2149,15 @@ mod docs_drift {
             ("thaw", "cli/freeze.rs"),
         ] {
             let src = super::super::scan::production_source(module);
-            // A testable body returns its code; the rest exit with one.
-            let used = match sub {
-                "freeze" | "thaw" => body_return_codes(&src, &format!("{sub}_body")),
-                _ => exit_codes_in(&super::super::scan::statements_of(&src)),
-            };
+            // What the module exits with, and what the subcommand's
+            // testable body returns for its shell to exit with.
+            let body_fn = format!("{}_body", sub.replace(' ', "_"));
+            let mut used = body_return_codes(&src, &body_fn);
+            // Only the module's own exits: freeze.rs holds `thaw` too,
+            // and its body's codes are not `freeze`'s.
+            if sub != "thaw" {
+                used.extend(exit_codes_in(&super::super::scan::statements_of(&src)));
+            }
             let listed = documented_codes(&docs, sub)
                 .unwrap_or_else(|| panic!("no exit-code row for `ebman {sub}`"));
             let missing: Vec<&u8> = used.difference(&listed).collect();
@@ -2107,6 +2165,19 @@ mod docs_drift {
                 missing.is_empty(),
                 "`ebman {sub}` can exit {missing:?}, which docs/headless.md's table does not list"
             );
+            subs_by_module.entry(module).or_default().push(body_fn);
+        }
+        // A body named for no subcommand returns codes the loop above
+        // never reads: name it `<subcommand>_body`.
+        for (module, bodies) in subs_by_module {
+            let src = super::super::scan::production_source(module);
+            for body in exit_bodies(&src) {
+                assert!(
+                    bodies.contains(&body),
+                    "{module}: `{body}` returns exit codes but is named for no subcommand \
+                     in this table, so they are never checked against the docs"
+                );
+            }
         }
     }
 
