@@ -69,6 +69,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   for the writes; a DLQ batch could be cut off after its deletes went
   out, with no completed audit lines and "timed out" told to the agent.
   The dispatch now gets the usual 30 seconds after the ask's window.
+- **Terraform state is matched to envs by region, not just name.** A
+  tfstate resource's `arn` names its region, so under `:region all` the
+  other region's same-named env was badged terraform-managed and
+  `:drift` (and `ebman drift`, MCP `drift`) diffed this resource against
+  it. A resource with no `arn` still matches by name.
 - **A form takes only its own env's pre-fill and options.** The
   option-settings forms (`:capacity` and the rest), the subnet and
   security-group pickers and `:listener-edit`'s certificates matched

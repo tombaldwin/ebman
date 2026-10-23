@@ -326,12 +326,6 @@ pub struct App {
     /// than just a derived set) so `:drift ENV` can pull the
     /// declared option_settings + version_label for the report.
     pub(crate) tf_state: Option<crate::terraform::TfState>,
-    /// Cached `HashSet` of tf-managed env names — derived from
-    /// `tf_state` and kept in sync with it. Used by the env-table
-    /// render path for the `ⓣ` badge: O(1) lookup per row,
-    /// which matters when an operator has 50+ envs and the
-    /// renderer fires every frame.
-    pub(crate) tf_managed_envs: std::collections::HashSet<String>,
     /// Ring buffer of reversible option-settings writes captured
     /// just before each `spawn_option_settings_update` dispatch.
     /// `:undo` pops the most recent (back of the deque) and
@@ -1378,7 +1372,6 @@ impl App {
             // immediately. Re-loaded on context switch (account /
             // region change) and on `:drift refresh`.
             tf_state: crate::terraform::load_from_cwd(),
-            tf_managed_envs: std::collections::HashSet::new(),
             undo_history: std::collections::VecDeque::new(),
             promotion_history: Vec::new(),
             demo_mode: false,
@@ -1518,7 +1511,6 @@ impl App {
         app.rebuild_view();
         // Derive the tf-managed name set from the loaded tfstate
         // so the env-table badge can do O(1) lookups per row.
-        app.refresh_tf_managed_envs();
         app.announce_freeze_state();
         Ok(app)
     }
@@ -1675,7 +1667,6 @@ impl App {
             // detail. Tests that exercise drift behavior set
             // `app.tf_state` explicitly.
             tf_state: None,
-            tf_managed_envs: std::collections::HashSet::new(),
             undo_history: std::collections::VecDeque::new(),
             promotion_history: Vec::new(),
             demo_mode: false,

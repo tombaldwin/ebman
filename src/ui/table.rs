@@ -872,7 +872,14 @@ pub(crate) fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
                     // a glance which envs will drift after ebman-
                     // side mutations.
                     Span::styled(
-                        if app.tf_managed_envs.contains(&e.name) {
+                        // The field, not `App::tf_env_for`: the rows may
+                        // borrow only fields of the App (see `CellCtx`).
+                        if app
+                            .tf_state
+                            .as_ref()
+                            .and_then(|s| s.env_for(&key.name, &key.region))
+                            .is_some()
+                        {
                             glyph(app.theme.icons, "ⓣ ", "t ")
                         } else {
                             ""

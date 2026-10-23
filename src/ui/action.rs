@@ -282,7 +282,15 @@ pub(crate) fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
             // state by mutating EB directly. Yellow not red — this
             // is a heads-up, not a block. Rendered just below
             // traffic_warning so state-level concerns stay grouped.
-            if app.tf_managed_envs.contains(&modal.target_env) {
+            // The field, not `App::tf_env_for`: `app.action_flow` is
+            // borrowed for the modal.
+            let key = modal.key();
+            if app
+                .tf_state
+                .as_ref()
+                .and_then(|s| s.env_for(&key.name, &key.region))
+                .is_some()
+            {
                 lines.push(Line::from(""));
                 lines.push(Line::from(Span::styled(
                     format!(

@@ -1142,7 +1142,7 @@ impl Server {
         let mut fetches = Vec::with_capacity(targets.len());
         for env in targets.iter().copied() {
             fetches.push(async move {
-                let Some(tf) = state_ref.env_by_name(&env.name) else {
+                let Some(tf) = state_ref.env_for(&env.name, &client_ref.context.region) else {
                     return Ok((env.name.clone(), false, Vec::new()));
                 };
                 let opts = client_ref

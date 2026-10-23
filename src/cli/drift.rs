@@ -279,12 +279,12 @@ pub async fn run(args: &[String]) -> Result<()> {
             },
             None => live_envs
                 .iter()
-                .filter(|e| tf_state.env_by_name(&e.name).is_some())
+                .filter(|e| tf_state.env_for(&e.name, &aws.context.region).is_some())
                 .collect(),
         };
 
         for env in targets {
-            let tf_env = tf_state.env_by_name(&env.name);
+            let tf_env = tf_state.env_for(&env.name, &aws.context.region);
             let tf_managed = tf_env.is_some();
             let drift = if let Some(tf) = tf_env {
                 match aws

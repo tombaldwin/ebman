@@ -52,6 +52,11 @@ pub(crate) struct TfEnv {
     pub options: Vec<(String, String, String)>,
     /// Tag map.
     pub tags: std::collections::BTreeMap<String, String>,
+    /// The region, from the resource's `arn`; `None` when the state
+    /// carries none. A name alone matches an env in every region of a
+    /// `:region all` fan-out, which badged the other region's same-named
+    /// env as terraform-managed and diffed this resource against it.
+    pub region: Option<String>,
 }
 
 /// Parsed tfstate, narrowed to the envs ebman cares about. Other
@@ -77,19 +82,16 @@ pub(crate) struct TfState {
 }
 
 impl TfState {
-    /// Lookup by env name. Returns the FIRST match — duplicate
-    /// `name` attributes across resources are theoretically
-    /// possible but operationally meaningless (EB env names are
-    /// unique per region anyway).
-    pub(crate) fn env_by_name(&self, name: &str) -> Option<&TfEnv> {
-        self.envs.iter().find(|e| e.name == name)
-    }
-
-    /// Set of tf-managed env names. Used by the table-render
-    /// badge — `HashSet` lookup is O(1) per row, which matters
-    /// when the operator has 50+ envs.
-    pub(crate) fn managed_names(&self) -> std::collections::HashSet<String> {
-        self.envs.iter().map(|e| e.name.clone()).collect()
+    /// The resource for env `name` in `region`: one whose `arn` names
+    /// that region, else one with no `arn` and that name (the state then
+    /// says nothing of region, and the name is all there is to go on).
+    /// A resource whose `arn` names another region is that region's env,
+    /// never this one.
+    pub(crate) fn env_for(&self, name: &str, region: &str) -> Option<&TfEnv> {
+        let named = || self.envs.iter().filter(move |e| e.name == name);
+        named()
+            .find(|e| e.region.as_deref() == Some(region))
+            .or_else(|| named().find(|e| e.region.is_none()))
     }
 }
 
@@ -251,12 +253,20 @@ fn extract_env(attrs: &serde_json::Value) -> Option<TfEnv> {
         .to_string();
     let options = extract_settings(attrs.get("setting"));
     let tags = extract_tags(attrs.get("tags"));
+    // `arn:aws:elasticbeanstalk:REGION:ACCOUNT:environment/APP/NAME`.
+    let region = attrs
+        .get("arn")
+        .and_then(|v| v.as_str())
+        .and_then(|arn| arn.split(':').nth(3))
+        .filter(|r| !r.is_empty())
+        .map(str::to_string);
     Some(TfEnv {
         name,
         application,
         version_label,
         options,
         tags,
+        region,
     })
 }
 
@@ -814,26 +824,44 @@ mod tests {
     }
 
     #[test]
-    fn env_by_name_finds_match_or_returns_none() {
+    fn a_resource_without_an_arn_matches_by_name_in_any_region() {
         let state = parse(SAMPLE_TFSTATE).expect("parse ok");
-        assert!(state.env_by_name("prod-api").is_some());
-        assert!(state.env_by_name("nope").is_none());
+        assert_eq!(state.envs[0].region, None, "the sample carries no arn");
+        assert!(state.env_for("prod-api", "us-east-1").is_some());
+        assert!(state.env_for("prod-api", "eu-west-2").is_some());
+        assert!(state.env_for("nope", "us-east-1").is_none());
         // Case-sensitive — EB env names are exact-match.
-        assert!(state.env_by_name("PROD-API").is_none());
+        assert!(state.env_for("PROD-API", "us-east-1").is_none());
     }
 
+    /// Same-named envs in two regions are two resources, told apart by
+    /// their `arn`. By name alone the eu-west-2 twin was badged managed
+    /// and `:drift` diffed the home resource against it.
     #[test]
-    fn managed_names_returns_set_for_o1_lookup() {
-        let state = parse(SAMPLE_TFSTATE).expect("parse ok");
-        let names = state.managed_names();
-        assert!(names.contains("prod-api"));
-        assert_eq!(names.len(), 1);
+    fn a_resource_with_an_arn_matches_only_its_own_region() {
+        let text = r#"{"version":4,"resources":[{"type":"aws_elastic_beanstalk_environment","instances":[
+            {"attributes":{"name":"api","application":"shop","version_label":"home",
+              "arn":"arn:aws:elasticbeanstalk:us-east-1:123456789012:environment/shop/api"}},
+            {"attributes":{"name":"api","application":"shop","version_label":"eu",
+              "arn":"arn:aws:elasticbeanstalk:eu-west-2:123456789012:environment/shop/api"}},
+            {"attributes":{"name":"solo","application":"shop",
+              "arn":"arn:aws:elasticbeanstalk:us-east-1:123456789012:environment/shop/solo"}}
+        ]}]}"#;
+        let state = parse(text).expect("parse ok");
+        assert_eq!(state.envs[0].region.as_deref(), Some("us-east-1"));
+        let label = |r: &str| state.env_for("api", r).map(|e| e.version_label.as_str());
+        assert_eq!(label("us-east-1"), Some("home"));
+        assert_eq!(label("eu-west-2"), Some("eu"));
+        assert!(
+            state.env_for("solo", "eu-west-2").is_none(),
+            "a resource in another region is not this env"
+        );
     }
 
     #[test]
     fn compute_drift_no_drift_when_states_match() {
         let state = parse(SAMPLE_TFSTATE).expect("parse ok");
-        let tf = state.env_by_name("prod-api").unwrap();
+        let tf = state.env_for("prod-api", "us-east-1").unwrap();
         let live = mk_env("prod-api", "build-820");
         let live_options = vec![
             ("aws:autoscaling:asg".into(), "MinSize".into(), "2".into()),
@@ -851,7 +879,7 @@ mod tests {
     #[test]
     fn compute_drift_detects_version_label_mismatch() {
         let state = parse(SAMPLE_TFSTATE).expect("parse ok");
-        let tf = state.env_by_name("prod-api").unwrap();
+        let tf = state.env_for("prod-api", "us-east-1").unwrap();
         // Live env is on build-900; tf pins build-820.
         let live = mk_env("prod-api", "build-900");
         let live_options = vec![
@@ -881,6 +909,7 @@ mod tests {
             version_label: String::new(),
             options: Vec::new(),
             tags: Default::default(),
+            region: None,
         };
         let live = mk_env("prod-api", "build-900");
         let drift = compute_drift(&tf, &live, &[]);
@@ -890,7 +919,7 @@ mod tests {
     #[test]
     fn compute_drift_detects_option_setting_diff() {
         let state = parse(SAMPLE_TFSTATE).expect("parse ok");
-        let tf = state.env_by_name("prod-api").unwrap();
+        let tf = state.env_for("prod-api", "us-east-1").unwrap();
         // Live MaxSize was bumped to 8; tf still says 4.
         let live = mk_env("prod-api", "build-820");
         let live_options = vec![
@@ -921,6 +950,7 @@ mod tests {
             version_label: "build-820".into(),
             options: vec![("aws:autoscaling:asg".into(), "MaxSize".into(), "4".into())],
             tags: Default::default(),
+            region: None,
         };
         let live = mk_env("prod-api", "build-820");
         let live_options = vec![
@@ -951,6 +981,7 @@ mod tests {
                 "/health".into(),
             )],
             tags: Default::default(),
+            region: None,
         };
         let live = mk_env("prod-api", "");
         let drift = compute_drift(&tf, &live, &[]);
@@ -977,6 +1008,7 @@ mod tests {
                 ("aws:autoscaling:asg".into(), "MinSize".into(), "2".into()),
             ],
             tags: Default::default(),
+            region: None,
         };
         let live = mk_env("prod-api", "");
         let drift = compute_drift(&tf, &live, &[]);

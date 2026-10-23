@@ -1182,7 +1182,14 @@ async fn a_terraform_managed_env_is_flagged_in_the_confirm_modal() {
     // rather than a block — but a silent one is worse than none.
     let mut app = test_app();
     app.environments = vec![mk_env("api-prod", "poly", "Web", "Green")];
-    app.tf_managed_envs.insert("api-prod".to_string());
+    app.tf_state = Some(crate::terraform::TfState {
+        serial: None,
+        lineage: None,
+        envs: vec![crate::terraform::TfEnv {
+            name: "api-prod".into(),
+            ..Default::default()
+        }],
+    });
     app.rebuild_view();
     app.mode = Mode::Action;
     app.action_flow = Some(crate::app::ActionFlow::Confirm(mk_modal(

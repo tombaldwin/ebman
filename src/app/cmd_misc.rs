@@ -630,7 +630,6 @@ impl App {
         // without restarting ebman.
         if rest.first().copied() == Some("refresh") {
             self.tf_state = crate::terraform::load_from_cwd();
-            self.refresh_tf_managed_envs();
             self.pin_status(match &self.tf_state {
                 Some(s) => format!("tfstate reloaded — {} tf-managed env(s)", s.envs.len()),
                 None => "tfstate reload: no tfstate found in cwd ancestors".into(),
@@ -673,6 +672,7 @@ impl App {
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let env_name = env.name.clone();
+        let region = self.region_for(&env);
         let app_name = env.application.clone();
         self.status_message = Some(format!("computing drift for {env_name}…"));
         tokio::spawn(async move {
@@ -689,7 +689,7 @@ impl App {
             };
             let tf_env = tf_state_snapshot
                 .as_ref()
-                .and_then(|s| s.env_by_name(&env_name).cloned());
+                .and_then(|s| s.env_for(&env_name, &region).cloned());
             let body = match tf_env {
                 None => crate::terraform::render_drift_text(&env_name, false, &[]),
                 Some(tf_env) => match aws.fetch_env_option_settings(&app_name, &env_name).await {

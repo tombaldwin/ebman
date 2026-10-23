@@ -2786,3 +2786,33 @@ async fn every_modal_preflight_answer_is_matched_by_region() {
         assert!(landed(&modal(&app)), "{label}: its own answer was dropped");
     }
 }
+
+/// The TF badge and the confirm modal's terraform warning follow the
+/// resource's region: by name alone the eu-west-2 twin was badged for
+/// the home twin's resource.
+#[tokio::test]
+async fn the_tf_badge_follows_the_resources_region() {
+    let mut app = twins_and_staging();
+    app.multi_regions = vec!["eu-west-2".into(), app.context.region.clone()];
+    app.tf_state = Some(crate::terraform::TfState {
+        serial: None,
+        lineage: None,
+        envs: vec![crate::terraform::TfEnv {
+            name: "api-prod".into(),
+            region: Some("us-east-1".into()),
+            ..Default::default()
+        }],
+    });
+    app.view.invalidate();
+    app.rebuild_view();
+    let frame = render(&mut app, 220, 20);
+    let rows: Vec<&str> = frame
+        .lines()
+        .filter(|l| l.contains("api-prod") && l.contains("Ready"))
+        .collect();
+    assert_eq!(rows.len(), 2, "{frame}");
+    for row in rows {
+        let eu = row.contains("eu-west-2");
+        assert_eq!(row.contains('ⓣ'), !eu, "{row}");
+    }
+}

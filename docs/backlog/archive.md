@@ -5226,3 +5226,26 @@ From `PLAN.md`, retired with it:
   assertion). The MCP `lint` tool can now read the notes rather than
   re-parse text.
 
+- [x] **Terraform state is matched to envs by name.** `terraform.rs`'s
+  `managed_names()` and `env_by_name` key the tfstate's
+  `aws_elastic_beanstalk_environment` resources by name, so under
+  `:region all` the eu-west-2 twin gets the TF badge and `:drift` on it
+  diffs the home twin's terraform resource against the eu env's live
+  settings: a wrong answer, not a cosmetic one. The resource's `arn`
+  attribute carries its region (the test fixture already has one).
+  Parse it into `TfEnv`, falling back to the name with no arn, and key
+  `tf_managed_envs` and the drift lookups (`cmd_misc.rs`, `cli/drift.rs`,
+  the MCP `drift` tool) by `EnvKey`. *2026-10-23 group-1 architecture
+  review, M5.*
+
+  **Done 2026-10-23.** `TfEnv::region` from the resource's `arn`;
+  `TfState::env_for(name, region)` matches that region, else a resource
+  with no `arn` by name, never one whose `arn` names another region.
+  `tf_managed_envs` (a name set) is gone: the table's badge and the
+  confirm modal's warning look the row's key up, and `:drift`, `ebman
+  drift` and MCP `drift` pass the region they read. Tests:
+  `a_resource_with_an_arn_matches_only_its_own_region`,
+  `a_resource_without_an_arn_matches_by_name_in_any_region`,
+  `the_tf_badge_follows_the_resources_region`; three mutations CAUGHT.
+  The CLI / MCP drift region is pinned only through `env_for` (no
+  testable body yet).

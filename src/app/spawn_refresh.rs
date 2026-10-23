@@ -152,19 +152,6 @@ impl App {
         );
     }
 
-    /// Recompute `tf_managed_envs` from the current `tf_state`.
-    /// Called at startup (after `App::new`'s tfstate load), on
-    /// `apply_rebuild` (context switch), and on the `:drift
-    /// refresh` operator gesture. Cheap — set construction is
-    /// O(n) over tf-managed env names; typically < 50.
-    pub(crate) fn refresh_tf_managed_envs(&mut self) {
-        self.tf_managed_envs = self
-            .tf_state
-            .as_ref()
-            .map(|s| s.managed_names())
-            .unwrap_or_default();
-    }
-
     pub(crate) fn spawn_rebuild(&mut self) {
         self.load_state = LoadState::Loading;
         self.loading_since = Some(Instant::now());
@@ -875,7 +862,6 @@ impl App {
                 // re-discovery ensures the tf-managed badge reflects
                 // the current project.
                 self.tf_state = crate::terraform::load_from_cwd();
-                self.refresh_tf_managed_envs();
                 self.rebuild_view();
                 self.table_state.select(None);
                 self.status_message = Some(format!(

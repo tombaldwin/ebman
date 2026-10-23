@@ -86,18 +86,6 @@ Tier definitions:
     once at load into a typed saved cursor.
   *2026-10-23 group-1 architecture review, M1/M3/M4/M7.*
 
-- [ ] **Terraform state is matched to envs by name.** `terraform.rs`'s
-  `managed_names()` and `env_by_name` key the tfstate's
-  `aws_elastic_beanstalk_environment` resources by name, so under
-  `:region all` the eu-west-2 twin gets the TF badge and `:drift` on it
-  diffs the home twin's terraform resource against the eu env's live
-  settings: a wrong answer, not a cosmetic one. The resource's `arn`
-  attribute carries its region (the test fixture already has one).
-  Parse it into `TfEnv`, falling back to the name with no arn, and key
-  `tf_managed_envs` and the drift lookups (`cmd_misc.rs`, `cli/drift.rs`,
-  the MCP `drift` tool) by `EnvKey`. *2026-10-23 group-1 architecture
-  review, M5.*
-
 - [ ] **Audit-line boilerplate.** ~30 `append_action_dispatched` and ~11
   `append_action_completed` sites pass account / profile / region by
   hand, and the profile is already inconsistent: `shell_session.rs`
