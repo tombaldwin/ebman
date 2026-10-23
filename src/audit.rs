@@ -2310,9 +2310,6 @@ mod parser_properties {
             let _ = super::parse_audit_line(&s);
         }
 
-        /// The same, biased toward input that looks *nearly* valid —
-        /// random text mostly misses the interesting branches, and the
-        /// dangerous states are half-formed records, not noise.
         /// The writer and the parser agree: a line built from any
         /// operator-chosen text (a profile name, an env name, an extra's
         /// value) is ONE entry, whose fields read back as what was
@@ -2353,6 +2350,9 @@ mod parser_properties {
             prop_assert_eq!(e.extras.get("note").cloned(), esc(&value));
         }
 
+        /// The same, biased toward input that looks *nearly* valid —
+        /// random text mostly misses the interesting branches, and the
+        /// dangerous states are half-formed records, not noise.
         #[test]
         fn parse_audit_line_survives_near_miss_records(
             ts in "[0-9TZ:.-]{0,30}",

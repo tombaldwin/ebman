@@ -102,7 +102,30 @@ misread them:
   from a live TUI session, or a freeze declared with `ebman freeze`.
   Nothing was dispatched; the reason goes to stderr.
 - `ebman thaw` refusing to lift a live TUI session's freeze, which only
-  that session may lift.
+  that session may lift — or lifting the `ebman freeze` freeze while a
+  session's still holds, so the fleet is still frozen.
+- A `rollout` **halted part-way** by a freeze declared while it was
+  running. Regions already dispatched stay dispatched; the rest are not
+  attempted. This exits `3` even though no region *failed*, because the
+  rollout did not complete and reporting success would be a lie.
+
+  The unattempted regions are listed on **stdout** alongside the ones
+  that ran — `REGION\tskipped (rollout halted)` in text mode, or a row
+  with `"ok":false,"err":"skipped (rollout halted)"` in `--json`. Only
+  the halt *reason* goes to stderr. So a script can recover exactly
+  which regions still need deploying from the normal output, without
+  parsing stderr.
+
+For a refused write, stderr names the cause, so a script that needs to
+tell a pin from a freeze should read it rather than infer from the
+code.
+
+`ebman lint` exits `1` when a check could not run — for example an
+`AccessDenied` on `iam:SimulatePrincipalPolicy`, which EBL020 needs.
+The rule skips rather than firing a false positive, but the run is not
+clean and does not claim to be: the reason goes to stderr. If a rule
+isn't for you, `lint.disable` (or `--rules`) switches it off and its
+probe stops running, so it can't affect the exit code.
 
 ### A freeze that outlives the session (`ebman freeze`, 0.47+)
 
@@ -126,28 +149,6 @@ freeze ended by accident rather than by decision.
 is **not** frozen, and it says so. An MCP server or CLI older than 0.47
 also refuses writes under a persistent freeze; its refusal names the
 wrong remedy (`:thaw-deploys` in pid 1), so lift it with `ebman thaw`.
-- A `rollout` **halted part-way** by a freeze declared while it was
-  running. Regions already dispatched stay dispatched; the rest are not
-  attempted. This exits `3` even though no region *failed*, because the
-  rollout did not complete and reporting success would be a lie.
-
-  The unattempted regions are listed on **stdout** alongside the ones
-  that ran — `REGION\tskipped (rollout halted)` in text mode, or a row
-  with `"ok":false,"err":"skipped (rollout halted)"` in `--json`. Only
-  the halt *reason* goes to stderr. So a script can recover exactly
-  which regions still need deploying from the normal output, without
-  parsing stderr.
-
-For a refused write, stderr names the cause, so a script that needs to
-tell a pin from a freeze should read it rather than infer from the
-code.
-
-`ebman lint` exits `1` when a check could not run — for example an
-`AccessDenied` on `iam:SimulatePrincipalPolicy`, which EBL020 needs.
-The rule skips rather than firing a false positive, but the run is not
-clean and does not claim to be: the reason goes to stderr. If a rule
-isn't for you, `lint.disable` (or `--rules`) switches it off and its
-probe stops running, so it can't affect the exit code.
 
 ### Shell completion (`ebman completions`)
 
