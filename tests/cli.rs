@@ -996,3 +996,30 @@ fn a_scripted_client_can_complete_a_typed_confirmation() {
     drop(si);
     let _ = child.wait();
 }
+
+/// `ebman SUB --help` prints that subcommand's help and exits 0. Every
+/// one answered "unknown flag" with exit 2, and `ctl --help` dialled the
+/// control socket. The list is the binary's own, from the bare-word
+/// error that names every subcommand.
+#[test]
+fn every_subcommand_answers_help() {
+    let listing = stderr(&ebman(&["not-a-subcommand"]));
+    let subs: Vec<String> = listing
+        .split("available: ")
+        .nth(1)
+        .unwrap_or_else(|| panic!("the error lists the subcommands: {listing}"))
+        .trim()
+        .split(", ")
+        .map(str::to_string)
+        .collect();
+    assert!(subs.len() >= 10, "{listing}");
+    for sub in &subs {
+        for flag in ["--help", "-h"] {
+            let out = ebman(&[sub, flag]);
+            assert!(out.status.success(), "{sub} {flag}: {}", stderr(&out));
+            assert!(stdout(&out).contains(sub.as_str()), "{sub} {flag}");
+        }
+    }
+    let out = ebman(&["audit", "replay", "--help"]);
+    assert!(out.status.success() && stdout(&out).contains("audit replay"));
+}

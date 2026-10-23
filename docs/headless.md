@@ -67,7 +67,25 @@ ebman freeze --status                                                       # wh
 ebman thaw                                                                  # lift a freeze declared with `ebman freeze`
 ```
 
-Exit-code convention (CI scripts can branch on these): `0` clean, `1` AWS-layer error, `2` usage error, `3` issues / drift found.
+Exit-code convention (CI scripts can branch on these): `0` clean, `1` AWS-layer error, `2` usage error, `3` issues / drift found. Every subcommand answers `--help` (or `-h`) with its usage and exits `0`.
+
+Each subcommand's codes in full (pinned to the source by a test):
+
+| subcommand | exit codes |
+|---|---|
+| `ebman envs` | 0 ok · 1 AWS error · 2 usage |
+| `ebman action` | 0 dispatched · 1 AWS error · 2 usage · 3 refused or halted · 4 `--wait-for-green` timed out · 5 `--auto-rollback` fired |
+| `ebman lint` | 0 clean · 1 AWS error or a check could not run · 2 usage · 3 issues found |
+| `ebman drift` | 0 no drift · 1 AWS error · 2 usage · 3 drift found |
+| `ebman audit` | 0 ok · 1 error · 2 usage |
+| `ebman audit replay` | 0 dispatched · 1 AWS error · 2 usage · 3 refused |
+| `ebman explain` | 0 explained · 1 provider error or rule not evaluated · 2 usage · 3 issue not found |
+| `ebman versions` | 0 ok · 1 AWS error · 2 usage |
+| `ebman completions` | 0 ok · 2 usage |
+| `ebman ctl` | 0 ok · 1 socket or command error · 2 usage |
+| `ebman mcp` | 0 ok · 2 usage |
+| `ebman freeze` | 0 declared or status printed · 1 not written, NOT frozen · 2 usage |
+| `ebman thaw` | 0 lifted or nothing to lift · 2 usage · 3 refused, a live TUI session holds it |
 
 `ebman audit --action NAME` matches every spelling of one operation. Since 0.45 every surface writes one spelling per verb (`RestartAppServer`, `SetOption`), but older logs also carry `Restart` and `UpdateOptionSettings`; either name finds both.
 

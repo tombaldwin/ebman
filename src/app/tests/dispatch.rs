@@ -1920,6 +1920,84 @@ mod docs_drift {
     /// Every subcommand `cli::SUBCOMMANDS` advertises must appear in
     /// `docs/headless.md`, which is the reference for anything scripting
     /// against ebman.
+    /// The literal exit codes in a module's production statements:
+    /// `process::exit(N)` and `exit_after_drain(N)`.
+    fn exit_codes_in(statements: &[String]) -> std::collections::BTreeSet<u8> {
+        let mut out = std::collections::BTreeSet::new();
+        for st in statements {
+            for needle in ["process::exit(", "exit_after_drain("] {
+                for part in st.split(needle).skip(1) {
+                    if let Some(d) = part.chars().next().and_then(|c| c.to_digit(10)) {
+                        if part[1..].starts_with(')') {
+                            out.insert(d as u8);
+                        }
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// The codes a row of `docs/headless.md`'s exit-code table lists.
+    fn documented_codes(docs: &str, sub: &str) -> Option<std::collections::BTreeSet<u8>> {
+        let row = docs
+            .lines()
+            .find(|l| l.starts_with(&format!("| `ebman {sub}` |")))?;
+        let cell = row.rsplit('|').nth(1)?;
+        Some(
+            cell.split('·')
+                .filter_map(|item| item.trim().chars().next()?.to_digit(10))
+                .map(|d| d as u8)
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn the_exit_code_reader_sees_both_forms() {
+        let st = vec![
+            "std::process::exit(2);".to_string(),
+            "crate::cli::exit_after_drain(5).await;".to_string(),
+            "std::process::exit(code);".to_string(),
+        ];
+        assert_eq!(exit_codes_in(&st), [2, 5].into_iter().collect());
+        let docs = "| `ebman x` | 0 ok · 4 slow |\n";
+        assert_eq!(
+            documented_codes(docs, "x"),
+            Some([0, 4].into_iter().collect())
+        );
+    }
+
+    /// Every literal exit code a subcommand's module can exit with is in
+    /// its row of the exit-code table. `ebman action` exited 4 and 5
+    /// while the docs listed 0-3.
+    #[test]
+    fn every_exit_code_is_documented() {
+        let docs = std::fs::read_to_string("docs/headless.md").expect("read headless.md");
+        for (sub, module) in [
+            ("envs", "cli/envs.rs"),
+            ("action", "cli/action.rs"),
+            ("lint", "cli/lint.rs"),
+            ("drift", "cli/drift.rs"),
+            ("audit", "cli/audit.rs"),
+            ("audit replay", "cli/audit_replay.rs"),
+            ("explain", "cli/explain.rs"),
+            ("versions", "cli/versions.rs"),
+            ("completions", "cli/completions.rs"),
+            ("ctl", "cli/ctl.rs"),
+            ("mcp", "cli/mcp/mod.rs"),
+        ] {
+            let src = super::super::scan::production_source(module);
+            let used = exit_codes_in(&super::super::scan::statements_of(&src));
+            let listed = documented_codes(&docs, sub)
+                .unwrap_or_else(|| panic!("no exit-code row for `ebman {sub}`"));
+            let missing: Vec<&u8> = used.difference(&listed).collect();
+            assert!(
+                missing.is_empty(),
+                "`ebman {sub}` can exit {missing:?}, which docs/headless.md's table does not list"
+            );
+        }
+    }
+
     #[test]
     fn every_subcommand_is_documented() {
         let src = std::fs::read_to_string("src/cli/mod.rs").expect("read cli/mod.rs");

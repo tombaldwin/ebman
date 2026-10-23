@@ -20,6 +20,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- **Every subcommand answers `--help` / `-h`** with its usage and exits
+  `0`. They all rejected it as an unknown flag (exit `2`), and
+  `ebman ctl --help` tried the control socket. `docs/headless.md` gains
+  a per-subcommand exit-code table, which now includes `ebman action`'s
+  `4` (wait-for-green timed out) and `5` (auto-rollback fired).
 - **MCP `fleet_cost` keys `by_env` as `NAME@REGION`**, the form the
   write tools take, instead of the bare name.
 

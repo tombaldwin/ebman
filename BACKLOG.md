@@ -306,13 +306,6 @@ Tier definitions:
   tool on the registry surface and lifting must stay with the operator.
   Left out of the freeze work by design (`docs/design/persistent-freeze.md`).
 
-- [ ] **`--help` on every subcommand, and a complete exit-code table.**
-  `lint --help` fails with "unknown flag" (verified); the review
-  reports the same for `drift`, `audit`, `explain`, `envs`, that
-  `ctl --help` tries the socket and prints a source location, and that
-  `ebman action` exits 4 (wait-timeout) and 5 (rolled back) while
-  `docs/headless.md` documents 0–3 (not verified 2026-09-25).
-
 - [ ] **Six doc contradictions** (reviewer-verified): `commands.md:3`
   says tab-completion is not implemented (`keys.md:46` documents it, and
   it exists); `commands.md:66` says five write verbs (eight);

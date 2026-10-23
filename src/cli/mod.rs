@@ -34,6 +34,7 @@ pub mod drift;
 pub mod envs;
 pub mod explain;
 pub mod freeze;
+pub mod help;
 pub mod lint;
 pub mod mcp;
 pub mod versions;

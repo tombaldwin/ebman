@@ -5119,3 +5119,24 @@ From `PLAN.md`, retired with it:
   too, never another live session's. Fifteen mutations across the marker,
   CLI, TUI gate, header, thaw, startup notice and doctor: all CAUGHT. Not
   done, by design: an MCP tool to declare a freeze (new BACKLOG item).
+
+- [x] **`--help` on every subcommand, and a complete exit-code table.**
+  `lint --help` fails with "unknown flag" (verified); the review
+  reports the same for `drift`, `audit`, `explain`, `envs`, that
+  `ctl --help` tries the socket and prints a source location, and that
+  `ebman action` exits 4 (wait-timeout) and 5 (rolled back) while
+  `docs/headless.md` documents 0–3 (not verified 2026-09-25).
+
+  **Done 2026-10-23.** The SUBCOMMANDS section of `ebman --help` moved to
+  `cli::help::SUBCOMMANDS_HELP`; `ebman SUB --help` (or `-h`, first, or
+  after a form's word: `audit replay`, `mcp serve`, `ctl state`) prints
+  that subcommand's blocks and exits 0, before any subcommand parses its
+  flags or `ctl` dials the socket. Guards: `every_subcommand_has_help`,
+  the binary-level `every_subcommand_answers_help` (subcommands taken from
+  the binary's own unknown-subcommand error), and
+  `every_exit_code_is_documented`, which reads each module's literal
+  `process::exit` / `exit_after_drain` codes through `scan.rs` against a
+  new per-subcommand table in `docs/headless.md`. The table added
+  `action`'s 4 and 5. Mutations: main's help dispatch removed (by hand,
+  `mutate.sh` refuses main.rs), a code dropped from the table, the flag
+  position rule: all CAUGHT.

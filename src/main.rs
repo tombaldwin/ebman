@@ -40,6 +40,14 @@ async fn main() -> Result<()> {
         if !first.starts_with('-') {
             ebman::project::warnings_to_stderr();
         }
+        // `ebman SUB --help`: before any subcommand reads its flags (they
+        // all rejected it as unknown) or `ctl` dials the socket.
+        if ebman::cli::help::asks_for_help(&args) {
+            if let Some(text) = ebman::cli::help::subcommand_help(first) {
+                println!("{text}");
+                return Ok(());
+            }
+        }
         match first.as_str() {
             "envs" => return ebman::cli::envs::run(&args).await,
             "action" => {
@@ -299,163 +307,15 @@ FLAGS:
                             Pair with `ebman ctl <op>` to drive the running session.
 
 SUBCOMMANDS:
-    envs [--json]                                List environments in current profile / region.
-    lint [--env NAME] [--regions r1,r2,r3] [--json] [--severity LVL] [--rules ID1,ID2] [--quiet]
-         [--fix (--yes | --dry-run)] [--watch [--interval 60s] [--webhook URL]] [--probe-live]
-         [--baseline FILE | --against-baseline FILE]
-                                                  Run the diagnostic rule engine against one env
-                                                  (or every env in the context) and emit findings
-                                                  as text or JSON. Non-zero exit when issues found.
-                                                  Useful for git hooks, CI gates, monitoring loops.
-                                                  Exit codes: 0 clean, 1 aws err, 2 usage, 3 issues.
-                                                  Operator disables via `lint.disable` in
-                                                  config.toml and project-local .ebman/ebman.toml.
-                                                  --regions fans out across regions; rows are
-                                                  prefixed with the region.
-                                                  --fix dispatches each rule's auto-remediation
-                                                  (DeploymentPolicy → Rolling for EBL001, etc.).
-                                                  Requires --yes to write; --dry-run prints the
-                                                  plan without dispatching. Per-rule opt-out via
-                                                  `lint.fix_disable`. Manual fixes printed as
-                                                  instructions when the right answer is operator-
-                                                  context-dependent.
-                                                  --watch loops at --interval (default 60s) until
-                                                  Ctrl-C; exit code reflects the LAST cycle.
-                                                  Canonical monitoring shape:
-                                                  `ebman lint --watch --interval 5m --json > alerts.jsonl`.
-                                                  --watch and --fix are mutually exclusive.
-                                                  --webhook URL (watch only) POSTs findings to
-                                                  the URL when the issue set CHANGES between
-                                                  cycles (Slack-shaped body; includes the
-                                                  all-clear on dirty → clean).
-                                                  --probe-live enables EBL016: one live HTTP HEAD
-                                                  of each env's health-check URL (2s cap; off by
-                                                  default to keep lint fast).
-                                                  --baseline FILE snapshots current issues to JSON
-                                                  (CI adoption: grandfather existing warnings).
-                                                  --against-baseline FILE diffs vs the snapshot;
-                                                  exits 3 only on NEW issues, cleared ones are
-                                                  informational. Identity is (rule_id, env_name,
-                                                  fields); title / detail drift doesn't churn.
-    drift [--env NAME] [--regions r1,r2,r3] [--tfstate PATH] [--tfdir PATH] [--json] [--quiet] [--no-redact]
-                                                  Terraform drift report. Discovers tfstate via
-                                                  walk-up from cwd (or --tfdir / --tfstate
-                                                  overrides). Compares tf-declared option settings
-                                                  + version_label against live EB state. Drifted
-                                                  env-var values + DBPassword are redacted by
-                                                  default; --no-redact shows them verbatim.
-                                                  Exit codes: 0 no drift, 1 aws err, 2 usage,
-                                                  3 drift detected. CI-friendly default exit code.
-                                                  --regions fans out across regions against a
-                                                  single tfstate (multi-region tf projects).
-    action ACTION --env NAME [--yes]             Run an action (rebuild|restart|terminate|deploy|rollout) on an env.
-                                                  Terminate requires --yes to confirm.
-                                                  Deploy requires --version LABEL; supports
-                                                  --wait-for-green Nm and --auto-rollback Nm.
-                                                  Rollout: --version LABEL --regions r1,r2,r3 --env NAME
-                                                  --yes [--wait-for-green Nm] [--json] [--profile P]
-                                                  [--parallel [--max-concurrency N]]
-                                                  [--continue-on-fail] [--staggered Nm].
-                                                  Default: sequential, halt on first failure.
-                                                  --parallel fans out concurrently (implies
-                                                  --continue-on-fail since in-flight regions
-                                                  can't be cancelled). --staggered delays
-                                                  between regions in sequential mode (requires
-                                                  --wait-for-green). Single rollout_id
-                                                  correlation across audit lines.
-                                                  Exit codes: 0 ok, 1 aws err, 2 usage, 3 partial
-                                                  failure, 4 wait-timeout, 5 rolled-back.
-    ctl <screen|key|cmd|state|reload> [args]     Talk to a running ebman via --control-socket.
-                                                  `reload` re-execs the binary (rebuild first via
-                                                  `cargo build --release`). Use --socket PATH to
-                                                  override the default location.
-    audit [--tail] [--since DUR] [--env NAME] [--rule ID] [--action NAME] [--json]
-                                                  Read ~/.cache/ebman/audit.log — surface the local
-                                                  audit trail for scripting / Slack-bot routing /
-                                                  CI gating. Default text mode renders columns
-                                                  (TS / REGION / STAGE / ACTION / TARGET / OUTCOME);
-                                                  --json emits JSONL one entry per line. --tail
-                                                  polls 1s for new entries (until Ctrl-C). --since
-                                                  filters to entries within a duration (5m/1h/2d).
-                                                  Exit codes: 0 ok, 1 io err, 2 usage.
-    mcp serve [--demo] [--no-redact] [--allow-writes[=VERBS] | --read-only]
-                                                  Stdio MCP server for Claude Code etc.: the read
-                                                  surface (envs / lint / option settings / drift /
-                                                  audit / events / versions / cost) as agent tools.
-                                                  WRITES: on a client that can ask you (Claude Code
-                                                  can), EVERY write verb is available — deploy,
-                                                  restart, rebuild, terminate, set_option and the
-                                                  dlq verbs — each two-phase and put to you as a
-                                                  confirmation you can decline. On a client that
-                                                  cannot ask, reads only. --read-only keeps it to
-                                                  reads whatever the client supports;
-                                                  --allow-writes=VERBS names the only verbs allowed.
-                                                  Pins + freeze + read-only are enforced either way.
-                                                  get_option_settings redacts env-var values +
-                                                  DBPassword (--no-redact opts out). --demo serves
-                                                  the synthetic fleet with zero AWS calls.
-                                                  Register: claude mcp add ebman -- ebman mcp serve
-    mcp setup [--allow-writes[=VERBS]]           Print the MCP registration commands (claude mcp add
-                                                  + a .mcp.json snippet for other clients) from the
-                                                  installed binary — no network, no remote fetch.
-                                                  --allow-writes shows the write-enabled form.
-    audit replay LINE_ID [--yes]                 Re-dispatch a previously-audited action. LINE_ID
-                                                  is a prefix of the line's RFC3339 timestamp (the
-                                                  first `ebman audit` column); ambiguous prefixes
-                                                  are refused with candidates listed. Supported
-                                                  actions: Rebuild / Restart / Terminate / Deploy
-                                                  (others refuse — the line doesn't carry enough to
-                                                  reconstruct them). Honours safety.envs.* /
-                                                  safety.accounts.* pins; Terminate needs --yes.
-                                                  Exit codes: 0 ok, 1 aws err, 2 usage/no-match/
-                                                  ambiguous, 3 pin-refused or destructive-gate.
-    explain EBL### [--env NAME] [--json] [--dry-run] [--no-cache]
-                                                  LLM-backed explanation of a lint issue. Routes to
-                                                  the configured Provider (Anthropic API or local
-                                                  Ollama) and prints an operator-readable summary
-                                                  of why the issue matters and what to do next.
-                                                  Requires `explain.enabled = true` in
-                                                  config.toml + an exported ANTHROPIC_API_KEY
-                                                  (Anthropic) or a running Ollama server. Responses
-                                                  cached to ~/.cache/ebman/explain/; --no-cache
-                                                  forces a fresh call. --dry-run prints the prompt
-                                                  without sending. Exit codes: 0 ok, 1 provider err,
-                                                  2 usage, 3 issue not found.
-    versions --env NAME [--json]                 List application versions for the env's app,
-                                                  newest-first. CLI mirror of the TUI `:versions`
-                                                  overlay. Useful for CI scripts that want to
-                                                  validate a candidate label exists before
-                                                  `ebman action deploy`, or to surface the
-                                                  candidate's description / age in a Slack notify.
-                                                  --json emits one object per version with
-                                                  {{label, deployed (bool), created (RFC3339),
-                                                  description}}. Default text mode marks the
-                                                  currently-deployed label with `*`. Exit codes:
-                                                  0 ok, 1 aws err, 2 usage.
-    freeze [--incident] [REASON...]              Freeze every ebman write fleet-wide (TUI, CLI, MCP)
-                                                  until `ebman thaw`, whatever is running: unlike
-                                                  :freeze-deploys, it does not end with a TUI
-                                                  session. --status says what is in force, and any
-                                                  TUI freeze that ended with its session in the last
-                                                  day. Exit codes: 0 ok, 1 not written (NOT frozen),
-                                                  2 usage.
-    thaw                                         Lift a freeze declared with `ebman freeze`. Refuses
-                                                  (exit 3) a live TUI session's freeze, which that
-                                                  session lifts. Exit codes: 0 lifted or nothing to
-                                                  lift, 2 usage, 3 refused.
-    completions <bash|zsh|fish>                  Emit a shell completion script to stdout. Static:
-                                                  subcommands + flags, not live env names. Install:
-                                                  zsh  -> ebman completions zsh  > \"${{fpath[1]}}/_ebman\"
-                                                  bash -> ebman completions bash > ~/.local/share/bash-completion/completions/ebman
-                                                  fish -> ebman completions fish > ~/.config/fish/completions/ebman.fish
-
+{subcommands}
 CONFIG:
     ~/.config/ebman/config.toml   user configuration (see README)
     ~/.config/ebman/state.toml    persisted session state (managed by the app)
     ~/.cache/ebman/ebman.log      log output (filter with RUST_LOG)
 
 KEYS:
-    Once running, press '?' for the in-app help screen."
+    Once running, press '?' for the in-app help screen.",
+        subcommands = ebman::cli::help::SUBCOMMANDS_HELP.trim_end()
     );
 }
 
