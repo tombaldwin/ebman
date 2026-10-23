@@ -563,7 +563,7 @@ async fn a_dlq_op_removes_only_the_message_it_names() {
         let mut app = armed();
         app.handle_msg(AppMsg::DlqActionResult {
             gen: app.generation,
-            env_name: "api-prod".into(),
+            key: home_key("api-prod"),
             result: Ok(op.clone()),
         });
         assert_eq!(
@@ -578,7 +578,7 @@ async fn a_dlq_op_removes_only_the_message_it_names() {
     let mut app = armed();
     app.handle_msg(AppMsg::DlqActionResult {
         gen: app.generation,
-        env_name: "worker-prod".into(),
+        key: home_key("worker-prod"),
         result: Ok(DlqOp::Purged),
     });
     assert_eq!(
@@ -587,11 +587,24 @@ async fn a_dlq_op_removes_only_the_message_it_names() {
         "wrong env purged the view"
     );
 
+    // Nor a same-named env's in another region.
+    let mut app = armed();
+    app.handle_msg(AppMsg::DlqActionResult {
+        gen: app.generation,
+        key: EnvKey::new("eu-west-2", "api-prod"),
+        result: Ok(DlqOp::Purged),
+    });
+    assert_eq!(
+        ids(&app),
+        vec!["m-1", "m-2", "m-3"],
+        "a same-named env's purge cleared this view"
+    );
+
     // Purge clears everything.
     let mut app = armed();
     app.handle_msg(AppMsg::DlqActionResult {
         gen: app.generation,
-        env_name: "api-prod".into(),
+        key: home_key("api-prod"),
         result: Ok(DlqOp::Purged),
     });
     assert!(ids(&app).is_empty());
@@ -609,7 +622,7 @@ async fn a_replay_with_failures_reports_as_an_error() {
         app.dlq = Some(open_dlq_state("api-prod"));
         app.handle_msg(AppMsg::DlqActionResult {
             gen: app.generation,
-            env_name: "api-prod".into(),
+            key: home_key("api-prod"),
             result: Ok(DlqOp::Replayed { count, failures }),
         });
         app
@@ -1116,4 +1129,30 @@ async fn a_context_switch_forgets_which_workers_have_no_dlq() {
         result: Ok(Box::new(crate::aws::AwsClient::stub())),
     });
     assert!(!app.caches.worker_dlq.is_absent(&home_key("wk-prod")));
+}
+
+/// Each DLQ write's answer names the viewer's own env, region included:
+/// driven through the real senders on a viewer open in eu-west-2.
+#[tokio::test]
+async fn dlq_write_answers_carry_the_viewers_region() {
+    use crate::app::AppMsg;
+    for which in ["delete", "resend", "purge", "replay"] {
+        let mut app = test_app();
+        let mut dlq = open_dlq_state("api-prod");
+        dlq.region = "eu-west-2".into();
+        let messages = dlq.messages.clone();
+        app.dlq = Some(dlq);
+        match which {
+            "delete" => app.spawn_dlq_delete_one("m-1"),
+            "resend" => app.spawn_dlq_resend_selected(),
+            "purge" => app.spawn_dlq_purge("api-prod".into(), "https://sqs/q-dlq".into()),
+            _ => app.spawn_dlq_replay_batch(messages),
+        }
+        let key = loop {
+            if let AppMsg::DlqActionResult { key, .. } = next_msg(&mut app).await {
+                break key;
+            }
+        };
+        assert_eq!(key, EnvKey::new("eu-west-2", "api-prod"), "{which}");
+    }
 }

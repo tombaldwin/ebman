@@ -356,9 +356,9 @@ impl App {
                 result,
                 ..
             } => self.handle_dlq_messages(env_name, queue_url, result),
-            AppMsg::DlqActionResult {
-                env_name, result, ..
-            } => self.handle_dlq_action_result(env_name, result),
+            AppMsg::DlqActionResult { key, result, .. } => {
+                self.handle_dlq_action_result(key, result)
+            }
         }
     }
 
@@ -1901,11 +1901,13 @@ impl App {
         }
     }
 
-    fn handle_dlq_action_result(&mut self, env_name: String, result: Result<DlqOp, String>) {
+    fn handle_dlq_action_result(&mut self, key: EnvKey, result: Result<DlqOp, String>) {
         let mut refetch = false;
         {
             let Some(dlq) = self.dlq.as_mut() else { return };
-            if dlq.env_name != env_name {
+            // By key: a same-named env's purge, arriving late, cleared this
+            // viewer's list and reported "DLQ purged" for the wrong env.
+            if EnvKey::new(dlq.region.clone(), dlq.env_name.clone()) != key {
                 return;
             }
             match result {

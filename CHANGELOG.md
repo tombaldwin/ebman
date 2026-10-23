@@ -63,6 +63,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   twin and opened on the other could be filled with the first one's
   settings, or offered subnets and certificates from the wrong region,
   and Submit would write them.
+- **The DLQ viewer takes only its own env's write results.** A purge,
+  delete, resend or replay result was matched by env name, so a
+  same-named env's late purge cleared this viewer's list and reported
+  "DLQ purged" for the wrong env.
 - **A write's result no longer closes what the operator has open.**
   Every action result closed the action flow and reset the mode, so an
   unattended one (an auto-rollback, a batch member) arriving while the

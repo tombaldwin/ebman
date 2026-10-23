@@ -999,7 +999,9 @@ pub(crate) enum AppMsg {
     },
     DlqActionResult {
         gen: u64,
-        env_name: String,
+        /// The env whose queue was acted on: a same-named env's viewer
+        /// must not drop messages it never touched.
+        key: EnvKey,
         result: Result<DlqOp, String>,
     },
     ActionResult {

@@ -77,6 +77,7 @@ impl App {
             return;
         }
         let env_name = dlq.env_name.clone();
+        let key = EnvKey::new(dlq.region.clone(), dlq.env_name.clone());
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let queue_label = if matches!(dlq.viewing, QueueView::Main) {
@@ -104,7 +105,7 @@ impl App {
                 Err(e) => {
                     let _ = tx.send(AppMsg::DlqActionResult {
                         gen,
-                        env_name,
+                        key,
                         result: Err(flatten_err("cached_client", e)),
                     });
                     return;
@@ -117,11 +118,7 @@ impl App {
                     message_id: msg.id.clone(),
                 })
                 .map_err(|e| flatten_err("delete_message", e));
-            let _ = tx.send(AppMsg::DlqActionResult {
-                gen,
-                env_name,
-                result,
-            });
+            let _ = tx.send(AppMsg::DlqActionResult { gen, key, result });
         });
     }
 
@@ -149,6 +146,7 @@ impl App {
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let env_name = dlq.env_name.clone();
+        let key = EnvKey::new(dlq.region.clone(), dlq.env_name.clone());
         let main_url = dlq.main_queue_url.clone();
         let dlq_url = dlq.dlq_url.clone();
         crate::audit::append_dlq_op(
@@ -171,7 +169,7 @@ impl App {
                 Err(e) => {
                     let _ = tx.send(AppMsg::DlqActionResult {
                         gen,
-                        env_name,
+                        key,
                         result: Err(flatten_err("cached_client", e)),
                     });
                     return;
@@ -197,11 +195,7 @@ impl App {
                     Err(format!("send to main queue failed: {e}"))
                 }
             };
-            let _ = tx.send(AppMsg::DlqActionResult {
-                gen,
-                env_name,
-                result,
-            });
+            let _ = tx.send(AppMsg::DlqActionResult { gen, key, result });
         });
     }
 
@@ -217,6 +211,7 @@ impl App {
             &env_name,
             &[],
         );
+        let key = EnvKey::new(self.dlq_region(), env_name.clone());
         let client = self.dlq_client();
         let tx = self.msg_tx.clone();
         let gen = self.generation;
@@ -232,7 +227,7 @@ impl App {
                 Err(e) => {
                     let _ = tx.send(AppMsg::DlqActionResult {
                         gen,
-                        env_name,
+                        key,
                         result: Err(flatten_err("cached_client", e)),
                     });
                     return;
@@ -243,11 +238,7 @@ impl App {
                 .await
                 .map(|_| DlqOp::Purged)
                 .map_err(|e| flatten_err("purge_queue", e));
-            let _ = tx.send(AppMsg::DlqActionResult {
-                gen,
-                env_name,
-                result,
-            });
+            let _ = tx.send(AppMsg::DlqActionResult { gen, key, result });
         });
     }
 
@@ -275,6 +266,7 @@ impl App {
         let main_url = dlq.main_queue_url.clone();
         let dlq_url = dlq.dlq_url.clone();
         let env_name = dlq.env_name.clone();
+        let key = EnvKey::new(dlq.region.clone(), dlq.env_name.clone());
         let client = self.dlq_client();
         let tx = self.msg_tx.clone();
         let gen = self.generation;
@@ -300,7 +292,7 @@ impl App {
                 Err(e) => {
                     let _ = tx.send(AppMsg::DlqActionResult {
                         gen,
-                        env_name,
+                        key,
                         result: Err(flatten_err("cached_client", e)),
                     });
                     return;
@@ -330,11 +322,7 @@ impl App {
                 count: count - failures,
                 failures,
             });
-            let _ = tx.send(AppMsg::DlqActionResult {
-                gen,
-                env_name,
-                result,
-            });
+            let _ = tx.send(AppMsg::DlqActionResult { gen, key, result });
         });
     }
 }
