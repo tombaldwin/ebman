@@ -450,14 +450,28 @@ mod body {
 
     #[tokio::test]
     async fn a_named_env_is_the_one_explained() {
-        let (code, out, err, asked) = run(
-            &opts("EBL001", Some("api"), false, false),
-            fires(),
-            Ok("Use Rolling."),
+        // Two envs that both fire: only the named one is asked about.
+        let client = mock_client_inner(vec!["api".into(), "web".into()], fires());
+        let asked = std::sync::Mutex::new(Vec::new());
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let code = explain_body(
+            &opts("EBL001", Some("web"), false, false),
+            &client,
+            &[],
+            &[],
+            |issue: lint::Issue, _prompt| {
+                asked
+                    .lock()
+                    .unwrap()
+                    .push(issue.env_name.clone().unwrap_or_default());
+                async { Ok::<String, String>("Use Rolling.".into()) }
+            },
+            &mut out,
+            &mut err,
         )
         .await;
-        assert_eq!((code, asked.len()), (0, 1), "{err}");
-        assert!(out.contains("── EBL001 (api) ──"), "{out}");
+        assert_eq!(code, 0, "{}", String::from_utf8_lossy(&err));
+        assert_eq!(asked.into_inner().unwrap(), ["web"]);
     }
 
     /// A rule the operator disabled does not fire, so there is nothing

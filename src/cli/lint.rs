@@ -3795,6 +3795,51 @@ mod body {
         assert_eq!(code, 2);
     }
 
+    /// `--fix --yes` honours the env and account pins it was set up
+    /// with: the refusal, not an `UpdateEnvironment` failure, is what
+    /// stops it. Pins the setup's safety config and ambient profile
+    /// reaching the cycle, which every other test leaves at defaults.
+    #[tokio::test]
+    async fn a_pinned_fix_is_refused_by_its_pin() {
+        async fn fix(cfg: config::Config, profile: Option<&str>) -> (i32, String) {
+            let profile = profile.map(String::from);
+            let (mut out, mut err) = (Vec::new(), Vec::new());
+            let code = lint_body(
+                &["lint".to_string(), "--fix".to_string(), "--yes".to_string()],
+                || LintSetup {
+                    disabled: vec![],
+                    fix_disabled: vec![],
+                    safety_cfg: cfg,
+                    ambient_profile: profile,
+                },
+                |_: &str| None,
+                |_| async { Ok(mock_client_inner(vec!["api".into()], findings())) },
+                async {},
+                &mut out,
+                &mut err,
+            )
+            .await;
+            (code, String::from_utf8(err).unwrap())
+        }
+        let mut cfg = config::Config::default();
+        cfg.safety_envs.insert("api".into(), true);
+        let (code, err) = fix(cfg, None).await;
+        assert_eq!(code, 1, "{err}");
+        assert!(
+            err.contains("refusing api — pinned by safety.envs.api.read_only"),
+            "{err}"
+        );
+
+        let mut cfg = config::Config::default();
+        cfg.safety_accounts.insert("ops".into(), true);
+        let (code, err) = fix(cfg, Some("ops")).await;
+        assert_eq!(code, 1, "{err}");
+        assert!(
+            err.contains("refusing api — pinned by safety.accounts.ops"),
+            "{err}"
+        );
+    }
+
     #[tokio::test]
     async fn quiet_prints_nothing_and_still_exits_with_the_finding() {
         let r = lint(&["--quiet"], findings(), None).await;

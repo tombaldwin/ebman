@@ -609,13 +609,20 @@ mod write_gate_input_guard {
                 .find(|(name, _)| name == f)
                 .unwrap_or_else(|| panic!("{module}: `{f}` is defined"))
                 .1;
+            // The body call's own arguments, not anywhere in the shell: a
+            // shell reading AWS_PROFILE for something else while passing
+            // `None` must not pass.
+            let call = &body[body
+                .find("_body(")
+                .unwrap_or_else(|| panic!("{f} calls a body"))..];
+            let args = &call[..call.find("\n    )").unwrap_or(call.len())];
             assert!(
-                body.contains(gate),
-                "{module}: `{f}` must pass `{gate}` to its body: {body}"
+                args.contains(gate),
+                "{module}: `{f}` must pass `{gate}` to its body: {args}"
             );
             assert!(
-                body.contains("std::env::var(\"AWS_PROFILE\").ok()"),
-                "{module}: `{f}` must pass the ambient AWS_PROFILE: {body}"
+                args.contains("std::env::var(\"AWS_PROFILE\").ok()"),
+                "{module}: `{f}` must pass the ambient AWS_PROFILE: {args}"
             );
         }
     }
@@ -653,6 +660,12 @@ mod write_gate_input_guard {
             assert!(
                 !body.contains("std::process::exit("),
                 "{f} must not bypass the draining exit: {body}"
+            );
+            // And the success path drains too: a write that went through
+            // has its webhook POST in flight as surely as a refusal.
+            assert!(
+                body.contains("drain_before_return()") || body.contains("drain_webhooks("),
+                "{f} must drain before a successful return: {body}"
             );
             // Canary: prove the body extraction found the real one.
             assert!(

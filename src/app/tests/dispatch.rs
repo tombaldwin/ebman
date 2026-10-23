@@ -1995,6 +1995,23 @@ mod docs_drift {
         out
     }
 
+    /// Canary on the real sources: the parsers' forwarded codes are seen,
+    /// so renaming the field cannot blind the reader quietly.
+    #[test]
+    fn the_forwarded_code_reader_sees_the_real_parsers() {
+        for (module, want) in [
+            ("cli/action.rs", vec![2, 3]),
+            ("cli/audit_replay.rs", vec![2]),
+        ] {
+            let src = super::super::scan::production_source(module);
+            let got = forwarded_codes(&super::super::scan::statements_of(&src));
+            assert!(
+                want.iter().all(|c| got.contains(c)),
+                "{module}: forwarded codes {got:?} missing some of {want:?}"
+            );
+        }
+    }
+
     #[test]
     fn the_forwarded_code_reader_sees_both_shapes_and_no_prose() {
         let st: Vec<String> = [
@@ -2230,10 +2247,28 @@ pub(crate) fn exit_code(failed: bool) -> i32 {
             // that lost it, would otherwise leave `used` short and the
             // comparison below vacuously true.
             let own = body_of(sub);
-            if super::super::scan::fn_bodies(&src)
+            // These have a testable body by that name; a rename (or a
+            // return type that reads as no code) must fail here, not
+            // skip the check below and leave `used` short.
+            const WITH_BODIES: [&str; 9] = [
+                "audit",
+                "audit replay",
+                "ctl",
+                "drift",
+                "explain",
+                "action",
+                "lint",
+                "freeze",
+                "thaw",
+            ];
+            let defined = super::super::scan::fn_bodies(&src)
                 .iter()
-                .any(|(n, _)| *n == own)
-            {
+                .any(|(n, _)| *n == own);
+            assert!(
+                defined || !WITH_BODIES.contains(&sub),
+                "{module}: `{own}` is gone — renamed? its codes are no longer read"
+            );
+            if defined {
                 assert!(
                     fns.contains(&own),
                     "{module}: `{own}` no longer reads as returning an exit code"
