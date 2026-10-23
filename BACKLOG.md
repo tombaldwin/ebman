@@ -70,9 +70,33 @@ Tier definitions:
     move it to `env_ref.rs`;
   - four region-wide writes use `EnvKey::new(region, "")`: a named
     constructor;
-  - `LogTailOpened`, `DeleteAppVersion` carry `(env_name, region)`
-    pairs where an `EnvKey` would do (`AppTabDiscovered` done
-    2026-10-23).
+  - `EnvVarsForEdit`, `RollbackTarget`, `LogTailOpened` carry
+    `(env_name, region)` pairs where an `EnvKey` would do (the arms
+    already build one); `AppTabDiscovered`, the Detail, form, DLQ and
+    confirm-modal answers were done 2026-10-23;
+  - `DetailState::env_name` duplicates `key.name` (~29 readers): a
+    method instead of the field;
+  - `CostCache.costs` keeps `REGION/NAME` strings, so the format is
+    known in five places (`Costs::restore_cached` / `to_cache_map`,
+    `cost_cache::parse`'s own `/` test, the MCP demo, `fleet_cost_entries`):
+    key it by `EnvKey` and convert only in `parse` / `serialize`, with an
+    `EnvKey::to_ref()` (`NAME@REGION`) for MCP and `env_ref.rs`; the `@`
+    parser also exists twice (`env_ref.rs`, `cmd_action.rs`);
+  - `pending_select` is a `String` re-parsed on every rebuild: parse it
+    once at load into a typed saved cursor.
+  *2026-10-23 group-1 architecture review, M1/M3/M4/M7.*
+
+- [ ] **Terraform state is matched to envs by name.** `terraform.rs`'s
+  `managed_names()` and `env_by_name` key the tfstate's
+  `aws_elastic_beanstalk_environment` resources by name, so under
+  `:region all` the eu-west-2 twin gets the TF badge and `:drift` on it
+  diffs the home twin's terraform resource against the eu env's live
+  settings: a wrong answer, not a cosmetic one. The resource's `arn`
+  attribute carries its region (the test fixture already has one).
+  Parse it into `TfEnv`, falling back to the name with no arn, and key
+  `tf_managed_envs` and the drift lookups (`cmd_misc.rs`, `cli/drift.rs`,
+  the MCP `drift` tool) by `EnvKey`. *2026-10-23 group-1 architecture
+  review, M5.*
 
 - [ ] **Audit-line boilerplate.** ~30 `append_action_dispatched` and ~11
   `append_action_completed` sites pass account / profile / region by
