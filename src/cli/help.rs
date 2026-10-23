@@ -178,20 +178,44 @@ pub fn subcommand_help(name: &str) -> Option<String> {
     (!out.is_empty()).then(|| out.join("\n"))
 }
 
-/// The words that name a form of a subcommand (`audit replay`,
-/// `mcp serve`, `ctl state`): help may follow one of them.
-const FORMS: &[&str] = &[
-    "replay", "serve", "setup", "screen", "key", "cmd", "state", "reload",
-];
+/// The words that name a form of `sub` (`audit replay`, `mcp serve`,
+/// `ctl state`), read from its help headers: a header's second word, or
+/// each choice in a `<a|b|c>` there. Derived, so a new form cannot be
+/// left out, and per subcommand, so `ebman freeze state --help` declares
+/// a freeze rather than printing help.
+fn forms_of(sub: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for line in SUBCOMMANDS_HELP.lines() {
+        let Some(rest) = line.strip_prefix("    ").filter(|r| !r.starts_with(' ')) else {
+            continue;
+        };
+        let mut words = rest.split_whitespace();
+        if words.next() != Some(sub) {
+            continue;
+        }
+        let Some(second) = words.next() else {
+            continue;
+        };
+        if let Some(choices) = second.strip_prefix('<').and_then(|c| c.strip_suffix('>')) {
+            out.extend(choices.split('|').map(str::to_string));
+        } else if second.chars().all(|c| c.is_ascii_lowercase()) {
+            out.push(second.to_string());
+        }
+    }
+    out
+}
 
 /// Does `args` (the subcommand's own, `args[0]` being its name) ask for
-/// help? Only in the flag position: first, or second after a form's word.
-/// So a value that happens to be `--help` (a freeze reason after another
-/// word) is never read as one.
+/// help? Only in the flag position: first, or second after one of that
+/// subcommand's form words. So a value that happens to be `--help` (a
+/// freeze reason after another word) is never read as one.
 pub fn asks_for_help(args: &[String]) -> bool {
     let is_help = |a: Option<&String>| matches!(a.map(String::as_str), Some("-h" | "--help"));
-    is_help(args.get(1))
-        || (args.get(1).is_some_and(|w| FORMS.contains(&w.as_str())) && is_help(args.get(2)))
+    let form = |w: &String| {
+        args.first()
+            .is_some_and(|sub| forms_of(sub).iter().any(|f| f == w))
+    };
+    is_help(args.get(1)) || (args.get(1).is_some_and(form) && is_help(args.get(2)))
 }
 
 #[cfg(test)]
@@ -203,6 +227,22 @@ mod tests {
         for sub in crate::cli::SUBCOMMANDS {
             let text = subcommand_help(sub).unwrap_or_else(|| panic!("no help for `{sub}`"));
             assert!(text.contains(sub), "{sub}: {text}");
+        }
+    }
+
+    /// The other direction from `every_subcommand_has_help`: every block
+    /// is a subcommand's, so a removed one's help cannot linger.
+    #[test]
+    fn every_help_block_is_a_subcommands() {
+        for line in SUBCOMMANDS_HELP.lines() {
+            let Some(rest) = line.strip_prefix("    ").filter(|r| !r.starts_with(' ')) else {
+                continue;
+            };
+            let name = rest.split_whitespace().next().unwrap_or_default();
+            assert!(
+                crate::cli::SUBCOMMANDS.contains(&name),
+                "help block for `{name}`, which is not a subcommand"
+            );
         }
     }
 
@@ -234,8 +274,11 @@ mod tests {
         assert!(asks_for_help(&argv(&["audit", "replay", "--help"])));
         assert!(asks_for_help(&argv(&["mcp", "serve", "--help"])));
         assert!(asks_for_help(&argv(&["ctl", "state", "--help"])));
-        // A reason that happens to be the word, after another word.
+        // A reason that happens to be the word, after another word, even
+        // one that is another subcommand's form.
         assert!(!asks_for_help(&argv(&["freeze", "release", "--help"])));
+        assert!(!asks_for_help(&argv(&["freeze", "state", "--help"])));
+        assert!(asks_for_help(&argv(&["ctl", "reload", "--help"])));
         assert!(!asks_for_help(&argv(&["lint", "--env", "x"])));
         assert!(!asks_for_help(&argv(&["envs"])));
     }

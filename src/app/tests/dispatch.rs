@@ -1938,6 +1938,47 @@ mod docs_drift {
         out
     }
 
+    /// The codes a `*_body` function returns (`freeze_body`,
+    /// `thaw_body`): a subcommand whose body is testable returns its
+    /// code rather than exiting, so its codes are its `return N;` and
+    /// bare-literal tails.
+    fn body_return_codes(src: &str, body_fn: &str) -> std::collections::BTreeSet<u8> {
+        let mut out = std::collections::BTreeSet::new();
+        for (name, body) in super::super::scan::fn_bodies(src) {
+            if name != body_fn {
+                continue;
+            }
+            for line in body.lines() {
+                let t = line
+                    .trim()
+                    .trim_start_matches("return ")
+                    .trim_end_matches(';');
+                if t.len() == 1 {
+                    if let Some(d) = t.chars().next().and_then(|c| c.to_digit(10)) {
+                        out.insert(d as u8);
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// The codes a subcommand's help block lists after "Exit codes:".
+    fn help_codes(sub: &str) -> Option<std::collections::BTreeSet<u8>> {
+        let help = crate::cli::help::subcommand_help(sub)?;
+        let flat = help.split_whitespace().collect::<Vec<_>>().join(" ");
+        let after = flat.split("Exit codes:").nth(1)?;
+        let end = after.find('.').unwrap_or(after.len());
+        Some(
+            after[..end]
+                .split(|c: char| !c.is_ascii_alphanumeric())
+                .filter(|w| w.len() == 1)
+                .filter_map(|w| w.chars().next()?.to_digit(10))
+                .map(|d| d as u8)
+                .collect(),
+        )
+    }
+
     /// The codes a row of `docs/headless.md`'s exit-code table lists.
     fn documented_codes(docs: &str, sub: &str) -> Option<std::collections::BTreeSet<u8>> {
         let row = docs
@@ -1994,6 +2035,30 @@ mod docs_drift {
 
     /// `docs/headless.md` lists the rules `lint --fix` remediates on its
     /// own. It said EBL001/004/006 while EBL009 and EBL019 shipped fixes.
+    /// The "Exit codes:" line in a subcommand's `--help` lists the same
+    /// codes as its row in the table, so the two cannot drift apart.
+    #[test]
+    fn help_exit_codes_match_the_table() {
+        let docs = std::fs::read_to_string("docs/headless.md").expect("read headless.md");
+        let mut checked = 0;
+        for sub in crate::cli::SUBCOMMANDS {
+            let Some(help) = help_codes(sub) else {
+                continue;
+            };
+            let table = documented_codes(&docs, sub)
+                .unwrap_or_else(|| panic!("no exit-code row for `ebman {sub}`"));
+            assert_eq!(
+                help, table,
+                "`ebman {sub} --help` and docs/headless.md disagree"
+            );
+            checked += 1;
+        }
+        assert!(
+            checked >= 6,
+            "only {checked} help blocks list exit codes: reader broken?"
+        );
+    }
+
     #[test]
     fn the_auto_fixed_rules_are_documented() {
         let src = super::super::scan::production_source("lint/rules.rs");
@@ -2026,9 +2091,15 @@ mod docs_drift {
             ("completions", "cli/completions.rs"),
             ("ctl", "cli/ctl.rs"),
             ("mcp", "cli/mcp/mod.rs"),
+            ("freeze", "cli/freeze.rs"),
+            ("thaw", "cli/freeze.rs"),
         ] {
             let src = super::super::scan::production_source(module);
-            let used = exit_codes_in(&super::super::scan::statements_of(&src));
+            // A testable body returns its code; the rest exit with one.
+            let used = match sub {
+                "freeze" | "thaw" => body_return_codes(&src, &format!("{sub}_body")),
+                _ => exit_codes_in(&super::super::scan::statements_of(&src)),
+            };
             let listed = documented_codes(&docs, sub)
                 .unwrap_or_else(|| panic!("no exit-code row for `ebman {sub}`"));
             let missing: Vec<&u8> = used.difference(&listed).collect();
