@@ -932,19 +932,20 @@ pub(crate) fn env_not_found_anywhere(
 /// and 2 a usage error. `--baseline` also exits 1 rather than snapshot
 /// a degraded run.
 pub async fn run(args: &[String]) -> Result<()> {
-    let mut disabled: Vec<String> = config::load_lint_disables();
-    disabled.extend(project::load_lint_disables_from_cwd());
-    let mut fix_disabled: Vec<String> = config::load_lint_fix_disables();
-    fix_disabled.extend(project::load_lint_fix_disables_from_cwd());
-    let setup = LintSetup {
-        disabled,
-        fix_disabled,
-        safety_cfg: config::load(),
-        ambient_profile: std::env::var("AWS_PROFILE").ok(),
-    };
     let code = lint_body(
         args,
-        &setup,
+        || {
+            let mut disabled: Vec<String> = config::load_lint_disables();
+            disabled.extend(project::load_lint_disables_from_cwd());
+            let mut fix_disabled: Vec<String> = config::load_lint_fix_disables();
+            fix_disabled.extend(project::load_lint_fix_disables_from_cwd());
+            LintSetup {
+                disabled,
+                fix_disabled,
+                safety_cfg: config::load(),
+                ambient_profile: std::env::var("AWS_PROFILE").ok(),
+            }
+        },
         crate::cli::frozen_refusal,
         |region| aws::AwsClient::with(None, region),
         // `ctrl_c` panics outside a Tokio runtime, but `run` is
@@ -977,13 +978,15 @@ pub(crate) struct LintSetup {
     pub ambient_profile: Option<String>,
 }
 
-/// `ebman lint`'s whole behaviour against its setup, a freeze check
+/// `ebman lint`'s whole behaviour against its setup (loaded once the
+/// flags parse: a usage error reads no config and prints none of its
+/// warnings), a freeze check
 /// (`frozen_refusal` in production: the refusal, audited, if a freeze
 /// holds), a region → client factory, the `--watch` stop signal
 /// (Ctrl-C) and writers. Returns the exit code.
 pub(crate) async fn lint_body<F, Fut>(
     args: &[String],
-    setup: &LintSetup,
+    setup: impl FnOnce() -> LintSetup,
     frozen: impl Fn(&str) -> Option<String>,
     client_for: F,
     stop: impl std::future::Future<Output = ()>,
@@ -994,12 +997,6 @@ where
     F: Fn(Option<String>) -> Fut,
     Fut: std::future::Future<Output = color_eyre::eyre::Result<aws::AwsClient>>,
 {
-    let LintSetup {
-        disabled,
-        fix_disabled,
-        safety_cfg,
-        ambient_profile: active_profile_for_safety,
-    } = setup;
     let LintArgs {
         env_name,
         regions,
@@ -1026,6 +1023,13 @@ where
             return 2;
         }
     };
+    let setup = setup();
+    let LintSetup {
+        disabled,
+        fix_disabled,
+        safety_cfg,
+        ambient_profile: active_profile_for_safety,
+    } = &setup;
     // `run_cycle` computes its own; this one is for the printing
     // and baseline branches below, which stayed in `run`.
     let multi_region = regions.len() > 1;
@@ -3710,7 +3714,7 @@ mod body {
         let (mut out, mut err) = (Vec::new(), Vec::new());
         let code = lint_body(
             &argv,
-            &setup(),
+            setup,
             |verb: &str| {
                 *verb_asked.lock().unwrap() = Some(verb.to_string());
                 frozen.map(String::from)
@@ -3773,6 +3777,24 @@ mod body {
         let r = lint(&["--fix"], MockFaults::default(), None).await;
         assert_eq!(r.code, 2, "--fix needs --yes or --dry-run");
         assert_eq!(r.clients, 0);
+    }
+
+    /// A usage error is decided before any config is read, so a broken
+    /// project config's warnings do not bury it.
+    #[tokio::test]
+    async fn a_usage_error_reads_no_config() {
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let code = lint_body(
+            &["lint".to_string(), "--bogus".to_string()],
+            || panic!("config read for a usage error"),
+            |_: &str| None,
+            |_| async { Err(color_eyre::eyre::eyre!("no client")) },
+            async {},
+            &mut out,
+            &mut err,
+        )
+        .await;
+        assert_eq!(code, 2);
     }
 
     #[tokio::test]
