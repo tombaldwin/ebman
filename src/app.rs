@@ -1058,6 +1058,9 @@ pub(crate) enum AppMsg {
         gen: u64,
         pending: PendingId,
         env_name: String,
+        /// The region the write went to: Detail is refreshed only when it
+        /// is open on this env, not on a same-named one elsewhere.
+        region: String,
         summary: String,
         result: Result<(), String>,
     },
@@ -1069,6 +1072,8 @@ pub(crate) enum AppMsg {
         gen: u64,
         pending: PendingId,
         env_name: String,
+        /// The region the write went to, as for `TagUpdate`.
+        region: String,
         summary: String,
         result: Result<(), String>,
     },

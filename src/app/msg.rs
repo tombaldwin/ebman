@@ -290,10 +290,11 @@ impl App {
             AppMsg::OptionSettingsUpdate {
                 pending,
                 env_name,
+                region,
                 summary,
                 result,
                 ..
-            } => self.handle_option_settings_update(pending, env_name, summary, result),
+            } => self.handle_option_settings_update(pending, env_name, region, summary, result),
             AppMsg::AlarmOp {
                 pending,
                 verb,
@@ -313,10 +314,11 @@ impl App {
             AppMsg::TagUpdate {
                 pending,
                 env_name,
+                region,
                 summary,
                 result,
                 ..
-            } => self.handle_tag_update(pending, env_name, summary, result),
+            } => self.handle_tag_update(pending, env_name, region, summary, result),
             AppMsg::DetailQueues { ticket, result, .. } => {
                 self.handle_detail_queues(ticket, result)
             }
@@ -1652,9 +1654,11 @@ impl App {
         &mut self,
         pending: PendingId,
         env_name: String,
+        region: String,
         summary: String,
         result: Result<(), String>,
     ) {
+        let written = super::EnvKey::new(region, env_name.clone());
         self.complete_pending(pending, result.clone());
         match result {
             Ok(()) => {
@@ -1679,7 +1683,7 @@ impl App {
                     || summary.starts_with("env rename ")
                 {
                     if let Some(d) = self.detail.as_ref() {
-                        if d.env_name == env_name {
+                        if d.key == written {
                             self.spawn_detail_env_vars();
                         }
                     }
@@ -1790,15 +1794,17 @@ impl App {
         &mut self,
         pending: PendingId,
         env_name: String,
+        region: String,
         summary: String,
         result: Result<(), String>,
     ) {
+        let written = super::EnvKey::new(region, env_name.clone());
         self.complete_pending(pending, result.clone());
         match result {
             Ok(()) => {
                 self.push_toast(ToastKind::Info, format!("{summary} on {env_name}"));
                 if let Some(d) = self.detail.as_ref() {
-                    if d.env_name == env_name {
+                    if d.key == written {
                         self.spawn_detail_tags();
                     }
                 }

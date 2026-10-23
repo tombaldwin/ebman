@@ -905,6 +905,7 @@ impl App {
                         gen,
                         pending,
                         env_name: arn_for_msg,
+                        region: region.clone(),
                         summary: "Delete custom platform".into(),
                         result,
                     });

@@ -131,6 +131,7 @@ impl App {
         let pending_label = format!("{op_label} {key}");
         let pending = self.push_pending(pending_label.clone(), env.clone());
         let env_for_msg = env.clone();
+        let region_for_msg = region.clone();
         tokio::spawn(async move {
             let to_add: Vec<(String, String)> = match &value {
                 Some(v) => vec![(key.clone(), v.clone())],
@@ -152,6 +153,7 @@ impl App {
                 gen,
                 pending,
                 env_name: env_for_msg,
+                region: region_for_msg,
                 summary: pending_label,
                 result,
             });
@@ -215,6 +217,7 @@ impl App {
                         gen,
                         pending,
                         env_name: env_for_msg,
+                        region: region.clone(),
                         summary: pending_label,
                         result: Err(flatten_err("cached_client", e)),
                     });
@@ -257,6 +260,7 @@ impl App {
                 gen,
                 pending,
                 env_name: env_for_msg,
+                region: region.clone(),
                 summary: pending_label,
                 result,
             });

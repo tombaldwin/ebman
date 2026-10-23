@@ -86,6 +86,7 @@ impl App {
                         gen,
                         pending,
                         env_name: env_for_msg,
+                        region: region.clone(),
                         summary: summary_for_msg,
                         result: Err(flatten_err("cached_client", e)),
                     });
@@ -133,6 +134,7 @@ impl App {
                 gen,
                 pending,
                 env_name: env_for_msg,
+                region: region.clone(),
                 summary: summary_for_msg,
                 result,
             });
@@ -660,6 +662,7 @@ impl App {
                 gen,
                 pending,
                 env_name,
+                region: region.clone(),
                 summary: summary_for_msg,
                 result,
             });

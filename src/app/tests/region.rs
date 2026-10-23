@@ -2816,3 +2816,61 @@ async fn the_tf_badge_follows_the_resources_region() {
         assert_eq!(row.contains('ⓣ'), !eu, "{row}");
     }
 }
+
+/// A tag or env-var write's result refreshes Detail only when Detail is
+/// open on the env written — not on a same-named one in another region,
+/// which used to refetch while the env actually written did not.
+#[tokio::test]
+async fn a_write_to_a_twin_does_not_refresh_this_detail() {
+    let mut app = test_app();
+    let mut env = mk_env("api-prod", "poly", "Web", "Green");
+    env.region = Some("eu-west-2".into());
+    app.environments = vec![env];
+    app.rebuild_view();
+    app.table_state.select(Some(0));
+    app.open_detail();
+    let home = app.context.region.clone();
+    let reset = |app: &mut App| {
+        let d = app.detail.as_mut().expect("detail");
+        d.tags_request = Default::default();
+        d.env_vars_request = Default::default();
+    };
+    let in_flight = |app: &App| {
+        let d = app.detail.as_ref().expect("detail");
+        (
+            d.tags_request.in_flight_since().is_some(),
+            d.env_vars_request.in_flight_since().is_some(),
+        )
+    };
+    let results = |region: &str, gen: u64| {
+        [
+            AppMsg::TagUpdate {
+                gen,
+                pending: crate::app::PendingId::stray(),
+                env_name: "api-prod".into(),
+                region: region.into(),
+                summary: "tag owner".into(),
+                result: Ok(()),
+            },
+            AppMsg::OptionSettingsUpdate {
+                gen,
+                pending: crate::app::PendingId::stray(),
+                env_name: "api-prod".into(),
+                region: region.into(),
+                summary: "env set FOO".into(),
+                result: Ok(()),
+            },
+        ]
+    };
+
+    reset(&mut app);
+    for msg in results(&home, app.generation) {
+        app.handle_msg(msg);
+    }
+    assert_eq!(in_flight(&app), (false, false), "the home twin's write");
+
+    for msg in results("eu-west-2", app.generation) {
+        app.handle_msg(msg);
+    }
+    assert_eq!(in_flight(&app), (true, true), "this env's write");
+}
