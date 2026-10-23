@@ -1108,26 +1108,41 @@ pub(crate) struct ResolvedConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Fetch<T> {
     settled: Option<Result<T, String>>,
+    request: Request,
+}
+
+/// A request in flight, and which one: what [`Fetch`] tracks besides its
+/// value, and on its own for a fetch whose data lives elsewhere (Detail's
+/// tabs keep their lists in their own fields and their error in
+/// `DetailState::error`, so a failed refresh leaves the last list up).
+///
+/// It was `Fetch<()>` in those places, which carried a value that was
+/// always `Ok(())` and accessors (`ready`, `error`, `is_blank`) that
+/// meant nothing there, and spelled every answer `settle_ticket(t, Ok(()))`.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct Request {
     in_flight: bool,
-    /// The latest request's [`Ticket`]: only its answer settles.
+    /// The latest request's [`Ticket`]: only its answer finishes it.
     issued: u64,
     /// When the latest request began, while it is in flight: a request
     /// whose task died never answers, and its age is how a caller tells.
     began: Option<std::time::Instant>,
 }
 
-/// Which request a [`Fetch`]'s answer belongs to. A fetch that can be
-/// superseded (a range change, a config edit, a stuck query retried)
-/// carries the ticket [`Fetch::begin`] gave it, and settles through
-/// [`Fetch::settle_ticket`]: an earlier request's answer, arriving
-/// late, is dropped rather than shown over the later one's.
+/// Which request an answer belongs to. A request that can be superseded
+/// (a range change, a config edit, a `^R`, a stuck query retried)
+/// carries the ticket [`Request::begin`] gave it, and finishes through
+/// [`Request::finish`] or [`Fetch::settle_ticket`]: an earlier request's
+/// answer, arriving late, is dropped rather than shown over the later
+/// one's.
 ///
-/// Drawn from one counter for the process, not per `Fetch`: a Detail
-/// view closed and reopened on the same env has a new `Fetch`, and a
+/// Drawn from one counter for the process, not per `Request`: a Detail
+/// view closed and reopened on the same env has a new `Request`, and a
 /// per-instance count would hand its first request the same ticket as
-/// the old view's, whose answer may still be coming.
+/// the old view's, whose answer may still be coming. The same counter is
+/// why a same-named env's answer, in another region, matches nothing.
 /// No `Default`: only `begin` makes one, so no ticket can match a
-/// `Fetch` that has issued none.
+/// `Request` that has issued none.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Ticket(u64);
 
@@ -1138,13 +1153,79 @@ impl Ticket {
     }
 }
 
+impl Request {
+    /// Start a request, superseding any in flight. Its answer finishes
+    /// it only through [`finish`](Self::finish) with the ticket returned.
+    #[must_use = "the answer finishes only with this ticket"]
+    pub(crate) fn begin(&mut self) -> Ticket {
+        self.in_flight = true;
+        self.issued = Ticket::next();
+        self.began = Some(std::time::Instant::now());
+        Ticket(self.issued)
+    }
+
+    /// End the request `ticket` answers, if it is the latest; otherwise
+    /// the answer is stale and a later request stays in flight. Returns
+    /// whether it finished: the caller applies the answer only then.
+    pub(crate) fn finish(&mut self, ticket: Ticket) -> bool {
+        let latest = ticket.0 == self.issued;
+        if latest {
+            self.in_flight = false;
+        }
+        latest
+    }
+
+    /// Whether `ticket` is the request in flight, without finishing it:
+    /// a progress report on a request still running. False once it has
+    /// finished, so a report arriving late cannot move a stage back.
+    pub(crate) fn is_latest(&self, ticket: Ticket) -> bool {
+        self.in_flight && ticket.0 == self.issued
+    }
+
+    /// Forget any request outstanding: every ticket issued before this
+    /// is stale, so its answer is dropped.
+    pub(crate) fn reset(&mut self) {
+        self.in_flight = false;
+        self.began = None;
+        self.issued = Ticket::next();
+    }
+
+    /// Is a request outstanding?
+    pub(crate) fn in_flight(&self) -> bool {
+        self.in_flight
+    }
+
+    /// When the request in flight began; `None` with none in flight.
+    pub(crate) fn in_flight_since(&self) -> Option<std::time::Instant> {
+        self.began.filter(|_| self.in_flight)
+    }
+
+    /// The ticket of the request in flight, for a test standing in for
+    /// its answer.
+    #[cfg(test)]
+    pub(crate) fn ticket_in_flight(&self) -> Option<Ticket> {
+        self.in_flight.then_some(Ticket(self.issued))
+    }
+
+    /// A ticket no request will ever match: a test's stand-in for an
+    /// answer to some other request.
+    #[cfg(test)]
+    pub(crate) fn stray_ticket() -> Ticket {
+        Ticket(Ticket::next())
+    }
+
+    /// Make the request in flight look as if it began at `at`.
+    #[cfg(test)]
+    pub(crate) fn backdate(&mut self, at: std::time::Instant) {
+        self.began = Some(at);
+    }
+}
+
 impl<T> Default for Fetch<T> {
     fn default() -> Self {
         Self {
             settled: None,
-            in_flight: false,
-            issued: 0,
-            began: None,
+            request: Request::default(),
         }
     }
 }
@@ -1156,27 +1237,19 @@ impl<T> Fetch<T> {
     /// with the ticket returned here.
     #[must_use = "the answer settles only with this ticket"]
     pub(crate) fn begin(&mut self) -> Ticket {
-        self.in_flight = true;
-        self.issued = Ticket::next();
-        self.began = Some(std::time::Instant::now());
-        Ticket(self.issued)
+        self.request.begin()
     }
 
-    /// [`settle`](Self::settle) with the answer to `ticket`, if it is the
-    /// latest request's; otherwise dropped, and a later request stays
-    /// in flight. Returns whether it settled.
+    /// Record the answer to `ticket`, if it is the latest request's;
+    /// otherwise dropped, and a later request stays in flight. Returns
+    /// whether it settled. The only way an answer lands, so none can
+    /// skip the check that it is the latest request's.
     pub(crate) fn settle_ticket(&mut self, ticket: Ticket, result: Result<T, String>) -> bool {
-        let latest = ticket.0 == self.issued;
+        let latest = self.request.finish(ticket);
         if latest {
-            self.settle(result);
+            self.settled = Some(result);
         }
         latest
-    }
-
-    /// Whether `ticket` is the latest request's, without settling it: a
-    /// progress report on a request still running.
-    pub(crate) fn is_latest(&self, ticket: Ticket) -> bool {
-        ticket.0 == self.issued
     }
 
     /// Forget the value and any request outstanding: what was fetched no
@@ -1184,17 +1257,7 @@ impl<T> Fetch<T> {
     /// ticket issued before this is then stale, so its answer is dropped.
     pub(crate) fn reset(&mut self) {
         self.settled = None;
-        self.in_flight = false;
-        self.began = None;
-        self.issued = Ticket::next();
-    }
-
-    /// Record a result and clear the in-flight flag together. Private:
-    /// every answer goes through `settle_ticket`, so none can skip the
-    /// check that it is the latest request's.
-    fn settle(&mut self, result: Result<T, String>) {
-        self.settled = Some(result);
-        self.in_flight = false;
+        self.request.reset();
     }
 
     /// Begin and answer at once: a test seeding a panel's value.
@@ -1206,38 +1269,38 @@ impl<T> Fetch<T> {
 
     /// When the request in flight began; `None` with none in flight.
     pub(crate) fn in_flight_since(&self) -> Option<std::time::Instant> {
-        self.began.filter(|_| self.in_flight)
+        self.request.in_flight_since()
     }
 
     /// Nothing to show and nothing coming: never asked, or
     /// [`reset`](Self::reset) since.
     pub(crate) fn is_blank(&self) -> bool {
-        !self.in_flight && self.settled.is_none()
+        !self.request.in_flight() && self.settled.is_none()
     }
 
     /// The ticket of the request in flight, for a test standing in for
     /// its answer.
     #[cfg(test)]
     pub(crate) fn ticket_in_flight(&self) -> Option<Ticket> {
-        self.in_flight.then_some(Ticket(self.issued))
+        self.request.ticket_in_flight()
     }
 
     /// Make the request in flight look as if it began at `at`.
     #[cfg(test)]
     pub(crate) fn backdate(&mut self, at: std::time::Instant) {
-        self.began = Some(at);
+        self.request.backdate(at);
     }
 
     /// Is a request outstanding? True during a refresh even when a
     /// previous result is still displayed — `tab_loading` needs that.
     pub(crate) fn in_flight(&self) -> bool {
-        self.in_flight
+        self.request.in_flight()
     }
 
     /// In flight with nothing to show yet: the only case that should
     /// draw a spinner.
     pub(crate) fn is_first_load(&self) -> bool {
-        self.in_flight && self.settled.is_none()
+        self.request.in_flight() && self.settled.is_none()
     }
 
     /// The value, if the last attempt succeeded.

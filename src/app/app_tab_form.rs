@@ -547,7 +547,7 @@ impl App {
             .app_tab_discovery
             .discovering
             .get(env)
-            .and_then(crate::app::Fetch::in_flight_since)
+            .and_then(crate::app::Request::in_flight_since)
             .is_some_and(|t| t.elapsed() < DISCOVERY_STALE)
     }
 
@@ -610,7 +610,7 @@ impl App {
             .app_tab_discovery
             .discovering
             .get_mut(&key)
-            .is_some_and(|run| run.settle_ticket(ticket, Ok(())));
+            .is_some_and(|run| run.finish(ticket));
         if !latest {
             return;
         }
@@ -715,7 +715,7 @@ pub(crate) struct AppTabDiscovery {
     /// [`DISCOVERY_STALE`] treated as lost (a result dropped by a
     /// context switch, a task that died) rather than blocking the env's
     /// discovery for good.
-    pub(crate) discovering: std::collections::BTreeMap<EnvKey, crate::app::Fetch<()>>,
+    pub(crate) discovering: std::collections::BTreeMap<EnvKey, crate::app::Request>,
 }
 
 /// See [`App::app_tab_source`].

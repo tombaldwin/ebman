@@ -1590,3 +1590,17 @@ fn the_request_id_survives_to_the_log() {
     };
     assert!(meta.to_string().contains("req-9f3c"), "{meta}");
 }
+
+/// A progress report is current only while its request runs: one that
+/// arrives after the answer must not move a finished stage back.
+#[test]
+fn a_finished_request_has_no_latest_ticket() {
+    let mut r = crate::app::Request::default();
+    let first = r.begin();
+    let second = r.begin();
+    assert!(!r.is_latest(first) && r.is_latest(second));
+    assert!(!r.finish(first), "the superseded answer does not finish it");
+    assert!(r.in_flight());
+    assert!(r.finish(second));
+    assert!(!r.is_latest(second), "finished, so no report is current");
+}

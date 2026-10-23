@@ -605,7 +605,7 @@ impl App {
         result: Result<Vec<EbEvent>, String>,
     ) {
         self.apply_detail_msg(&env_name, result, |d, r| {
-            if !d.events_request.settle_ticket(ticket, Ok(())) {
+            if !d.events_request.finish(ticket) {
                 return;
             }
             match r {
@@ -656,7 +656,7 @@ impl App {
         result: Result<Vec<Instance>, String>,
     ) {
         self.apply_detail_msg(&env_name, result, |d, r| {
-            if !d.instances_request.settle_ticket(ticket, Ok(())) {
+            if !d.instances_request.finish(ticket) {
                 return;
             }
             match r {
@@ -681,7 +681,7 @@ impl App {
         result: super::spawn_detail::MetricsResult,
     ) {
         self.apply_detail_msg(&env_name, result, |d, r| {
-            if !d.metrics_request.settle_ticket(ticket, Ok(())) {
+            if !d.metrics_request.finish(ticket) {
                 return;
             }
             match r {
@@ -721,7 +721,7 @@ impl App {
         let Some(detail) = self.detail.as_mut() else {
             return;
         };
-        if !detail.log_tail.request.settle_ticket(ticket, Ok(())) {
+        if !detail.log_tail.request.finish(ticket) {
             return;
         }
         match result {
@@ -1260,7 +1260,7 @@ impl App {
         result: Result<Vec<(String, String)>, String>,
     ) {
         self.apply_detail_msg(&env_name, result, |d, r| {
-            if !d.tags_request.settle_ticket(ticket, Ok(())) {
+            if !d.tags_request.finish(ticket) {
                 return;
             }
             match r {
@@ -1695,7 +1695,7 @@ impl App {
         result: Result<Vec<(String, String)>, String>,
     ) {
         self.apply_detail_msg(&env_name, result, |d, r| {
-            if !d.env_vars_request.settle_ticket(ticket, Ok(())) {
+            if !d.env_vars_request.finish(ticket) {
                 return;
             }
             match r {
@@ -1886,7 +1886,7 @@ impl App {
         result: Result<WorkerQueues, String>,
     ) {
         self.apply_detail_msg(&env_name, result, |d, r| {
-            if !d.queues_request.settle_ticket(ticket, Ok(())) {
+            if !d.queues_request.finish(ticket) {
                 return;
             }
             match r {

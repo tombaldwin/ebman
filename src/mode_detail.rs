@@ -356,7 +356,7 @@ pub(crate) struct LogTail {
     /// The tail in flight. Only the latest's progress and result land:
     /// a `^R` mid-tail starts another, and the first one's answer, or a
     /// same-named env's, must not overwrite it.
-    pub request: crate::app::Fetch<()>,
+    pub request: crate::app::Request,
     /// When set, the tab is filtered to lines matching this regex.
     pub search_input: TextInput,
     pub search_active: bool,
@@ -478,12 +478,12 @@ pub(crate) struct DetailState {
     /// counter for the process, an answer for the same-named env in
     /// another region, or for a Detail view since closed, matches no
     /// request here and is dropped.
-    pub events_request: crate::app::Fetch<()>,
-    pub instances_request: crate::app::Fetch<()>,
-    pub queues_request: crate::app::Fetch<()>,
-    pub metrics_request: crate::app::Fetch<()>,
-    pub tags_request: crate::app::Fetch<()>,
-    pub env_vars_request: crate::app::Fetch<()>,
+    pub events_request: crate::app::Request,
+    pub instances_request: crate::app::Request,
+    pub queues_request: crate::app::Request,
+    pub metrics_request: crate::app::Request,
+    pub tags_request: crate::app::Request,
+    pub env_vars_request: crate::app::Request,
     pub error: Option<DetailError>,
     /// Tail-log state, populated when the user visits the Logs tab.
     pub log_tail: LogTail,

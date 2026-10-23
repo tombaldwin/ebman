@@ -1722,7 +1722,7 @@ fn unpaired_detail_fetches(src: &str) -> Vec<String> {
         .filter_map(|l| {
             let t = l.trim();
             t.strip_prefix("pub ")
-                .and_then(|r| r.strip_suffix("_request: crate::app::Fetch<()>,"))
+                .and_then(|r| r.strip_suffix("_request: crate::app::Request,"))
         })
         .filter(|f| !variants.contains(&pascal(f)))
         .map(str::to_string)
@@ -1758,8 +1758,8 @@ pub(crate) enum DetailFetch {
     Events,
 }
 struct S {
-    pub events_request: crate::app::Fetch<()>,
-    pub probe_request: crate::app::Fetch<()>,
+    pub events_request: crate::app::Request,
+    pub probe_request: crate::app::Request,
 }
 ";
     assert_eq!(
@@ -1774,8 +1774,8 @@ pub(crate) enum DetailFetch {
     Probe,
 }
 struct S {
-    pub events_request: crate::app::Fetch<()>,
-    pub probe_request: crate::app::Fetch<()>,
+    pub events_request: crate::app::Request,
+    pub probe_request: crate::app::Request,
 }
 ";
     assert!(
@@ -1790,7 +1790,7 @@ struct S {
 fn the_detail_fetch_scan_can_see_its_inputs() {
     let src = std::fs::read_to_string("src/mode_detail.rs").expect("read mode_detail.rs");
     assert!(
-        src.contains("pub env_vars_request: crate::app::Fetch<()>,"),
+        src.contains("pub env_vars_request: crate::app::Request,"),
         "the field shape this guard scans for has changed"
     );
     assert!(
@@ -3781,7 +3781,7 @@ impl TicketedFetch {
         }
     }
 
-    fn request(self, d: &mut crate::mode_detail::DetailState) -> &mut crate::app::Fetch<()> {
+    fn request(self, d: &mut crate::mode_detail::DetailState) -> &mut crate::app::Request {
         match self {
             Self::Events => &mut d.events_request,
             Self::Instances => &mut d.instances_request,
@@ -3892,7 +3892,7 @@ async fn an_older_log_tail_cannot_land_over_a_newer_one() {
     // A stale progress report must not move the stage either.
     app.handle_msg(AppMsg::DetailLogsProgress {
         gen: app.generation,
-        ticket: crate::app::Fetch::<()>::default().begin(),
+        ticket: crate::app::Request::stray_ticket(),
         stage: LogTailStage::Fetching,
         attempt: 3,
     });

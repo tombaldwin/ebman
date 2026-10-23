@@ -2076,7 +2076,7 @@ async fn detail_ignores_an_answer_for_its_name_in_another_region() {
     // arriving last is what would show. The twin's answers its own
     // request, whose ticket this Detail never issued.
     let own = detail_ticket(&mut app, |d| &mut d.events_request);
-    let twin = crate::app::Fetch::<()>::default().begin();
+    let twin = crate::app::Request::stray_ticket();
     for (ticket, msg) in [(own, "EU-OWN"), (twin, "HOME-TWIN")] {
         app.handle_msg(AppMsg::DetailEvents {
             gen: app.generation,

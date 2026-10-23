@@ -473,8 +473,8 @@ pub(super) fn discovery_ticket(app: &App, env: &str) -> crate::app::Ticket {
         .app_tab_discovery
         .discovering
         .get(&test_key(app, env))
-        .and_then(crate::app::Fetch::ticket_in_flight)
-        .unwrap_or_else(|| crate::app::Fetch::<()>::default().begin())
+        .and_then(crate::app::Request::ticket_in_flight)
+        .unwrap_or_else(crate::app::Request::stray_ticket)
 }
 
 /// A glyph `icons = "ascii"` must never draw: arrows, technical
@@ -496,7 +496,7 @@ pub(super) fn decorative(c: char) -> bool {
 /// request in flight, or a new one when none is.
 pub(super) fn detail_ticket(
     app: &mut App,
-    pick: impl FnOnce(&mut crate::mode_detail::DetailState) -> &mut crate::app::Fetch<()>,
+    pick: impl FnOnce(&mut crate::mode_detail::DetailState) -> &mut crate::app::Request,
 ) -> crate::app::Ticket {
     let fetch = pick(app.detail.as_mut().expect("Detail open"));
     fetch.ticket_in_flight().unwrap_or_else(|| fetch.begin())
