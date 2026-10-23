@@ -210,6 +210,18 @@ Tier definitions:
   `strip_line_comment` — so this is consolidation, not a fix, but it is
   the house rule. S.
 
+- [ ] **CLI body paths still untested** *(2026-10-23 CLI-body review)*
+  Every subcommand is behind a testable body now; these paths through
+  them are reached by no test: explain's `required_tags` pass-through;
+  `lint --webhook` (the post, the change guard's wiring, the degraded
+  suppression; `should_post_webhook` itself is tested) — it needs a
+  webhook seam, since the body fires a real POST; a `lint --baseline`
+  write that fails; and which cycle's code a multi-cycle `--watch` exits
+  with (the mock fleet is the same every cycle). Also:
+  `cli::audit_delta::lines_for` panics "append-only" if one test run's
+  audit lines cross the 1 MiB rotation mid-test — the pattern the older
+  audit tests use, now in four more. S each.
+
 - [ ] **`frozen_refusal` decides outside `write_gate::decide`**
   (`cli/mod.rs`, used by `lint --fix`). It hard-codes
   `Refusal::Frozen`, skipping `decide`'s precedence: with an unreadable
