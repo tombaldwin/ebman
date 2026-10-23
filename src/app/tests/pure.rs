@@ -1217,7 +1217,7 @@ async fn the_health_panel_shows_fatal_events() {
     app.table_state.select(Some(0));
     app.open_detail();
     let detail = app.detail.as_mut().expect("detail opened");
-    detail.loading_events = false;
+    detail.events_request = Default::default();
     detail.events = vec![crate::aws::Event {
         at: Some(chrono::Utc::now() - chrono::Duration::minutes(2)),
         env: "api-prod".into(),

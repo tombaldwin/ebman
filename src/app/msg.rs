@@ -122,10 +122,10 @@ impl App {
             AppMsg::Events { result, .. } => self.handle_events(result),
             AppMsg::DetailEvents {
                 env_name,
+                ticket,
                 result,
-                region,
                 ..
-            } if self.detail_takes(&region) => self.handle_detail_events(env_name, result),
+            } => self.handle_detail_events(env_name, ticket, result),
             AppMsg::ActionResult {
                 pending,
                 action,
@@ -135,10 +135,10 @@ impl App {
             } => self.handle_action_result(pending, action, env_name, result),
             AppMsg::DetailInstances {
                 env_name,
+                ticket,
                 result,
-                region,
                 ..
-            } if self.detail_takes(&region) => self.handle_detail_instances(env_name, result),
+            } => self.handle_detail_instances(env_name, ticket, result),
             AppMsg::DetailMetrics {
                 env_name,
                 ticket,
@@ -271,10 +271,10 @@ impl App {
             }
             AppMsg::DetailTags {
                 env_name,
+                ticket,
                 result,
-                region,
                 ..
-            } if self.detail_takes(&region) => self.handle_detail_tags(env_name, result),
+            } => self.handle_detail_tags(env_name, ticket, result),
             AppMsg::DeployFromLocal {
                 pending,
                 env_name,
@@ -347,10 +347,10 @@ impl App {
             } => self.handle_form_multi_select_loaded(env_name, field_key, result),
             AppMsg::DetailEnvVars {
                 env_name,
+                ticket,
                 result,
-                region,
                 ..
-            } if self.detail_takes(&region) => self.handle_detail_env_vars(env_name, result),
+            } => self.handle_detail_env_vars(env_name, ticket, result),
             AppMsg::OptionSettingsUpdate {
                 pending,
                 env_name,
@@ -383,10 +383,10 @@ impl App {
             } => self.handle_tag_update(pending, env_name, summary, result),
             AppMsg::DetailQueues {
                 env_name,
+                ticket,
                 result,
-                region,
                 ..
-            } if self.detail_takes(&region) => self.handle_detail_queues(env_name, result),
+            } => self.handle_detail_queues(env_name, ticket, result),
             // An answer for the modal's env name in another region: a
             // same-named env's modal, since closed.
             AppMsg::DryRunResult { .. }
@@ -397,12 +397,7 @@ impl App {
             | AppMsg::ConfirmModalLint { .. } => {}
             // An answer from Detail's env name in another region: the
             // same-named env Detail was on before, not this one.
-            AppMsg::DetailEvents { .. }
-            | AppMsg::DetailInstances { .. }
-            | AppMsg::DetailQueues { .. }
-            | AppMsg::DetailTags { .. }
-            | AppMsg::DetailEnvVars { .. }
-            | AppMsg::DetailLogGroups { .. }
+            AppMsg::DetailLogGroups { .. }
             | AppMsg::DetailLogs { .. }
             | AppMsg::DetailLogsProgress { .. } => {}
             AppMsg::DlqMessages {
@@ -623,9 +618,16 @@ impl App {
         }
     }
 
-    fn handle_detail_events(&mut self, env_name: String, result: Result<Vec<EbEvent>, String>) {
+    fn handle_detail_events(
+        &mut self,
+        env_name: String,
+        ticket: crate::app::Ticket,
+        result: Result<Vec<EbEvent>, String>,
+    ) {
         self.apply_detail_msg(&env_name, result, |d, r| {
-            d.loading_events = false;
+            if !d.events_request.settle_ticket(ticket, Ok(())) {
+                return;
+            }
             match r {
                 Ok(events) => {
                     d.events = events;
@@ -665,9 +667,16 @@ impl App {
         }
     }
 
-    fn handle_detail_instances(&mut self, env_name: String, result: Result<Vec<Instance>, String>) {
+    fn handle_detail_instances(
+        &mut self,
+        env_name: String,
+        ticket: crate::app::Ticket,
+        result: Result<Vec<Instance>, String>,
+    ) {
         self.apply_detail_msg(&env_name, result, |d, r| {
-            d.loading_instances = false;
+            if !d.instances_request.settle_ticket(ticket, Ok(())) {
+                return;
+            }
             match r {
                 Ok(instances) => {
                     d.instances = instances;
@@ -1262,10 +1271,13 @@ impl App {
     fn handle_detail_tags(
         &mut self,
         env_name: String,
+        ticket: crate::app::Ticket,
         result: Result<Vec<(String, String)>, String>,
     ) {
         self.apply_detail_msg(&env_name, result, |d, r| {
-            d.loading_tags = false;
+            if !d.tags_request.settle_ticket(ticket, Ok(())) {
+                return;
+            }
             match r {
                 Ok(tags) => {
                     d.tags = tags;
@@ -1689,10 +1701,13 @@ impl App {
     fn handle_detail_env_vars(
         &mut self,
         env_name: String,
+        ticket: crate::app::Ticket,
         result: Result<Vec<(String, String)>, String>,
     ) {
         self.apply_detail_msg(&env_name, result, |d, r| {
-            d.loading_env_vars = false;
+            if !d.env_vars_request.settle_ticket(ticket, Ok(())) {
+                return;
+            }
             match r {
                 Ok(vars) => {
                     d.env_vars = vars;
@@ -1874,9 +1889,16 @@ impl App {
         }
     }
 
-    fn handle_detail_queues(&mut self, env_name: String, result: Result<WorkerQueues, String>) {
+    fn handle_detail_queues(
+        &mut self,
+        env_name: String,
+        ticket: crate::app::Ticket,
+        result: Result<WorkerQueues, String>,
+    ) {
         self.apply_detail_msg(&env_name, result, |d, r| {
-            d.loading_queues = false;
+            if !d.queues_request.settle_ticket(ticket, Ok(())) {
+                return;
+            }
             match r {
                 Ok(queues) => {
                     d.queues = queues;

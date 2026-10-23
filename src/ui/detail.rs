@@ -162,9 +162,9 @@ pub(super) fn draw_detail(f: &mut Frame, area: Rect, app: &mut App) {
     let footer_state = DetailFooterState {
         auto_refresh: detail.auto_refresh,
         error: detail.error.as_ref().map(|e| e.message.clone()),
-        loading_events: detail.loading_events,
-        loading_instances: detail.loading_instances,
-        loading_queues: detail.loading_queues,
+        loading_events: detail.events_request.in_flight(),
+        loading_instances: detail.instances_request.in_flight(),
+        loading_queues: detail.queues_request.in_flight(),
         loading_metrics: detail.metrics_request.in_flight(),
         log_stage: detail.log_tail.stage,
     };
@@ -553,7 +553,7 @@ pub(super) fn draw_detail_health(
     lines.push(section(
         "recent events (last 30 min · fatal + errors + warnings)",
     ));
-    if detail.loading_events && detail.events.is_empty() {
+    if detail.events_request.in_flight() && detail.events.is_empty() {
         lines.push(muted(" fetching events…".into()));
     } else {
         let cutoff = now - chrono::Duration::minutes(30);
@@ -613,7 +613,7 @@ pub(super) fn draw_detail_health(
     // get a "(see Instances tab)" pointer so the operator knows where
     // to drill in.
     lines.push(section("instances"));
-    if detail.loading_instances && detail.instances.is_empty() {
+    if detail.instances_request.in_flight() && detail.instances.is_empty() {
         lines.push(muted(" fetching instances…".into()));
     } else if detail.instances.is_empty() {
         lines.push(muted(" (no instances reported)".into()));
@@ -771,7 +771,7 @@ pub(super) fn draw_detail_health(
     // populated by `detail_refresh_active_tab`'s `spawn_detail_queues`.
     if is_worker {
         lines.push(section("worker queues"));
-        if detail.loading_queues {
+        if detail.queues_request.in_flight() {
             lines.push(muted(" fetching queue depths…".into()));
         } else {
             let q = &detail.queues;
@@ -939,7 +939,7 @@ pub(super) fn draw_detail_events(
         f.render_widget(Paragraph::new(Line::from(spans)), sa);
     }
 
-    if detail.events.is_empty() && !detail.loading_events {
+    if detail.events.is_empty() && !detail.events_request.in_flight() {
         let lines = vec![
             Line::from(""),
             Line::from(Span::styled(
@@ -1035,7 +1035,7 @@ pub(super) fn draw_detail_instances(
                 .add_modifier(Modifier::BOLD),
         ))
         .padding(Padding::horizontal(1));
-    if detail.instances.is_empty() && !detail.loading_instances {
+    if detail.instances.is_empty() && !detail.instances_request.in_flight() {
         let lines = vec![
             Line::from(""),
             Line::from(Span::styled(
@@ -1549,7 +1549,7 @@ pub(super) fn draw_detail_queue(
         "  j/k pick queue · enter view messages · d quick-open DLQ",
         Style::default().fg(theme.muted),
     )));
-    if detail.loading_queues {
+    if detail.queues_request.in_flight() {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             "  loading queue stats…",
@@ -1885,7 +1885,7 @@ pub(super) fn draw_detail_config(
 
     // Cost annotation
     lines.push(Line::raw(""));
-    if detail.loading_instances && detail.instances.is_empty() {
+    if detail.instances_request.in_flight() && detail.instances.is_empty() {
         lines.push(Line::from(Span::styled(
             "Est. cost     loading…",
             Style::default().fg(theme.muted),
@@ -1938,7 +1938,7 @@ pub(super) fn draw_detail_config(
 
     // Tags section
     lines.push(Line::raw(""));
-    if detail.loading_tags && detail.tags.is_empty() {
+    if detail.tags_request.in_flight() && detail.tags.is_empty() {
         lines.push(Line::from(Span::styled(
             "Tags          loading…",
             Style::default().fg(theme.muted),
@@ -2021,7 +2021,7 @@ pub(super) fn draw_detail_config(
     // often (debugging, change verification); shown read-only here, edited
     // via `:env set` / `:env unset`.
     lines.push(Line::raw(""));
-    if detail.loading_env_vars && detail.env_vars.is_empty() {
+    if detail.env_vars_request.in_flight() && detail.env_vars.is_empty() {
         lines.push(Line::from(Span::styled(
             "Env vars      loading…",
             Style::default().fg(theme.muted),

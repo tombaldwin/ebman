@@ -458,8 +458,8 @@ async fn the_detail_tick_does_not_stack_a_slow_scan() {
         .expect("Instances tab present");
     // `open_detail` fires its own eager fetches; clear them so the
     // assertions below are about the tick, not the open.
-    detail.loading_instances = false;
-    detail.loading_events = false;
+    detail.instances_request = Default::default();
+    detail.events_request = Default::default();
     app.detail_fetch_started = None;
     assert!(
         !app.detail.as_ref().unwrap().tab_loading(),
@@ -468,7 +468,7 @@ async fn the_detail_tick_does_not_stack_a_slow_scan() {
 
     // First refresh fires and marks the tab loading.
     app.detail_refresh_active_tab();
-    assert!(app.detail.as_ref().unwrap().loading_instances);
+    assert!(app.detail.as_ref().unwrap().instances_request.in_flight());
     let fired_at = app.detail_fetch_started.expect("stamped");
 
     // A tick landing while it's still running is a no-op.
@@ -480,7 +480,7 @@ async fn the_detail_tick_does_not_stack_a_slow_scan() {
     );
 
     // Once the result lands, the next tick proceeds.
-    app.detail.as_mut().unwrap().loading_instances = false;
+    app.detail.as_mut().unwrap().instances_request = Default::default();
     app.detail_refresh_active_tab();
     assert_ne!(
         app.detail_fetch_started,
@@ -491,7 +491,7 @@ async fn the_detail_tick_does_not_stack_a_slow_scan() {
 
 #[tokio::test]
 async fn a_lost_detail_fetch_does_not_wedge_the_tab() {
-    // The guard reads the `loading_*` flags, which a dropped result —
+    // The guard reads the `*_request` fetches, which a dropped result —
     // a generation-guarded arrival after a context switch, say — never
     // clears. Without an age cap the tab would refuse to refresh for
     // the rest of the session.
@@ -537,9 +537,9 @@ async fn every_detail_tab_reports_its_own_loading_state() {
     );
 
     // `open_detail` fires eager fetches; start from a clean slate.
-    d.loading_events = false;
-    d.loading_instances = false;
-    d.loading_queues = false;
+    d.events_request = Default::default();
+    d.instances_request = Default::default();
+    d.queues_request = Default::default();
     d.metrics_request = Default::default();
     d.cw_alarms = Default::default();
     d.recent_versions = Default::default();
@@ -562,17 +562,23 @@ async fn every_detail_tab_reports_its_own_loading_state() {
     let cases: &[LoadingCase] = &[
         (
             "events",
-            |d| d.loading_events = true,
+            |d| {
+                let _ = d.events_request.begin();
+            },
             &[DetailTab::Health, DetailTab::Events],
         ),
         (
             "instances",
-            |d| d.loading_instances = true,
+            |d| {
+                let _ = d.instances_request.begin();
+            },
             &[DetailTab::Instances],
         ),
         (
             "queues",
-            |d| d.loading_queues = true,
+            |d| {
+                let _ = d.queues_request.begin();
+            },
             &[DetailTab::Health, DetailTab::Queue],
         ),
         (
@@ -620,9 +626,9 @@ async fn every_detail_tab_reports_its_own_loading_state() {
     }
     for (label, set, owners) in cases {
         let d = app.detail.as_mut().unwrap();
-        d.loading_events = false;
-        d.loading_instances = false;
-        d.loading_queues = false;
+        d.events_request = Default::default();
+        d.instances_request = Default::default();
+        d.queues_request = Default::default();
         d.metrics_request = Default::default();
         d.cw_alarms = Default::default();
         d.recent_versions = Default::default();
@@ -675,7 +681,7 @@ fn detail_app_on_tab_for_tier(tab: DetailTab, tier: &str) -> App {
 async fn detail_events_tab_renders_its_events() {
     let mut app = detail_app_on_tab(DetailTab::Events);
     let d = app.detail.as_mut().unwrap();
-    d.loading_events = false;
+    d.events_request = Default::default();
     d.events = vec![make_event("EVENT-CANARY deployment failed")];
 
     let out = render(&mut app, 160, 44);
@@ -686,7 +692,7 @@ async fn detail_events_tab_renders_its_events() {
 async fn detail_instances_tab_renders_its_instances() {
     let mut app = detail_app_on_tab(DetailTab::Instances);
     let d = app.detail.as_mut().unwrap();
-    d.loading_instances = false;
+    d.instances_request = Default::default();
     d.instances = vec![crate::aws::Instance {
         id: "i-0canary99".into(),
         health: "Severe".into(),
@@ -706,7 +712,7 @@ async fn detail_instances_tab_renders_its_instances() {
 async fn detail_queue_tab_renders_its_queues() {
     let mut app = detail_app_on_tab_for_tier(DetailTab::Queue, "Worker");
     let d = app.detail.as_mut().unwrap();
-    d.loading_queues = false;
+    d.queues_request = Default::default();
     d.queues = crate::aws::WorkerQueues {
         main_url: Some("https://sqs.eu-west-2.amazonaws.com/1/awseb-CANARY".into()),
         dlq_url: None,
@@ -768,8 +774,8 @@ async fn the_alarms_pair_encodes_two_orthogonal_facts_not_one_redundant_state() 
         .position(|t| *t == DetailTab::Health)
         .expect("Health tab");
     // `open_detail` fires eager fetches; start from a clean slate.
-    d.loading_events = false;
-    d.loading_queues = false;
+    d.events_request = Default::default();
+    d.queues_request = Default::default();
     d.recent_versions = Default::default();
 
     let alarm = || {
@@ -846,10 +852,11 @@ async fn a_successful_fetch_does_not_erase_another_fetchs_error() {
 
     let gen = app.generation;
     // Events fetch fails — AccessDenied on DescribeEvents, say.
+    let ticket = detail_ticket(&mut app, |d| &mut d.events_request);
     app.handle_msg(crate::app::AppMsg::DetailEvents {
         gen,
         env_name: "wk-prod".to_string(),
-        region: "us-east-1".into(),
+        ticket,
         result: Err("AccessDenied: DescribeEvents".to_string()),
     });
     let after_failure = app
@@ -863,10 +870,11 @@ async fn a_successful_fetch_does_not_erase_another_fetchs_error() {
     );
 
     // An UNRELATED fetch then succeeds.
+    let ticket = detail_ticket(&mut app, |d| &mut d.instances_request);
     app.handle_msg(crate::app::AppMsg::DetailInstances {
         gen,
         env_name: "wk-prod".to_string(),
-        region: "us-east-1".into(),
+        ticket,
         result: Ok(Vec::new()),
     });
 
@@ -1595,25 +1603,9 @@ async fn x_arms_the_delete_belonging_to_the_focused_tab_and_no_other() {
 /// during triage.
 #[tokio::test]
 async fn a_failed_config_fetch_is_shown_not_just_logged() {
-    for (msg, needle) in [
-        (
-            AppMsg::DetailTags {
-                gen: 0,
-                env_name: "api-prod".into(),
-                region: "us-east-1".into(),
-                result: Err("AccessDenied: elasticbeanstalk:ListTagsForResource".into()),
-            },
-            "ListTagsForResource",
-        ),
-        (
-            AppMsg::DetailEnvVars {
-                gen: 0,
-                env_name: "api-prod".into(),
-                region: "us-east-1".into(),
-                result: Err("AccessDenied: DescribeConfigurationSettings".into()),
-            },
-            "DescribeConfigurationSettings",
-        ),
+    for (tags, needle) in [
+        (true, "ListTagsForResource"),
+        (false, "DescribeConfigurationSettings"),
     ] {
         let mut app = test_app();
         app.environments = vec![mk_env("api-prod", "poly", "Web", "Green")];
@@ -1621,6 +1613,21 @@ async fn a_failed_config_fetch_is_shown_not_just_logged() {
         app.table_state.select(Some(0));
         app.open_detail();
 
+        let msg = if tags {
+            AppMsg::DetailTags {
+                gen: 0,
+                env_name: "api-prod".into(),
+                ticket: detail_ticket(&mut app, |d| &mut d.tags_request),
+                result: Err("AccessDenied: elasticbeanstalk:ListTagsForResource".into()),
+            }
+        } else {
+            AppMsg::DetailEnvVars {
+                gen: 0,
+                env_name: "api-prod".into(),
+                ticket: detail_ticket(&mut app, |d| &mut d.env_vars_request),
+                result: Err("AccessDenied: DescribeConfigurationSettings".into()),
+            }
+        };
         app.handle_msg(msg);
 
         let d = app.detail.as_ref().expect("detail open");
@@ -1645,10 +1652,11 @@ async fn a_successful_config_refetch_clears_only_its_own_error() {
     app.table_state.select(Some(0));
     app.open_detail();
 
+    let ticket = detail_ticket(&mut app, |d| &mut d.tags_request);
     app.handle_msg(AppMsg::DetailTags {
         gen: 0,
         env_name: "api-prod".into(),
-        region: "us-east-1".into(),
+        ticket,
         result: Err("tags boom".into()),
     });
     assert!(app.detail.as_ref().unwrap().error.is_some());
@@ -1656,10 +1664,11 @@ async fn a_successful_config_refetch_clears_only_its_own_error() {
     // An ENV VARS success must not clear the TAGS error — that is the
     // whole contract of `clear_error`: a success must not speak for a
     // sibling fetch.
+    let ticket = detail_ticket(&mut app, |d| &mut d.env_vars_request);
     app.handle_msg(AppMsg::DetailEnvVars {
         gen: 0,
         env_name: "api-prod".into(),
-        region: "us-east-1".into(),
+        ticket,
         result: Ok(vec![("K".into(), "V".into())]),
     });
     assert!(
@@ -1673,10 +1682,11 @@ async fn a_successful_config_refetch_clears_only_its_own_error() {
     );
 
     // The matching success does clear it.
+    let ticket = detail_ticket(&mut app, |d| &mut d.tags_request);
     app.handle_msg(AppMsg::DetailTags {
         gen: 0,
         env_name: "api-prod".into(),
-        region: "us-east-1".into(),
+        ticket,
         result: Ok(vec![("t".into(), "v".into())]),
     });
     assert!(
@@ -1685,7 +1695,7 @@ async fn a_successful_config_refetch_clears_only_its_own_error() {
     );
 }
 
-/// Fetches with a `loading_*` flag but no `DetailFetch` variant to
+/// Fetches with a `*_request` but no `DetailFetch` variant to
 /// report a failure against.
 ///
 /// Pure, over the source text, so the "one is missing" case can be
@@ -1713,21 +1723,21 @@ fn unpaired_detail_fetches(src: &str) -> Vec<String> {
     src.lines()
         .filter_map(|l| {
             let t = l.trim();
-            t.strip_prefix("pub loading_")
-                .and_then(|r| r.strip_suffix(": bool,"))
+            t.strip_prefix("pub ")
+                .and_then(|r| r.strip_suffix("_request: crate::app::Fetch<()>,"))
         })
         .filter(|f| !variants.contains(&pascal(f)))
         .map(str::to_string)
         .collect()
 }
 
-/// Every `loading_*` fetch must have a `DetailFetch` variant to report
+/// Every `*_request` fetch must have a `DetailFetch` variant to report
 /// its failure against.
 ///
 /// Two of the six did not, so their handlers had nowhere to put an
 /// error and logged it instead — leaving an empty panel that reads as
 /// "nothing configured". The pairing is invisible at a glance: adding a
-/// `loading_x` field and its handler is a natural change that gives no
+/// `x_request` field and its handler is a natural change that gives no
 /// hint an error channel is also required.
 #[test]
 fn every_detail_fetch_can_report_a_failure() {
@@ -1750,8 +1760,8 @@ pub(crate) enum DetailFetch {
     Events,
 }
 struct S {
-    pub loading_events: bool,
-    pub loading_probe: bool,
+    pub events_request: crate::app::Fetch<()>,
+    pub probe_request: crate::app::Fetch<()>,
 }
 ";
     assert_eq!(
@@ -1766,8 +1776,8 @@ pub(crate) enum DetailFetch {
     Probe,
 }
 struct S {
-    pub loading_events: bool,
-    pub loading_probe: bool,
+    pub events_request: crate::app::Fetch<()>,
+    pub probe_request: crate::app::Fetch<()>,
 }
 ";
     assert!(
@@ -1782,7 +1792,7 @@ struct S {
 fn the_detail_fetch_scan_can_see_its_inputs() {
     let src = std::fs::read_to_string("src/mode_detail.rs").expect("read mode_detail.rs");
     assert!(
-        src.contains("pub loading_env_vars: bool,"),
+        src.contains("pub env_vars_request: crate::app::Fetch<()>,"),
         "the field shape this guard scans for has changed"
     );
     assert!(
@@ -1872,7 +1882,10 @@ async fn the_app_tab_refresh_brings_the_instance_list_along() {
     app.table_state.select(Some(0));
     app.open_detail();
     let d = app.detail.as_mut().unwrap();
-    assert!(d.loading_instances, "open_detail fetches instances eagerly");
+    assert!(
+        d.instances_request.in_flight(),
+        "open_detail fetches instances eagerly"
+    );
     d.tab_idx = d.tabs.iter().position(|t| *t == DetailTab::App).unwrap();
     app.detail_refresh_active_tab();
     assert!(
@@ -1881,13 +1894,16 @@ async fn the_app_tab_refresh_brings_the_instance_list_along() {
     );
 
     let d = app.detail.as_mut().unwrap();
-    d.loading_instances = false;
+    d.instances_request = Default::default();
     d.app_tab.metrics.settle_now(Ok(Default::default()));
     d.cw_alarms.settle_now(Ok(Vec::new()));
     app.detail_fetch_started = None;
     app.detail_refresh_active_tab();
     let d = app.detail.as_ref().unwrap();
-    assert!(d.loading_instances, "the App refresh refetches instances");
+    assert!(
+        d.instances_request.in_flight(),
+        "the App refresh refetches instances"
+    );
     assert!(d.cw_alarms.in_flight(), "and alarms, for its alarm line");
     assert!(d.app_tab.metrics.in_flight());
 }
@@ -3732,4 +3748,105 @@ async fn a_settings_change_to_alarm_dimensions_drops_the_old_alarms() {
     app.apply_config_live(&cfg);
     assert_eq!(app.cfg.alarm_dimensions.len(), 2);
     assert!(app.detail.as_ref().unwrap().cw_alarms.ready().is_none());
+}
+
+/// Which of Detail's ticketed fetches a case drives.
+#[derive(Clone, Copy, Debug)]
+enum TicketedFetch {
+    Events,
+    Instances,
+    Queues,
+    Tags,
+    EnvVars,
+}
+
+impl TicketedFetch {
+    fn spawn(self, app: &mut App) {
+        match self {
+            Self::Events => app.spawn_detail_events("wk-prod".into()),
+            Self::Instances => app.spawn_detail_instances("wk-prod".into()),
+            Self::Queues => app.spawn_detail_queues("poly".into(), "wk-prod".into()),
+            Self::Tags => app.spawn_detail_tags(),
+            Self::EnvVars => app.spawn_detail_env_vars(),
+        }
+    }
+
+    fn request(self, d: &mut crate::mode_detail::DetailState) -> &mut crate::app::Fetch<()> {
+        match self {
+            Self::Events => &mut d.events_request,
+            Self::Instances => &mut d.instances_request,
+            Self::Queues => &mut d.queues_request,
+            Self::Tags => &mut d.tags_request,
+            Self::EnvVars => &mut d.env_vars_request,
+        }
+    }
+
+    /// The ticket an answer from this fetch carries; `None` for another
+    /// message (a sibling fetch the open spawned).
+    fn ticket_of(self, msg: &AppMsg) -> Option<crate::app::Ticket> {
+        match (self, msg) {
+            (Self::Events, AppMsg::DetailEvents { ticket, .. })
+            | (Self::Instances, AppMsg::DetailInstances { ticket, .. })
+            | (Self::Queues, AppMsg::DetailQueues { ticket, .. })
+            | (Self::Tags, AppMsg::DetailTags { ticket, .. })
+            | (Self::EnvVars, AppMsg::DetailEnvVars { ticket, .. }) => Some(*ticket),
+            _ => None,
+        }
+    }
+}
+
+/// Two `^R`s in a row, and the first answer lands last. A bare loading
+/// flag let it overwrite the second and clear the flag while the second
+/// was still out; a ticket drops it.
+#[tokio::test]
+async fn an_older_detail_answer_cannot_land_over_a_newer_request() {
+    for kind in [
+        TicketedFetch::Events,
+        TicketedFetch::Instances,
+        TicketedFetch::Queues,
+        TicketedFetch::Tags,
+        TicketedFetch::EnvVars,
+    ] {
+        let mut app = test_app();
+        app.environments = vec![mk_env("wk-prod", "poly", "Worker", "Green")];
+        app.rebuild_view();
+        app.table_state.select(Some(0));
+        app.open_detail();
+        // An answer to a request the open made carries an older ticket
+        // too, so it serves as well as the first spawn's below.
+        kind.spawn(&mut app);
+        kind.spawn(&mut app);
+        let newer = kind
+            .request(app.detail.as_mut().unwrap())
+            .ticket_in_flight()
+            .unwrap_or_else(|| panic!("{kind:?}: the second request is in flight"));
+        let (mut older_msg, mut newer_msg) = (None, None);
+        while older_msg.is_none() || newer_msg.is_none() {
+            let msg = next_msg(&mut app).await;
+            match kind.ticket_of(&msg) {
+                Some(t) if t == newer => newer_msg = Some(msg),
+                Some(_) => older_msg = Some(msg),
+                None => {}
+            }
+        }
+
+        app.handle_msg(older_msg.unwrap());
+        let d = app.detail.as_mut().unwrap();
+        assert!(
+            kind.request(d).in_flight(),
+            "{kind:?}: the older answer must not clear the newer request"
+        );
+        assert!(d.error.is_none(), "{kind:?}: nor show its result");
+
+        app.handle_msg(newer_msg.unwrap());
+        let d = app.detail.as_mut().unwrap();
+        assert!(
+            !kind.request(d).in_flight(),
+            "{kind:?}: the newer one lands"
+        );
+        assert!(
+            d.error.is_some(),
+            "{kind:?}: with its (offline) failure on screen"
+        );
+    }
 }

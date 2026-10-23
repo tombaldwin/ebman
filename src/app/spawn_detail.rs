@@ -143,15 +143,15 @@ impl App {
     }
 
     pub(super) fn spawn_detail_env_vars(&mut self) {
-        let region = self.detail_region();
         let Some(d) = self.detail.as_ref() else {
             return;
         };
         let app_name = d.env_snapshot.application.clone();
         let env_name = d.env_name.clone();
-        if let Some(d) = self.detail.as_mut() {
-            d.loading_env_vars = true;
-        }
+        let Some(d) = self.detail.as_mut() else {
+            return;
+        };
+        let ticket = d.env_vars_request.begin();
         let env_for_msg = env_name.clone();
         self.spawn_aws_in(
             self.detail_client(),
@@ -160,14 +160,13 @@ impl App {
             move |gen, result| AppMsg::DetailEnvVars {
                 gen,
                 env_name: env_for_msg,
-                region: region.clone(),
+                ticket,
                 result,
             },
         );
     }
 
     pub(super) fn spawn_detail_tags(&mut self) {
-        let region = self.detail_region();
         let Some(d) = self.detail.as_ref() else {
             return;
         };
@@ -175,9 +174,10 @@ impl App {
             return;
         };
         let env_name = d.env_name.clone();
-        if let Some(d) = self.detail.as_mut() {
-            d.loading_tags = true;
-        }
+        let Some(d) = self.detail.as_mut() else {
+            return;
+        };
+        let ticket = d.tags_request.begin();
         self.spawn_aws_in(
             self.detail_client(),
             "list_tags",
@@ -185,7 +185,7 @@ impl App {
             move |gen, result| AppMsg::DetailTags {
                 gen,
                 env_name,
-                region: region.clone(),
+                ticket,
                 result,
             },
         );
@@ -400,19 +400,20 @@ impl App {
     }
 
     pub(super) fn spawn_detail_queues(&mut self, application_name: String, env_name: String) {
-        let region = self.detail_region();
-        if let Some(d) = self.detail.as_mut() {
-            d.loading_queues = true;
-            // Only its own: a sibling's failure stays on screen.
-            d.clear_error(crate::mode_detail::DetailFetch::Queues);
-        }
+        // Nothing to answer to without a Detail view.
+        let Some(d) = self.detail.as_mut() else {
+            return;
+        };
+        let ticket = d.queues_request.begin();
+        // Only its own: a sibling's failure stays on screen.
+        d.clear_error(crate::mode_detail::DetailFetch::Queues);
         if self.demo_mode {
             let result = Ok(crate::demo_fixture::worker_queues_for_env(&env_name));
             let gen = self.generation;
             let _ = self.msg_tx.send(AppMsg::DetailQueues {
                 gen,
                 env_name,
-                region: region.clone(),
+                ticket,
                 result,
             });
             return;
@@ -428,19 +429,20 @@ impl App {
             move |gen, result| AppMsg::DetailQueues {
                 gen,
                 env_name: env_for_msg,
-                region: region.clone(),
+                ticket,
                 result,
             },
         );
     }
 
     pub(super) fn spawn_detail_events(&mut self, env_name: String) {
-        let region = self.detail_region();
-        if let Some(d) = self.detail.as_mut() {
-            d.loading_events = true;
-            // Only its own: a sibling's failure stays on screen.
-            d.clear_error(crate::mode_detail::DetailFetch::Events);
-        }
+        // Nothing to answer to without a Detail view.
+        let Some(d) = self.detail.as_mut() else {
+            return;
+        };
+        let ticket = d.events_request.begin();
+        // Only its own: a sibling's failure stays on screen.
+        d.clear_error(crate::mode_detail::DetailFetch::Events);
         // Demo-mode short-circuit: filter the fixture's fleet-wide
         // events down to this env, mirror what list_events_for_env
         // would have returned. Same channel + msg variant the live
@@ -452,7 +454,7 @@ impl App {
             let _ = self.msg_tx.send(AppMsg::DetailEvents {
                 gen,
                 env_name,
-                region: region.clone(),
+                ticket,
                 result,
             });
             return;
@@ -465,19 +467,20 @@ impl App {
             move |gen, result| AppMsg::DetailEvents {
                 gen,
                 env_name: env_for_msg,
-                region: region.clone(),
+                ticket,
                 result,
             },
         );
     }
 
     pub(super) fn spawn_detail_instances(&mut self, env_name: String) {
-        let region = self.detail_region();
-        if let Some(d) = self.detail.as_mut() {
-            d.loading_instances = true;
-            // Only its own: a sibling's failure stays on screen.
-            d.clear_error(crate::mode_detail::DetailFetch::Instances);
-        }
+        // Nothing to answer to without a Detail view.
+        let Some(d) = self.detail.as_mut() else {
+            return;
+        };
+        let ticket = d.instances_request.begin();
+        // Only its own: a sibling's failure stays on screen.
+        d.clear_error(crate::mode_detail::DetailFetch::Instances);
         // Demo-mode short-circuit: synthesise the fixture's per-env
         // instance list and send the result message directly. Avoids
         // firing list_instances against the stub AwsClient, which
@@ -488,7 +491,7 @@ impl App {
             let _ = self.msg_tx.send(AppMsg::DetailInstances {
                 gen,
                 env_name,
-                region: region.clone(),
+                ticket,
                 result,
             });
             return;
@@ -501,7 +504,7 @@ impl App {
             move |gen, result| AppMsg::DetailInstances {
                 gen,
                 env_name: env_for_msg,
-                region: region.clone(),
+                ticket,
                 result,
             },
         );

@@ -51,16 +51,6 @@ Tier definitions:
   output is PLAN item 2's typed-report question, so it waits on that
   ruling.
 
-- [ ] **The Detail view's other fetches settle by ticket.** The Metrics
-  tab and the App tab do; `loading_events`, `loading_instances`,
-  `loading_queues`, `loading_tags` and `loading_env_vars` are still bare
-  flags, so two `^R`s in a row can land the older answer over the newer
-  and clear the loading state while the newer is out (the Metrics tab's
-  bug before 2026-10-21). Move each onto a `Fetch` ticket; if more of
-  them want "keep the last value on error", that belongs in `Fetch`
-  rather than in more `Fetch<()>`s. *Architecture re-review,
-  2026-10-21.*
-
 - [ ] **Detail and the App tab carry an `EnvKey`, not a name.** Detail
   answers are matched to Detail's env in two halves (region by the
   `detail_takes` / `modal_takes` guards in `handle_msg`, name inside

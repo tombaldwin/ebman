@@ -461,18 +461,21 @@ pub(crate) struct DetailState {
     /// streaming available via `s`". The Logs tab uses this to render a
     /// hint that's accurate rather than generic.
     pub cw_log_groups: Option<Vec<String>>,
-    pub loading_events: bool,
-    pub loading_instances: bool,
-    pub loading_queues: bool,
-    /// The Metrics tab's request: in flight, and which one. Only the
+    /// Each tab fetch's request: in flight, and which one. Only the
     /// latest request's answer lands (`Fetch::settle_ticket`), so a
     /// range changed and changed back, or two `^R`s, cannot have an
-    /// older answer overwrite a newer one. The series and the error stay
-    /// in `metrics` and `error`, so a failed refresh leaves the last
-    /// series on screen.
+    /// older answer overwrite a newer one. The data and the error stay
+    /// in their own fields and `error`, so a failed refresh leaves the
+    /// last value on screen. And because tickets are drawn from one
+    /// counter for the process, an answer for the same-named env in
+    /// another region, or for a Detail view since closed, matches no
+    /// request here and is dropped.
+    pub events_request: crate::app::Fetch<()>,
+    pub instances_request: crate::app::Fetch<()>,
+    pub queues_request: crate::app::Fetch<()>,
     pub metrics_request: crate::app::Fetch<()>,
-    pub loading_tags: bool,
-    pub loading_env_vars: bool,
+    pub tags_request: crate::app::Fetch<()>,
+    pub env_vars_request: crate::app::Fetch<()>,
     pub error: Option<DetailError>,
     /// Tail-log state, populated when the user visits the Logs tab.
     pub log_tail: LogTail,
@@ -541,7 +544,7 @@ impl DetailState {
     /// no timeout and no cancel, so a scan that outlives the tick used
     /// to be joined by another every 15 seconds for as long as it ran.
     ///
-    /// Derived from the existing `loading_*` flags rather than a new
+    /// Derived from the existing `*_request` fetches rather than a new
     /// piece of state, because those are already cleared by every
     /// result handler — a separate in-flight marker would need its own
     /// clearing discipline and would wedge the tab the first time one
@@ -565,16 +568,16 @@ impl DetailState {
             // and any one of them still running means the refresh it
             // belongs to hasn't finished.
             DetailTab::Health => {
-                self.loading_events
+                self.events_request.in_flight()
                     || self.cw_alarms.in_flight()
                     || self.recent_versions.in_flight()
-                    || self.loading_queues
+                    || self.queues_request.in_flight()
             }
-            DetailTab::Events => self.loading_events,
-            DetailTab::Instances => self.loading_instances,
-            DetailTab::Queue => self.loading_queues,
+            DetailTab::Events => self.events_request.in_flight(),
+            DetailTab::Instances => self.instances_request.in_flight(),
+            DetailTab::Queue => self.queues_request.in_flight(),
             DetailTab::Metrics => self.metrics_request.in_flight(),
-            // Not `loading_instances`: the eager instance fetch from
+            // Not `instances_request`: the eager instance fetch from
             // opening Detail would then block the tab's own first fetch.
             DetailTab::App => self.app_tab.metrics.in_flight(),
             DetailTab::Logs => matches!(
@@ -771,12 +774,12 @@ mod tests {
             tags: vec![],
             env_vars: vec![],
             cw_log_groups: None,
-            loading_events: false,
-            loading_instances: false,
-            loading_queues: false,
+            events_request: Default::default(),
+            instances_request: Default::default(),
+            queues_request: Default::default(),
             metrics_request: Default::default(),
-            loading_tags: false,
-            loading_env_vars: false,
+            tags_request: Default::default(),
+            env_vars_request: Default::default(),
             error: None,
             log_tail: LogTail::default(),
             queue_cursor: 0,

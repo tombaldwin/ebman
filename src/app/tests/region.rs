@@ -1972,7 +1972,7 @@ fn detail_on_an_eu_instance() -> App {
         .iter()
         .position(|t| *t == crate::app::DetailTab::Instances)
         .expect("instances tab");
-    d.loading_instances = false;
+    d.instances_request = Default::default();
     d.instances = vec![crate::aws::Instance {
         id: "i-0eu".into(),
         health: "Ok".into(),
@@ -2064,12 +2064,15 @@ async fn detail_ignores_an_answer_for_its_name_in_another_region() {
         version_label: None,
     };
     // Its own answer first: the handler replaces the list, so a twin's
-    // arriving last is what would show.
-    for (region, msg) in [("eu-west-2", "EU-OWN"), ("us-east-1", "HOME-TWIN")] {
+    // arriving last is what would show. The twin's answers its own
+    // request, whose ticket this Detail never issued.
+    let own = detail_ticket(&mut app, |d| &mut d.events_request);
+    let twin = crate::app::Fetch::<()>::default().begin();
+    for (ticket, msg) in [(own, "EU-OWN"), (twin, "HOME-TWIN")] {
         app.handle_msg(AppMsg::DetailEvents {
             gen: app.generation,
             env_name: "api-prod".into(),
-            region: region.into(),
+            ticket,
             result: Ok(vec![ev(msg)]),
         });
     }

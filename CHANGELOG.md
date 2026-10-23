@@ -31,6 +31,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   regions showed one summed cost on both rows, in Detail, in `:why` and
   in `:fleet-cost`. It now groups by tag and region. A cost cache
   written by 0.46.2 or earlier reads as stale, so `:cost on` refetches.
+- **Detail's tabs show the latest answer, not the last to arrive.**
+  Events, instances, queues, tags and env vars were bare loading flags,
+  so two `^R`s in a row could land the older answer over the newer and
+  clear the loading state while the newer was still out. Each now
+  settles by ticket, as the Metrics and App tabs already did.
 
 ## [0.46.2] - 2026-10-23
 

@@ -80,12 +80,12 @@ impl App {
             tags: Vec::new(),
             env_vars: Vec::new(),
             cw_log_groups: None,
-            loading_events: false,
-            loading_instances: false,
-            loading_queues: false,
+            events_request: Default::default(),
+            instances_request: Default::default(),
+            queues_request: Default::default(),
             metrics_request: Default::default(),
-            loading_tags: false,
-            loading_env_vars: false,
+            tags_request: Default::default(),
+            env_vars_request: Default::default(),
             error: None,
             log_tail: LogTail::default(),
             queue_cursor: 0,
@@ -440,7 +440,11 @@ impl App {
     fn refresh_app_tab(&mut self, env_name: String, trigger: RefreshTrigger) {
         // Its instance rows come from the instance list; one
         // already in flight (the eager fetch on open) will do.
-        if !self.detail.as_ref().is_some_and(|d| d.loading_instances) {
+        if !self
+            .detail
+            .as_ref()
+            .is_some_and(|d| d.instances_request.in_flight())
+        {
             self.spawn_detail_instances(env_name.clone());
         }
         // And its alarm line from the Health tab's alarm list.

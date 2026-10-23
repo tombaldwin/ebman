@@ -5025,3 +5025,28 @@ From `PLAN.md`, retired with it:
   `a_twin_result_completes_the_twin_it_was_dispatched_to`. Mutations: match
   any unfinished row, drop the unfinished check, send a wrong id from the
   auto-rollback and from the batch path: all CAUGHT.
+
+- [x] **The Detail view's other fetches settle by ticket.** The Metrics
+  tab and the App tab do; `loading_events`, `loading_instances`,
+  `loading_queues`, `loading_tags` and `loading_env_vars` are still bare
+  flags, so two `^R`s in a row can land the older answer over the newer
+  and clear the loading state while the newer is out (the Metrics tab's
+  bug before 2026-10-21). Move each onto a `Fetch` ticket; if more of
+  them want "keep the last value on error", that belongs in `Fetch`
+  rather than in more `Fetch<()>`s. *Architecture re-review,
+  2026-10-21.*
+
+  **Done 2026-10-23.** `events_request`, `instances_request`,
+  `queues_request`, `tags_request` and `env_vars_request` are `Fetch<()>`
+  beside `metrics_request`, each spawn begins one and its message carries
+  the ticket. Kept as `Fetch<()>` rather than moving "keep the last value
+  on error" into `Fetch`: all five already keep their data in their own
+  fields and their error in `DetailState::error`, which is the metrics
+  shape exactly. Because tickets come from one process-wide counter, the
+  five messages also dropped their `region` field and their
+  `detail_takes` guards: a same-named env's answer matches no request.
+  `every_detail_fetch_can_report_a_failure` now scans the `*_request`
+  shape. Test: `an_older_detail_answer_cannot_land_over_a_newer_request`
+  (spawns each fetch twice for real, delivers the older answer last).
+  Mutations: each handler settling whatever is in flight, all five
+  CAUGHT; the guard's scanner on the old shape, CAUGHT.

@@ -3244,15 +3244,6 @@ fn toggling_read_only_in_demo_writes_no_audit() {
     assert!(!delta.contains(profile), "{delta}");
 }
 
-/// The next message a spawned task sends, waiting for it. The clients
-/// under test are offline, so a dispatch fails at once without a request.
-async fn next_msg(app: &mut App) -> crate::app::AppMsg {
-    tokio::time::timeout(std::time::Duration::from_secs(10), app.msg_rx.recv())
-        .await
-        .expect("a spawned task answers")
-        .expect("the channel is open")
-}
-
 #[tokio::test]
 async fn an_auto_rollback_completes_its_own_pending_row() {
     // It pushed "Auto-rollback" and its result came back as a Deploy,

@@ -481,3 +481,22 @@ pub(super) fn decorative(c: char) -> bool {
         || (0x2700..=0x27BF).contains(&n) // dingbats (✓ ✗)
         || (0x1F000..=0x1FAFF).contains(&n) // emoji (👁 💡 🚨)
 }
+
+/// The ticket a test's stand-in answer for a Detail fetch carries: the
+/// request in flight, or a new one when none is.
+pub(super) fn detail_ticket(
+    app: &mut App,
+    pick: impl FnOnce(&mut crate::mode_detail::DetailState) -> &mut crate::app::Fetch<()>,
+) -> crate::app::Ticket {
+    let fetch = pick(app.detail.as_mut().expect("Detail open"));
+    fetch.ticket_in_flight().unwrap_or_else(|| fetch.begin())
+}
+
+/// The next message a spawned task sends, waiting for it. The clients
+/// under test are offline, so a dispatch fails at once without a request.
+pub(super) async fn next_msg(app: &mut App) -> crate::app::AppMsg {
+    tokio::time::timeout(std::time::Duration::from_secs(10), app.msg_rx.recv())
+        .await
+        .expect("a spawned task answers")
+        .expect("the channel is open")
+}

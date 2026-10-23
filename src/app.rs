@@ -624,22 +624,28 @@ pub(crate) enum AppMsg {
     DetailEvents {
         gen: u64,
         env_name: String,
-        /// Detail's region at dispatch: a same-named env's answer is dropped.
-        region: String,
+        /// The request it answers. Only the latest of Detail's settles,
+        /// so a same-named env's answer, or one from before a `^R`, is
+        /// dropped.
+        ticket: Ticket,
         result: Result<Vec<EbEvent>, String>,
     },
     DetailInstances {
         gen: u64,
         env_name: String,
-        /// Detail's region at dispatch: a same-named env's answer is dropped.
-        region: String,
+        /// The request it answers. Only the latest of Detail's settles,
+        /// so a same-named env's answer, or one from before a `^R`, is
+        /// dropped.
+        ticket: Ticket,
         result: Result<Vec<Instance>, String>,
     },
     DetailQueues {
         gen: u64,
         env_name: String,
-        /// Detail's region at dispatch: a same-named env's answer is dropped.
-        region: String,
+        /// The request it answers. Only the latest of Detail's settles,
+        /// so a same-named env's answer, or one from before a `^R`, is
+        /// dropped.
+        ticket: Ticket,
         result: Result<WorkerQueues, String>,
     },
     DetailMetrics {
@@ -684,8 +690,10 @@ pub(crate) enum AppMsg {
     DetailTags {
         gen: u64,
         env_name: String,
-        /// Detail's region at dispatch: a same-named env's answer is dropped.
-        region: String,
+        /// The request it answers. Only the latest of Detail's settles,
+        /// so a same-named env's answer, or one from before a `^R`, is
+        /// dropped.
+        ticket: Ticket,
         result: Result<Vec<(String, String)>, String>,
     },
     /// Env vars for the Config tab — same shape as DetailTags but pulled
@@ -694,8 +702,10 @@ pub(crate) enum AppMsg {
     DetailEnvVars {
         gen: u64,
         env_name: String,
-        /// Detail's region at dispatch: a same-named env's answer is dropped.
-        region: String,
+        /// The request it answers. Only the latest of Detail's settles,
+        /// so a same-named env's answer, or one from before a `^R`, is
+        /// dropped.
+        ticket: Ticket,
         result: Result<Vec<(String, String)>, String>,
     },
     /// CloudWatch Logs groups discovered for an env. Sent once on Detail
