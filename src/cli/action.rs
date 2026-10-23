@@ -265,6 +265,40 @@ pub async fn run(args: &[String]) -> Result<()> {
     if action_name == "rollout" {
         return run_rollout(args).await;
     }
+    let code = action_body(
+        args,
+        std::env::var("AWS_PROFILE").ok(),
+        crate::cli::real_refusal,
+        aws::AwsClient::with,
+        &mut std::io::stdout().lock(),
+        &mut std::io::stderr().lock(),
+    )
+    .await;
+    // Every exit drains: a refusal's or a dispatch's audit line may
+    // have a webhook POST in flight.
+    if code != 0 {
+        crate::cli::exit_after_drain(code).await;
+    }
+    crate::cli::drain_before_return().await;
+    Ok(())
+}
+
+/// `ebman action <verb>`'s whole behaviour (not `rollout`) against any
+/// safety decision, client factory (`profile, region`) and writers.
+/// Returns the exit code. `ambient_profile` is `AWS_PROFILE`, which the
+/// dispatch runs under and the pins are checked against.
+pub(crate) async fn action_body<F, Fut>(
+    args: &[String],
+    ambient_profile: Option<String>,
+    refusal: impl crate::cli::Refusal,
+    client_for: F,
+    out: &mut dyn std::io::Write,
+    err: &mut dyn std::io::Write,
+) -> i32
+where
+    F: FnOnce(Option<String>, Option<String>) -> Fut,
+    Fut: std::future::Future<Output = Result<aws::AwsClient>>,
+{
     let ActionArgs {
         action: action_name,
         env,
@@ -275,32 +309,45 @@ pub async fn run(args: &[String]) -> Result<()> {
     } = match parse_action_args(args) {
         Ok(parsed) => parsed,
         Err(ActionArgError { msg, code }) => {
-            eprintln!("{msg}");
-            std::process::exit(code);
+            let _ = writeln!(err, "{msg}");
+            return code;
         }
     };
     let action_name = action_name.as_str();
     let Some(action) = CliAction::parse(action_name) else {
-        eprintln!("ebman action: unknown action '{action_name}'");
-        eprintln!("{ACTION_USAGE}");
-        std::process::exit(2);
+        let _ = writeln!(err, "ebman action: unknown action '{action_name}'");
+        let _ = writeln!(err, "{ACTION_USAGE}");
+        return 2;
     };
-    // Freeze BEFORE pin, matching the MCP write gate. The two
-    // disagreed on order, so an env that was both pinned and frozen
-    // got a different reason depending on which surface refused it —
-    // and the freeze is the more urgent of the two: fleet-wide,
-    // session-scoped, and the thing that just changed.
-    // The audit vocabulary, not the CLI token: a refusal logging
-    // `action=restart` while the dispatch logs `action=RestartAppServer`
-    // means `ebman audit --action RestartAppServer` shows the writes
-    // that happened and hides the ones that were stopped — which is the
-    // correlation this feature exists for.
-    refuse_write("ebman action", &env, None, action.audit_label()).await;
-    let aws = aws::AwsClient::with(None, None).await?;
+    // Freeze BEFORE pin, matching the MCP write gate (inside the
+    // refusal). The audit vocabulary, not the CLI token: a refusal
+    // logging `action=restart` while the dispatch logs
+    // `action=RestartAppServer` means `ebman audit --action
+    // RestartAppServer` shows the writes that happened and hides the
+    // ones that were stopped — which is the correlation this feature
+    // exists for. No region: the gate runs before any AWS client is
+    // built, and the rules it applies are region-independent.
+    let profile = ambient_profile.as_deref();
+    if let Some(reason) = refusal(&env, profile, None, action.audit_label()) {
+        let _ = writeln!(err, "ebman action: {reason}");
+        return 3;
+    }
+    let aws = match client_for(None, None).await {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = writeln!(err, "ebman action: {e}");
+            return 1;
+        }
+    };
 
     let verb = match action {
         CliAction::Deploy => {
-            return run_deploy(&aws, &env, version, wait_for_green, auto_rollback).await;
+            let flags = DeployFlags {
+                version,
+                wait_for_green,
+                auto_rollback,
+            };
+            return deploy(&aws, &env, flags, profile, out, err).await;
         }
         CliAction::Verb(v) => v,
     };
@@ -308,20 +355,12 @@ pub async fn run(args: &[String]) -> Result<()> {
     // Mirror the TUI's dispatched/completed audit pair — headless
     // dispatches were previously invisible to the audit log (and the
     // webhook fan-out), contradicting the safety docs.
-    let cli_profile = std::env::var("AWS_PROFILE").ok();
-    audit::append_action_dispatched(
-        None,
-        cli_profile.as_deref(),
-        &aws.context.region,
-        label,
-        &env,
-        &[],
-    );
+    audit::append_action_dispatched(None, profile, &aws.context.region, label, &env, &[]);
     let result = verb.dispatch(&aws, &env).await;
     let err_text = result.as_ref().err().map(|e| e.to_string());
     audit::append_action_completed(
         None,
-        cli_profile.as_deref(),
+        profile,
         &aws.context.region,
         label,
         &env,
@@ -331,17 +370,23 @@ pub async fn run(args: &[String]) -> Result<()> {
         },
         &[],
     );
-    match result {
-        Ok(()) => {
-            println!("ok: {action_name} on {env} dispatched");
-            crate::cli::drain_before_return().await;
-            Ok(())
+    match err_text {
+        None => {
+            let _ = writeln!(out, "ok: {action_name} on {env} dispatched");
+            0
         }
-        Err(e) => {
-            eprintln!("err: {e}");
-            crate::cli::exit_after_drain(1).await;
+        Some(e) => {
+            let _ = writeln!(err, "err: {e}");
+            1
         }
     }
+}
+
+/// `ebman action deploy`'s flags, unparsed.
+struct DeployFlags {
+    version: Option<String>,
+    wait_for_green: Option<String>,
+    auto_rollback: Option<String>,
 }
 
 /// `ebman action deploy --env X --version Y [--wait-for-green Nm]
@@ -352,105 +397,99 @@ pub async fn run(args: &[String]) -> Result<()> {
 ///   2  — usage error
 ///   4  — `--wait-for-green` deadline elapsed without Green
 ///   5  — `--auto-rollback` deadline elapsed; rollback dispatched
-async fn run_deploy(
+async fn deploy(
     aws: &aws::AwsClient,
     env: &str,
-    version: Option<String>,
-    wait_for_green: Option<String>,
-    auto_rollback: Option<String>,
-) -> Result<()> {
-    let Some(version) = version else {
-        eprintln!("ebman action deploy: --version LABEL is required");
-        std::process::exit(2);
+    flags: DeployFlags,
+    profile: Option<&str>,
+    out: &mut dyn std::io::Write,
+    err: &mut dyn std::io::Write,
+) -> i32 {
+    let Some(version) = flags.version else {
+        let _ = writeln!(err, "ebman action deploy: --version LABEL is required");
+        return 2;
     };
-    let wait_for_green_secs = match wait_for_green {
-        Some(ref s) => match aws::parse_window_ms(s) {
-            Some(ms) => Some((ms / 1000) as u64),
-            None => {
-                eprintln!(
-                    "ebman action deploy: --wait-for-green expects a duration like `5m` / `30m` / `1h`"
-                );
-                std::process::exit(2);
-            }
+    let window = |flag: &str, value: Option<String>| match value {
+        Some(s) => match aws::parse_window_ms(&s) {
+            Some(ms) => Ok(Some((ms / 1000) as u64)),
+            None => Err(format!(
+                "ebman action deploy: {flag} expects a duration like `5m` / `30m` / `1h`"
+            )),
         },
-        None => None,
+        None => Ok(None),
     };
-    let auto_rollback_secs = match auto_rollback {
-        Some(ref s) => match aws::parse_window_ms(s) {
-            Some(ms) => Some((ms / 1000) as u64),
-            None => {
-                eprintln!(
-                    "ebman action deploy: --auto-rollback expects a duration like `5m` / `30m` / `1h`"
-                );
-                std::process::exit(2);
-            }
-        },
-        None => None,
+    let (wait_for_green_secs, auto_rollback_secs) = match (
+        window("--wait-for-green", flags.wait_for_green),
+        window("--auto-rollback", flags.auto_rollback),
+    ) {
+        (Ok(w), Ok(a)) => (w, a),
+        (Err(msg), _) | (_, Err(msg)) => {
+            let _ = writeln!(err, "{msg}");
+            return 2;
+        }
     };
 
-    let envs = aws
-        .list_environments()
-        .await
-        .map_err(|e| color_eyre::eyre::eyre!("list_environments: {e}"))?;
+    let envs = match aws.list_environments().await {
+        Ok(envs) => envs,
+        Err(e) => {
+            let _ = writeln!(err, "ebman action deploy: list_environments: {e}");
+            return 1;
+        }
+    };
     let snapshot = envs
         .iter()
         .find(|e| e.name == env)
         .map(|e| e.version_label.clone());
     let Some(snapshot_label) = snapshot else {
-        eprintln!("ebman action deploy: env '{env}' not found");
-        std::process::exit(2);
+        let _ = writeln!(err, "ebman action deploy: env '{env}' not found");
+        return 2;
     };
     if auto_rollback_impossible(auto_rollback_secs, &snapshot_label) {
-        eprintln!(
+        let _ = writeln!(
+            err,
             "ebman action deploy: --auto-rollback requested but env '{env}' has no prior version to roll back to"
         );
-        std::process::exit(2);
+        return 2;
     }
 
-    println!("dispatching deploy: env={env} version={version}");
-    let cli_profile = std::env::var("AWS_PROFILE").ok();
-    audit::append_action_dispatched(
-        None,
-        cli_profile.as_deref(),
-        &aws.context.region,
-        crate::verb::Verb::Deploy.audit_label(),
-        env,
-        &[("version", &version)],
-    );
+    let _ = writeln!(out, "dispatching deploy: env={env} version={version}");
+    let region = aws.context.region.as_str();
+    let label = crate::verb::Verb::Deploy.audit_label();
+    audit::append_action_dispatched(None, profile, region, label, env, &[("version", &version)]);
     if let Err(e) = aws.deploy_version(env, &version).await {
         let msg = format!("deploy_version: {e}");
         audit::append_action_completed(
             None,
-            cli_profile.as_deref(),
-            &aws.context.region,
-            crate::verb::Verb::Deploy.audit_label(),
+            profile,
+            region,
+            label,
             env,
             Err(&msg),
             &[("version", &version)],
         );
-        eprintln!("err: {msg}");
-        crate::cli::exit_after_drain(1).await;
+        let _ = writeln!(err, "err: {msg}");
+        return 1;
     }
     audit::append_action_completed(
         None,
-        cli_profile.as_deref(),
-        &aws.context.region,
-        crate::verb::Verb::Deploy.audit_label(),
+        profile,
+        region,
+        label,
         env,
         Ok(()),
         &[("version", &version)],
     );
 
     if !deploy_needs_watching(wait_for_green_secs, auto_rollback_secs) {
-        println!("ok: deploy on {env} dispatched (version={version})");
-        crate::cli::drain_before_return().await;
-        return Ok(());
+        let _ = writeln!(out, "ok: deploy on {env} dispatched (version={version})");
+        return 0;
     }
 
     let start = tokio::time::Instant::now();
     let poll_interval = std::time::Duration::from_secs(5);
     let mut wait_for_green_timeout_emitted = false;
-    println!(
+    let _ = writeln!(
+        out,
         "polling {env} every {}s for Green{}{}",
         poll_interval.as_secs(),
         wait_for_green_secs
@@ -465,8 +504,8 @@ async fn run_deploy(
         let envs = match aws.list_environments().await {
             Ok(envs) => envs,
             Err(e) => {
-                eprintln!("err: list_environments during poll: {e}");
-                crate::cli::exit_after_drain(1).await;
+                let _ = writeln!(err, "err: list_environments during poll: {e}");
+                return 1;
             }
         };
         let (status, health) = envs
@@ -484,45 +523,53 @@ async fn run_deploy(
             wait_for_green_timeout_emitted,
         ) {
             PollDecision::KeepPolling => {
-                println!("poll t={elapsed}s status={status} health={health}");
+                let _ = writeln!(out, "poll t={elapsed}s status={status} health={health}");
             }
             PollDecision::Success => {
-                println!("ok: deploy on {env} reached Green at t={elapsed}s (version={version})");
-                crate::cli::drain_before_return().await;
-                return Ok(());
+                let _ = writeln!(
+                    out,
+                    "ok: deploy on {env} reached Green at t={elapsed}s (version={version})"
+                );
+                return 0;
             }
             PollDecision::WaitForGreenTimeout => {
                 wait_for_green_timeout_emitted = true;
                 if auto_rollback_secs.is_none() {
-                    eprintln!(
+                    let _ = writeln!(
+                        err,
                         "timeout: deploy on {env} did not reach Green within {}s (status={status}, health={health}, version={version})",
                         wait_for_green_secs.unwrap_or(0)
                     );
-                    crate::cli::exit_after_drain(4).await;
+                    return 4;
                 }
                 let remaining = auto_rollback_secs.unwrap_or(0).saturating_sub(elapsed);
-                println!(
+                let _ = writeln!(
+                    out,
                     "wait-for-green timeout at t={elapsed}s (status={status}, health={health}); continuing under auto-rollback ({remaining}s remaining)"
                 );
             }
             PollDecision::DispatchRollback => {
-                eprintln!(
+                let _ = writeln!(
+                    err,
                     "auto-rollback firing on {env}: env still status={status} health={health} at t={elapsed}s; redeploying snapshot version={snapshot_label}"
                 );
                 audit::append_action_dispatched(
                     None,
-                    cli_profile.as_deref(),
-                    &aws.context.region,
-                    crate::verb::Verb::Deploy.audit_label(),
+                    profile,
+                    region,
+                    label,
                     env,
                     &[("version", &snapshot_label), ("auto_rollback_of", &version)],
                 );
                 if let Err(e) = aws.deploy_version(env, &snapshot_label).await {
-                    eprintln!("err: rollback deploy_version: {e}");
-                    crate::cli::exit_after_drain(1).await;
+                    let _ = writeln!(err, "err: rollback deploy_version: {e}");
+                    return 1;
                 }
-                println!("ok: rollback dispatched on {env} (version={snapshot_label})");
-                crate::cli::exit_after_drain(5).await;
+                let _ = writeln!(
+                    out,
+                    "ok: rollback dispatched on {env} (version={snapshot_label})"
+                );
+                return 5;
             }
         }
     }
@@ -1162,6 +1209,295 @@ async fn run_rollout(args: &[String]) -> Result<()> {
     }
     crate::cli::drain_before_return().await;
     Ok(())
+}
+
+#[cfg(test)]
+mod body {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    /// The fleet `api`: `version` before the deploy, then each listing
+    /// after the first returning the next of `states` (the last
+    /// repeating). `UpdateEnvironment` succeeds for `build-2` (the
+    /// deploy) and `build-1` (the rollback): the rules, to count which.
+    struct Fleet {
+        client: aws::AwsClient,
+        deployed: aws_smithy_mocks::Rule,
+        rolled_back: aws_smithy_mocks::Rule,
+        restarted: aws_smithy_mocks::Rule,
+    }
+
+    fn fleet(version: &'static str, states: &'static [(&'static str, &'static str)]) -> Fleet {
+        use aws_sdk_elasticbeanstalk::operation::describe_environments::DescribeEnvironmentsOutput;
+        use aws_sdk_elasticbeanstalk::types::EnvironmentDescription;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let listing =
+            aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::describe_environments)
+                .then_output(move || {
+                    let n = calls.fetch_add(1, Ordering::SeqCst);
+                    let (status, health) = match n {
+                        0 => ("Ready", "Green"),
+                        n => states[(n - 1).min(states.len() - 1)],
+                    };
+                    DescribeEnvironmentsOutput::builder()
+                        .environments(
+                            EnvironmentDescription::builder()
+                                .environment_name("api")
+                                .application_name("shop")
+                                .version_label(version)
+                                .status(status.into())
+                                .health(health.into())
+                                .build(),
+                        )
+                        .build()
+                });
+        let update = |label: &'static str| {
+            aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::update_environment)
+                .match_requests(move |r| {
+                    r.environment_name() == Some("api") && r.version_label() == Some(label)
+                })
+                .then_output(|| {
+                    aws_sdk_elasticbeanstalk::operation::update_environment::UpdateEnvironmentOutput::builder().build()
+                })
+        };
+        let (deployed, rolled_back) = (update("build-2"), update("build-1"));
+        let restarted = aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::restart_app_server)
+            .match_requests(|r| r.environment_name() == Some("api"))
+            .then_output(|| {
+                aws_sdk_elasticbeanstalk::operation::restart_app_server::RestartAppServerOutput::builder().build()
+            });
+        let eb = aws_smithy_mocks::mock_client!(
+            aws_sdk_elasticbeanstalk,
+            aws_smithy_mocks::RuleMode::MatchAny,
+            [&listing, &deployed, &rolled_back, &restarted]
+        );
+        let cfg = aws_config::SdkConfig::builder()
+            .region(aws_config::Region::new("us-east-1"))
+            .behavior_version(aws_config::BehaviorVersion::latest())
+            .build();
+        let client = aws::AwsClient::for_tests(
+            eb,
+            aws_sdk_sqs::Client::new(&cfg),
+            aws_sdk_cloudwatch::Client::new(&cfg),
+            aws_sdk_cloudwatchlogs::Client::new(&cfg),
+            aws_sdk_s3::Client::new(&cfg),
+            aws_sdk_ec2::Client::new(&cfg),
+        );
+        Fleet {
+            client,
+            deployed,
+            rolled_back,
+            restarted,
+        }
+    }
+
+    struct Outcome {
+        code: i32,
+        out: String,
+        err: String,
+        /// The profile the safety decision was asked about, if it was.
+        asked: Option<Option<String>>,
+        client_built: bool,
+    }
+
+    async fn action(
+        args: &[&str],
+        refuse: Option<&str>,
+        client: Option<aws::AwsClient>,
+    ) -> Outcome {
+        let argv: Vec<String> = std::iter::once("action")
+            .chain(args.iter().copied())
+            .map(String::from)
+            .collect();
+        let asked = Mutex::new(None);
+        let built = Mutex::new(false);
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let code = action_body(
+            &argv,
+            Some("ops".into()),
+            |env: &str, profile: Option<&str>, _: Option<&str>, _: &str| {
+                *asked.lock().unwrap() = Some(profile.map(String::from));
+                refuse.map(|why| format!("refusing {env} — {why}"))
+            },
+            |_, _| {
+                *built.lock().unwrap() = true;
+                async move { client.ok_or_else(|| color_eyre::eyre::eyre!("no credentials")) }
+            },
+            &mut out,
+            &mut err,
+        )
+        .await;
+        Outcome {
+            code,
+            out: String::from_utf8(out).unwrap(),
+            err: String::from_utf8(err).unwrap(),
+            asked: asked.into_inner().unwrap(),
+            client_built: built.into_inner().unwrap(),
+        }
+    }
+
+    const STUCK: &[(&str, &str)] = &[("Updating", "Grey")];
+
+    #[tokio::test]
+    async fn a_verb_is_dispatched_under_the_profile_its_pins_were_checked_for() {
+        let f = fleet("build-1", STUCK);
+        let r = action(&["restart", "--env", "api"], None, Some(f.client)).await;
+        assert_eq!(r.code, 0, "{}", r.err);
+        assert_eq!(f.restarted.num_calls(), 1);
+        assert!(r.out.contains("ok: restart on api dispatched"), "{}", r.out);
+        assert_eq!(r.asked, Some(Some("ops".into())));
+
+        let r = action(&["restart", "--env", "api"], Some("frozen"), None).await;
+        assert_eq!(r.code, 3, "{}", r.err);
+        assert!(!r.client_built, "a refusal reaches no client");
+        assert!(r.err.contains("refusing api — frozen"), "{}", r.err);
+
+        let r = action(&["restart", "--env", "api"], None, None).await;
+        assert_eq!(r.code, 1, "no client");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_deploy_returns_at_once_or_watches_for_green() {
+        let f = fleet("build-1", STUCK);
+        let r = action(
+            &["deploy", "--env", "api", "--version", "build-2"],
+            None,
+            Some(f.client),
+        )
+        .await;
+        assert_eq!(r.code, 0, "{}", r.err);
+        assert_eq!(f.deployed.num_calls(), 1);
+        assert!(!r.out.contains("polling"), "no flag, no watch: {}", r.out);
+
+        let f = fleet(
+            "build-1",
+            &[
+                ("Updating", "Grey"),
+                ("Updating", "Green"),
+                ("Ready", "Green"),
+            ],
+        );
+        let r = action(
+            &[
+                "deploy",
+                "--env",
+                "api",
+                "--version",
+                "build-2",
+                "--wait-for-green",
+                "5m",
+            ],
+            None,
+            Some(f.client),
+        )
+        .await;
+        assert_eq!(r.code, 0, "{}", r.err);
+        assert!(r.out.contains("reached Green at t=15s"), "{}", r.out);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_deploy_that_never_settles_times_out_4_or_rolls_back_5() {
+        let f = fleet("build-1", STUCK);
+        let r = action(
+            &[
+                "deploy",
+                "--env",
+                "api",
+                "--version",
+                "build-2",
+                "--wait-for-green",
+                "1m",
+            ],
+            None,
+            Some(f.client),
+        )
+        .await;
+        assert_eq!(r.code, 4, "{}", r.err);
+        assert_eq!(f.rolled_back.num_calls(), 0);
+
+        let f = fleet("build-1", STUCK);
+        let r = action(
+            &[
+                "deploy",
+                "--env",
+                "api",
+                "--version",
+                "build-2",
+                "--wait-for-green",
+                "1m",
+                "--auto-rollback",
+                "2m",
+            ],
+            None,
+            Some(f.client),
+        )
+        .await;
+        assert_eq!(r.code, 5, "{}", r.err);
+        assert_eq!((f.deployed.num_calls(), f.rolled_back.num_calls()), (1, 1));
+        assert_eq!(
+            r.out.matches("continuing under auto-rollback").count(),
+            1,
+            "said once, not every tick: {}",
+            r.out
+        );
+    }
+
+    #[tokio::test]
+    async fn a_deploy_that_cannot_be_judged_is_not_sent() {
+        for (args, version, why) in [
+            (&["deploy", "--env", "api"][..], "build-1", "no --version"),
+            (
+                &[
+                    "deploy",
+                    "--env",
+                    "api",
+                    "--version",
+                    "build-2",
+                    "--wait-for-green",
+                    "soon",
+                ][..],
+                "build-1",
+                "bad duration",
+            ),
+            (
+                &[
+                    "deploy",
+                    "--env",
+                    "api",
+                    "--version",
+                    "build-2",
+                    "--auto-rollback",
+                    "soon",
+                ][..],
+                "build-1",
+                "bad duration",
+            ),
+            (
+                &["deploy", "--env", "nope", "--version", "build-2"][..],
+                "build-1",
+                "no such env",
+            ),
+            (
+                &[
+                    "deploy",
+                    "--env",
+                    "api",
+                    "--version",
+                    "build-2",
+                    "--auto-rollback",
+                    "5m",
+                ][..],
+                "",
+                "nothing to roll back to",
+            ),
+        ] {
+            let f = fleet(version, STUCK);
+            let r = action(args, None, Some(f.client)).await;
+            assert_eq!(r.code, 2, "{why}: {}", r.err);
+            assert_eq!(f.deployed.num_calls(), 0, "{why}");
+        }
+    }
 }
 
 #[cfg(test)]
