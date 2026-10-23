@@ -219,8 +219,60 @@ pub async fn run(args: &[String]) -> Result<()> {
         );
         std::process::exit(2);
     };
-    let used_path = Some(path);
+    let code = drift_body(
+        &DriftRun {
+            env_name,
+            regions,
+            json,
+            quiet,
+            no_redact,
+        },
+        &tf_state,
+        Some(&path),
+        |region| async move { aws::AwsClient::with(None, region).await },
+        &mut std::io::stdout().lock(),
+        &mut std::io::stderr().lock(),
+    )
+    .await;
+    if code != 0 {
+        std::process::exit(code);
+    }
+    Ok(())
+}
 
+/// The flags the comparison itself reads.
+pub(crate) struct DriftRun {
+    pub env_name: Option<String>,
+    pub regions: Vec<Option<String>>,
+    pub json: bool,
+    pub quiet: bool,
+    pub no_redact: bool,
+}
+
+/// `ebman drift`'s comparison against any client factory and writers:
+/// each region's live envs against `tf_state`, the report, and the exit
+/// code. `client_for` builds the client for a region (`None`: the
+/// default), as `lint`'s cycle does, so a test drives it with mocks.
+pub(crate) async fn drift_body<F, Fut>(
+    opts: &DriftRun,
+    tf_state: &terraform::TfState,
+    used_path: Option<&std::path::Path>,
+    client_for: F,
+    out: &mut dyn std::io::Write,
+    err: &mut dyn std::io::Write,
+) -> i32
+where
+    F: Fn(Option<String>) -> Fut,
+    Fut: std::future::Future<Output = Result<aws::AwsClient>>,
+{
+    let DriftRun {
+        env_name,
+        regions,
+        json,
+        quiet,
+        no_redact,
+    } = opts;
+    let (json, quiet, no_redact) = (*json, *quiet, *no_redact);
     let multi_region = regions.len() > 1;
     let mut reports: Vec<(Option<String>, String, bool, Vec<terraform::DriftField>)> = Vec::new();
     let mut any_drift = false;
@@ -232,13 +284,16 @@ pub async fn run(args: &[String]) -> Result<()> {
     // answer? See `lint::env_not_found_anywhere`, shared with `lint`.
     let mut env_found = false;
     let mut every_region_answered = true;
-    for region_opt in &regions {
-        let aws = match aws::AwsClient::with(None, region_opt.clone()).await {
+    for region_opt in regions {
+        let region_label = region_opt.as_deref().unwrap_or("default");
+        let aws = match client_for(region_opt.clone()).await {
             Ok(c) => c,
             Err(e) => {
                 if !quiet {
-                    let region_label = region_opt.as_deref().unwrap_or("default");
-                    eprintln!("warning: skipping region '{region_label}' — AwsClient::with: {e}");
+                    let _ = writeln!(
+                        err,
+                        "warning: skipping region '{region_label}' — AwsClient::with: {e}"
+                    );
                 }
                 degraded = true;
                 every_region_answered = false;
@@ -249,8 +304,10 @@ pub async fn run(args: &[String]) -> Result<()> {
             Ok(envs) => envs,
             Err(e) => {
                 if !quiet {
-                    let region_label = region_opt.as_deref().unwrap_or("default");
-                    eprintln!("warning: skipping region '{region_label}' — list_environments: {e}");
+                    let _ = writeln!(
+                        err,
+                        "warning: skipping region '{region_label}' — list_environments: {e}"
+                    );
                 }
                 degraded = true;
                 every_region_answered = false;
@@ -266,13 +323,16 @@ pub async fn run(args: &[String]) -> Result<()> {
                 }
                 None => {
                     if multi_region && !quiet {
-                        let region_label = region_opt.as_deref().unwrap_or("default");
-                        eprintln!(
+                        let _ = writeln!(
+                            err,
                             "warning: env '{name}' not in region '{region_label}' — skipping"
                         );
                     } else if !multi_region {
-                        eprintln!("ebman drift: env '{name}' not found in current context");
-                        std::process::exit(2);
+                        let _ = writeln!(
+                            err,
+                            "ebman drift: env '{name}' not found in current context"
+                        );
+                        return 2;
                     }
                     continue;
                 }
@@ -303,7 +363,8 @@ pub async fn run(args: &[String]) -> Result<()> {
                     }
                     Err(e) => {
                         if !quiet {
-                            eprintln!(
+                            let _ = writeln!(
+                                err,
                                 "warning: skipping {} — fetch_env_option_settings: {e}",
                                 env.name
                             );
@@ -328,8 +389,8 @@ pub async fn run(args: &[String]) -> Result<()> {
         env_found,
         every_region_answered,
     ) {
-        eprintln!("ebman drift: {msg}");
-        std::process::exit(2);
+        let _ = writeln!(err, "ebman drift: {msg}");
+        return 2;
     }
 
     if !quiet {
@@ -337,26 +398,19 @@ pub async fn run(args: &[String]) -> Result<()> {
             let shaped: Vec<(String, bool, Vec<terraform::DriftField>)> = reports
                 .iter()
                 .map(|(region, env, managed, drift)| {
-                    let name = if multi_region {
-                        if let Some(r) = region {
-                            format!("{r}/{env}")
-                        } else {
-                            env.clone()
-                        }
-                    } else {
-                        env.clone()
+                    let name = match region {
+                        Some(r) if multi_region => format!("{r}/{env}"),
+                        _ => env.clone(),
                     };
                     (name, *managed, drift.clone())
                 })
                 .collect();
-            println!(
+            let _ = writeln!(
+                out,
                 "{}",
                 terraform::render_drift_json(
-                    used_path.as_deref(),
-                    Some(&terraform::StateProvenance::of(
-                        &tf_state,
-                        used_path.as_deref(),
-                    )),
+                    used_path,
+                    Some(&terraform::StateProvenance::of(tf_state, used_path)),
                     &shaped,
                 )
             );
@@ -370,7 +424,7 @@ pub async fn run(args: &[String]) -> Result<()> {
                 };
                 if drift.is_empty() {
                     if *managed {
-                        println!("{prefix}{env}\t✓ no drift");
+                        let _ = writeln!(out, "{prefix}{env}\t✓ no drift");
                     }
                     continue;
                 }
@@ -380,7 +434,8 @@ pub async fn run(args: &[String]) -> Result<()> {
                         (_, Some(n)) => n.to_string(),
                         _ => d.kind.clone(),
                     };
-                    println!(
+                    let _ = writeln!(
+                        out,
                         "{prefix}{env}\t{}\t{target}\ttf={}\tlive={}",
                         d.kind, d.tf_value, d.live_value
                     );
@@ -391,13 +446,13 @@ pub async fn run(args: &[String]) -> Result<()> {
 
     if any_drift {
         // Drift found wins over degraded — exit 3 is actionable.
-        std::process::exit(3);
+        return 3;
     }
     if degraded {
         // "No drift" but incomplete coverage: clean is unproven.
-        std::process::exit(1);
+        return 1;
     }
-    Ok(())
+    0
 }
 
 #[cfg(test)]
@@ -627,5 +682,270 @@ mod tests {
             }
             other => panic!("--json must emit JSON, got {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod body {
+    use super::*;
+
+    /// Which call a region's client refuses.
+    #[derive(Clone, Copy, PartialEq)]
+    enum Fault {
+        None,
+        Settings,
+        Listing,
+    }
+    use Fault::{Listing, Settings};
+    const OK: Fault = Fault::None;
+
+    /// A client for `region` listing `envs` as `(name, version_label)`,
+    /// refusing the call `fault` names.
+    fn client(region: &str, envs: &[(&str, &str)], fault: Fault) -> aws::AwsClient {
+        let settings_denied = fault == Settings;
+        let listing_denied = fault == Listing;
+        use aws_sdk_elasticbeanstalk::operation::describe_environments::DescribeEnvironmentsOutput;
+        use aws_sdk_elasticbeanstalk::types::EnvironmentDescription;
+        let envs: Vec<(String, String)> = envs
+            .iter()
+            .map(|(n, v)| (n.to_string(), v.to_string()))
+            .collect();
+        let region_s = region.to_string();
+        let refused = aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::describe_environments)
+            .match_requests(move |_| listing_denied)
+            .then_error(|| {
+                aws_sdk_elasticbeanstalk::operation::describe_environments::DescribeEnvironmentsError::generic(
+                    aws_smithy_types::error::ErrorMetadata::builder()
+                        .code("AccessDeniedException")
+                        .message("not authorized")
+                        .build(),
+                )
+            });
+        let listing = aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::describe_environments)
+            .match_requests(move |_| !listing_denied)
+            .then_output(move || {
+                let mut b = DescribeEnvironmentsOutput::builder();
+                for (name, version) in &envs {
+                    b = b.environments(
+                        EnvironmentDescription::builder()
+                            .environment_name(name)
+                            .environment_arn(format!(
+                                "arn:aws:elasticbeanstalk:{region_s}:123456789012:environment/shop/{name}"
+                            ))
+                            .application_name("shop")
+                            .version_label(version)
+                            .status("Ready".into())
+                            .health("Green".into())
+                            .build(),
+                    );
+                }
+                b.build()
+            });
+        let settings = if settings_denied {
+            aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::describe_configuration_settings)
+                .then_error(|| {
+                    aws_sdk_elasticbeanstalk::operation::describe_configuration_settings::DescribeConfigurationSettingsError::generic(
+                        aws_smithy_types::error::ErrorMetadata::builder()
+                            .code("AccessDeniedException")
+                            .message("not authorized")
+                            .build(),
+                    )
+                })
+        } else {
+            aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::describe_configuration_settings)
+                .then_output(|| {
+                    aws_sdk_elasticbeanstalk::operation::describe_configuration_settings::DescribeConfigurationSettingsOutput::builder().build()
+                })
+        };
+        let eb = aws_smithy_mocks::mock_client!(
+            aws_sdk_elasticbeanstalk,
+            aws_smithy_mocks::RuleMode::MatchAny,
+            [&refused, &listing, &settings]
+        );
+        let cfg = aws_config::SdkConfig::builder()
+            .region(aws_config::Region::new(region.to_string()))
+            .behavior_version(aws_config::BehaviorVersion::latest())
+            .build();
+        let mut c = aws::AwsClient::for_tests(
+            eb,
+            aws_sdk_sqs::Client::new(&cfg),
+            aws_sdk_cloudwatch::Client::new(&cfg),
+            aws_sdk_cloudwatchlogs::Client::new(&cfg),
+            aws_sdk_s3::Client::new(&cfg),
+            aws_sdk_ec2::Client::new(&cfg),
+        );
+        c.context.region = region.to_string();
+        c
+    }
+
+    /// Terraform says `api` runs `build-2`, in us-east-1 when `arn`.
+    fn state(arn: bool) -> terraform::TfState {
+        terraform::TfState {
+            serial: Some(7),
+            lineage: None,
+            envs: vec![terraform::TfEnv {
+                name: "api".into(),
+                application: "shop".into(),
+                version_label: "build-2".into(),
+                region: arn.then(|| "us-east-1".to_string()),
+                ..Default::default()
+            }],
+        }
+    }
+
+    fn opts(regions: &[&str], env: Option<&str>, json: bool) -> DriftRun {
+        DriftRun {
+            env_name: env.map(Into::into),
+            regions: if regions.is_empty() {
+                vec![None]
+            } else {
+                regions.iter().map(|r| Some(r.to_string())).collect()
+            },
+            json,
+            quiet: false,
+            no_redact: false,
+        }
+    }
+
+    /// One region of a test fleet: its name, its envs as
+    /// `(name, version_label)`, and the call its client refuses.
+    type Region = (&'static str, &'static [(&'static str, &'static str)], Fault);
+
+    /// Run against clients per region, a region missing from the list
+    /// failing to build a client.
+    async fn run(
+        o: &DriftRun,
+        tf: &terraform::TfState,
+        fleet: &'static [Region],
+    ) -> (i32, String, String) {
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let code = drift_body(
+            o,
+            tf,
+            None,
+            |region: Option<String>| async move {
+                let r = region.unwrap_or_else(|| "us-east-1".into());
+                match fleet.iter().find(|(name, _, _)| *name == r) {
+                    Some((name, envs, fault)) => Ok(client(name, envs, *fault)),
+                    None => Err(color_eyre::eyre::eyre!("no credentials for {r}")),
+                }
+            },
+            &mut out,
+            &mut err,
+        )
+        .await;
+        (
+            code,
+            String::from_utf8(out).unwrap(),
+            String::from_utf8(err).unwrap(),
+        )
+    }
+
+    #[tokio::test]
+    async fn clean_drifted_and_incomplete_exit_0_3_and_1() {
+        let (code, out, _) = run(
+            &opts(&[], None, false),
+            &state(false),
+            &[("us-east-1", &[("api", "build-2")], OK)],
+        )
+        .await;
+        assert_eq!(code, 0, "{out}");
+        assert!(out.contains("api\t✓ no drift"), "{out}");
+
+        let (code, out, _) = run(
+            &opts(&[], None, false),
+            &state(false),
+            &[("us-east-1", &[("api", "build-1")], OK)],
+        )
+        .await;
+        assert_eq!(code, 3);
+        assert!(
+            out.contains("api\tversion_label\tversion_label\ttf=build-2\tlive=build-1"),
+            "{out}"
+        );
+
+        let (code, _, err) = run(
+            &opts(&[], None, false),
+            &state(false),
+            &[("us-east-1", &[("api", "build-2")], Settings)],
+        )
+        .await;
+        assert_eq!(code, 1, "settings unreadable: clean is unproven: {err}");
+
+        // Drift wins over an incomplete region.
+        let (code, _, err) = run(
+            &opts(&["us-east-1", "eu-west-2"], None, false),
+            &state(false),
+            &[("us-east-1", &[("api", "build-1")], OK)],
+        )
+        .await;
+        assert_eq!(code, 3, "{err}");
+        assert!(err.contains("skipping region 'eu-west-2'"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_named_env_nowhere_is_a_usage_error() {
+        let (code, _, err) = run(
+            &opts(&[], Some("nope"), false),
+            &state(false),
+            &[("us-east-1", &[("api", "build-2")], OK)],
+        )
+        .await;
+        assert_eq!(code, 2, "{err}");
+        let (code, _, err) = run(
+            &opts(&["us-east-1", "eu-west-2"], Some("nope"), false),
+            &state(false),
+            &[
+                ("us-east-1", &[("api", "build-2")], OK),
+                ("eu-west-2", &[], OK),
+            ],
+        )
+        .await;
+        assert_eq!(code, 2, "in no region of two: {err}");
+    }
+
+    /// The resource's arn names us-east-1, so the eu-west-2 env of the
+    /// same name is not compared with it.
+    #[tokio::test]
+    async fn the_twin_in_another_region_is_not_compared() {
+        let (code, out, _) = run(
+            &opts(&["us-east-1", "eu-west-2"], None, true),
+            &state(true),
+            &[
+                ("us-east-1", &[("api", "build-2")], OK),
+                ("eu-west-2", &[("api", "build-1")], OK),
+            ],
+        )
+        .await;
+        assert_eq!(code, 0, "{out}");
+        assert!(
+            out.contains("us-east-1/api") && !out.contains("eu-west-2/api"),
+            "{out}"
+        );
+    }
+
+    /// A region that cannot be reached, or will not list its envs, makes
+    /// a clean result unproven: exit 1, each on its own.
+    #[tokio::test]
+    async fn a_region_that_does_not_answer_makes_clean_unproven() {
+        let two = opts(&["us-east-1", "eu-west-2"], None, false);
+        let (code, _, err) = run(
+            &two,
+            &state(false),
+            &[("us-east-1", &[("api", "build-2")], OK)],
+        )
+        .await;
+        assert_eq!(code, 1, "eu-west-2 had no client: {err}");
+        let (code, _, err) = run(
+            &two,
+            &state(false),
+            &[
+                ("us-east-1", &[("api", "build-2")], OK),
+                ("eu-west-2", &[], Listing),
+            ],
+        )
+        .await;
+        assert_eq!(code, 1, "eu-west-2 would not list: {err}");
+        assert!(err.contains("list_environments"), "{err}");
     }
 }
