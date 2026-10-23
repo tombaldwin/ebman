@@ -325,7 +325,7 @@ impl App {
             env_name.as_str(),
             &[("template", template.as_str())],
         );
-        self.push_pending(Action::ConfigApply.label(), env_name.clone());
+        let pending = self.push_pending(Action::ConfigApply.label(), env_name.clone());
         let env_for_msg = env_name.clone();
         let ident = self.audit_ident();
         tokio::spawn(async move {
@@ -339,6 +339,7 @@ impl App {
             let _ = tx.send(super::action_result(
                 &ident,
                 gen,
+                pending,
                 Action::ConfigApply,
                 env_for_msg,
                 region,
@@ -379,7 +380,7 @@ impl App {
             &target,
             &[],
         );
-        self.push_pending(Action::ConfigDelete.label(), target.clone());
+        let pending = self.push_pending(Action::ConfigDelete.label(), target.clone());
         let template_for_msg = template.clone();
         let ident = self.audit_ident();
         tokio::spawn(async move {
@@ -394,6 +395,7 @@ impl App {
             let _ = tx.send(super::action_result(
                 &ident,
                 gen,
+                pending,
                 Action::ConfigDelete,
                 target,
                 region,

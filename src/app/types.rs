@@ -563,11 +563,19 @@ pub(crate) struct PaletteItem {
 /// in the `:pending` overlay + header chip.
 #[derive(Debug, Clone)]
 pub(crate) struct PendingAction {
+    pub id: PendingId,
     pub label: String,
     pub target: String,
     pub started: Instant,
     pub completed: Option<(Instant, Result<(), String>)>,
 }
+
+/// Which pending-actions row a result stamps. Handed out by
+/// `App::push_pending` and carried by the result message. Matching on
+/// `(label, target)` instead stamped the wrong row when the same action
+/// was in flight on two same-named envs in different regions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PendingId(pub(crate) u64);
 
 /// Help overlay scope. `Global` shows the full keymap; the per-mode topics
 /// surface only the keys relevant to where the user just pressed `?`,

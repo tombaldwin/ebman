@@ -283,7 +283,7 @@ impl App {
             env_name.as_str(),
             &[("summary", summary.as_str())],
         );
-        self.push_pending(summary.clone(), env_name.clone());
+        let pending = self.push_pending(summary.clone(), env_name.clone());
         // No status_message ack here — the pending-actions pill in the
         // header (`⏳ N`) is the truth-source for in-flight work, and a
         // status_message ack would just race with whatever the operator
@@ -316,6 +316,7 @@ impl App {
                 Err(e) => {
                     let _ = tx.send(AppMsg::OptionSettingsUpdate {
                         gen,
+                        pending,
                         env_name: env_for_msg,
                         summary: summary_for_msg,
                         result: Err(flatten_err("cached_client", e)),
@@ -360,6 +361,7 @@ impl App {
             }
             let _ = tx.send(AppMsg::OptionSettingsUpdate {
                 gen,
+                pending,
                 env_name: env_for_msg,
                 summary: summary_for_msg,
                 result,

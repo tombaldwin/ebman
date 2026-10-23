@@ -72,7 +72,7 @@ impl App {
                 ("op", op_str.as_str()),
             ],
         );
-        self.push_pending("Create alarm", target.clone());
+        let pending = self.push_pending("Create alarm", target.clone());
         self.status_message = Some(format!(
             "creating alarm '{alarm_name}' on {env_name}/{metric_name} {op_str} {threshold}…"
         ));
@@ -111,9 +111,9 @@ impl App {
             );
             let _ = tx.send(AppMsg::AlarmOp {
                 gen,
+                pending,
                 verb: "create",
                 alarm_name: alarm_for_msg,
-                env_name: env_for_msg,
                 result,
             });
         });
@@ -150,13 +150,12 @@ impl App {
                     &target,
                     &[],
                 );
-                self.push_pending("Delete alarm", target.clone());
+                let pending = self.push_pending("Delete alarm", target.clone());
                 self.status_message = Some(format!("deleting alarm '{alarm_name}'…"));
                 let client = self.client_for_region(&region);
                 let tx = self.msg_tx.clone();
                 let gen = self.generation;
                 let alarm_for_msg = alarm_name.clone();
-                let env_for_msg = env_name.clone();
                 let account = self.context.account_id.clone();
                 let profile = self.context.profile.clone();
                 tokio::spawn(async move {
@@ -178,9 +177,9 @@ impl App {
                     );
                     let _ = tx.send(AppMsg::AlarmOp {
                         gen,
+                        pending,
                         verb: "delete",
                         alarm_name: alarm_for_msg,
-                        env_name: env_for_msg,
                         result,
                     });
                 });

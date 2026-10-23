@@ -86,11 +86,6 @@ Tier definitions:
   metric name. Fix when it matters: one row per metric in the form
   rather than a `;`-joined field. *0.46 correctness re-review.*
 
-- [ ] **The pending-actions panel is keyed by name.** `complete_pending`
-  matches label and target name, so the same action in flight on two
-  same-named envs can stamp the wrong row ✓. Display only. *0.46 release
-  review.*
-
 - [ ] **Region and key plumbing, tidy-ups.** From the 0.46 architecture
   review, none a defect:
   - the "row's region, empty means home" rule is written three times

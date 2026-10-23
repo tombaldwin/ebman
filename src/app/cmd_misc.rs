@@ -835,7 +835,7 @@ impl App {
                     &arn,
                     &[],
                 );
-                self.push_pending("Delete custom platform", arn.clone());
+                let pending = self.push_pending("Delete custom platform", arn.clone());
                 // In-flight ack lives on the pending pill.
                 let aws = self.aws.clone();
                 let tx = self.msg_tx.clone();
@@ -864,6 +864,7 @@ impl App {
                     // (target_arn + summary).
                     let _ = tx.send(AppMsg::OptionSettingsUpdate {
                         gen,
+                        pending,
                         env_name: arn_for_msg,
                         summary: "Delete custom platform".into(),
                         result,

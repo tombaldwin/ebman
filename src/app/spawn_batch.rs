@@ -31,7 +31,7 @@ impl App {
             &env,
             None,
         );
-        self.push_pending(action.label(), env.clone());
+        let pending = self.push_pending(action.label(), env.clone());
         let env_for_msg = env.clone();
         // Per-env: a multi-selection can span regions, and these are
         // rebuild / restart / terminate.
@@ -49,7 +49,7 @@ impl App {
                 }
             },
             move |gen, result| {
-                super::action_result(&ident, gen, action, env_for_msg, region, result)
+                super::action_result(&ident, gen, pending, action, env_for_msg, region, result)
             },
         );
     }
@@ -70,7 +70,7 @@ impl App {
             env.as_str(),
             &[("version", label.as_str())],
         );
-        self.push_pending(Action::Deploy.label(), env.clone());
+        let pending = self.push_pending(Action::Deploy.label(), env.clone());
         let env_for_msg = env.clone();
         let ident = self.audit_ident();
         tokio::spawn(async move {
@@ -84,6 +84,7 @@ impl App {
             let _ = tx.send(super::action_result(
                 &ident,
                 gen,
+                pending,
                 Action::Deploy,
                 env_for_msg,
                 region,
@@ -128,7 +129,7 @@ impl App {
             ),
         }
         let pending_label = format!("{op_label} {key}");
-        self.push_pending(pending_label.clone(), env.clone());
+        let pending = self.push_pending(pending_label.clone(), env.clone());
         let env_for_msg = env.clone();
         tokio::spawn(async move {
             let to_add: Vec<(String, String)> = match &value {
@@ -149,6 +150,7 @@ impl App {
             };
             let _ = tx.send(AppMsg::TagUpdate {
                 gen,
+                pending,
                 env_name: env_for_msg,
                 summary: pending_label,
                 result,
@@ -196,7 +198,7 @@ impl App {
             &[("ns", &namespace), ("name", &name), ("value", &value)],
         );
         let pending_label = format!("set-option {namespace}.{name}");
-        self.push_pending(pending_label.clone(), env.clone());
+        let pending = self.push_pending(pending_label.clone(), env.clone());
         let env_for_msg = env.clone();
         let env_for_undo = EnvKey::new(region.clone(), env.clone());
         let pending_label_for_undo = pending_label.clone();
@@ -211,6 +213,7 @@ impl App {
                 Err(e) => {
                     let _ = tx.send(AppMsg::OptionSettingsUpdate {
                         gen,
+                        pending,
                         env_name: env_for_msg,
                         summary: pending_label,
                         result: Err(flatten_err("cached_client", e)),
@@ -252,6 +255,7 @@ impl App {
             }
             let _ = tx.send(AppMsg::OptionSettingsUpdate {
                 gen,
+                pending,
                 env_name: env_for_msg,
                 summary: pending_label,
                 result,

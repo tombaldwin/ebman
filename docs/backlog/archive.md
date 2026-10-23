@@ -5006,3 +5006,22 @@ From `PLAN.md`, retired with it:
   `a_saved_cursor_comes_back_on_the_twin_it_names`. Three mutations
   (save by name, restore by name, drop the bare-name fallback): all
   CAUGHT, the last only after its case was moved off the first row.
+
+- [x] **The pending-actions panel is keyed by name.** `complete_pending`
+  matches label and target name, so the same action in flight on two
+  same-named envs can stamp the wrong row ✓. Display only. *0.46 release
+  review.*
+
+  **Done 2026-10-23.** `push_pending` returns a `PendingId` (`#[must_use]`)
+  and every result message that completes a row (`ActionResult`,
+  `DeployFromLocal`, `OptionSettingsUpdate`, `AlarmOp`, `DeleteAppVersion`,
+  `TagUpdate`) carries it; `complete_pending(id, result)` matches nothing
+  else. Found on the way: the auto-rollback row never completed, because
+  it was pushed as "Auto-rollback" and answered as `Action::Deploy`.
+  `AlarmOp.env_name` and two label/target reconstructions in `msg.rs`
+  existed only for the old match and went. Tests:
+  `complete_pending_stamps_the_row_its_id_names`,
+  `an_auto_rollback_completes_its_own_pending_row`,
+  `a_twin_result_completes_the_twin_it_was_dispatched_to`. Mutations: match
+  any unfinished row, drop the unfinished check, send a wrong id from the
+  auto-rollback and from the batch path: all CAUGHT.

@@ -2240,13 +2240,13 @@ async fn push_pending_caps_the_panel_and_drops_the_oldest() {
     let mut app = test_app();
     let cap = crate::app::PENDING_CAP;
     for i in 0..cap {
-        app.push_pending(format!("Action{i}"), format!("env{i}"));
+        let _ = app.push_pending(format!("Action{i}"), format!("env{i}"));
     }
     assert_eq!(app.pending_actions.len(), cap, "fills to the cap");
     assert_eq!(app.pending_actions.front().unwrap().label, "Action0");
 
     // One more evicts the oldest, and only the oldest.
-    app.push_pending("Overflow", "envN");
+    let _ = app.push_pending("Overflow", "envN");
     assert_eq!(app.pending_actions.len(), cap, "stays at the cap");
     assert_eq!(
         app.pending_actions.front().unwrap().label,
@@ -2256,48 +2256,45 @@ async fn push_pending_caps_the_panel_and_drops_the_oldest() {
     assert_eq!(app.pending_actions.back().unwrap().label, "Overflow");
 }
 
-/// `complete_pending` matches on *unfinished* AND label AND target.
-/// Four survivors sat on that predicate, so each conjunct needs a case
-/// where it alone is what rejects the row.
+/// `complete_pending` stamps the row its id names, and only an
+/// unfinished one. It matched `(label, target)` instead, so the same
+/// action in flight on two same-named envs (one per region) stamped
+/// whichever row came first.
 #[tokio::test]
-async fn complete_pending_matches_on_all_three_conditions() {
-    let seed = || {
-        let mut app = test_app();
-        app.push_pending("Restart", "api-prod");
-        app
-    };
-    let done = |app: &App| app.pending_actions[0].completed.is_some();
+async fn complete_pending_stamps_the_row_its_id_names() {
+    let mut app = test_app();
+    let home = app.push_pending("Restart", "api-prod");
+    let eu = app.push_pending("Restart", "api-prod");
+    assert_ne!(home, eu, "each push hands out its own id");
 
-    // Happy path.
-    let mut app = seed();
-    app.complete_pending("Restart", "api-prod", Ok(()));
-    assert!(done(&app), "the matching row completes");
-
-    // Wrong label.
-    let mut app = seed();
-    app.complete_pending("Rebuild", "api-prod", Ok(()));
-    assert!(!done(&app), "a different action must not complete this row");
-
-    // Wrong target — the case that matters most, since the same action
-    // against a different env is the realistic collision.
-    let mut app = seed();
-    app.complete_pending("Restart", "worker-prod", Ok(()));
-    assert!(!done(&app), "a different env must not complete this row");
-
-    // Already finished: a second result must not re-stamp it. Two rows,
-    // the first already complete, so the second is the one to take it.
-    let mut app = seed();
-    app.push_pending("Restart", "api-prod");
-    app.complete_pending("Restart", "api-prod", Ok(()));
-    app.complete_pending("Restart", "api-prod", Err("second".into()));
+    app.complete_pending(eu, Err("eu failed".into()));
     assert!(
-        app.pending_actions[0].completed.as_ref().unwrap().1.is_ok(),
-        "the first row keeps its original outcome"
+        app.pending_actions[0].completed.is_none(),
+        "the home twin's row is still in flight"
     );
+    assert_eq!(
+        app.pending_actions[1]
+            .completed
+            .as_ref()
+            .map(|c| c.1.clone()),
+        Some(Err("eu failed".into())),
+        "the eu-west-2 result lands on its own row"
+    );
+
+    // A second result for a finished row must not re-stamp it.
+    app.complete_pending(eu, Ok(()));
     assert!(
-        app.pending_actions[1].completed.is_some(),
-        "the second result lands on the second row"
+        app.pending_actions[1]
+            .completed
+            .as_ref()
+            .unwrap()
+            .1
+            .is_err(),
+        "a finished row keeps its outcome"
     );
+
+    app.complete_pending(home, Ok(()));
+    assert!(app.pending_actions[0].completed.as_ref().unwrap().1.is_ok());
 }
 
 /// Completed rows linger for `PENDING_COMPLETED_TTL`, then go. Both
@@ -2306,9 +2303,9 @@ async fn complete_pending_matches_on_all_three_conditions() {
 #[tokio::test]
 async fn expire_pending_drops_only_rows_past_the_ttl() {
     let mut app = test_app();
-    app.push_pending("Old", "env-old");
-    app.push_pending("Fresh", "env-fresh");
-    app.push_pending("Running", "env-running");
+    let _ = app.push_pending("Old", "env-old");
+    let _ = app.push_pending("Fresh", "env-fresh");
+    let _ = app.push_pending("Running", "env-running");
 
     let ttl = crate::app::PENDING_COMPLETED_TTL;
     let now = std::time::Instant::now();
@@ -2718,12 +2715,12 @@ async fn an_alarm_op_reports_the_operation_it_performed() {
     let run = |verb: &'static str, label: &str| {
         let mut app = test_app();
         // Seed the pending row the handler is expected to complete.
-        app.push_pending(label, "api-prod/cpu-high");
+        let pending = app.push_pending(label, "api-prod/cpu-high");
         app.handle_msg(AppMsg::AlarmOp {
             gen: app.generation,
+            pending,
             verb,
             alarm_name: "cpu-high".into(),
-            env_name: "api-prod".into(),
             result: Ok(()),
         });
         app
@@ -2732,8 +2729,7 @@ async fn an_alarm_op_reports_the_operation_it_performed() {
     let app = run("create", "Create alarm");
     assert!(
         app.pending_actions[0].completed.is_some(),
-        "the create label must match what push_pending used, or the row \
-         never finishes"
+        "the result completes the row push_pending made"
     );
     let toasts: String = app.toasts.iter().map(|t| t.text.clone()).collect();
     assert!(
@@ -2745,7 +2741,7 @@ async fn an_alarm_op_reports_the_operation_it_performed() {
     let app = run("delete", "Delete alarm");
     assert!(
         app.pending_actions[0].completed.is_some(),
-        "and the delete label likewise"
+        "and for a delete likewise"
     );
     let toasts: String = app.toasts.iter().map(|t| t.text.clone()).collect();
     assert!(
@@ -3246,4 +3242,72 @@ fn toggling_read_only_in_demo_writes_no_audit() {
     let after = std::fs::read_to_string(&path).unwrap_or_default();
     let delta = after.strip_prefix(&before).expect("append-only");
     assert!(!delta.contains(profile), "{delta}");
+}
+
+/// The next message a spawned task sends, waiting for it. The clients
+/// under test are offline, so a dispatch fails at once without a request.
+async fn next_msg(app: &mut App) -> crate::app::AppMsg {
+    tokio::time::timeout(std::time::Duration::from_secs(10), app.msg_rx.recv())
+        .await
+        .expect("a spawned task answers")
+        .expect("the channel is open")
+}
+
+#[tokio::test]
+async fn an_auto_rollback_completes_its_own_pending_row() {
+    // It pushed "Auto-rollback" and its result came back as a Deploy,
+    // so matched by label the row stayed in flight for good.
+    let mut app = test_app();
+    app.environments = vec![mk_env("prod", "shop", "Web", "Red")];
+    app.rebuild_view();
+    app.deploy_snapshots.insert(
+        home_key("prod"),
+        DeploySnapshot {
+            previous_version_label: "build-820".into(),
+            taken_at: chrono::Utc::now(),
+        },
+    );
+    app.dispatch_auto_rollback(home_key("prod"), "Red".into());
+    assert_eq!(app.pending_actions.len(), 1);
+    let msg = next_msg(&mut app).await;
+    app.handle_msg(msg);
+    assert!(
+        app.pending_actions[0].completed.is_some(),
+        "the rollback's row completes: {:?}",
+        app.pending_actions[0]
+    );
+}
+
+#[tokio::test]
+async fn a_twin_result_completes_the_twin_it_was_dispatched_to() {
+    let mut app = test_app();
+    let home = mk_env("api-prod", "poly", "Web", "Green");
+    let mut eu = home.clone();
+    eu.region = Some("eu-west-2".into());
+    app.environments = vec![home, eu];
+    app.rebuild_view();
+    let home_region = app.context.region.clone();
+    app.spawn_batch_action(
+        Action::RestartAppServer,
+        EnvKey::new(home_region, "api-prod"),
+    );
+    app.spawn_batch_action(
+        Action::RestartAppServer,
+        EnvKey::new("eu-west-2", "api-prod"),
+    );
+    let eu_row = app.pending_actions[1].id;
+    // Deliver only the eu-west-2 answer, whichever order they arrive in.
+    let mut eu_msg = None;
+    for _ in 0..2 {
+        let msg = next_msg(&mut app).await;
+        if matches!(&msg, crate::app::AppMsg::ActionResult { pending, .. } if *pending == eu_row) {
+            eu_msg = Some(msg);
+        }
+    }
+    app.handle_msg(eu_msg.expect("the eu-west-2 dispatch answered with its own row's id"));
+    assert!(
+        app.pending_actions[0].completed.is_none(),
+        "the home twin's row is still in flight"
+    );
+    assert!(app.pending_actions[1].completed.is_some());
 }

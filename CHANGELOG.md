@@ -16,6 +16,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   the selected env's name, so a session that ended on the eu-west-2
   twin reopened on the home one. It now saves `REGION/NAME`; a bare
   name from an older file still restores by name.
+- **The pending-actions panel stamps the row a result belongs to.** It
+  matched a result to a row by label and env name, so the same action
+  in flight on two same-named envs could mark the wrong one done, and an
+  auto-rollback's row (pushed as "Auto-rollback", answered as a Deploy)
+  never completed at all. Each row now has an id its result carries.
 
 ## [0.46.2] - 2026-10-23
 

@@ -769,11 +769,12 @@ pub(crate) enum AppMsg {
         result: Result<MultiSelectOptions, String>,
     },
     /// Result of a `:deploy --from PATH` chain (upload → create version →
-    /// optional deploy). `summary` is the same label used in the pending
-    /// row so `complete_pending` can match. On success we also surface the
+    /// optional deploy). `pending` names the row it completes; `summary`
+    /// is that row's label, for the toast. On success we also surface the
     /// new version label in the toast.
     DeployFromLocal {
         gen: u64,
+        pending: PendingId,
         env_name: String,
         label: String,
         summary: String,
@@ -997,6 +998,7 @@ pub(crate) enum AppMsg {
     },
     ActionResult {
         gen: u64,
+        pending: PendingId,
         action: Action,
         env_name: String,
         result: Result<(), String>,
@@ -1058,16 +1060,18 @@ pub(crate) enum AppMsg {
     /// the new state immediately.
     TagUpdate {
         gen: u64,
+        pending: PendingId,
         env_name: String,
         summary: String,
         result: Result<(), String>,
     },
     /// Result of an `UpdateEnvironment(option_settings)` call from any of
     /// the small option-settings commands (`:logs-stream`, `:notify`,
-    /// `:managed-window`). `summary` is the same human-readable label that
-    /// went into the pending panel so `complete_pending` can match.
+    /// `:managed-window`). `pending` names the row it completes;
+    /// `summary` is that row's label, for the toast.
     OptionSettingsUpdate {
         gen: u64,
+        pending: PendingId,
         env_name: String,
         summary: String,
         result: Result<(), String>,
@@ -1077,14 +1081,15 @@ pub(crate) enum AppMsg {
     /// the correct tense.
     AlarmOp {
         gen: u64,
+        pending: PendingId,
         verb: &'static str,
         alarm_name: String,
-        env_name: String,
         result: Result<(), String>,
     },
     /// Result of a `DeleteApplicationVersion` call from `:delete-version`.
     DeleteAppVersion {
         gen: u64,
+        pending: PendingId,
         application: String,
         /// Where the version was deleted; the `:versions` refetch goes there.
         region: String,
@@ -3044,6 +3049,7 @@ where
 fn finish_deploy_from_local(
     tx: &tokio::sync::mpsc::UnboundedSender<AppMsg>,
     gen: u64,
+    pending: PendingId,
     env_name: String,
     label: String,
     summary: String,
@@ -3063,6 +3069,7 @@ fn finish_deploy_from_local(
     );
     let _ = tx.send(AppMsg::DeployFromLocal {
         gen,
+        pending,
         env_name,
         label,
         summary,
@@ -3134,6 +3141,7 @@ impl App {
 pub(crate) fn action_result(
     ident: &AuditIdent,
     gen: u64,
+    pending: PendingId,
     action: Action,
     env_name: String,
     region: String,
@@ -3149,6 +3157,7 @@ pub(crate) fn action_result(
     );
     AppMsg::ActionResult {
         gen,
+        pending,
         action,
         env_name,
         result,

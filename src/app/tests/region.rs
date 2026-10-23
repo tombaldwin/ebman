@@ -390,6 +390,7 @@ async fn a_dispatch_and_its_completion_agree_on_the_region() {
     let msg = crate::app::action_result(
         &app.audit_ident(),
         app.generation,
+        crate::app::PendingId(0),
         crate::app::Action::RestartAppServer,
         env_name.into(),
         "eu-west-2".into(),

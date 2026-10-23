@@ -55,7 +55,7 @@ impl App {
             env_name.as_str(),
             &[("summary", summary.as_str())],
         );
-        self.push_pending(summary.clone(), env_name.clone());
+        let pending = self.push_pending(summary.clone(), env_name.clone());
         // No status_message ack here — the pending-actions pill in the
         // header (`⏳ N`) is the truth-source for in-flight work, and a
         // status_message ack would just race with whatever the operator
@@ -84,6 +84,7 @@ impl App {
                 Err(e) => {
                     let _ = tx.send(AppMsg::OptionSettingsUpdate {
                         gen,
+                        pending,
                         env_name: env_for_msg,
                         summary: summary_for_msg,
                         result: Err(flatten_err("cached_client", e)),
@@ -130,6 +131,7 @@ impl App {
             }
             let _ = tx.send(AppMsg::OptionSettingsUpdate {
                 gen,
+                pending,
                 env_name: env_for_msg,
                 summary: summary_for_msg,
                 result,
@@ -185,7 +187,7 @@ impl App {
                 ("and_deploy", and_deploy_str.as_str()),
             ],
         );
-        self.push_pending(summary.clone(), env_name.clone());
+        let pending = self.push_pending(summary.clone(), env_name.clone());
         // In-flight ack lives on the pending pill; completion toasts.
         let client = self.client_for_region(&region);
         let tx = self.msg_tx.clone();
@@ -203,6 +205,7 @@ impl App {
                     finish_deploy_from_local(
                         &tx,
                         gen,
+                        pending,
                         env_for_msg,
                         label_for_msg,
                         summary_for_msg,
@@ -228,6 +231,7 @@ impl App {
                 finish_deploy_from_local(
                     &tx,
                     gen,
+                    pending,
                     env_for_msg,
                     label_for_msg,
                     summary_for_msg,
@@ -244,6 +248,7 @@ impl App {
                     finish_deploy_from_local(
                         &tx,
                         gen,
+                        pending,
                         env_for_msg,
                         label_for_msg,
                         summary_for_msg,
@@ -258,6 +263,7 @@ impl App {
             finish_deploy_from_local(
                 &tx,
                 gen,
+                pending,
                 env_for_msg,
                 label_for_msg,
                 summary_for_msg,
@@ -373,7 +379,7 @@ impl App {
                 ("and_deploy", &and_deploy_str),
             ],
         );
-        self.push_pending(summary.clone(), env_name.clone());
+        let pending = self.push_pending(summary.clone(), env_name.clone());
         let client = self.client_for_region(&region);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
@@ -390,6 +396,7 @@ impl App {
                     finish_deploy_from_local(
                         &tx,
                         gen,
+                        pending,
                         env_for_msg,
                         label_for_msg,
                         summary_for_msg,
@@ -414,6 +421,7 @@ impl App {
                     finish_deploy_from_local(
                         &tx,
                         gen,
+                        pending,
                         env_for_msg,
                         label_for_msg,
                         summary_for_msg,
@@ -432,6 +440,7 @@ impl App {
                 finish_deploy_from_local(
                     &tx,
                     gen,
+                    pending,
                     env_for_msg,
                     label_for_msg,
                     summary_for_msg,
@@ -456,6 +465,7 @@ impl App {
                 finish_deploy_from_local(
                     &tx,
                     gen,
+                    pending,
                     env_for_msg,
                     label_for_msg,
                     summary_for_msg,
@@ -472,6 +482,7 @@ impl App {
                     finish_deploy_from_local(
                         &tx,
                         gen,
+                        pending,
                         env_for_msg,
                         label_for_msg,
                         summary_for_msg,
@@ -486,6 +497,7 @@ impl App {
             finish_deploy_from_local(
                 &tx,
                 gen,
+                pending,
                 env_for_msg,
                 label_for_msg,
                 summary_for_msg,
@@ -537,7 +549,7 @@ impl App {
             "Delete app version"
         };
         let pending_target = format!("{application}/{label}");
-        self.push_pending(pending_label, pending_target);
+        let pending = self.push_pending(pending_label, pending_target);
         let client = self.client_for_region(&region);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
@@ -565,6 +577,7 @@ impl App {
             );
             let _ = tx.send(AppMsg::DeleteAppVersion {
                 gen,
+                pending,
                 application: app_for_msg,
                 region,
                 label: label_for_msg,
@@ -618,7 +631,7 @@ impl App {
         // the pending panel distinguishes simultaneous edits. The pending
         // pill in the header is the in-flight truth-source; no
         // status_message ack here (would race with the next operation).
-        self.push_pending(summary.clone(), env.name.clone());
+        let pending = self.push_pending(summary.clone(), env.name.clone());
         let client = self.client_for(&env);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
@@ -645,6 +658,7 @@ impl App {
             );
             let _ = tx.send(AppMsg::TagUpdate {
                 gen,
+                pending,
                 env_name,
                 summary: summary_for_msg,
                 result,

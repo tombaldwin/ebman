@@ -53,7 +53,7 @@ impl App {
                     &display_env,
                     &[("template", template.as_str())],
                 );
-                self.push_pending(action.label(), display_env.clone());
+                let pending = self.push_pending(action.label(), display_env.clone());
                 let ident = self.audit_ident();
                 tokio::spawn(async move {
                     let result = match client.resolve().await {
@@ -69,6 +69,7 @@ impl App {
                     let _ = tx.send(super::action_result(
                         &ident,
                         gen,
+                        pending,
                         action,
                         display_env,
                         region,

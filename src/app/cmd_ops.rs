@@ -397,7 +397,7 @@ impl App {
         // `Action::TerminateInstance.label()` exactly so the AppMsg handler's
         // `complete_pending` finds the row.
         let target = format!("{env_name}/{id}");
-        self.push_pending(Action::TerminateInstance.label(), target.clone());
+        let pending = self.push_pending(Action::TerminateInstance.label(), target.clone());
         // In-flight ack lives on the pending pill; completion toasts.
         let _ = id;
         let ident = self.audit_ident();
@@ -412,6 +412,7 @@ impl App {
             let _ = tx.send(super::action_result(
                 &ident,
                 gen,
+                pending,
                 Action::TerminateInstance,
                 target,
                 region,

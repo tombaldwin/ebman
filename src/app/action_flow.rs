@@ -63,7 +63,7 @@ impl App {
             env_name.as_str(),
             &[("version", label.as_str()), ("health", health.as_str())],
         );
-        self.push_pending("Auto-rollback", env_name.clone());
+        let pending = self.push_pending("Auto-rollback", env_name.clone());
         self.pin_status(format!(
             "auto-rollback for {env_name}: redeploying {label} (env was {health})"
         ));
@@ -80,6 +80,7 @@ impl App {
             let _ = tx.send(super::action_result(
                 &ident,
                 gen,
+                pending,
                 Action::Deploy,
                 env_for_msg,
                 region,
@@ -490,36 +491,37 @@ impl App {
     }
 
     /// Add a row to the pending-actions panel before dispatching. Callers
-    /// follow with a `tokio::spawn` that sends an `AppMsg::ActionResult`;
-    /// the result handler finds the first matching unfinished row and
-    /// stamps it with the outcome. Caps the list at `PENDING_CAP`.
-    pub(crate) fn push_pending(&mut self, label: impl Into<String>, target: impl Into<String>) {
+    /// follow with a `tokio::spawn` whose result message carries the
+    /// returned id, and the result handler stamps that row with the
+    /// outcome. Caps the list at `PENDING_CAP`.
+    #[must_use = "the result message must carry the id, or its row never completes"]
+    pub(crate) fn push_pending(
+        &mut self,
+        label: impl Into<String>,
+        target: impl Into<String>,
+    ) -> PendingId {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let id = PendingId(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
         if self.pending_actions.len() >= PENDING_CAP {
             self.pending_actions.pop_front();
         }
         self.pending_actions.push_back(PendingAction {
+            id,
             label: label.into(),
             target: target.into(),
             started: Instant::now(),
             completed: None,
         });
+        id
     }
 
-    /// Resolve a pending entry against an arriving `ActionResult`. Picks
-    /// the oldest unfinished entry whose `(label, target)` match — the
-    /// dispatch order is preserved so this is correct without IDs as long
-    /// as we don't have two concurrent dispatches of the same action to the
-    /// same target (a deliberate operator wouldn't do that).
-    pub(crate) fn complete_pending(
-        &mut self,
-        label: &str,
-        target: &str,
-        result: Result<(), String>,
-    ) {
+    /// Stamp the row `push_pending` handed out `id` for with its outcome.
+    /// A row already completed, or pushed off by the cap, is left alone.
+    pub(crate) fn complete_pending(&mut self, id: PendingId, result: Result<(), String>) {
         if let Some(entry) = self
             .pending_actions
             .iter_mut()
-            .find(|e| e.completed.is_none() && e.label == label && e.target == target)
+            .find(|e| e.completed.is_none() && e.id == id)
         {
             entry.completed = Some((Instant::now(), result));
         }
@@ -1078,7 +1080,7 @@ impl App {
             &env,
             swap_with.as_deref(),
         );
-        self.push_pending(action.label(), env.clone());
+        let pending = self.push_pending(action.label(), env.clone());
         let ident = self.audit_ident();
         tokio::spawn(async move {
             let aws = match client.resolve().await {
@@ -1087,6 +1089,7 @@ impl App {
                     let _ = tx.send(super::action_result(
                         &ident,
                         gen,
+                        pending,
                         action,
                         env,
                         region,
@@ -1140,7 +1143,7 @@ impl App {
             }
             .map_err(|e| flatten_err("action", e));
             let _ = tx.send(super::action_result(
-                &ident, gen, action, env, region, result,
+                &ident, gen, pending, action, env, region, result,
             ));
         });
     }

@@ -127,11 +127,12 @@ impl App {
                 ..
             } if self.detail_takes(&region) => self.handle_detail_events(env_name, result),
             AppMsg::ActionResult {
+                pending,
                 action,
                 env_name,
                 result,
                 ..
-            } => self.handle_action_result(action, env_name, result),
+            } => self.handle_action_result(pending, action, env_name, result),
             AppMsg::DetailInstances {
                 env_name,
                 result,
@@ -275,12 +276,13 @@ impl App {
                 ..
             } if self.detail_takes(&region) => self.handle_detail_tags(env_name, result),
             AppMsg::DeployFromLocal {
+                pending,
                 env_name,
                 label,
                 summary,
                 result,
                 ..
-            } => self.handle_deploy_from_local(env_name, label, summary, result),
+            } => self.handle_deploy_from_local(pending, env_name, label, summary, result),
             AppMsg::LogTailOpened {
                 session_id,
                 env_name,
@@ -350,32 +352,35 @@ impl App {
                 ..
             } if self.detail_takes(&region) => self.handle_detail_env_vars(env_name, result),
             AppMsg::OptionSettingsUpdate {
+                pending,
                 env_name,
                 summary,
                 result,
                 ..
-            } => self.handle_option_settings_update(env_name, summary, result),
+            } => self.handle_option_settings_update(pending, env_name, summary, result),
             AppMsg::AlarmOp {
+                pending,
                 verb,
                 alarm_name,
-                env_name,
                 result,
                 ..
-            } => self.handle_alarm_op(verb, alarm_name, env_name, result),
+            } => self.handle_alarm_op(pending, verb, alarm_name, result),
             AppMsg::DeleteAppVersion {
+                pending,
                 application,
                 region,
                 label,
                 force,
                 result,
                 ..
-            } => self.handle_delete_app_version(application, region, label, force, result),
+            } => self.handle_delete_app_version(pending, application, region, label, force, result),
             AppMsg::TagUpdate {
+                pending,
                 env_name,
                 summary,
                 result,
                 ..
-            } => self.handle_tag_update(env_name, summary, result),
+            } => self.handle_tag_update(pending, env_name, summary, result),
             AppMsg::DetailQueues {
                 env_name,
                 result,
@@ -633,6 +638,7 @@ impl App {
 
     fn handle_action_result(
         &mut self,
+        pending: PendingId,
         action: Action,
         env_name: String,
         result: Result<(), String>,
@@ -642,11 +648,7 @@ impl App {
         // has one.
         // Stamp the matching pending-actions entry with the outcome so the
         // panel shows ✓ / ✗ instead of "in flight".
-        self.complete_pending(
-            action.label(),
-            &env_name,
-            result.as_ref().map(|_| ()).map_err(|e| e.clone()),
-        );
+        self.complete_pending(pending, result.clone());
         match result {
             Ok(()) => {
                 self.close_action_flow();
@@ -1283,16 +1285,13 @@ impl App {
 
     fn handle_deploy_from_local(
         &mut self,
+        pending: PendingId,
         env_name: String,
         label: String,
         summary: String,
         result: Result<(), String>,
     ) {
-        self.complete_pending(
-            &summary,
-            &env_name,
-            result.as_ref().map(|_| ()).map_err(|e| e.clone()),
-        );
+        self.complete_pending(pending, result.clone());
         match result {
             Ok(()) => {
                 self.push_toast(
@@ -1716,15 +1715,12 @@ impl App {
 
     fn handle_option_settings_update(
         &mut self,
+        pending: PendingId,
         env_name: String,
         summary: String,
         result: Result<(), String>,
     ) {
-        self.complete_pending(
-            &summary,
-            &env_name,
-            result.as_ref().map(|_| ()).map_err(|e| e.clone()),
-        );
+        self.complete_pending(pending, result.clone());
         match result {
             Ok(()) => {
                 // Append " · press U to undo" so operators discover
@@ -1765,22 +1761,12 @@ impl App {
 
     fn handle_alarm_op(
         &mut self,
+        pending: PendingId,
         verb: &'static str,
         alarm_name: String,
-        env_name: String,
         result: Result<(), String>,
     ) {
-        let label = match verb {
-            "create" => "Create alarm",
-            "delete" => "Delete alarm",
-            _ => "Alarm op",
-        };
-        let target = format!("{env_name}/{alarm_name}");
-        self.complete_pending(
-            label,
-            &target,
-            result.as_ref().map(|_| ()).map_err(|e| e.clone()),
-        );
+        self.complete_pending(pending, result.clone());
         match result {
             Ok(()) => {
                 let past = if verb == "create" {
@@ -1801,6 +1787,7 @@ impl App {
 
     fn handle_delete_app_version(
         &mut self,
+        pending: PendingId,
         application: String,
         region: String,
         label: String,
@@ -1808,17 +1795,7 @@ impl App {
         result: Result<(), String>,
     ) {
         let force_str = if force { " (+source bundle)" } else { "" };
-        let pending_label = if force {
-            "Delete app version (+source)"
-        } else {
-            "Delete app version"
-        };
-        let pending_target = format!("{application}/{label}");
-        self.complete_pending(
-            pending_label,
-            &pending_target,
-            result.as_ref().map(|_| ()).map_err(|e| e.clone()),
-        );
+        self.complete_pending(pending, result.clone());
         match result {
             Ok(()) => {
                 self.push_toast(
@@ -1874,12 +1851,14 @@ impl App {
         }
     }
 
-    fn handle_tag_update(&mut self, env_name: String, summary: String, result: Result<(), String>) {
-        self.complete_pending(
-            &summary,
-            &env_name,
-            result.as_ref().map(|_| ()).map_err(|e| e.clone()),
-        );
+    fn handle_tag_update(
+        &mut self,
+        pending: PendingId,
+        env_name: String,
+        summary: String,
+        result: Result<(), String>,
+    ) {
+        self.complete_pending(pending, result.clone());
         match result {
             Ok(()) => {
                 self.push_toast(ToastKind::Info, format!("{summary} on {env_name}"));
