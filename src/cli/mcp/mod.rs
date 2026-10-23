@@ -46,7 +46,10 @@ pub(crate) const PROTOCOL_VERSION: &str = "2025-06-18";
 /// can't wedge the agent turn.
 const TOOL_TIMEOUT_SECS: u64 = 30;
 
-/// How long a call that will ASK a human may take.
+/// The ask's share of a `confirm_action` call that can ASK a human:
+/// the ask itself ([`ASK_WAIT_SECS`]) plus a margin for what comes
+/// before it and the deny after. The whole call is bounded at
+/// [`CONFIRM_TIMEOUT_SECS`], this plus a dispatch's own bound.
 ///
 /// 30 seconds bounds a hung AWS call, which is what it was written
 /// for. It is nonsense as a bound on a person deciding whether to
@@ -64,8 +67,7 @@ const ASK_TIMEOUT_SECS: u64 = 300;
 /// How long the ask itself waits — strictly less than the budget of
 /// the call containing it.
 ///
-/// These must not be equal. `call_timeout_secs` bounds the whole
-/// `confirm_action` call at `ASK_TIMEOUT_SECS`, and that clock starts
+/// These must not be equal. The call's clock starts
 /// before the question is even sent, so an ask given the same budget
 /// loses the race with its own container. The visible effect is that
 /// an unanswered ask returns a generic tool timeout instead of the

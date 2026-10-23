@@ -216,6 +216,20 @@ pub(crate) fn is_region(r: &str) -> bool {
             .is_some_and(|p| p.chars().all(|c| c.is_ascii_digit()))
 }
 
+/// A Local Zone's or Wavelength Zone's parent region: Cost Explorer can
+/// file spend under `us-west-2-lax-1`, which belongs to `us-west-2`'s
+/// envs. Anything else is returned as it is.
+pub(crate) fn parent_region(r: &str) -> String {
+    let parts: Vec<&str> = r.split('-').collect();
+    match parts
+        .iter()
+        .position(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
+    {
+        Some(i) if i + 1 < parts.len() => parts[..=i].join("-"),
+        _ => r.to_string(),
+    }
+}
+
 /// Give spend Cost Explorer filed under no region to the env it belongs
 /// to: the one region a name is listed in, where there is exactly one.
 /// A name in several regions cannot say which env the spend was, so it
@@ -230,8 +244,9 @@ pub(crate) fn fold_regionless(
     let mut regional = std::collections::HashMap::new();
     let mut regionless = Vec::new();
     for ((name, region), usd) in totals {
+        let region = parent_region(&region);
         if is_region(&region) {
-            regional.insert((name, region), usd);
+            *regional.entry((name, region)).or_insert(0.0) += usd;
         } else {
             regionless.push((name, region, usd));
         }

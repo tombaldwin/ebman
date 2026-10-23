@@ -178,3 +178,26 @@ fn region_names_are_told_from_cost_explorers_other_buckets() {
         assert!(!crate::aws::is_region(r), "{r}");
     }
 }
+
+/// Local Zone spend is its parent region's: kept as its own key it
+/// matched no row and vanished from the env's figure.
+#[test]
+fn local_zone_spend_goes_to_its_parent_region() {
+    assert_eq!(crate::aws::parent_region("us-west-2-lax-1"), "us-west-2");
+    assert_eq!(
+        crate::aws::parent_region("us-east-1-wl1-bos-wlz-1"),
+        "us-east-1"
+    );
+    assert_eq!(crate::aws::parent_region("us-gov-west-1"), "us-gov-west-1");
+    assert_eq!(crate::aws::parent_region("global"), "global");
+    let key = |n: &str, r: &str| (n.to_string(), r.to_string());
+    let totals: std::collections::HashMap<(String, String), f64> = [
+        (key("api", "us-west-2"), 10.0),
+        (key("api", "us-west-2-lax-1"), 2.0),
+    ]
+    .into_iter()
+    .collect();
+    let folded = crate::aws::fold_regionless(totals);
+    assert_eq!(folded.get(&key("api", "us-west-2")), Some(&12.0));
+    assert_eq!(folded.len(), 1);
+}
