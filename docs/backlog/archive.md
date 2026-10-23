@@ -5183,3 +5183,46 @@ From `PLAN.md`, retired with it:
   demo stamped it with the fixture's clock, months back; it now stamps
   the demo's start. Tests: `format_refresh_label_says_a_long_gap_in_human_units`,
   `the_demo_header_says_it_refreshed_just_now`; both CAUGHT.
+
+- [x] PLAN item 2, retired 2026-10-23:
+
+  2. **`run_cycle`'s third side channel: it prints instead of reporting** *(architecture — needs a scope ruling before dev)*
+
+     Nine sites wrote straight to the operator's terminal from inside
+     the function extracted to make the cycle testable. Nine still do,
+     re-counted 2026-09-25: `src/cli/lint.rs:652` in `run_cycle`,
+     `CycleReport::degrade`'s own `eprintln!` (`:393`), and seven in
+     `apply_fixes_for_env` (`:2367`–`:2471`). The old `:1089` site was
+     the EBL015 bug fixed in c704ea0. Output no test can assert on — the
+     same shape as the two channels already closed.
+
+     **Not one item.** The two in `run_cycle` are mechanical. The
+     seven in `apply_fixes_for_env` are interactive `--fix` output
+     and are a design question (does the report carry rendered lines,
+     a typed event stream, or a writer?), so they need a ruling
+     rather than a guess. Split accordingly when it is picked up.
+
+     **2026-09-25: the maintainer does not have a preference.** The
+     recommendation stands on its own: a TYPED report (events the cycle
+     returns, rendered by `run`), because the MCP `lint` tool is a second
+     consumer and a writer or pre-rendered lines would make it re-parse
+     text. The two `run_cycle` sites are mechanical either way.
+
+     Evidence the class is live, not cosmetic: chasing it on
+     2026-09-24 turned up a real bug at `:1089` — a partly-failed
+     EBL015 pass printed behind `!quiet` and exited clean. Fixed
+     separately; two mutations CAUGHT. That is three defects this
+     function has now shipped in its output wiring.
+
+  **Done 2026-10-23,** as the typed report recommended: `CycleNote`
+  (degraded, env not in region, and seven `--fix` events) on
+  `CycleReport::notes`, rendered by `render_notes` with the old wording,
+  streams and `--quiet` / `--json` rules. `degrade` records, it no longer
+  prints. Tests: `every_note_renders_where_it_did`,
+  `quiet_and_json_keep_what_must_not_be_missed`,
+  `the_lint_cycle_prints_nothing_itself`, and note assertions on the
+  rejected / preview / refused fix and missing-env wiring tests. Five
+  mutations CAUGHT (one only after the missing-env test gained its
+  assertion). The MCP `lint` tool can now read the notes rather than
+  re-parse text.
+

@@ -373,6 +373,101 @@ pub(crate) struct CycleReport {
     /// likely `ebman lint --env X` mistake was the one path the seam
     /// could not reach. `run` owns the exit; the cycle reports.
     pub usage_error: Option<String>,
+    /// What the operator is told, in the order it happened. The cycle
+    /// records; `run` renders ([`render_notes`]). It printed from inside
+    /// the function extracted to be testable, nine sites of output no
+    /// test could assert on; one of them was the EBL015 bug.
+    pub notes: Vec<CycleNote>,
+}
+
+/// One thing a lint cycle has to tell the operator.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CycleNote {
+    /// The cycle is incomplete; shown whatever `--quiet` says.
+    Degraded(String),
+    /// `--env NAME` is not in this region of a `--regions` run.
+    EnvNotInRegion { env: String, region: String },
+    /// `--fix` refused the env: a pin, read-only, an unreadable safety
+    /// config.
+    FixRefused { reason: String },
+    /// The rule is in `lint.fix_disable`.
+    FixDisabled { rule: String, env: String },
+    /// The rule has no remediation.
+    NoFix { rule: String, env: String },
+    /// A fix `--fix` will apply (or, with `--dry-run`, would).
+    FixPlanned {
+        rule: String,
+        env: String,
+        description: String,
+    },
+    /// A fix the operator has to make.
+    FixManual {
+        rule: String,
+        env: String,
+        instructions: String,
+    },
+    /// The option-settings update went through.
+    FixApplied { env: String, count: usize },
+    /// The option-settings update failed; shown whatever `--quiet` says.
+    FixFailed {
+        env: String,
+        region: String,
+        error: String,
+    },
+}
+
+/// Write a cycle's notes: stderr for warnings and failures, stdout for
+/// the fix plan. `--quiet` keeps only what must not be missed (an
+/// incomplete cycle, a failed dispatch); `--json` keeps prose off stdout,
+/// where it broke every piped consumer.
+pub(crate) fn render_notes(
+    notes: &[CycleNote],
+    quiet: bool,
+    json: bool,
+    out: &mut dyn std::io::Write,
+    err: &mut dyn std::io::Write,
+) -> std::io::Result<()> {
+    let plan = !quiet && !json;
+    for note in notes {
+        match note {
+            CycleNote::Degraded(reason) => writeln!(err, "warning: {reason}")?,
+            CycleNote::EnvNotInRegion { env, region } if !quiet => writeln!(
+                err,
+                "warning: env '{env}' not in region '{region}' — skipping"
+            )?,
+            CycleNote::FixRefused { reason } if !quiet => {
+                writeln!(err, "ebman lint --fix: {reason}")?
+            }
+            CycleNote::FixDisabled { rule, env } if plan => {
+                writeln!(out, "skip {rule} ({env}): in lint.fix_disable")?
+            }
+            CycleNote::NoFix { rule, env } if plan => {
+                writeln!(out, "no-fix {rule} ({env}): rule has no auto-remediation")?
+            }
+            CycleNote::FixPlanned {
+                rule,
+                env,
+                description,
+            } if plan => writeln!(out, "fix {rule} ({env}): {description}")?,
+            CycleNote::FixManual {
+                rule,
+                env,
+                instructions,
+            } if plan => writeln!(
+                out,
+                "fix {rule} ({env}) MANUAL — operator action required:\n  {instructions}"
+            )?,
+            CycleNote::FixApplied { env, count } if plan => {
+                writeln!(out, "ok ({env}): applied {count} fix(es)")?
+            }
+            CycleNote::FixFailed { env, region, error } => writeln!(
+                err,
+                "ebman lint --fix: dispatch failed for {env} in {region}: {error}"
+            )?,
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 impl CycleReport {
@@ -390,7 +485,7 @@ impl CycleReport {
     /// Record a failure that makes this cycle incomplete. The only way
     /// to reach that state.
     pub(crate) fn degrade(&mut self, reason: String) {
-        eprintln!("warning: {reason}");
+        self.notes.push(CycleNote::Degraded(reason.clone()));
         self.degrade_reasons.push(reason);
     }
 }
@@ -563,8 +658,6 @@ pub(crate) async fn run_cycle<F, Fut>(
     probe_live: bool,
     fix: bool,
     yes: bool,
-    quiet: bool,
-    json: bool,
     severity_filter: Option<lint::Severity>,
     rule_filter: &[String],
     // Ambient and disk-derived state arrives as arguments so a test
@@ -643,12 +736,12 @@ where
                     vec![env]
                 }
                 None => {
-                    if multi_region && !quiet {
-                        let region_label = aws.context.region.as_str();
-                        eprintln!(
-                            "warning: env '{name}' not in region '{region_label}' — skipping"
-                        );
-                    } else if !multi_region {
+                    if multi_region {
+                        report.notes.push(CycleNote::EnvNotInRegion {
+                            env: name.to_string(),
+                            region: aws.context.region.clone(),
+                        });
+                    } else {
                         report.usage_error =
                             Some(format!("env '{name}' not found in current context"));
                         return report;
@@ -719,11 +812,10 @@ where
                     &issues,
                     &rules,
                     yes,
-                    quiet,
-                    json,
                     fix_disabled,
                     safety_cfg,
                     active_profile_for_safety,
+                    &mut report.notes,
                 )
                 .await
             {
@@ -941,8 +1033,6 @@ pub async fn run(args: &[String]) -> Result<()> {
             probe_live,
             fix,
             yes,
-            quiet,
-            json,
             severity_filter,
             &rule_filter,
             &safety_cfg,
@@ -952,6 +1042,15 @@ pub async fn run(args: &[String]) -> Result<()> {
             cycle_started,
         )
         .await;
+        // What the cycle has to say, before its findings, as when it
+        // printed them itself.
+        let _ = render_notes(
+            &report.notes,
+            quiet,
+            json,
+            &mut std::io::stdout().lock(),
+            &mut std::io::stderr().lock(),
+        );
 
         // The cycle reports a usage error; `run` owns the exit. Same
         // message and same exit code 2 as the `exit_after_drain` call
@@ -1848,10 +1947,133 @@ mod degrade_guard {
             .nth(1)
             .expect("`CycleReport::degrade` must exist");
         let body = &helper[..helper.find("\n    }").unwrap_or(helper.len())];
-        assert!(body.contains("eprintln!"), "degrade must print the reason");
+        assert!(
+            body.contains("CycleNote::Degraded"),
+            "degrade must record the reason for the operator (render_notes prints it)"
+        );
         assert!(
             body.contains("push(reason)"),
             "degrade must keep the reason for --json"
+        );
+    }
+}
+
+#[cfg(test)]
+mod note_rendering {
+    use super::{render_notes, CycleNote};
+
+    fn render(notes: &[CycleNote], quiet: bool, json: bool) -> (String, String) {
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        render_notes(notes, quiet, json, &mut out, &mut err).unwrap();
+        (
+            String::from_utf8(out).unwrap(),
+            String::from_utf8(err).unwrap(),
+        )
+    }
+
+    fn all() -> Vec<CycleNote> {
+        let s = |x: &str| x.to_string();
+        vec![
+            CycleNote::Degraded(s("EBL020 skipped: AccessDenied")),
+            CycleNote::EnvNotInRegion {
+                env: s("api"),
+                region: s("eu-west-2"),
+            },
+            CycleNote::FixRefused {
+                reason: s("api is pinned read-only"),
+            },
+            CycleNote::FixDisabled {
+                rule: s("EBL001"),
+                env: s("api"),
+            },
+            CycleNote::NoFix {
+                rule: s("EBL002"),
+                env: s("api"),
+            },
+            CycleNote::FixPlanned {
+                rule: s("EBL004"),
+                env: s("api"),
+                description: s("set X"),
+            },
+            CycleNote::FixManual {
+                rule: s("EBL005"),
+                env: s("api"),
+                instructions: s("do Y"),
+            },
+            CycleNote::FixApplied {
+                env: s("api"),
+                count: 2,
+            },
+            CycleNote::FixFailed {
+                env: s("api"),
+                region: s("us-east-1"),
+                error: s("Throttled"),
+            },
+        ]
+    }
+
+    /// Each note in the words the cycle used to print, on the stream it
+    /// used: warnings and failures to stderr, the plan to stdout.
+    #[test]
+    fn every_note_renders_where_it_did() {
+        let (out, err) = render(&all(), false, false);
+        for line in [
+            "warning: EBL020 skipped: AccessDenied",
+            "warning: env 'api' not in region 'eu-west-2' — skipping",
+            "ebman lint --fix: api is pinned read-only",
+            "ebman lint --fix: dispatch failed for api in us-east-1: Throttled",
+        ] {
+            assert!(err.contains(line), "stderr lacks {line:?}:\n{err}");
+        }
+        for line in [
+            "skip EBL001 (api): in lint.fix_disable",
+            "no-fix EBL002 (api): rule has no auto-remediation",
+            "fix EBL004 (api): set X",
+            "fix EBL005 (api) MANUAL — operator action required:\n  do Y",
+            "ok (api): applied 2 fix(es)",
+        ] {
+            assert!(out.contains(line), "stdout lacks {line:?}:\n{out}");
+        }
+    }
+
+    /// The cycle and its fix pass record what to say and never print it:
+    /// output from inside them is output no test can assert on, which is
+    /// how a partly-failed EBL015 pass printed behind `!quiet` and exited
+    /// clean. `run` renders through `render_notes`.
+    #[test]
+    fn the_lint_cycle_prints_nothing_itself() {
+        let src = crate::app::tests::scan::production_source("cli/lint.rs");
+        for (name, body) in crate::app::tests::scan::fn_bodies(&src) {
+            if name != "run_cycle" && name != "apply_fixes_for_env" {
+                continue;
+            }
+            for mac in ["println!(", "eprintln!(", "print!(", "eprint!("] {
+                assert!(
+                    !body.contains(mac),
+                    "`{name}` calls {mac}: record a CycleNote instead"
+                );
+            }
+        }
+    }
+
+    /// `--quiet` keeps only what must not be missed; `--json` keeps the
+    /// plan's prose off stdout.
+    #[test]
+    fn quiet_and_json_keep_what_must_not_be_missed() {
+        let (out, err) = render(&all(), true, false);
+        assert!(out.is_empty(), "{out}");
+        assert_eq!(
+            err.lines().collect::<Vec<_>>(),
+            vec![
+                "warning: EBL020 skipped: AccessDenied",
+                "ebman lint --fix: dispatch failed for api in us-east-1: Throttled",
+            ]
+        );
+        let (out, err) = render(&all(), false, true);
+        assert!(out.is_empty(), "nothing but the JSON on stdout: {out}");
+        assert!(
+            err.contains("not in region") && err.contains("pinned read-only"),
+            "{err}"
         );
     }
 }
@@ -2340,11 +2562,10 @@ async fn apply_fixes_for_env(
     issues: &[lint::Issue],
     rules: &[Box<dyn lint::Rule>],
     yes: bool,
-    quiet: bool,
-    json: bool,
     fix_disabled: &[String],
     safety_cfg: &config::Config,
     active_profile_for_safety: &Option<String>,
+    notes: &mut Vec<CycleNote>,
 ) -> bool {
     let mut dispatch_failed = false;
     // Through the shared gate, not `pin_reason` alone.
@@ -2378,9 +2599,7 @@ async fn apply_fixes_for_env(
             .map(|(_, message, _)| message)
     };
     if let Some(reason) = refusal {
-        if !quiet {
-            eprintln!("ebman lint --fix: {reason}");
-        }
+        notes.push(CycleNote::FixRefused { reason });
         // Only a real (--yes) run treats the refusal as a dispatch
         // failure — a --dry-run preview dispatched nothing and must
         // not exit 1. `return yes`, not `return true`: the extraction
@@ -2401,21 +2620,20 @@ async fn apply_fixes_for_env(
     let mut planned_set_indices: Vec<usize> = Vec::new();
     for issue in issues {
         if fix_disabled.contains(&issue.rule_id) {
-            if !quiet && !json {
-                println!("skip {} ({}): in lint.fix_disable", issue.rule_id, env.name);
-            }
+            notes.push(CycleNote::FixDisabled {
+                rule: issue.rule_id.clone(),
+                env: env.name.clone(),
+            });
             continue;
         }
         let Some(rule) = rules.iter().find(|r| r.id() == issue.rule_id) else {
             continue;
         };
         let Some(action) = rule.fix(&ctx) else {
-            if !quiet && !json {
-                println!(
-                    "no-fix {} ({}): rule has no auto-remediation",
-                    issue.rule_id, env.name
-                );
-            }
+            notes.push(CycleNote::NoFix {
+                rule: issue.rule_id.clone(),
+                env: env.name.clone(),
+            });
             continue;
         };
         if let lint::FixAction::SetOption {
@@ -2430,23 +2648,19 @@ async fn apply_fixes_for_env(
         }
         planned.push((issue.rule_id.clone(), action));
     }
-    // Plan lines respect --quiet and stay off stdout
-    // under --json (prose interleaved with the JSON
-    // document broke every piped consumer).
-    if !quiet && !json {
-        for (rule_id, action) in &planned {
-            match action {
-                lint::FixAction::SetOption { description, .. } => {
-                    println!("fix {rule_id} ({}): {description}", env.name);
-                }
-                lint::FixAction::Manual { instructions } => {
-                    println!(
-                        "fix {rule_id} ({}) MANUAL — operator action required:\n  {instructions}",
-                        env.name
-                    );
-                }
-            }
-        }
+    for (rule_id, action) in &planned {
+        notes.push(match action {
+            lint::FixAction::SetOption { description, .. } => CycleNote::FixPlanned {
+                rule: rule_id.clone(),
+                env: env.name.clone(),
+                description: description.clone(),
+            },
+            lint::FixAction::Manual { instructions } => CycleNote::FixManual {
+                rule: rule_id.clone(),
+                env: env.name.clone(),
+                instructions: instructions.clone(),
+            },
+        });
     }
     if fix_may_dispatch(yes, to_set.len()) {
         match aws
@@ -2474,19 +2688,17 @@ async fn apply_fixes_for_env(
                         );
                     }
                 }
-                if !quiet && !json {
-                    println!(
-                        "ok ({}): applied {} fix(es)",
-                        env.name,
-                        planned_set_indices.len()
-                    );
-                }
+                notes.push(CycleNote::FixApplied {
+                    env: env.name.clone(),
+                    count: planned_set_indices.len(),
+                });
             }
             Err(e) => {
-                eprintln!(
-                    "ebman lint --fix: dispatch failed for {} in {region_label}: {e}",
-                    env.name
-                );
+                notes.push(CycleNote::FixFailed {
+                    env: env.name.clone(),
+                    region: region_label.clone(),
+                    error: e.to_string(),
+                });
                 let err_str = e.to_string();
                 for &idx in &planned_set_indices {
                     let (rule_id, action) = &planned[idx];
@@ -2849,8 +3061,6 @@ mod cycle_wiring {
             false,
             opts.fix,
             opts.yes,
-            true,
-            false,
             None,
             &[],
             &opts.safety_cfg,
@@ -2893,6 +3103,14 @@ mod cycle_wiring {
             !report.degraded(),
             "the fleet WAS seen — a rejected write is not incomplete coverage: {:?}",
             report.degrade_reasons
+        );
+        assert!(
+            report
+                .notes
+                .iter()
+                .any(|n| matches!(n, CycleNote::FixFailed { env, .. } if env == "poly-prod-web")),
+            "the failure is reported to the operator: {:?}",
+            report.notes
         );
     }
 
@@ -3109,6 +3327,22 @@ mod cycle_wiring {
             !report.fix_dispatch_failed,
             "a preview dispatched nothing and must not exit 1"
         );
+        assert!(
+            report
+                .notes
+                .iter()
+                .any(|n| matches!(n, CycleNote::FixPlanned { .. })),
+            "the preview shows its plan: {:?}",
+            report.notes
+        );
+        assert!(
+            !report.notes.iter().any(|n| matches!(
+                n,
+                CycleNote::FixApplied { .. } | CycleNote::FixFailed { .. }
+            )),
+            "and claims no dispatch: {:?}",
+            report.notes
+        );
     }
 
     fn read_only_cfg(env: &str) -> config::Config {
@@ -3146,6 +3380,14 @@ mod cycle_wiring {
                 expect_failed,
                 "a refusal with --yes={yes} must {} the cycle",
                 if expect_failed { "fail" } else { "not fail" }
+            );
+            assert!(
+                report
+                    .notes
+                    .iter()
+                    .any(|n| matches!(n, CycleNote::FixRefused { reason } if reason.contains(env))),
+                "the refusal is reported, naming the env: {:?}",
+                report.notes
             );
         }
     }
@@ -3223,6 +3465,16 @@ mod cycle_wiring {
             |_| async { Ok(mock_client(vec!["real-env".into()])) },
         )
         .await;
+        let missed = report
+            .notes
+            .iter()
+            .filter(|n| matches!(n, CycleNote::EnvNotInRegion { env, .. } if env == "no-such-env"))
+            .count();
+        assert_eq!(
+            missed, 2,
+            "each region says it lacked the env: {:?}",
+            report.notes
+        );
         let msg = report.usage_error.expect("a typo is a usage error");
         assert!(
             msg.contains("no-such-env") && msg.contains("2 regions"),

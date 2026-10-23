@@ -125,33 +125,10 @@ now head the list.*
    (0.43.0), so a test against it proves nothing. `brew upgrade ebman`,
    or register the local release build without `--demo`.
 
-2. **`run_cycle`'s third side channel: it prints instead of reporting** *(architecture — needs a scope ruling before dev)*
-
-   Nine sites wrote straight to the operator's terminal from inside
-   the function extracted to make the cycle testable. Nine still do,
-   re-counted 2026-09-25: `src/cli/lint.rs:652` in `run_cycle`,
-   `CycleReport::degrade`'s own `eprintln!` (`:393`), and seven in
-   `apply_fixes_for_env` (`:2367`–`:2471`). The old `:1089` site was
-   the EBL015 bug fixed in c704ea0. Output no test can assert on — the
-   same shape as the two channels already closed.
-
-   **Not one item.** The two in `run_cycle` are mechanical. The
-   seven in `apply_fixes_for_env` are interactive `--fix` output
-   and are a design question (does the report carry rendered lines,
-   a typed event stream, or a writer?), so they need a ruling
-   rather than a guess. Split accordingly when it is picked up.
-
-   **2026-09-25: the maintainer does not have a preference.** The
-   recommendation stands on its own: a TYPED report (events the cycle
-   returns, rendered by `run`), because the MCP `lint` tool is a second
-   consumer and a writer or pre-rendered lines would make it re-parse
-   text. The two `run_cycle` sites are mechanical either way.
-
-   Evidence the class is live, not cosmetic: chasing it on
-   2026-09-24 turned up a real bug at `:1089` — a partly-failed
-   EBL015 pass printed behind `!quiet` and exited clean. Fixed
-   separately; two mutations CAUGHT. That is three defects this
-   function has now shipped in its output wiring.
+2. **`run_cycle`'s third side channel** — *done 2026-10-23.* The cycle
+   and its fix pass record typed `CycleNote`s on `CycleReport` and `run`
+   renders them (`render_notes`); `the_lint_cycle_prints_nothing_itself`
+   pins it. Full write-up in `docs/backlog/archive.md`.
 
 3. **An "App" view per environment: is it healthy, and who is using it?** *(architecture — design note first)*
 

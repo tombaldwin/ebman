@@ -25,6 +25,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   `ebman ctl --help` tried the control socket. `docs/headless.md` gains
   a per-subcommand exit-code table, which now includes `ebman action`'s
   `4` (wait-for-green timed out) and `5` (auto-rollback fired).
+- **`ebman lint`'s cycle reports instead of printing.** Its warnings,
+  fix plan and fix results are typed notes the run renders, with the
+  same text, streams and `--quiet` / `--json` behaviour, so each is
+  now asserted by a test.
 - **MCP `fleet_cost` keys `by_env` as `NAME@REGION`**, the form the
   write tools take, instead of the bare name.
 
