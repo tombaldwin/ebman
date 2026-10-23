@@ -744,6 +744,20 @@ pub(crate) mod audit_delta {
         log()
     }
 
+    /// The lines written since `before` that `keep` accepts, for a line
+    /// with no target of its own to filter on.
+    pub(crate) fn lines_matching(before: &str, keep: impl Fn(&str) -> bool) -> Vec<String> {
+        let after = log();
+        let delta = after
+            .strip_prefix(before)
+            .expect("the audit log is append-only; a non-prefix means it was rotated mid-test");
+        delta
+            .lines()
+            .filter(|l| keep(l))
+            .map(String::from)
+            .collect()
+    }
+
     /// The lines written since `before` whose target is `target`: give
     /// each test a target no other test writes, as tests run at once.
     pub(crate) fn lines_for(before: &str, target: &str) -> Vec<String> {

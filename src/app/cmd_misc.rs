@@ -377,11 +377,13 @@ impl App {
         // A freeze declared with `ebman freeze` is lifted here too: this
         // is an explicit thaw. Another live session's is not, and says so.
         let mut held_elsewhere = None;
+        let mut lifted_persistent = false;
         if !self.demo_mode {
             self.freeze.clear_session(std::process::id());
             match self.freeze.thaw() {
                 crate::freeze::Thaw::Lifted { still_held, .. } => {
                     was_frozen = true;
+                    lifted_persistent = true;
                     held_elsewhere = still_held.filter(|m| m.pid != std::process::id());
                 }
                 crate::freeze::Thaw::HeldBySession(m) if m.pid != std::process::id() => {
@@ -392,13 +394,19 @@ impl App {
             self.foreign_freeze = self.foreign_freeze_now();
         }
         let was_frozen_str = was_frozen.to_string();
+        let mut extras = vec![("was_frozen", was_frozen_str.as_str())];
+        // An `ebman freeze` lifted from here is audited as one, as
+        // `ebman thaw`'s lift is.
+        if lifted_persistent {
+            extras.push(("persistent", "true"));
+        }
         crate::audit::append_action_dispatched(
             self.context.account_id.as_deref(),
             self.context.profile.as_deref(),
             &self.context.region,
             "ThawDeploys",
             "",
-            &[("was_frozen", was_frozen_str.as_str())],
+            &extras,
         );
         if let Some(m) = held_elsewhere {
             self.pin_error(format!(

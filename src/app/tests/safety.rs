@@ -2356,9 +2356,16 @@ async fn the_header_names_a_freeze_from_elsewhere() {
 async fn thaw_deploys_lifts_an_ebman_freeze_but_not_another_sessions() {
     let mut app = app_with_prod();
     app.freeze.write_test_marker(0, "release window", true);
+    let before = crate::cli::audit_delta::mark();
     app.execute_command("thaw-deploys");
     assert!(app.foreign_freeze_now().is_none(), "lifted");
     assert!(!app.deny_write(&home_key("api-prod"), "restart"));
+    // Audited as the lift of a persistent freeze, as `ebman thaw` is.
+    // The only TUI path that lifts one; the CLI's lines say `via=cli`.
+    let lifted = crate::cli::audit_delta::lines_matching(&before, |l| {
+        l.contains("action=ThawDeploys") && l.contains("persistent=true") && !l.contains("via=cli")
+    });
+    assert_eq!(lifted.len(), 1, "{lifted:#?}");
 
     let mut app = app_with_prod();
     app.freeze.write_test_marker(1, "incident: db", false);
