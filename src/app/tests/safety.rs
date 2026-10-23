@@ -2384,3 +2384,76 @@ async fn startup_says_when_a_freeze_ended_with_its_session() {
         "{err}"
     );
 }
+
+#[tokio::test]
+async fn startup_says_nothing_of_an_ended_freeze_while_one_holds() {
+    let mut app = app_with_prod();
+    // The freeze first: declaring one clears the ended record.
+    crate::freeze::write_test_marker(&app.freeze_marker, 0, "release window", true);
+    crate::freeze::write_test_ended(&app.freeze_marker, "incident: db failover");
+    app.announce_freeze_state();
+    let err = app.error_message.clone().unwrap_or_default();
+    assert!(
+        !err.contains("db failover"),
+        "a freeze holds, so 'declare it again' is wrong: {err}"
+    );
+}
+
+/// The TUI's own freeze goes through its marker path, writes and
+/// clears alike, so a test App's freeze stays its own and production
+/// cannot drift between the path it writes and the one it reads.
+#[tokio::test]
+async fn the_tuis_own_freeze_goes_through_its_marker_path() {
+    let mut app = app_with_prod();
+    app.execute_command("freeze-deploys release window");
+    let held = crate::freeze::read_all_at(&app.freeze_marker);
+    assert_eq!(
+        held.iter().map(|m| m.pid).collect::<Vec<_>>(),
+        vec![std::process::id()],
+        "{held:?}"
+    );
+    app.execute_command("thaw-deploys");
+    assert!(crate::freeze::read_all_at(&app.freeze_marker).is_empty());
+}
+
+/// The App reaches the freeze only through its own marker path: the
+/// global-path conveniences are for the CLI, MCP and process exit.
+#[test]
+fn the_app_uses_no_global_freeze_path() {
+    let hits = super::scan::production_statements_where(|code| {
+        [
+            "freeze::write_marker(",
+            "freeze::clear_marker_if_own(",
+            "freeze::read_active()",
+            "freeze::thaw_persistent()",
+            "freeze::read_ended()",
+            "freeze::marker_path()",
+        ]
+        .iter()
+        .any(|n| code.contains(n))
+    });
+    let in_app: Vec<&String> = hits
+        .iter()
+        .filter(|h| h.starts_with("src/app/") || h.starts_with("src/ui/"))
+        .collect();
+    assert!(in_app.is_empty(), "{in_app:#?}");
+}
+
+/// The chip follows the marker on idle ticks, at most every two seconds:
+/// it used to update only on a refresh, so with auto-refresh paused an
+/// `ebman freeze` refused writes with no chip showing.
+#[tokio::test]
+async fn the_freeze_chip_follows_the_marker_on_idle_ticks() {
+    let mut app = app_with_prod();
+    let t0 = std::time::Instant::now();
+    app.tick_foreign_freeze(t0);
+    assert!(app.foreign_freeze.is_none());
+    crate::freeze::write_test_marker(&app.freeze_marker, 0, "release window", true);
+    app.tick_foreign_freeze(t0 + std::time::Duration::from_millis(500));
+    assert!(
+        app.foreign_freeze.is_none(),
+        "not re-read inside two seconds"
+    );
+    app.tick_foreign_freeze(t0 + std::time::Duration::from_secs(3));
+    assert!(app.foreign_freeze.is_some(), "seen on the next check");
+}

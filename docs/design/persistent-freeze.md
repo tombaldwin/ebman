@@ -31,21 +31,36 @@ And one found while reading the code:
   `ebman freeze --status` says what is in force. **`ebman thaw`** lifts a
   persistent freeze; it refuses (exit 3) to lift a live TUI session's
   freeze, which belongs to that session, and names it.
-- **The marker keeps a `pid`.** A persistent marker is written with
-  `pid: 1`, which every ebman since 0.28 reads as a live owner that
-  started before the marker. An older binary (an MCP server spawned
-  before an upgrade) therefore refuses writes under a persistent freeze
-  rather than ignoring a marker it cannot parse: it fails closed.
+- **One file per holder.** `freeze.d/persistent.json` for `ebman
+  freeze`, `freeze.d/session-<pid>.json` for each TUI session. Readers
+  refuse while any is live; a session's end removes only its own file,
+  and a thaw only the persistent one. *Revised 2026-10-23 after review:*
+  the first version kept one `freeze.json`, last writer wins, so a TUI's
+  `:incident START` replaced an `ebman freeze` and its END then deleted
+  it, and `ebman freeze` replaced a session's marker so a later thaw
+  lifted the session's freeze too.
+- **`freeze.json` stays, as a mirror for older binaries.** ebman before
+  0.47 reads only that file. It mirrors one live holder (persistent
+  first) and is marked `"mirror": true`, so a new reader does not count
+  it twice; one without the mark was written by an older TUI and is a
+  holder of its own, never overwritten while its process lives. A
+  persistent freeze's mirror carries `pid: 1`, which an older reader
+  takes for a live owner that started before the marker, so it refuses
+  writes. In a container whose pid 1 started after the marker, an older
+  reader judges it reused and removes the mirror; the holder file is
+  untouched and every 0.47+ reader still honours it.
 - **Every TUI honours every live marker**, not only its own session's.
   A refusal names the marker's owner and its remedy. `:thaw-deploys`
   lifts this session's freeze or a persistent one, never another live
   session's.
 - **"The freeze ended with its session" is said, not swallowed.** When a
-  reader removes a stale session marker, it writes
-  `freeze-ended.json` (the marker, plus when it was found stale). The
-  TUI shows it on startup, `ebman freeze --status` prints it, and
+  reader removes a stale session file, it writes `freeze.ended.json`
+  (the marker, plus when it was found stale). With no freeze in force,
+  the TUI shows it on startup, `ebman freeze --status` prints it, and
   `doctor` (MCP) reports it, for 24 hours or until the next freeze or
-  thaw. It says how to re-declare one that should still hold.
+  thaw. It says how to re-declare one that should still hold. A session
+  that ends cleanly (`:thaw-deploys`, `:incident END`, quit) removes its
+  own file and records nothing: that was a decision.
 
 ## Not doing
 

@@ -252,9 +252,31 @@ impl App {
             return;
         }
         self.foreign_freeze = self.foreign_freeze_now();
+        // Only with no freeze in force: a freeze declared since is the
+        // operator's answer to it, and the note would tell them to
+        // declare one that already holds.
+        if self.foreign_freeze.is_some() || self.deploy_freeze.is_some() {
+            return;
+        }
         if let Some(ended) = crate::freeze::read_ended_beside(&self.freeze_marker) {
             self.pin_error(ended.message());
         }
+    }
+
+    /// Re-read the header chip's freeze from disk, at most every two
+    /// seconds. From the run loop's per-iteration housekeeping, which
+    /// runs while idle, so the chip follows `ebman freeze` / `thaw` with
+    /// auto-refresh paused. The write gate reads the marker itself.
+    pub(crate) fn tick_foreign_freeze(&mut self, now: std::time::Instant) {
+        const EVERY: std::time::Duration = std::time::Duration::from_secs(2);
+        if self
+            .foreign_freeze_checked
+            .is_some_and(|t| now.duration_since(t) < EVERY)
+        {
+            return;
+        }
+        self.foreign_freeze_checked = Some(now);
+        self.foreign_freeze = self.foreign_freeze_now();
     }
 
     /// A freeze in force that this session did not declare: another

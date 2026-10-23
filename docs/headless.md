@@ -115,8 +115,10 @@ Every surface honours it: the TUI, `ebman action` / `audit replay` /
 credentials; the declaration and the lift are audit lines
 (`persistent=true via=cli`).
 
+Each holder has its own file, so a TUI's `:incident END` never lifts an
+`ebman freeze`, and `ebman thaw` never lifts a TUI session's freeze.
 When a TUI freeze does end with its session, the next reader records
-it, and for a day the TUI says so on startup, `ebman freeze --status`
+it, and for a day (while no freeze holds) the TUI says so on startup, `ebman freeze --status`
 prints it, and MCP `doctor` reports it, so the next person learns the
 freeze ended by accident rather than by decision.
 

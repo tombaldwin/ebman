@@ -43,11 +43,7 @@ pub(crate) fn build_chain_pills(app: &App) -> Vec<(String, Color, Color)> {
     // before trying one. Not the `FROZEN` pill below, which is `f`'s
     // paused auto-refresh.
     if let Some(m) = app.foreign_freeze.as_ref() {
-        let who = if m.persistent {
-            "ebman freeze".to_string()
-        } else {
-            format!("pid {}", m.pid)
-        };
+        let who = m.short_holder();
         let label = if m.reason.is_empty() {
             format!("WRITES FROZEN ({who})")
         } else {

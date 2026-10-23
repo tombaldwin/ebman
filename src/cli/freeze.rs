@@ -106,24 +106,27 @@ pub(crate) fn freeze_body(args: &[String], out: &mut dyn Write, err: &mut dyn Wr
 
 /// What is in force, and any freeze that ended with its session.
 fn status_text() -> String {
-    let mut lines = vec![match crate::freeze::read_active() {
-        Some(m) => {
-            let reason = if m.reason.is_empty() {
-                "no reason given".to_string()
-            } else {
-                m.reason.clone()
-            };
-            format!(
-                "frozen ({reason}) — {}, since {}; lift with `{}`",
-                m.holder(),
-                m.at,
-                m.remedy()
-            )
+    let holders = crate::freeze::read_all_at(&crate::freeze::marker_path());
+    let mut lines: Vec<String> = if holders.is_empty() {
+        vec!["not frozen".to_string()]
+    } else {
+        holders
+            .iter()
+            .map(|m| {
+                format!(
+                    "frozen ({}) — {}, since {}; lift with `{}`",
+                    m.reason_or_default(),
+                    m.holder(),
+                    m.at,
+                    m.remedy()
+                )
+            })
+            .collect()
+    };
+    if holders.is_empty() {
+        if let Some(ended) = crate::freeze::read_ended() {
+            lines.push(format!("note: {}", ended.message()));
         }
-        None => "not frozen".to_string(),
-    }];
-    if let Some(ended) = crate::freeze::read_ended() {
-        lines.push(format!("note: {}", ended.message()));
     }
     lines.join("\n")
 }

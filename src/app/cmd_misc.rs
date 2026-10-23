@@ -304,7 +304,12 @@ impl App {
         // marker fails OPEN — agent/CLI writes would NOT be blocked.
         let mut marker_failed = false;
         if !self.demo_mode {
-            if let Err(e) = crate::freeze::write_marker(&reason_for_store, false) {
+            if let Err(e) = crate::freeze::declare_session_at(
+                &self.freeze_marker,
+                std::process::id(),
+                &reason_for_store,
+                false,
+            ) {
                 marker_failed = true;
                 tracing::warn!(error = %e, "freeze marker persist failed");
             }
@@ -375,7 +380,7 @@ impl App {
         // is an explicit thaw. Another live session's is not, and says so.
         let mut held_elsewhere = None;
         if !self.demo_mode {
-            crate::freeze::clear_marker_if_own();
+            crate::freeze::clear_session_at(&self.freeze_marker, std::process::id());
             match crate::freeze::thaw_persistent_at(&self.freeze_marker) {
                 crate::freeze::Thaw::Lifted(_) => was_frozen = true,
                 crate::freeze::Thaw::HeldBySession(m) if m.pid != std::process::id() => {
@@ -460,7 +465,12 @@ impl App {
                         .as_ref()
                         .map(|f| f.reason.clone())
                         .unwrap_or_else(|| "incident".to_string());
-                    if let Err(e) = crate::freeze::write_marker(&reason, true) {
+                    if let Err(e) = crate::freeze::declare_session_at(
+                        &self.freeze_marker,
+                        std::process::id(),
+                        &reason,
+                        true,
+                    ) {
                         marker_failed = true;
                         tracing::warn!(error = %e, "freeze marker persist failed");
                     }
@@ -508,7 +518,7 @@ impl App {
                 // the summary reflects which happened.
                 let was_frozen = self.deploy_freeze.take().is_some();
                 if !self.demo_mode {
-                    crate::freeze::clear_marker_if_own();
+                    crate::freeze::clear_session_at(&self.freeze_marker, std::process::id());
                 }
                 let elapsed = (chrono::Utc::now() - incident.started_at)
                     .to_std()

@@ -511,6 +511,8 @@ pub struct App {
     /// `ebman freeze`), as of the last refresh: the header's chip. The
     /// write gate reads the marker itself rather than this.
     pub(crate) foreign_freeze: Option<crate::freeze::FreezeMarker>,
+    /// When `foreign_freeze` was last read from disk.
+    pub(crate) foreign_freeze_checked: Option<Instant>,
     pending_select: Option<String>,
     aws: Arc<AwsClient>,
     generation: u64,
@@ -1431,6 +1433,7 @@ impl App {
             config_seen: crate::config::stamp_of(&config_file),
             freeze_marker: crate::freeze::marker_path(),
             foreign_freeze: None,
+            foreign_freeze_checked: None,
             config_file: Some(config_file),
             cfg: ResolvedConfig {
                 notify_webhook: config.notify_webhook.clone(),
@@ -1727,6 +1730,7 @@ impl App {
                 crate::util::cache_dir().join(format!("freeze-app-{n}.json"))
             },
             foreign_freeze: None,
+            foreign_freeze_checked: None,
             cfg: ResolvedConfig {
                 notify_webhook: config.notify_webhook.clone(),
                 safety_read_only: config.safety_read_only,
@@ -1979,6 +1983,9 @@ impl App {
             }
             // Drop pending-actions entries that completed > PENDING_COMPLETED_TTL ago.
             self.expire_pending();
+            // The header's freeze chip, on idle ticks too: with
+            // auto-refresh paused it never appeared or cleared.
+            self.tick_foreign_freeze(now);
             // Fire any pending dispatch whose cancel window has elapsed.
             // Cheap (a single Instant comparison when None); placed here
             // so the deadline is checked on every loop iteration, not
