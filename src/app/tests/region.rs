@@ -390,7 +390,7 @@ async fn a_dispatch_and_its_completion_agree_on_the_region() {
     let msg = crate::app::action_result(
         &app.audit_ident(),
         app.generation,
-        crate::app::PendingId(0),
+        crate::app::PendingId::stray(),
         crate::app::Action::RestartAppServer,
         env_name.into(),
         "eu-west-2".into(),
@@ -926,11 +926,11 @@ async fn discovery_for_a_same_named_env_in_another_region_is_not_this_ones() {
     app.table_state.select(Some(away_row));
     app.open_detail();
     assert_eq!(
-        test_key(&app, "api-prod"),
-        crate::app::EnvKey::new("eu-west-2", "api-prod"),
+        app.detail_key(),
+        Some(crate::app::EnvKey::new("eu-west-2", "api-prod")),
         "Detail's env, by its own region, not the first row of that name"
     );
-    let key = test_key(&app, "api-prod");
+    let key = app.detail_key().expect("Detail open");
     assert_eq!(
         app.discovery_client(&key).region_for_tests(),
         "eu-west-2",
@@ -1021,7 +1021,7 @@ async fn a_discovery_is_for_the_envs_own_region_whichever_row_is_first() {
             .expect("the eu-west-2 row");
         app.table_state.select(Some(away_row));
         app.open_detail();
-        let key = test_key(&app, "api-prod");
+        let key = app.detail_key().expect("Detail open");
         assert_eq!(key.region, "eu-west-2", "away first: {away_first}");
         assert_eq!(
             app.discovery_app_name(&key).as_deref(),

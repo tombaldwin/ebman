@@ -575,7 +575,22 @@ pub(crate) struct PendingAction {
 /// `(label, target)` instead stamped the wrong row when the same action
 /// was in flight on two same-named envs in different regions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct PendingId(pub(crate) u64);
+pub(crate) struct PendingId(u64);
+
+impl PendingId {
+    /// The next id, from one counter for the process. Private, and from 1,
+    /// so nothing outside `push_pending` can name a row's id.
+    pub(super) fn next() -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        Self(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+    }
+
+    /// An id no row has: a test's stand-in for a result whose row is gone.
+    #[cfg(test)]
+    pub(crate) fn stray() -> Self {
+        Self::next()
+    }
+}
 
 /// Help overlay scope. `Global` shows the full keymap; the per-mode topics
 /// surface only the keys relevant to where the user just pressed `?`,

@@ -500,8 +500,7 @@ impl App {
         label: impl Into<String>,
         target: impl Into<String>,
     ) -> PendingId {
-        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let id = PendingId(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+        let id = PendingId::next();
         if self.pending_actions.len() >= PENDING_CAP {
             self.pending_actions.pop_front();
         }
