@@ -97,7 +97,8 @@ pub(crate) struct AppRollup {
 /// refresh lag anyway.
 pub(crate) fn render_fleet_cost(
     envs: &[crate::aws::Environment],
-    costs: &HashMap<String, f64>,
+    costs: &std::collections::BTreeMap<EnvKey, f64>,
+    home_region: &str,
     fetched_at: Option<chrono::DateTime<chrono::Utc>>,
     now: chrono::DateTime<chrono::Utc>,
 ) -> String {
@@ -112,7 +113,7 @@ pub(crate) fn render_fleet_cost(
     let mut covered = 0usize;
     let mut missing = 0usize;
     for e in envs {
-        match costs.get(&e.name) {
+        match costs.get(&EnvKey::of(e, home_region)) {
             Some(c) => {
                 total += c;
                 covered += 1;

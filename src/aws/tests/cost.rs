@@ -17,26 +17,30 @@ async fn fetch_env_costs_extracts_env_name_from_tag_group_key() {
         .match_requests(|req| {
             req.granularity() == Some(&Granularity::Monthly)
                 && req.metrics().iter().any(|m| m == "UnblendedCost")
-                && req
-                    .group_by()
-                    .iter()
-                    .any(|g| g.key() == Some("elasticbeanstalk:environment-name"))
+                // Tag first, then region: the response's keys follow
+                // the GroupBy order, and the parse reads them by position.
+                && req.group_by().len() == 2
+                && req.group_by()[0].key() == Some("elasticbeanstalk:environment-name")
+                && req.group_by()[1].key() == Some("REGION")
         })
         .then_output(|| {
-            let mut metrics = std::collections::HashMap::new();
-            metrics.insert(
-                "UnblendedCost".to_string(),
-                MetricValue::builder().amount("150.25").unit("USD").build(),
-            );
+            let group = |region: &str, amount: &str| {
+                let mut metrics = std::collections::HashMap::new();
+                metrics.insert(
+                    "UnblendedCost".to_string(),
+                    MetricValue::builder().amount(amount).unit("USD").build(),
+                );
+                Group::builder()
+                    .keys("elasticbeanstalk:environment-name$poly-prod")
+                    .keys(region)
+                    .set_metrics(Some(metrics))
+                    .build()
+            };
             GetCostAndUsageOutput::builder()
                 .results_by_time(
                     ResultByTime::builder()
-                        .groups(
-                            Group::builder()
-                                .keys("elasticbeanstalk:environment-name$poly-prod")
-                                .set_metrics(Some(metrics))
-                                .build(),
-                        )
+                        .groups(group("us-east-1", "150.25"))
+                        .groups(group("eu-west-2", "20.00"))
                         .build(),
                 )
                 .build()
@@ -45,12 +49,20 @@ async fn fetch_env_costs_extracts_env_name_from_tag_group_key() {
     let client = client_with_sub!(cost = cost);
 
     let costs = client.fetch_env_costs().await.expect("ok");
-    assert_eq!(costs.rows.len(), 1);
-    assert_eq!(costs.rows[0].env_name, "poly-prod");
     assert!(!costs.truncated, "a single complete page is not truncated");
-    assert!(
-        (costs.rows[0].cost_usd - 150.25).abs() < f64::EPSILON,
-        "amount parsed from string"
+    let mut rows: Vec<(String, String, f64)> = costs
+        .rows
+        .iter()
+        .map(|r| (r.env_name.clone(), r.region.clone(), r.cost_usd))
+        .collect();
+    rows.sort_by(|a, b| a.1.cmp(&b.1));
+    assert_eq!(
+        rows,
+        vec![
+            ("poly-prod".into(), "eu-west-2".into(), 20.0),
+            ("poly-prod".into(), "us-east-1".into(), 150.25),
+        ],
+        "same-named envs in two regions are two rows, amounts parsed from strings"
     );
 }
 
@@ -80,6 +92,7 @@ async fn fetch_env_costs_flags_a_truncated_walk() {
                     .groups(
                         Group::builder()
                             .keys("elasticbeanstalk:environment-name$api-prod")
+                            .keys("us-east-1")
                             .set_metrics(Some(metrics))
                             .build(),
                     )

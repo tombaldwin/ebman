@@ -1539,9 +1539,8 @@ impl App {
                         // what makes "don't cache it, don't stamp a
                         // fetch time that would suppress the retry"
                         // structural rather than remembered.
-                        self.costs.set_partial(
-                            costs.rows.iter().map(|r| (r.env_name.clone(), r.cost_usd)),
-                        );
+                        self.costs
+                            .set_partial(costs.rows.iter().map(|r| (r.key(), r.cost_usd)));
                         self.error_message = Some(format!(
                             "cost: INCOMPLETE — Cost Explorer returned more pages than ebman \
                              will walk. Showing {n} env(s); not cached — `:cost on` retries."
@@ -1555,17 +1554,15 @@ impl App {
                     }
                     return;
                 }
-                self.costs.set_complete(
-                    costs.rows.iter().map(|r| (r.env_name.clone(), r.cost_usd)),
-                    now,
-                );
+                self.costs
+                    .set_complete(costs.rows.iter().map(|r| (r.key(), r.cost_usd)), now);
                 {
                     // Persist to ~/.cache/ebman/cost-{account}-{region}.toml
                     // so subsequent sessions render immediately.
                     let account_key = account.unwrap_or_else(|| "unknown".into());
                     let cache = crate::cost_cache::CostCache {
                         fetched_at: Some(now),
-                        costs: self.costs.by_env().clone(),
+                        costs: self.costs.to_cache_map(),
                     };
                     if let Err(e) = crate::cost_cache::save(&account_key, &region, &cache) {
                         tracing::warn!(

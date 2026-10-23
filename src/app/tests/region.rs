@@ -2477,3 +2477,92 @@ async fn a_saved_cursor_comes_back_on_the_twin_it_names() {
         );
     }
 }
+
+/// `api-prod` at home ($612) and in eu-west-2 ($20), under `:region all`
+/// with cost tracking on. Cost Explorer is account-wide, so by name the
+/// two came back as one summed row.
+fn twins_with_costs() -> App {
+    let mut app = test_app();
+    let home = mk_env("api-prod", "poly", "Web", "Red");
+    let mut eu = home.clone();
+    eu.region = Some("eu-west-2".into());
+    app.environments = vec![home, eu];
+    app.multi_regions = vec!["eu-west-2".into(), app.context.region.clone()];
+    app.costs.set_enabled(true);
+    app.costs.set_complete(
+        [
+            (EnvKey::new(app.context.region.clone(), "api-prod"), 612.0),
+            (EnvKey::new("eu-west-2", "api-prod"), 20.0),
+        ],
+        chrono::Utc::now(),
+    );
+    app.view.invalidate();
+    app.rebuild_view();
+    app
+}
+
+#[tokio::test]
+async fn each_twin_shows_its_own_cost() {
+    let mut app = twins_with_costs();
+    let frame = render(&mut app, 220, 20);
+    // The home row leaves REGION blank; the other names eu-west-2.
+    for (eu, cost) in [(false, "$612"), (true, "$20")] {
+        let row = frame
+            .lines()
+            .find(|l| {
+                l.contains("api-prod") && l.contains("Ready") && l.contains("eu-west-2") == eu
+            })
+            .unwrap_or_else(|| panic!("no row (eu-west-2: {eu}):\n{frame}"));
+        assert!(row.contains(cost), "shows {cost}: {row}");
+    }
+}
+
+#[tokio::test]
+async fn detail_and_why_show_the_cost_of_the_twin_they_are_on() {
+    for (index, region, cost) in [(0, "us-east-1", "$612/mo"), (1, "eu-west-2", "$20/mo")] {
+        let mut app = twins_with_costs();
+        let row = app
+            .view
+            .display()
+            .iter()
+            .position(|r| matches!(r, DisplayRow::Env(i) if *i == index))
+            .expect("row shown");
+        app.table_state.select(Some(row));
+        app.open_detail();
+        let frame = render(&mut app, 200, 40);
+        assert!(frame.contains(cost), "Detail on twin {index}:\n{frame}");
+
+        app.detail = None;
+        app.mode = Mode::Normal;
+        app.current_overlay = Some(crate::app::Overlay::WhyRed {
+            env_name: "api-prod".into(),
+            region: region.into(),
+            tier: "Web".into(),
+            events: Some(Ok(Vec::new())),
+            alarms: Some(Ok(Vec::new())),
+            instances: Some(Ok(Vec::new())),
+            deploys: Some(Ok(Vec::new())),
+            queues: None,
+            dlq_messages: None,
+            session_id: 1,
+            cursor: 0,
+        });
+        let frame = render(&mut app, 180, 44);
+        let shown = cost.trim_end_matches("/mo");
+        assert!(frame.contains(shown), ":why on twin {index}:\n{frame}");
+    }
+}
+
+#[test]
+fn fleet_cost_counts_both_twins() {
+    let app = twins_with_costs();
+    let body = crate::app::render_fleet_cost(
+        &app.environments,
+        app.costs.by_env(),
+        &app.context.region,
+        None,
+        chrono::Utc::now(),
+    );
+    assert!(body.contains("Total: $632.00/mo"), "{body}");
+    assert!(body.contains("2 env(s) covered"), "{body}");
+}

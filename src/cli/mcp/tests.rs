@@ -5301,3 +5301,34 @@ fn headless_md_states_the_token_and_undo_windows_the_code_has() {
         "headless.md's dlq_undo window must be the code's, in minutes"
     );
 }
+
+#[test]
+fn fleet_cost_names_each_twin_by_region() {
+    let costs: std::collections::HashMap<String, f64> = [
+        ("us-east-1/api-prod".to_string(), 612.0),
+        ("eu-west-2/api-prod".to_string(), 20.0),
+        ("api-prod".to_string(), 999.0),
+    ]
+    .into_iter()
+    .collect();
+    assert_eq!(
+        super::tools::fleet_cost_entries(&costs),
+        vec![
+            ("api-prod@eu-west-2".to_string(), 20.0),
+            ("api-prod@us-east-1".to_string(), 612.0),
+        ],
+        "one row per env, and a bare name (no region) is skipped"
+    );
+}
+
+#[tokio::test]
+async fn fleet_cost_keys_are_env_refs() {
+    let (is_error, body) = call(&demo_server(), "fleet_cost", json!({})).await;
+    assert!(!is_error, "{body}");
+    let keys: Vec<&String> = body["by_env"].as_object().expect("by_env").keys().collect();
+    assert!(!keys.is_empty());
+    assert!(
+        keys.iter().all(|k| k.ends_with("@us-east-1")),
+        "every key names its region: {keys:?}"
+    );
+}

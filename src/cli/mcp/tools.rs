@@ -329,7 +329,7 @@ fn read_tool_table() -> Value {
         super::app_metrics::schema(),
         {
             "name": "fleet_cost",
-            "description": "Cached Cost Explorer summary per environment ($/month). Reads ebman's local cost cache only (populated by `:cost on` in the TUI) — never calls Cost Explorer itself. `stale: true` means the cache is older than 24h; an empty result means cost tracking hasn't been enabled.",
+            "description": "Cached Cost Explorer summary per environment ($/month). Reads ebman's local cost cache only (populated by `:cost on` in the TUI) — never calls Cost Explorer itself. `by_env` keys are `NAME@REGION`, the form the write tools take. `stale: true` means the cache is older than 24h, or was written by ebman 0.46.2 or earlier, before costs were split by region; an empty result means cost tracking hasn't been enabled.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1885,7 +1885,7 @@ impl Server {
                     fetched_at: None,
                     costs: demo_fixture::envs()
                         .iter()
-                        .map(|e| (e.name.clone(), 42.0))
+                        .map(|e| (format!("us-east-1/{}", e.name), 42.0))
                         .collect(),
                 };
                 ("123456789012".to_string(), "us-east-1".to_string(), cache)
@@ -1904,14 +1904,10 @@ impl Server {
             }
         };
         let stale = cache.is_stale(chrono::Utc::now());
-        let by_env: Vec<String> = {
-            let mut pairs: Vec<(&String, &f64)> = cache.costs.iter().collect();
-            pairs.sort_by(|a, b| a.0.cmp(b.0));
-            pairs
-                .iter()
-                .map(|(name, usd)| format!("{}:{usd:.2}", util::json_string(name)))
-                .collect()
-        };
+        let by_env: Vec<String> = fleet_cost_entries(&cache.costs)
+            .iter()
+            .map(|(env, usd)| format!("{}:{usd:.2}", util::json_string(env)))
+            .collect();
         // f64's Sum impl folds from -0.0, so an empty cache would render
         // "-0.00"; adding 0.0 normalises negative zero to positive.
         let total: f64 = cache.costs.values().sum::<f64>() + 0.0;
@@ -1926,6 +1922,24 @@ impl Server {
             by_env.join(",")
         ))
     }
+}
+
+/// `fleet_cost`'s rows from the cache's `REGION/NAME` keys, as
+/// `NAME@REGION` (the form the write tools take) and sorted. Cost
+/// Explorer is account-wide, so one name can be an env in each of two
+/// regions. A key with no region (0.46.2 or earlier) is skipped.
+pub(super) fn fleet_cost_entries(
+    costs: &std::collections::HashMap<String, f64>,
+) -> Vec<(String, f64)> {
+    let mut out: Vec<(String, f64)> = costs
+        .iter()
+        .filter_map(|(k, usd)| {
+            let key = crate::app::EnvKey::parse_persisted(k)?;
+            Some((format!("{}@{}", key.name, key.region), *usd))
+        })
+        .collect();
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
 }
 
 /// Tool-error formatting: route through the shared credential

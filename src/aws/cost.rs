@@ -38,14 +38,26 @@ pub(crate) struct EnvCosts {
     pub truncated: bool,
 }
 
-/// One row of cost data — an EB env name and its monthly cost in USD
-/// across the trailing window. Whole + fractional dollars; the SDK
-/// returns strings and we parse at the boundary.
+/// One row of cost data — an EB env name, the region its resources ran
+/// in, and its monthly cost in USD across the trailing window. Whole +
+/// fractional dollars; the SDK returns strings and we parse at the
+/// boundary.
 #[derive(Clone, Debug)]
 pub(crate) struct EnvCost {
     pub env_name: String,
+    /// Cost Explorer's REGION dimension. Cost Explorer is account-wide,
+    /// so grouped by the name tag alone, same-named envs in two regions
+    /// came back as one summed row.
+    pub region: String,
     /// Monthly USD spend (summed across the trailing-30d window).
     pub cost_usd: f64,
+}
+
+impl EnvCost {
+    /// The env this row's cost belongs to.
+    pub(crate) fn key(&self) -> crate::app::EnvKey {
+        crate::app::EnvKey::new(self.region.clone(), self.env_name.clone())
+    }
 }
 
 impl AwsClient {
@@ -86,16 +98,22 @@ impl AwsClient {
             .r#type(GroupDefinitionType::Tag)
             .key("elasticbeanstalk:environment-name")
             .build();
-        // Result format: results_by_time[N].groups[].keys[0] is the
-        // tag value (prefixed with `elasticbeanstalk:environment-name$`
-        // — the Cost Explorer SDK encodes the tag key in the group
-        // key, separated by `$`). Strip the prefix to recover the env
-        // name. Sum across the time buckets in case the window spans
+        let by_region = GroupDefinition::builder()
+            .r#type(GroupDefinitionType::Dimension)
+            .key("REGION")
+            .build();
+        // Result format: results_by_time[N].groups[].keys holds one key
+        // per GroupBy, in order. keys[0] is the tag value (prefixed with
+        // `elasticbeanstalk:environment-name$` — the Cost Explorer SDK
+        // encodes the tag key in the group key, separated by `$`); strip
+        // the prefix to recover the env name. keys[1] is the region.
+        // Sum across the time buckets in case the window spans
         // multiple months. Pages through NextPageToken — the pre-0.27
         // single-call shape silently truncated large grouped results,
         // and the partial map was then cached for 24h (missing envs
         // indistinguishable from untagged ones).
-        let mut totals: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
+        let mut totals: std::collections::HashMap<(String, String), f64> =
+            std::collections::HashMap::new();
         let mut next_page: Option<String> = None;
         // Page cap: Cost Explorer paginates, but 20 pages of grouped
         // monthly cost is already absurd for one account's EB fleet —
@@ -108,16 +126,17 @@ impl AwsClient {
                 .time_period(time_period.clone())
                 .granularity(aws_sdk_costexplorer::types::Granularity::Monthly)
                 .metrics("UnblendedCost")
-                .group_by(group_by.clone());
+                .group_by(group_by.clone())
+                .group_by(by_region.clone());
             if let Some(t) = next_page.take() {
                 req = req.next_page_token(t);
             }
             let resp = req.send().await.aws_ctx("GetCostAndUsage failed")?;
             for period in resp.results_by_time.unwrap_or_default() {
                 for group in period.groups.unwrap_or_default() {
-                    let raw_key = match group.keys.as_ref().and_then(|k| k.first()) {
-                        Some(k) => k.clone(),
-                        None => continue,
+                    let (raw_key, region) = match group.keys.as_deref() {
+                        Some([tag, region, ..]) => (tag.clone(), region.clone()),
+                        _ => continue,
                     };
                     // Cost Explorer encodes a tag group key as
                     // `elasticbeanstalk:environment-name$<value>`. The
@@ -138,7 +157,7 @@ impl AwsClient {
                         // comparator, and the serialized cache).
                         .filter(|a: &f64| a.is_finite())
                         .unwrap_or(0.0);
-                    *totals.entry(env_name).or_insert(0.0) += amount;
+                    *totals.entry((env_name, region)).or_insert(0.0) += amount;
                 }
             }
             match resp.next_page_token {
@@ -165,7 +184,11 @@ impl AwsClient {
         }
         let mut out: Vec<EnvCost> = totals
             .into_iter()
-            .map(|(env_name, cost_usd)| EnvCost { env_name, cost_usd })
+            .map(|((env_name, region), cost_usd)| EnvCost {
+                env_name,
+                region,
+                cost_usd,
+            })
             .collect();
         // Stable ordering — highest-cost first so the operator's eye
         // catches the expensive envs without scrolling.

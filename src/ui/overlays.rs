@@ -1201,7 +1201,15 @@ pub(super) fn draw_why_red_overlay(f: &mut Frame, area: Rect, app: &mut App) {
     // responder a coarse signal alongside health. Only rendered when
     // cost data is loaded — keeps the overlay shape stable for
     // operators who haven't enabled cost tracking.
-    if let Some(cost) = app.costs.get(env_name) {
+    let why_key = crate::app::EnvKey::new(
+        if region.is_empty() {
+            app.context.region.clone()
+        } else {
+            region.clone()
+        },
+        env_name.clone(),
+    );
+    if let Some(cost) = app.costs.get(&why_key) {
         let bucket_fg = if cost >= 500.0 {
             theme.health_red
         } else if cost >= 50.0 {

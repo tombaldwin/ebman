@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- **MCP `fleet_cost` keys `by_env` as `NAME@REGION`**, the form the
+  write tools take, instead of the bare name.
+
 ### Fixed
 
 - **The stale-platform sign follows the env, not its name.** Under
@@ -21,6 +26,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   in flight on two same-named envs could mark the wrong one done, and an
   auto-rollback's row (pushed as "Auto-rollback", answered as a Deploy)
   never completed at all. Each row now has an id its result carries.
+- **Costs are per env, not per name.** Cost Explorer is account-wide
+  and was grouped by the env-name tag alone, so same-named envs in two
+  regions showed one summed cost on both rows, in Detail, in `:why` and
+  in `:fleet-cost`. It now groups by tag and region. A cost cache
+  written by 0.46.2 or earlier reads as stale, so `:cost on` refetches.
 
 ## [0.46.2] - 2026-10-23
 

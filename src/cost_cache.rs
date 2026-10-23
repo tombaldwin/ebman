@@ -12,9 +12,15 @@
 //!
 //! ```toml
 //! fetched_at = "2026-05-21T12:34:56Z"
-//! env."prod-api" = 1240.50
-//! env."staging-api" = 180.00
+//! env."us-east-1/prod-api" = 1240.50
+//! env."eu-west-2/prod-api" = 180.00
 //! ```
+//!
+//! An env is `REGION/NAME` (`EnvKey::to_persisted`): Cost Explorer is
+//! account-wide, so one name can be an env in each of two regions. A
+//! file from 0.46.2 or earlier keys by bare name; [`parse`] reads it as
+//! stale, so the next `:cost on` tick refetches rather than showing
+//! nothing for a day.
 //!
 //! Keyed by (account, region) because the same env name in two AWS
 //! accounts is two different surfaces, and Cost Explorer's account
@@ -31,7 +37,7 @@ use chrono::{DateTime, Utc};
 use crate::util::{cache_dir, write_atomic};
 
 /// Cached Cost Explorer result. `fetched_at` lets the caller decide
-/// whether to refresh; the map itself is `env_name -> monthly USD`.
+/// whether to refresh; the map itself is `REGION/NAME -> monthly USD`.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct CostCache {
     pub fetched_at: Option<DateTime<Utc>>,
@@ -69,6 +75,7 @@ pub(crate) fn cache_path(account: &str, region: &str) -> PathBuf {
 /// can't block startup.
 pub(crate) fn parse(text: &str) -> CostCache {
     let mut out = CostCache::default();
+    let mut by_name = false;
     for line in text.lines() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
@@ -88,6 +95,10 @@ pub(crate) fn parse(text: &str) -> CostCache {
             if env_name.is_empty() {
                 continue;
             }
+            if !env_name.contains('/') {
+                by_name = true;
+                continue;
+            }
             if let Ok(amount) = value.parse::<f64>() {
                 // `parse::<f64>` accepts "NaN"/"inf" — a hand-edited
                 // or corrupted cache would otherwise break the JSON
@@ -98,6 +109,9 @@ pub(crate) fn parse(text: &str) -> CostCache {
                 }
             }
         }
+    }
+    if by_name {
+        out.fetched_at = None;
     }
     out
 }
@@ -174,8 +188,8 @@ mod tests {
     #[test]
     fn parse_round_trip() {
         let mut costs = HashMap::new();
-        costs.insert("prod-api".into(), 1240.50);
-        costs.insert("staging-api".into(), 180.0);
+        costs.insert("us-east-1/prod-api".into(), 1240.50);
+        costs.insert("eu-west-2/prod-api".into(), 180.0);
         let c = CostCache {
             fetched_at: Some(at(2026, 5, 21)),
             costs,
@@ -183,23 +197,39 @@ mod tests {
         let text = serialize(&c);
         let parsed = parse(&text);
         assert_eq!(parsed.fetched_at, c.fetched_at);
-        assert!((parsed.costs.get("prod-api").unwrap() - 1240.50).abs() < 0.01);
-        assert!((parsed.costs.get("staging-api").unwrap() - 180.0).abs() < 0.01);
+        assert!((parsed.costs.get("us-east-1/prod-api").unwrap() - 1240.50).abs() < 0.01);
+        assert!((parsed.costs.get("eu-west-2/prod-api").unwrap() - 180.0).abs() < 0.01);
     }
 
     #[test]
     fn parse_ignores_malformed_lines() {
         let text = r#"
 fetched_at = "2026-05-21T12:00:00Z"
-env."prod-api" = 1240.50
+env."us-east-1/prod-api" = 1240.50
 # this is a comment
 not a key=value pair just garbage
 env."" = 50.00
-env."staging" = not-a-number
+env."us-east-1/staging" = not-a-number
 "#;
         let c = parse(text);
         assert!(c.fetched_at.is_some());
         assert_eq!(c.costs.len(), 1, "only prod-api should parse cleanly");
-        assert!(c.costs.contains_key("prod-api"));
+        assert!(c.costs.contains_key("us-east-1/prod-api"));
+    }
+
+    /// A file from 0.46.2 or earlier keys by bare name, which cannot say
+    /// which region's env it means. Kept fresh it would show every env as
+    /// unknown for up to a day; stale, the next tick refetches.
+    #[test]
+    fn a_cache_keyed_by_bare_name_is_stale() {
+        let text = r#"
+fetched_at = "2026-05-21T12:00:00Z"
+env."prod-api" = 1240.50
+env."us-east-1/staging" = 3.00
+"#;
+        let c = parse(text);
+        assert_eq!(c.fetched_at, None, "refetch rather than trust it");
+        assert!(c.is_stale(at(2026, 5, 21)));
+        assert!(!c.costs.contains_key("prod-api"));
     }
 }

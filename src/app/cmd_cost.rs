@@ -178,6 +178,7 @@ impl App {
         let body = render_fleet_cost(
             &self.environments,
             self.costs.by_env(),
+            &self.context.region,
             self.costs.fetched_at(),
             chrono::Utc::now(),
         );

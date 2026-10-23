@@ -18,13 +18,13 @@ fn render_fleet_cost_breaks_down_by_app_tier_health() {
         mk_env("worker-prod", "api", "Worker", "Green"),
         mk_env("billing-prod", "billing", "Web", "Red"),
     ];
-    let mut costs = std::collections::HashMap::new();
-    costs.insert("api-prod".to_string(), 100.0);
-    costs.insert("api-staging".to_string(), 25.5);
-    costs.insert("worker-prod".to_string(), 40.0);
-    costs.insert("billing-prod".to_string(), 60.25);
+    let mut costs = std::collections::BTreeMap::new();
+    costs.insert(home_key("api-prod"), 100.0);
+    costs.insert(home_key("api-staging"), 25.5);
+    costs.insert(home_key("worker-prod"), 40.0);
+    costs.insert(home_key("billing-prod"), 60.25);
     let now = chrono::Utc::now();
-    let body = crate::app::render_fleet_cost(&envs, &costs, Some(now), now);
+    let body = crate::app::render_fleet_cost(&envs, &costs, "us-east-1", Some(now), now);
     assert!(body.contains("Total: $225.75/mo"), "total: {body}");
     assert!(body.contains("4 env(s) covered"), "covered count: {body}");
     // Per-app cost: api = 100 + 25.5 + 40 = 165.5
@@ -43,10 +43,10 @@ fn render_fleet_cost_flags_uncovered_envs() {
         mk_env("api-prod", "api", "Web", "Green"),
         mk_env("api-uncached", "api", "Web", "Green"),
     ];
-    let mut costs = std::collections::HashMap::new();
-    costs.insert("api-prod".to_string(), 50.0);
+    let mut costs = std::collections::BTreeMap::new();
+    costs.insert(home_key("api-prod"), 50.0);
     let now = chrono::Utc::now();
-    let body = crate::app::render_fleet_cost(&envs, &costs, Some(now), now);
+    let body = crate::app::render_fleet_cost(&envs, &costs, "us-east-1", Some(now), now);
     assert!(
         body.contains("1 env(s) covered, 1 without cost data"),
         "missing count: {body}"
@@ -56,21 +56,21 @@ fn render_fleet_cost_flags_uncovered_envs() {
 #[test]
 fn render_fleet_cost_flags_stale_cache() {
     let envs = vec![mk_env("a", "x", "Web", "Green")];
-    let mut costs = std::collections::HashMap::new();
-    costs.insert("a".to_string(), 10.0);
+    let mut costs = std::collections::BTreeMap::new();
+    costs.insert(home_key("a"), 10.0);
     let now = chrono::Utc::now();
     let stale = now - chrono::Duration::hours(36);
-    let body = crate::app::render_fleet_cost(&envs, &costs, Some(stale), now);
+    let body = crate::app::render_fleet_cost(&envs, &costs, "us-east-1", Some(stale), now);
     assert!(body.contains("stale"), "stale marker: {body}");
 }
 
 #[test]
 fn render_fleet_cost_no_freshness_line_when_unset() {
     let envs = vec![mk_env("a", "x", "Web", "Green")];
-    let mut costs = std::collections::HashMap::new();
-    costs.insert("a".to_string(), 10.0);
+    let mut costs = std::collections::BTreeMap::new();
+    costs.insert(home_key("a"), 10.0);
     let now = chrono::Utc::now();
-    let body = crate::app::render_fleet_cost(&envs, &costs, None, now);
+    let body = crate::app::render_fleet_cost(&envs, &costs, "us-east-1", None, now);
     assert!(!body.contains("Cached:"), "no cached line: {body}");
     assert!(body.contains("Total: $10.00/mo"));
 }
@@ -139,11 +139,11 @@ async fn a_truncated_cost_refresh_keeps_the_previous_map() {
     // identically to "untagged", while `:fleet-cost` under-reported.
     let mut app = test_app();
     app.costs
-        .set_complete([("api-prod".into(), 100.0)], chrono::Utc::now());
+        .set_complete([(home_key("api-prod"), 100.0)], chrono::Utc::now());
     app.costs
-        .set_complete([("web-prod".into(), 200.0)], chrono::Utc::now());
+        .set_complete([(home_key("web-prod"), 200.0)], chrono::Utc::now());
     app.costs
-        .set_complete([("worker-prod".into(), 50.0)], chrono::Utc::now());
+        .set_complete([(home_key("worker-prod"), 50.0)], chrono::Utc::now());
     let before = app.costs.by_env().clone();
 
     app.handle_msg(AppMsg::CostsFetched {
@@ -153,6 +153,7 @@ async fn a_truncated_cost_refresh_keeps_the_previous_map() {
         result: Ok(crate::aws::EnvCosts {
             rows: vec![crate::aws::EnvCost {
                 env_name: "api-prod".into(),
+                region: "us-east-1".into(),
                 cost_usd: 111.0,
             }],
             truncated: true,
@@ -184,6 +185,7 @@ async fn a_truncated_cost_refresh_with_nothing_cached_shows_what_it_has() {
         result: Ok(crate::aws::EnvCosts {
             rows: vec![crate::aws::EnvCost {
                 env_name: "api-prod".into(),
+                region: "us-east-1".into(),
                 cost_usd: 111.0,
             }],
             truncated: true,
@@ -204,7 +206,7 @@ async fn a_truncated_cost_refresh_with_nothing_cached_shows_what_it_has() {
 async fn a_complete_cost_refresh_replaces_the_map() {
     let mut app = test_app();
     app.costs
-        .set_complete([("stale".into(), 999.0)], chrono::Utc::now());
+        .set_complete([(home_key("stale"), 999.0)], chrono::Utc::now());
 
     app.handle_msg(AppMsg::CostsFetched {
         gen: app.generation,
@@ -213,6 +215,7 @@ async fn a_complete_cost_refresh_replaces_the_map() {
         result: Ok(crate::aws::EnvCosts {
             rows: vec![crate::aws::EnvCost {
                 env_name: "api-prod".into(),
+                region: "us-east-1".into(),
                 cost_usd: 111.0,
             }],
             truncated: false,
@@ -220,9 +223,9 @@ async fn a_complete_cost_refresh_replaces_the_map() {
     });
 
     assert_eq!(app.costs.len(), 1);
-    assert!(app.costs.by_env().contains_key("api-prod"));
+    assert!(app.costs.by_env().contains_key(&home_key("api-prod")));
     assert!(
-        !app.costs.by_env().contains_key("stale"),
+        !app.costs.by_env().contains_key(&home_key("stale")),
         "a complete walk replaces"
     );
     assert!(app.costs.fetched_at().is_some());
@@ -241,6 +244,7 @@ async fn a_partial_cost_map_does_not_become_permanent() {
     let truncated = |env: &str, usd: f64| crate::aws::EnvCosts {
         rows: vec![crate::aws::EnvCost {
             env_name: env.into(),
+            region: "us-east-1".into(),
             cost_usd: usd,
         }],
         truncated: true,
@@ -254,7 +258,7 @@ async fn a_partial_cost_map_does_not_become_permanent() {
         result: Ok(truncated("api-prod", 100.0)),
     });
     assert!(!app.costs.is_complete(), "a truncated walk is not complete");
-    assert_eq!(app.costs.get("api-prod"), Some(100.0));
+    assert_eq!(app.costs.get(&home_key("api-prod")), Some(100.0));
 
     // Second truncated walk: what we hold is itself partial, so the
     // fresher partial data must replace it rather than be discarded.
@@ -265,9 +269,9 @@ async fn a_partial_cost_map_does_not_become_permanent() {
         result: Ok(truncated("web-prod", 55.0)),
     });
     assert!(!app.costs.is_complete());
-    assert_eq!(app.costs.get("web-prod"), Some(55.0));
+    assert_eq!(app.costs.get(&home_key("web-prod")), Some(55.0));
     assert!(
-        !app.costs.by_env().contains_key("api-prod"),
+        !app.costs.by_env().contains_key(&home_key("api-prod")),
         "the stale partial map must not accumulate"
     );
 
@@ -279,6 +283,7 @@ async fn a_partial_cost_map_does_not_become_permanent() {
         result: Ok(crate::aws::EnvCosts {
             rows: vec![crate::aws::EnvCost {
                 env_name: "full".into(),
+                region: "us-east-1".into(),
                 cost_usd: 1.0,
             }],
             truncated: false,
@@ -298,7 +303,7 @@ async fn a_partial_cost_map_does_not_become_permanent() {
         app.costs.is_complete(),
         "a complete map survives a truncated walk"
     );
-    assert_eq!(app.costs.get("full"), Some(1.0));
+    assert_eq!(app.costs.get(&home_key("full")), Some(1.0));
 }
 
 #[tokio::test]
@@ -318,6 +323,7 @@ async fn cost_status_and_fleet_cost_say_when_the_data_is_partial() {
         result: Ok(crate::aws::EnvCosts {
             rows: vec![crate::aws::EnvCost {
                 env_name: "api-prod".into(),
+                region: "us-east-1".into(),
                 cost_usd: 100.0,
             }],
             truncated: true,
@@ -348,7 +354,7 @@ async fn switching_context_resets_the_cost_completeness_verdict() {
     let mut app = test_app();
     app.costs.set_enabled(true); // `:cost off` early-returns when already off
     app.costs
-        .set_complete([("old".into(), 1.0)], chrono::Utc::now());
+        .set_complete([(home_key("old"), 1.0)], chrono::Utc::now());
     // A partial walk: `set_partial` is the only way to reach this state now.
     app.costs.set_partial(app.costs.by_env().clone());
     app.execute_command("cost off");
@@ -370,7 +376,7 @@ async fn cost_on_retries_an_incomplete_walk_instead_of_saying_already_on() {
     let mut app = test_app();
     app.costs.set_enabled(true);
     app.costs
-        .set_complete([("api-prod".into(), 1.0)], chrono::Utc::now());
+        .set_complete([(home_key("api-prod"), 1.0)], chrono::Utc::now());
     // A partial walk: `set_partial` is the only way to reach this state now.
     app.costs.set_partial(app.costs.by_env().clone());
 
@@ -402,7 +408,7 @@ async fn cost_status_does_not_call_a_partial_result_cached() {
     // Aged deliberately: `set_complete` takes the stamp, so "when did
     // this land" cannot be set independently of the data any more.
     app.costs.set_complete(
-        [("api-prod".into(), 1.0)],
+        [(home_key("api-prod"), 1.0)],
         chrono::Utc::now() - chrono::Duration::hours(3),
     );
     // A partial walk: `set_partial` is the only way to reach this state now.
@@ -564,18 +570,18 @@ fn an_unknown_instance_type_has_no_price() {
 #[test]
 fn fleet_cost_header_reports_gaps_and_staleness_only_when_real() {
     use crate::app::render_fleet_cost;
-    use std::collections::HashMap;
 
     let now = chrono::Utc::now();
     let envs = vec![
         mk_env("api-prod", "shop", "WebServer", "Green"),
         mk_env("worker-prod", "shop", "Worker", "Green"),
     ];
-    let priced: HashMap<String, f64> = envs.iter().map(|e| (e.name.clone(), 10.0)).collect();
+    let priced: std::collections::BTreeMap<EnvKey, f64> =
+        envs.iter().map(|e| (home_key(&e.name), 10.0)).collect();
 
     // Nothing missing → no note. `> 0` flipped to `>=` reports a gap
     // that isn't there on every single fleet-cost view.
-    let out = render_fleet_cost(&envs, &priced, None, now);
+    let out = render_fleet_cost(&envs, &priced, "us-east-1", None, now);
     assert!(
         !out.contains("without cost data"),
         "reported missing cost data when every env is priced:\n{out}"
@@ -583,8 +589,8 @@ fn fleet_cost_header_reports_gaps_and_staleness_only_when_real() {
 
     // One missing → the note, naming how many.
     let mut partial = priced.clone();
-    partial.remove("worker-prod");
-    let out = render_fleet_cost(&envs, &partial, None, now);
+    partial.remove(&home_key("worker-prod"));
+    let out = render_fleet_cost(&envs, &partial, "us-east-1", None, now);
     assert!(
         out.contains("1 without cost data"),
         "a genuine gap must be reported:\n{out}"
@@ -597,6 +603,7 @@ fn fleet_cost_header_reports_gaps_and_staleness_only_when_real() {
     let fresh = render_fleet_cost(
         &envs,
         &priced,
+        "us-east-1",
         Some(now - day + chrono::Duration::minutes(1)),
         now,
     );
@@ -607,6 +614,7 @@ fn fleet_cost_header_reports_gaps_and_staleness_only_when_real() {
     let stale = render_fleet_cost(
         &envs,
         &priced,
+        "us-east-1",
         Some(now - day - chrono::Duration::minutes(1)),
         now,
     );
@@ -668,5 +676,30 @@ fn app_rollup_counts_each_signal_independently() {
         .worker_dlq_alerts,
         0,
         "only Worker-tier envs raise a DLQ alert"
+    );
+}
+
+#[tokio::test]
+async fn a_cost_refresh_keeps_each_rows_region() {
+    // Same name, two regions: two envs, each with its own cost.
+    let mut app = test_app();
+    let row = |region: &str, cost_usd: f64| crate::aws::EnvCost {
+        env_name: "api-prod".into(),
+        region: region.into(),
+        cost_usd,
+    };
+    app.handle_msg(AppMsg::CostsFetched {
+        gen: app.generation,
+        account: None,
+        region: "us-east-1".into(),
+        result: Ok(crate::aws::EnvCosts {
+            rows: vec![row("us-east-1", 612.0), row("eu-west-2", 20.0)],
+            truncated: false,
+        }),
+    });
+    assert_eq!(app.costs.get(&home_key("api-prod")), Some(612.0));
+    assert_eq!(
+        app.costs.get(&EnvKey::new("eu-west-2", "api-prod")),
+        Some(20.0)
     );
 }

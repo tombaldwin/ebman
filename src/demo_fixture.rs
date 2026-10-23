@@ -668,7 +668,10 @@ pub(crate) fn install(app: &mut App) {
         app.caches.firing_alarms.set(key(&name), alarms);
     }
     app.costs.set_enabled(true);
-    app.costs.set_complete(costs(), fixture_now());
+    app.costs.set_complete(
+        costs().into_iter().map(|(name, usd)| (key(&name), usd)),
+        fixture_now(),
+    );
     app.context.account_id = Some("123456789012".into());
     app.context.profile = Some("poly-demo".into());
     app.context.caller_arn = Some("arn:aws:iam::123456789012:user/demo-operator".into());

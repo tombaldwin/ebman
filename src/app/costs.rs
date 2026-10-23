@@ -24,13 +24,17 @@
 //! partial data must never suppress a retry. That was a rule in a
 //! comment; it is now a rule in the type.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use chrono::{DateTime, Utc};
 
+use super::EnvKey;
+
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Costs {
-    by_env: HashMap<String, f64>,
+    /// Keyed by env, not name: Cost Explorer is account-wide, and under
+    /// `:region all` one name can be an env in each of two regions.
+    by_env: BTreeMap<EnvKey, f64>,
     /// Did the walk that produced `by_env` finish? An empty map is
     /// trivially complete; a truncated walk is not.
     complete: bool,
@@ -55,7 +59,7 @@ impl Costs {
     /// cacheable and suppresses a retry until it ages out.
     pub(crate) fn set_complete<I>(&mut self, rows: I, now: DateTime<Utc>)
     where
-        I: IntoIterator<Item = (String, f64)>,
+        I: IntoIterator<Item = (EnvKey, f64)>,
     {
         self.by_env = rows.into_iter().collect();
         self.complete = true;
@@ -68,20 +72,25 @@ impl Costs {
     /// remembering.
     pub(crate) fn set_partial<I>(&mut self, rows: I)
     where
-        I: IntoIterator<Item = (String, f64)>,
+        I: IntoIterator<Item = (EnvKey, f64)>,
     {
         self.by_env = rows.into_iter().collect();
         self.complete = false;
         self.fetched_at = None;
     }
 
-    /// Restore a complete result from the on-disk cache.
+    /// Restore a complete result from the on-disk cache, whose keys are
+    /// `REGION/NAME` (`EnvKey::to_persisted`). A key in any other shape
+    /// is skipped; `cost_cache::parse` already marks such a file stale.
     pub(crate) fn restore_cached(
         &mut self,
         by_env: HashMap<String, f64>,
         fetched_at: Option<DateTime<Utc>>,
     ) {
-        self.by_env = by_env;
+        self.by_env = by_env
+            .into_iter()
+            .filter_map(|(k, v)| Some((EnvKey::parse_persisted(&k)?, v)))
+            .collect();
         self.complete = true;
         self.fetched_at = fetched_at;
     }
@@ -96,7 +105,7 @@ impl Costs {
         !self.by_env.is_empty() && self.complete
     }
 
-    pub(crate) fn get(&self, env: &str) -> Option<f64> {
+    pub(crate) fn get(&self, env: &EnvKey) -> Option<f64> {
         self.by_env.get(env).copied()
     }
 
@@ -124,9 +133,17 @@ impl Costs {
         self.enabled = on;
     }
 
-    /// The map itself, for the cache writer and the render path.
-    pub(crate) fn by_env(&self) -> &HashMap<String, f64> {
+    /// The map itself, for the render path.
+    pub(crate) fn by_env(&self) -> &BTreeMap<EnvKey, f64> {
         &self.by_env
+    }
+
+    /// The map as the on-disk cache keeps it: `REGION/NAME` keys.
+    pub(crate) fn to_cache_map(&self) -> HashMap<String, f64> {
+        self.by_env
+            .iter()
+            .map(|(k, v)| (k.to_persisted(), *v))
+            .collect()
     }
 }
 
@@ -134,8 +151,12 @@ impl Costs {
 mod tests {
     use super::*;
 
-    fn rows() -> Vec<(String, f64)> {
-        vec![("api".to_string(), 12.5), ("worker".to_string(), 3.0)]
+    fn key(name: &str) -> EnvKey {
+        EnvKey::new("us-east-1", name)
+    }
+
+    fn rows() -> Vec<(EnvKey, f64)> {
+        vec![(key("api"), 12.5), (key("worker"), 3.0)]
     }
 
     /// The bug the `complete` flag was added for, now expressed as a
@@ -151,7 +172,7 @@ mod tests {
             "a timestamp suppresses the retry, and partial data must not \
              suppress the retry that would replace it"
         );
-        assert_eq!(c.get("api"), Some(12.5), "but it is still shown");
+        assert_eq!(c.get(&key("api")), Some(12.5), "but it is still shown");
     }
 
     #[test]
@@ -226,13 +247,31 @@ mod tests {
     #[test]
     fn the_original_bug_is_unrepresentable() {
         let mut c = Costs::default();
-        c.set_partial([("api".to_string(), 1.0)]);
+        c.set_partial([(key("api"), 1.0)]);
         // There is no API that leaves data in place while claiming
         // completeness, and none that stamps a time on a partial walk.
         assert!(!c.is_complete() && c.fetched_at().is_none());
         // The only route to `complete` also supplies the stamp.
         let now = chrono::Utc::now();
-        c.set_complete([("api".to_string(), 1.0)], now);
+        c.set_complete([(key("api"), 1.0)], now);
         assert!(c.is_complete() && c.fetched_at() == Some(now));
+    }
+
+    /// The cache keeps `REGION/NAME`; a restore reads it back by key and
+    /// skips a bare name, which says nothing about where the env ran.
+    #[test]
+    fn the_cache_round_trip_is_by_env() {
+        let mut c = Costs::default();
+        let eu = EnvKey::new("eu-west-2", "api");
+        c.set_complete([(key("api"), 12.5), (eu.clone(), 3.0)], Utc::now());
+        let mut cached = c.to_cache_map();
+        assert_eq!(cached.get("eu-west-2/api"), Some(&3.0));
+        cached.insert("legacy-bare-name".into(), 9.0);
+
+        let mut back = Costs::default();
+        back.restore_cached(cached, None);
+        assert_eq!(back.get(&key("api")), Some(12.5));
+        assert_eq!(back.get(&eu), Some(3.0), "the twins keep their own costs");
+        assert_eq!(back.len(), 2, "the bare name is skipped");
     }
 }
