@@ -210,6 +210,34 @@ Tier definitions:
   `strip_line_comment` — so this is consolidation, not a fix, but it is
   the house rule. S.
 
+- [ ] **Finish the injection and ticket seams** *(0.47.0 release
+  architecture review)*. Behaviour-neutral, each covered by guards today:
+  (1) the CLI write bodies inject their dependencies three ways (action /
+  rollout / replay take a profile and a `WriteGate`, in different
+  argument orders; lint a `LintSetup` and a freeze closure; freeze/thaw
+  nothing, calling `FreezeStore::real()` inline) — one `WriteEnv` value
+  would shrink `write_shells_pass_the_real_gate_and_the_ambient_profile`
+  to one pattern. M. (2) `FreezeStore` is injected only in the App; the
+  CLI and MCP call `FreezeStore::real()` at use (`cli/mod.rs`,
+  `mcp/tools.rs`, `mcp/writes.rs`). M. (3) `ActionState`'s six
+  `Option` + `loading_*` pairs and `DlqState.loading` are the shape
+  `Fetch` replaced in Detail; results match by `EnvKey`, not ticket, so a
+  superseded pre-flight answer is still accepted. M.
+
+- [ ] **Shared test fixtures and module placement** *(0.47.0 release
+  architecture review)*. A `#[cfg(test)] aws::test_support` with
+  `client_with_eb(eb, region)`, `denied(code)` and an env listing would
+  replace six mocked-`AwsClient` builders (`audit_replay`, `drift`,
+  `action` ×2, lint's `cycle_wiring` — which `explain` reaches into —
+  `envs`, `versions`). S–M. `EnvKey` lives in `app/polled.rs` though
+  `aws::cost` uses it (`aws` depends on `app`): move it to its own
+  module. S. The cost key has three shapes (`(String,String)`,
+  `REGION/NAME`, `EnvKey`), and `app/cost.rs` (pricing) beside
+  `app/costs.rs` (state) misleads: `app/pricing.rs`. S. `cli/lint.rs`
+  and `cli/action.rs` are two-thirds inline tests; `cli/<sub>/tests.rs`
+  as `cli/mcp/tests/` does. M. `freeze.rs`'s `/proc` and pid probing is
+  not about freezing: a `proc_liveness` module behind `Liveness`. S.
+
 - [ ] **CLI body paths still untested** *(2026-10-23 CLI-body review)*
   Every subcommand is behind a testable body now; these paths through
   them are reached by no test: explain's `required_tags` pass-through;
