@@ -223,31 +223,35 @@ pub(crate) fn write_refusal_unaudited(
     Some((refusal, message, pin_profile))
 }
 
-/// What decides whether a CLI write may go: `(env, profile, region,
-/// verb)` to the refusal, if any. A testable body takes one, so a test
-/// sees a refusal without the real config or freeze; production passes
-/// [`real_refusal`].
-pub(crate) trait Refusal:
-    Fn(&str, Option<&str>, Option<&str>, &str) -> Option<String>
-{
+/// One question to a CLI write gate: may `verb` (the audit label) write
+/// to `env` under `profile`, in `region`? Named fields, because profile
+/// and region are both `Option<&str>` and swapped positionally they
+/// would check the pins against the wrong thing and still compile.
+pub(crate) struct GateQuery<'a> {
+    pub env: &'a str,
+    pub profile: Option<&'a str>,
+    pub region: Option<&'a str>,
+    pub verb: &'a str,
 }
-impl<T: Fn(&str, Option<&str>, Option<&str>, &str) -> Option<String>> Refusal for T {}
+
+/// What decides whether a CLI write may go: the refusal, if any. A
+/// testable body takes one, so a test sees a refusal without the real
+/// config or freeze; production passes [`real_refusal`]. (Not
+/// `write_gate::Refusal`, the reason a gate refused; this answers with
+/// the message.)
+pub(crate) trait WriteGate: Fn(&GateQuery<'_>) -> Option<String> {}
+impl<T: Fn(&GateQuery<'_>) -> Option<String>> WriteGate for T {}
 
 /// [`write_refusal`] against the operator's config and the live freeze:
 /// the audited funnel every CLI write goes through.
-pub(crate) fn real_refusal(
-    env: &str,
-    profile: Option<&str>,
-    region: Option<&str>,
-    action_label: &str,
-) -> Option<String> {
+pub(crate) fn real_refusal(q: &GateQuery<'_>) -> Option<String> {
     write_refusal(
         &crate::config::load(),
-        env,
-        &profile.map(str::to_string),
+        q.env,
+        &q.profile.map(str::to_string),
         crate::freeze::FreezeStore::real().active(),
-        region,
-        action_label,
+        q.region,
+        q.verb,
     )
 }
 
@@ -369,7 +373,7 @@ mod write_gate_guard {
             "if let Some(r) = write_refusal(&cfg, env, &p, f) {"
         ));
         assert!(!reaches_past_the_gate(
-            "real_refusal(env, profile, region, action_label)"
+            "real_refusal(&GateQuery { env, profile, region, verb })"
         ));
     }
 
@@ -664,7 +668,7 @@ mod write_gate_input_guard {
             // And the success path drains too: a write that went through
             // has its webhook POST in flight as surely as a refusal.
             assert!(
-                body.contains("drain_before_return()") || body.contains("drain_webhooks("),
+                body.contains("drain_before_return()"),
                 "{f} must drain before a successful return: {body}"
             );
             // Canary: prove the body extraction found the real one.

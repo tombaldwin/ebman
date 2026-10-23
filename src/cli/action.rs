@@ -263,7 +263,7 @@ pub async fn run(args: &[String]) -> Result<()> {
 pub(crate) async fn action_body<F, Fut>(
     args: &[String],
     ambient_profile: Option<String>,
-    refusal: impl crate::cli::Refusal,
+    refusal: impl crate::cli::WriteGate,
     client_for: F,
     out: &mut dyn std::io::Write,
     err: &mut dyn std::io::Write,
@@ -301,7 +301,12 @@ where
     // exists for. No region: the gate runs before any AWS client is
     // built, and the rules it applies are region-independent.
     let profile = ambient_profile.as_deref();
-    if let Some(reason) = refusal(&env, profile, None, action.audit_label()) {
+    if let Some(reason) = refusal(&crate::cli::GateQuery {
+        env: &env,
+        profile,
+        region: None,
+        verb: action.audit_label(),
+    }) {
         let _ = writeln!(err, "ebman action: {reason}");
         return 3;
     }
@@ -967,7 +972,7 @@ pub(crate) struct RolloutIo<'a> {
 pub(crate) async fn rollout_body<F, Fut>(
     args: &[String],
     ambient_profile: Option<String>,
-    refusal: impl crate::cli::Refusal,
+    refusal: impl crate::cli::WriteGate,
     client_for: F,
     freeze_halt: impl Fn() -> Option<String>,
     io: RolloutIo<'_>,
@@ -1004,7 +1009,12 @@ where
     // another checks the pin on the wrong account. No region: the rules
     // it applies are region-independent.
     let pin_profile = profile.as_deref().or(ambient_profile.as_deref());
-    if let Some(reason) = refusal(&env, pin_profile, None, "Rollout") {
+    if let Some(reason) = refusal(&crate::cli::GateQuery {
+        env: &env,
+        profile: pin_profile,
+        region: None,
+        verb: "Rollout",
+    }) {
         let _ = writeln!(err, "ebman action rollout: {reason}");
         return 3;
     }
@@ -1430,7 +1440,8 @@ mod body {
         let code = action_body(
             &argv,
             Some("ops".into()),
-            |env: &str, profile: Option<&str>, _: Option<&str>, verb: &str| {
+            |q: &crate::cli::GateQuery<'_>| {
+                let (env, profile, verb) = (q.env, q.profile, q.verb);
                 *asked.lock().unwrap() = Some(profile.map(String::from));
                 *verb_asked.lock().unwrap() = Some(verb.to_string());
                 refuse.map(|why| format!("refusing {env} — {why}"))
@@ -2231,7 +2242,8 @@ mod rollout {
         let code = rollout_body(
             &argv,
             Some("ops".into()),
-            |env: &str, profile: Option<&str>, _: Option<&str>, verb: &str| {
+            |q: &crate::cli::GateQuery<'_>| {
+                let (env, profile, verb) = (q.env, q.profile, q.verb);
                 *asked.lock().unwrap() = Some(profile.map(String::from));
                 *verb_asked.lock().unwrap() = Some(verb.to_string());
                 refuse.map(|why| format!("refusing {env} — {why}"))

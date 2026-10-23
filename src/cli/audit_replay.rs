@@ -224,7 +224,7 @@ pub(crate) async fn run_replay(args: &[String]) -> Result<()> {
 pub(crate) async fn audit_replay_body<F, Fut>(
     args: &[String],
     log: &std::path::Path,
-    refusal: impl crate::cli::Refusal,
+    refusal: impl crate::cli::WriteGate,
     ambient_profile: Option<String>,
     client_for: F,
     out: &mut dyn std::io::Write,
@@ -321,12 +321,12 @@ where
     // `AwsClient::with(None, …)` will resolve to. Same fallback
     // `lint --fix` uses.
     let pin_profile = plan.profile.clone().or(ambient_profile);
-    if let Some(reason) = refusal(
-        &plan.env,
-        pin_profile.as_deref(),
-        plan.region.as_deref(),
-        plan.verb.label(),
-    ) {
+    if let Some(reason) = refusal(&crate::cli::GateQuery {
+        env: &plan.env,
+        profile: pin_profile.as_deref(),
+        region: plan.region.as_deref(),
+        verb: plan.verb.label(),
+    }) {
         let subject = format!("{} on {}", plan.verb.label(), plan.env);
         let _ = writeln!(
             err,
@@ -757,7 +757,8 @@ mod body {
         let code = audit_replay_body(
             &argv,
             &path,
-            |env: &str, profile: Option<&str>, _region: Option<&str>, verb: &str| {
+            |q: &crate::cli::GateQuery<'_>| {
+                let (env, profile, verb) = (q.env, q.profile, q.verb);
                 *asked.lock().unwrap() = Some(profile.map(String::from));
                 *verb_asked.lock().unwrap() = Some(verb.to_string());
                 refuse.map(|why| format!("refusing {env} — {why}"))

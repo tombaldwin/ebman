@@ -234,8 +234,8 @@ async fn a_refused_mcp_write_is_recorded_against_the_agent() {
 
 /// A demo MCP server must refuse the same way and write nothing.
 ///
-/// Demo gets `Config::default()` (no pins), but `freeze::read_active`
-/// reads the REAL cross-process marker — so a demo write attempted
+/// Demo gets `Config::default()` (no pins), but the freeze check
+/// (`FreezeStore::real().active()`) reads the REAL cross-process marker — so a demo write attempted
 /// during a live `:freeze-deploys` was appending a real line to the
 /// real audit log, against this module's stated contract.
 #[tokio::test]

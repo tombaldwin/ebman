@@ -503,8 +503,9 @@ fn is_mirror(path: &Path) -> bool {
 
 /// The one refusal sentence for an active fleet freeze.
 ///
-/// Shared because it was written twice — once in `cli::frozen_refusal`
-/// and once in the MCP write gate — with the same body and different
+/// Shared because it was written twice — once in the CLI's freeze
+/// refusal (now `cli::frozen_refusal`, which calls this) and once in
+/// the MCP write gate — with the same body and different
 /// framing, so the two surfaces disagreed in wording about the same
 /// condition and either could drift on the next edit.
 pub(crate) fn refusal_message(marker: &FreezeMarker) -> String {

@@ -964,7 +964,7 @@ pub async fn run(args: &[String]) -> Result<()> {
     if code != 0 {
         crate::cli::exit_after_drain(code).await;
     }
-    audit::drain_webhooks(std::time::Duration::from_secs(12)).await;
+    crate::cli::drain_before_return().await;
     Ok(())
 }
 
