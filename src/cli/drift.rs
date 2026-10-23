@@ -695,6 +695,8 @@ mod body {
         None,
         Settings,
         Listing,
+        /// Not a fault: the live settings hold `DB_PASSWORD=live-secret`.
+        Secret,
     }
     use Fault::{Listing, Settings};
     const OK: Fault = Fault::None;
@@ -752,9 +754,27 @@ mod body {
                     )
                 })
         } else {
+            let secret = fault == Fault::Secret;
             aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::describe_configuration_settings)
-                .then_output(|| {
-                    aws_sdk_elasticbeanstalk::operation::describe_configuration_settings::DescribeConfigurationSettingsOutput::builder().build()
+                .then_output(move || {
+                    use aws_sdk_elasticbeanstalk::types::{
+                        ConfigurationOptionSetting, ConfigurationSettingsDescription,
+                    };
+                    let mut out = aws_sdk_elasticbeanstalk::operation::describe_configuration_settings::DescribeConfigurationSettingsOutput::builder();
+                    if secret {
+                        out = out.configuration_settings(
+                            ConfigurationSettingsDescription::builder()
+                                .option_settings(
+                                    ConfigurationOptionSetting::builder()
+                                        .namespace(SECRET_NS)
+                                        .option_name("DB_PASSWORD")
+                                        .value("live-secret")
+                                        .build(),
+                                )
+                                .build(),
+                        );
+                    }
+                    out.build()
                 })
         };
         let eb = aws_smithy_mocks::mock_client!(
@@ -779,6 +799,15 @@ mod body {
     }
 
     /// Terraform says `api` runs `build-2`, in us-east-1 when `arn`.
+    const SECRET_NS: &str = "aws:elasticbeanstalk:application:environment";
+
+    /// [`state`], with Terraform pinning `DB_PASSWORD=tf-secret`.
+    fn state_with_secret() -> terraform::TfState {
+        let mut tf = state(false);
+        tf.envs[0].options = vec![(SECRET_NS.into(), "DB_PASSWORD".into(), "tf-secret".into())];
+        tf
+    }
+
     fn state(arn: bool) -> terraform::TfState {
         terraform::TfState {
             serial: Some(7),
@@ -947,5 +976,43 @@ mod body {
         .await;
         assert_eq!(code, 1, "eu-west-2 would not list: {err}");
         assert!(err.contains("list_environments"), "{err}");
+    }
+
+    /// A drifted secret is redacted unless `--no-redact`: drift output
+    /// lands in CI logs.
+    #[tokio::test]
+    async fn a_drifted_secret_is_redacted_unless_asked() {
+        let fleet: &'static [Region] = &[("us-east-1", &[("api", "build-2")], Fault::Secret)];
+        let (code, out, err) = run(&opts(&[], None, false), &state_with_secret(), fleet).await;
+        assert_eq!(code, 3, "{err}");
+        assert!(out.contains("DB_PASSWORD"), "the drift is reported: {out}");
+        assert!(
+            !out.contains("live-secret") && !out.contains("tf-secret"),
+            "{out}"
+        );
+
+        let mut bare = opts(&[], None, false);
+        bare.no_redact = true;
+        let (_, out, _) = run(&bare, &state_with_secret(), fleet).await;
+        assert!(
+            out.contains("tf=tf-secret") && out.contains("live=live-secret"),
+            "{out}"
+        );
+    }
+
+    /// `--env NAME` found in one of two regions is a run, not a miss.
+    #[tokio::test]
+    async fn a_named_env_found_in_one_region_of_two_is_compared() {
+        let (code, out, err) = run(
+            &opts(&["us-east-1", "eu-west-2"], Some("api"), false),
+            &state(false),
+            &[
+                ("us-east-1", &[("api", "build-2")], OK),
+                ("eu-west-2", &[], OK),
+            ],
+        )
+        .await;
+        assert_eq!(code, 0, "{err}");
+        assert!(out.contains("us-east-1\tapi\t✓ no drift"), "{out}");
     }
 }

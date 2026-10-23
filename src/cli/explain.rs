@@ -449,6 +449,18 @@ mod body {
     }
 
     #[tokio::test]
+    async fn a_named_env_is_the_one_explained() {
+        let (code, out, err, asked) = run(
+            &opts("EBL001", Some("api"), false, false),
+            fires(),
+            Ok("Use Rolling."),
+        )
+        .await;
+        assert_eq!((code, asked.len()), (0, 1), "{err}");
+        assert!(out.contains("── EBL001 (api) ──"), "{out}");
+    }
+
+    #[tokio::test]
     async fn a_dry_run_prints_the_prompt_and_asks_nothing() {
         let (code, out, _, asked) = run(
             &opts("EBL001", None, false, true),

@@ -2413,6 +2413,22 @@ mod rollout {
         );
     }
 
+    /// A freeze before the first region: every row skipped, and the
+    /// report still JSON. It was `"regions":[,{..}]`, each skipped row
+    /// written with a leading comma.
+    #[tokio::test]
+    async fn a_rollout_halted_before_any_region_is_valid_json() {
+        let r = rollout(&with(&["--yes", "--json"]), THREE, None, Some(0)).await;
+        assert_eq!((r.code, r.dispatched), (3, 0), "{}", r.err);
+        let v: serde_json::Value = serde_json::from_str(r.out.trim()).expect("valid JSON");
+        let rows = v["regions"].as_array().unwrap();
+        assert_eq!(rows.len(), 3);
+        assert!(
+            rows.iter().all(|r| r["err"] == "skipped (rollout halted)"),
+            "{rows:?}"
+        );
+    }
+
     #[tokio::test]
     async fn usage_and_unreachable_regions() {
         let r = rollout(
