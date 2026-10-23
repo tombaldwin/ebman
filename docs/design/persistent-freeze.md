@@ -82,6 +82,11 @@ And one found while reading the code:
 - **ebman before 0.47 records nothing** when it reaps a stale marker, so
   a freeze that ended with its session is said only when a 0.47+ reader
   found it.
+- **A read racing a thaw** can write back the mirror of the persistent
+  freeze just lifted, from the holders it read before the thaw. It fails
+  closed (an older reader refuses writes) and the next 0.47+ read
+  repairs it. The mirror re-reads `freeze.json` before writing, so it
+  never replaces or removes an older TUI's own live marker.
 - **A reaper racing a declare** can record an ended freeze just after a
   new freeze cleared the record. The TUI and `doctor` show the note only
   with no freeze in force, so it cannot tell an operator to declare a

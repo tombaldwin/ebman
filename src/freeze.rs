@@ -405,13 +405,21 @@ impl FreezeStore {
             return;
         }
         let current = parse_file(&self.marker);
+        // Read again at the moment of acting: an older TUI may have
+        // written its own marker since `holders` was read. That file is
+        // a real freeze with no `freeze.d/` twin to restore it, so the
+        // mirror never removes or overwrites it while its holder lives.
+        let an_older_tui_holds = || {
+            parse_file(&self.marker)
+                .is_some_and(|m| !is_mirror(&self.marker) && self.liveness.holds(&m))
+        };
         match holders.iter().filter(|h| !h.legacy).find(live) {
             Some(h) => {
                 let m = &h.marker;
                 let up_to_date = current.as_ref().is_some_and(|c| {
                     c.pid == m.pid && c.reason == m.reason && c.persistent == m.persistent
                 }) && is_mirror(&self.marker);
-                if !up_to_date {
+                if !up_to_date && !an_older_tui_holds() {
                     let _ = write_marker_full(
                         &self.marker,
                         m.pid,
@@ -423,7 +431,7 @@ impl FreezeStore {
                 }
             }
             None => {
-                if current.is_some() {
+                if current.is_some() && !an_older_tui_holds() {
                     let _ = std::fs::remove_file(&self.marker);
                 }
             }
@@ -1055,6 +1063,38 @@ mod tests {
     /// A `freeze.json` an older TUI wrote (no mirror mark) is that
     /// session's freeze: honoured while it lives, never overwritten by a
     /// mirror, reaped when it dies.
+    /// An older TUI that writes its own marker after the holders were
+    /// read is not removed (nothing else holds) or overwritten (a newer
+    /// holder does) by the mirror: that TUI has no `freeze.d/` file, so
+    /// nothing would restore it, and every older reader would fail open.
+    #[test]
+    fn the_mirror_never_destroys_an_older_tuis_marker_written_mid_sync() {
+        const OLD: &[u8] =
+            br#"{"pid":777,"reason":"old tui","incident":false,"at":"2026-10-23T00:00:00Z"}"#;
+        let s = store("race-none", Liveness::ALL_ALIVE);
+        let holders = s.holders();
+        crate::util::write_secure(s.marker(), OLD).unwrap();
+        s.sync_legacy(&holders);
+        assert_eq!(
+            parse_file(s.marker()).map(|l| l.pid),
+            Some(777),
+            "not removed"
+        );
+        done(&s);
+
+        let s = store("race-some", Liveness::ALL_ALIVE);
+        s.declare_session(4242, "new", false).unwrap();
+        let holders = s.holders();
+        crate::util::write_secure(s.marker(), OLD).unwrap();
+        s.sync_legacy(&holders);
+        assert_eq!(
+            parse_file(s.marker()).map(|l| l.pid),
+            Some(777),
+            "not overwritten"
+        );
+        done(&s);
+    }
+
     #[test]
     fn an_older_tuis_marker_is_a_holder_of_its_own() {
         let s = store("old", Liveness::ALL_ALIVE);
