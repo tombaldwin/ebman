@@ -113,11 +113,11 @@ impl App {
     }
 
     pub(super) fn spawn_detail_log_groups(&mut self) {
-        let region = self.detail_region();
         let Some(d) = self.detail.as_ref() else {
             return;
         };
         let env_name = d.env_name.clone();
+        let key = d.key.clone();
         let client = self.detail_client();
         let tx = self.msg_tx.clone();
         let gen = self.generation;
@@ -133,12 +133,7 @@ impl App {
                     .unwrap_or_default(),
                 Err(_) => Vec::new(),
             };
-            let _ = tx.send(AppMsg::DetailLogGroups {
-                gen,
-                env_name,
-                region: region.clone(),
-                groups,
-            });
+            let _ = tx.send(AppMsg::DetailLogGroups { gen, key, groups });
         });
     }
 
@@ -192,30 +187,27 @@ impl App {
     }
 
     pub(super) fn spawn_detail_logs(&mut self, env_name: String) {
-        let region = self.detail_region();
-        if let Some(d) = self.detail.as_mut() {
-            // Re-entering an in-flight tail is a refresh; reset state. Existing
-            // content is retained until the new fetch lands so the user keeps
-            // seeing the previous tail rather than a blank screen.
-            d.log_tail.stage = LogTailStage::Requesting;
-            d.log_tail.poll_attempt = 0;
-            d.log_tail.error = None;
-        }
+        let Some(d) = self.detail.as_mut() else {
+            return;
+        };
+        // Re-entering an in-flight tail is a refresh; reset state. Existing
+        // content is retained until the new fetch lands so the user keeps
+        // seeing the previous tail rather than a blank screen.
+        let ticket = d.log_tail.request.begin();
+        d.log_tail.stage = LogTailStage::Requesting;
+        d.log_tail.poll_attempt = 0;
+        d.log_tail.error = None;
         let client = self.detail_client();
         let tx = self.msg_tx.clone();
         let gen = self.generation;
-        let env_for_msg = env_name.clone();
         tokio::spawn(async move {
             let result = match client.resolve().await {
-                Ok(aws) => {
-                    collect_tail_logs(aws, env_name.clone(), region.clone(), tx.clone(), gen).await
-                }
+                Ok(aws) => collect_tail_logs(aws, env_name.clone(), ticket, tx.clone(), gen).await,
                 Err(e) => Err(flatten_err("cached_client", e)),
             };
             let _ = tx.send(AppMsg::DetailLogs {
                 gen,
-                env_name: env_for_msg,
-                region: region.clone(),
+                ticket,
                 result,
             });
         });

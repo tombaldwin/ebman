@@ -353,6 +353,10 @@ pub(crate) struct LogTail {
     pub poll_attempt: u32,
     /// Sticky error so the user can see why the tail failed.
     pub error: Option<String>,
+    /// The tail in flight. Only the latest's progress and result land:
+    /// a `^R` mid-tail starts another, and the first one's answer, or a
+    /// same-named env's, must not overwrite it.
+    pub request: crate::app::Fetch<()>,
     /// When set, the tab is filtered to lines matching this regex.
     pub search_input: TextInput,
     pub search_active: bool,

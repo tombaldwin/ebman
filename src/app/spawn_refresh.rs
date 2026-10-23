@@ -590,15 +590,6 @@ impl App {
         }
     }
 
-    /// Whether an answer fetched for Detail in `region` is Detail's:
-    /// with Detail open on a same-named env in another region, it is
-    /// not. With Detail closed the handlers drop it themselves.
-    pub(crate) fn detail_takes(&self, region: &str) -> bool {
-        self.detail
-            .as_ref()
-            .is_none_or(|d| self.region_for(&d.env_snapshot) == region)
-    }
-
     /// Whether an answer fetched for the confirm modal in `region` is
     /// the open modal's. With no modal open the handlers drop it.
     pub(crate) fn modal_takes(&self, region: &str) -> bool {

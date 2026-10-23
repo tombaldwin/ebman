@@ -1173,6 +1173,12 @@ impl<T> Fetch<T> {
         latest
     }
 
+    /// Whether `ticket` is the latest request's, without settling it: a
+    /// progress report on a request still running.
+    pub(crate) fn is_latest(&self, ticket: Ticket) -> bool {
+        ticket.0 == self.issued
+    }
+
     /// Forget the value and any request outstanding: what was fetched no
     /// longer applies (the config it was fetched for changed). Every
     /// ticket issued before this is then stale, so its answer is dropped.

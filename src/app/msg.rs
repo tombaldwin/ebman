@@ -169,20 +169,12 @@ impl App {
                 d.app_tab.top_errors.settle_ticket(ticket, r);
             }),
             AppMsg::DetailLogsProgress {
-                env_name,
+                ticket,
                 stage,
                 attempt,
-                region,
                 ..
-            } if self.detail_takes(&region) => {
-                self.handle_detail_logs_progress(env_name, stage, attempt)
-            }
-            AppMsg::DetailLogs {
-                env_name,
-                result,
-                region,
-                ..
-            } if self.detail_takes(&region) => self.handle_detail_logs(env_name, result),
+            } => self.handle_detail_logs_progress(ticket, stage, attempt),
+            AppMsg::DetailLogs { ticket, result, .. } => self.handle_detail_logs(ticket, result),
             AppMsg::TextOverlay { title, body, .. } => self.handle_text_overlay(title, body),
             AppMsg::AppVersions {
                 application,
@@ -306,12 +298,9 @@ impl App {
             AppMsg::EventTailEvents {
                 session_id, result, ..
             } => self.handle_event_tail_events(session_id, result),
-            AppMsg::DetailLogGroups {
-                env_name,
-                groups,
-                region,
-                ..
-            } if self.detail_takes(&region) => self.handle_detail_log_groups(env_name, groups),
+            AppMsg::DetailLogGroups { key, groups, .. } => {
+                self.handle_detail_log_groups(key, groups)
+            }
             AppMsg::DetailAlarms {
                 env_name,
                 ticket,
@@ -395,11 +384,6 @@ impl App {
             | AppMsg::HealthCheckProbe { .. }
             | AppMsg::UnavailabilityEstimate { .. }
             | AppMsg::ConfirmModalLint { .. } => {}
-            // An answer from Detail's env name in another region: the
-            // same-named env Detail was on before, not this one.
-            AppMsg::DetailLogGroups { .. }
-            | AppMsg::DetailLogs { .. }
-            | AppMsg::DetailLogsProgress { .. } => {}
             AppMsg::DlqMessages {
                 env_name,
                 queue_url,
@@ -715,11 +699,11 @@ impl App {
         });
     }
 
-    fn handle_detail_logs_progress(&mut self, env_name: String, stage: LogTailStage, attempt: u32) {
+    fn handle_detail_logs_progress(&mut self, ticket: Ticket, stage: LogTailStage, attempt: u32) {
         let Some(detail) = self.detail.as_mut() else {
             return;
         };
-        if detail.env_name != env_name {
+        if !detail.log_tail.request.is_latest(ticket) {
             return;
         }
         detail.log_tail.stage = stage;
@@ -728,15 +712,18 @@ impl App {
         }
     }
 
+    /// Only the latest tail's answer lands: a `^R` mid-tail started
+    /// another, and tickets are process-wide, so a same-named env's
+    /// answer matches nothing here either.
     fn handle_detail_logs(
         &mut self,
-        env_name: String,
+        ticket: Ticket,
         result: Result<Vec<(String, String)>, String>,
     ) {
         let Some(detail) = self.detail.as_mut() else {
             return;
         };
-        if detail.env_name != env_name {
+        if !detail.log_tail.request.settle_ticket(ticket, Ok(())) {
             return;
         }
         match result {
@@ -1475,11 +1462,11 @@ impl App {
         }
     }
 
-    fn handle_detail_log_groups(&mut self, env_name: String, groups: Vec<String>) {
+    fn handle_detail_log_groups(&mut self, key: EnvKey, groups: Vec<String>) {
         let Some(detail) = self.detail.as_mut() else {
             return;
         };
-        if detail.env_name != env_name {
+        if detail.key != key {
             return;
         }
         detail.cw_log_groups = Some(groups);

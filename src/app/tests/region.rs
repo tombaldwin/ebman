@@ -2569,3 +2569,23 @@ fn fleet_cost_counts_both_twins() {
     assert!(body.contains("Total: $632.00/mo"), "{body}");
     assert!(body.contains("2 env(s) covered"), "{body}");
 }
+
+#[tokio::test]
+async fn detail_ignores_log_groups_for_its_name_in_another_region() {
+    let mut app = detail_on_an_eu_instance();
+    app.handle_msg(AppMsg::DetailLogGroups {
+        gen: app.generation,
+        key: EnvKey::new("us-east-1", "api-prod"),
+        groups: vec!["/home-twin".into()],
+    });
+    assert_eq!(app.detail.as_ref().unwrap().cw_log_groups, None);
+    app.handle_msg(AppMsg::DetailLogGroups {
+        gen: app.generation,
+        key: EnvKey::new("eu-west-2", "api-prod"),
+        groups: vec!["/eu-own".into()],
+    });
+    assert_eq!(
+        app.detail.as_ref().unwrap().cw_log_groups,
+        Some(vec!["/eu-own".to_string()])
+    );
+}

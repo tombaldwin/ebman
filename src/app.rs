@@ -713,9 +713,8 @@ pub(crate) enum AppMsg {
     /// available" hint.
     DetailLogGroups {
         gen: u64,
-        env_name: String,
-        /// Detail's region at dispatch: a same-named env's answer is dropped.
-        region: String,
+        /// The env asked about: a same-named env's answer is dropped.
+        key: EnvKey,
         groups: Vec<String>,
     },
     /// CW alarms attached to an env. Populates the Detail-Health-tab
@@ -1019,18 +1018,16 @@ pub(crate) enum AppMsg {
     /// samples to S3.
     DetailLogsProgress {
         gen: u64,
-        env_name: String,
-        /// Detail's region at dispatch: a same-named env's answer is dropped.
-        region: String,
+        /// The tail it reports on: only the latest's moves the stage.
+        ticket: Ticket,
         stage: LogTailStage,
         attempt: u32,
     },
     /// Final tail-logs payload — `Vec<(ec2_instance_id, log_text)>` on success.
     DetailLogs {
         gen: u64,
-        env_name: String,
-        /// Detail's region at dispatch: a same-named env's answer is dropped.
-        region: String,
+        /// The tail it answers: only the latest's lands.
+        ticket: Ticket,
         result: Result<Vec<(String, String)>, String>,
     },
     /// Generic text overlay payload. Used by several commands that all
@@ -2358,7 +2355,7 @@ pub(crate) enum DisplayRow {
 async fn collect_tail_logs(
     aws: Arc<AwsClient>,
     env_name: String,
-    region: String,
+    ticket: Ticket,
     tx: mpsc::UnboundedSender<AppMsg>,
     gen: u64,
 ) -> std::result::Result<Vec<(String, String)>, String> {
@@ -2370,8 +2367,7 @@ async fn collect_tail_logs(
         .map_err(|e| flatten_err("request_env_info_tail", e))?;
     let _ = tx.send(AppMsg::DetailLogsProgress {
         gen,
-        env_name: env_name.clone(),
-        region: region.clone(),
+        ticket,
         stage: LogTailStage::Polling,
         attempt: 0,
     });
@@ -2388,8 +2384,7 @@ async fn collect_tail_logs(
         }
         let _ = tx.send(AppMsg::DetailLogsProgress {
             gen,
-            env_name: env_name.clone(),
-            region: region.clone(),
+            ticket,
             stage: LogTailStage::Polling,
             attempt,
         });
@@ -2402,8 +2397,7 @@ async fn collect_tail_logs(
     }
     let _ = tx.send(AppMsg::DetailLogsProgress {
         gen,
-        env_name: env_name.clone(),
-        region: region.clone(),
+        ticket,
         stage: LogTailStage::Fetching,
         attempt: 0,
     });

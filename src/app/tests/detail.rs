@@ -1202,8 +1202,7 @@ async fn detail_results_for_another_env_are_dropped() {
     let mut app = armed();
     app.handle_msg(AppMsg::DetailLogGroups {
         gen: app.generation,
-        env_name: "worker-prod".into(),
-        region: "us-east-1".into(),
+        key: EnvKey::new("us-east-1", "worker-prod"),
         groups: vec!["wrong-env-group".into()],
     });
     assert_eq!(
@@ -1345,8 +1344,7 @@ async fn detail_results_for_another_env_are_dropped() {
     let mut app = armed();
     app.handle_msg(AppMsg::DetailLogGroups {
         gen: app.generation,
-        env_name: "api-prod".into(),
-        region: "us-east-1".into(),
+        key: EnvKey::new("us-east-1", "api-prod"),
         groups: vec!["right-env-group".into()],
     });
     assert_eq!(
@@ -3849,4 +3847,54 @@ async fn an_older_detail_answer_cannot_land_over_a_newer_request() {
             "{kind:?}: with its (offline) failure on screen"
         );
     }
+}
+
+/// `^R` on the Logs tab mid-tail starts a second tail; the first one's
+/// answer, landing last, must not replace the second's or end it.
+#[tokio::test]
+async fn an_older_log_tail_cannot_land_over_a_newer_one() {
+    use crate::mode_detail::LogTailStage;
+    let mut app = test_app();
+    app.environments = vec![mk_env("api-prod", "poly", "Web", "Green")];
+    app.rebuild_view();
+    app.table_state.select(Some(0));
+    app.open_detail();
+    app.spawn_detail_logs("api-prod".into());
+    app.spawn_detail_logs("api-prod".into());
+    let newer = app
+        .detail
+        .as_ref()
+        .unwrap()
+        .log_tail
+        .request
+        .ticket_in_flight()
+        .expect("the second tail is in flight");
+    let (mut older_msg, mut newer_msg) = (None, None);
+    while older_msg.is_none() || newer_msg.is_none() {
+        match next_msg(&mut app).await {
+            msg @ AppMsg::DetailLogs { ticket, .. } if ticket == newer => newer_msg = Some(msg),
+            msg @ AppMsg::DetailLogs { .. } => older_msg = Some(msg),
+            _ => {}
+        }
+    }
+    // A stale progress report must not move the stage either.
+    app.handle_msg(AppMsg::DetailLogsProgress {
+        gen: app.generation,
+        ticket: crate::app::Fetch::<()>::default().begin(),
+        stage: LogTailStage::Fetching,
+        attempt: 3,
+    });
+    app.handle_msg(older_msg.unwrap());
+    let tail = &app.detail.as_ref().unwrap().log_tail;
+    assert_eq!(
+        tail.stage,
+        LogTailStage::Requesting,
+        "still the newer tail's"
+    );
+    assert!(tail.error.is_none() && tail.request.in_flight());
+
+    app.handle_msg(newer_msg.unwrap());
+    let tail = &app.detail.as_ref().unwrap().log_tail;
+    assert_eq!(tail.stage, LogTailStage::Ready);
+    assert!(tail.error.is_some(), "the newer (offline) failure shows");
 }
