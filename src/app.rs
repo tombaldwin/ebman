@@ -856,9 +856,8 @@ pub(crate) enum AppMsg {
     },
     DryRunResult {
         gen: u64,
-        env_name: String,
-        /// The modal's region: an answer for a same-named env is dropped.
-        region: String,
+        /// The modal's env: an answer for a same-named env is dropped.
+        key: EnvKey,
         result: Result<Vec<Instance>, String>,
     },
     /// `fetch_env_vars` result for `:env-edit`. The handler stashes
@@ -876,9 +875,8 @@ pub(crate) enum AppMsg {
     },
     PreflightEvents {
         gen: u64,
-        env_name: String,
-        /// The modal's region: an answer for a same-named env is dropped.
-        region: String,
+        /// The modal's env: an answer for a same-named env is dropped.
+        key: EnvKey,
         result: Result<Vec<EbEvent>, String>,
     },
     /// Pre-deploy version preview for the confirm modal. Carries
@@ -886,9 +884,8 @@ pub(crate) enum AppMsg {
     /// handler stays trivial — just stuff it into the modal slot.
     VersionPreview {
         gen: u64,
-        env_name: String,
-        /// The modal's region: an answer for a same-named env is dropped.
-        region: String,
+        /// The modal's env: an answer for a same-named env is dropped.
+        key: EnvKey,
         result: Result<String, String>,
     },
     /// Pre-deploy health-check probe outcome. `Ok(())` means the
@@ -898,9 +895,8 @@ pub(crate) enum AppMsg {
     /// continue. Doesn't block the deploy either way.
     HealthCheckProbe {
         gen: u64,
-        env_name: String,
-        /// The modal's region: an answer for a same-named env is dropped.
-        region: String,
+        /// The modal's env: an answer for a same-named env is dropped.
+        key: EnvKey,
         result: Result<(), String>,
     },
     /// Pre-deploy unavailability estimate. `line` is the rendered
@@ -910,9 +906,8 @@ pub(crate) enum AppMsg {
     /// not safety).
     UnavailabilityEstimate {
         gen: u64,
-        env_name: String,
-        /// The modal's region: an answer for a same-named env is dropped.
-        region: String,
+        /// The modal's env: an answer for a same-named env is dropped.
+        key: EnvKey,
         line: Option<(String, bool)>,
     },
     /// Lint findings against the confirm-modal's target env,
@@ -921,9 +916,8 @@ pub(crate) enum AppMsg {
     /// for one engine, three surfaces.
     ConfirmModalLint {
         gen: u64,
-        env_name: String,
-        /// The modal's region: an answer for a same-named env is dropped.
-        region: String,
+        /// The modal's env: an answer for a same-named env is dropped.
+        key: EnvKey,
         issues: Vec<crate::lint::Issue>,
         /// The checks that could not run, each with why: the whole lint
         /// (client or option fetch failed) or one rule's input. Listed

@@ -274,8 +274,7 @@ async fn handle_confirm_modal_lint_stuffs_issues_into_modal() {
     // Empty issues — handler still clears the loading flag.
     app.handle_msg(AppMsg::ConfirmModalLint {
         gen: app.generation,
-        env_name: "prod".into(),
-        region: "us-east-1".into(),
+        key: EnvKey::new("us-east-1", "prod"),
         issues: vec![],
         not_run: vec![],
     });
@@ -304,8 +303,7 @@ async fn a_lint_that_could_not_run_reaches_the_modal_as_a_reason() {
     app.execute_command("deploy build-900");
     app.handle_msg(AppMsg::ConfirmModalLint {
         gen: app.generation,
-        env_name: "prod".into(),
-        region: "us-east-1".into(),
+        key: EnvKey::new("us-east-1", "prod"),
         issues: vec![],
         not_run: vec![
             "lint could not run: DescribeConfigurationSettings failed: AccessDenied".into(),
@@ -344,8 +342,7 @@ async fn handle_confirm_modal_lint_drops_stale_target_results() {
     // Late-arriving lint result for prod — should be dropped.
     app.handle_msg(AppMsg::ConfirmModalLint {
         gen: app.generation,
-        env_name: "prod".into(),
-        region: "us-east-1".into(),
+        key: EnvKey::new("us-east-1", "prod"),
         issues: vec![crate::lint::Issue {
             rule_id: "EBL001".into(),
             severity: crate::lint::Severity::Warn,

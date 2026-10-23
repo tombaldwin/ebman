@@ -267,8 +267,7 @@ async fn handle_unavailability_estimate_stuffs_line_into_modal() {
     app.execute_command("deploy build-900");
     app.handle_msg(AppMsg::UnavailabilityEstimate {
         gen: app.generation,
-        env_name: "prod".into(),
-        region: "us-east-1".into(),
+        key: EnvKey::new("us-east-1", "prod"),
         line: Some((
             "deploy plan: Rolling → max 1/4 instance unavailable".into(),
             true,
@@ -320,8 +319,7 @@ async fn deploy_modal_handle_version_preview_stuffs_body_in_slot() {
     let body = "candidate: build-900\ncurrent: build-820\n".to_string();
     app.handle_msg(AppMsg::VersionPreview {
         gen: app.generation,
-        env_name: "prod".into(),
-        region: "us-east-1".into(),
+        key: EnvKey::new("us-east-1", "prod"),
         result: Ok(body.clone()),
     });
     match &app.action_flow {
@@ -344,8 +342,7 @@ async fn deploy_modal_handle_version_preview_error_renders_inline() {
     app.execute_command("deploy build-900");
     app.handle_msg(AppMsg::VersionPreview {
         gen: app.generation,
-        env_name: "prod".into(),
-        region: "us-east-1".into(),
+        key: EnvKey::new("us-east-1", "prod"),
         result: Err("ListApplicationVersions throttled".into()),
     });
     match &app.action_flow {

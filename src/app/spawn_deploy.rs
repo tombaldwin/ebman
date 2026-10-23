@@ -676,8 +676,7 @@ impl App {
             move |aws| async move { aws.list_events_for_env(&env_name, 3).await },
             move |gen, result| AppMsg::PreflightEvents {
                 gen,
-                env_name: env_for_msg,
-                region: region.clone(),
+                key: EnvKey::new(region.clone(), env_for_msg),
                 result,
             },
         );
@@ -693,8 +692,7 @@ impl App {
             move |aws| async move { aws.list_instances(&env_name).await },
             move |gen, result| AppMsg::DryRunResult {
                 gen,
-                env_name: env_for_msg,
-                region: region.clone(),
+                key: EnvKey::new(region.clone(), env_for_msg),
                 result,
             },
         );
@@ -733,8 +731,7 @@ impl App {
                 };
                 AppMsg::VersionPreview {
                     gen,
-                    env_name: env_for_msg,
-                    region: region.clone(),
+                    key: EnvKey::new(region.clone(), env_for_msg),
                     result: body,
                 }
             },
@@ -788,8 +785,7 @@ impl App {
             let result = crate::probe::run_health_check_probe(&url).await;
             let _ = tx.send(AppMsg::HealthCheckProbe {
                 gen,
-                env_name: env_for_msg,
-                region: region.clone(),
+                key: EnvKey::new(region.clone(), env_for_msg),
                 result,
             });
         });
@@ -820,8 +816,7 @@ impl App {
                 });
                 AppMsg::UnavailabilityEstimate {
                     gen,
-                    env_name: env_for_msg,
-                    region: region.clone(),
+                    key: EnvKey::new(region.clone(), env_for_msg),
                     line,
                 }
             },
@@ -888,8 +883,7 @@ impl App {
                 Err(e) => {
                     let _ = tx.send(AppMsg::ConfirmModalLint {
                         gen,
-                        env_name: env_for_msg,
-                        region: region.clone(),
+                        key: EnvKey::new(region.clone(), env_for_msg),
                         issues: Vec::new(),
                         not_run: vec![format!("lint could not run: {e}")],
                     });
@@ -970,8 +964,7 @@ impl App {
             };
             let _ = tx.send(AppMsg::ConfirmModalLint {
                 gen,
-                env_name: env_for_msg,
-                region: region.clone(),
+                key: EnvKey::new(region.clone(), env_for_msg),
                 issues,
                 not_run,
             });

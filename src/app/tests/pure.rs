@@ -814,8 +814,7 @@ async fn handle_unavailability_estimate_silent_on_fetch_failure() {
     app.execute_command("deploy build-900");
     app.handle_msg(AppMsg::UnavailabilityEstimate {
         gen: app.generation,
-        env_name: "prod".into(),
-        region: "us-east-1".into(),
+        key: EnvKey::new("us-east-1", "prod"),
         line: None,
     });
     match &app.action_flow {
@@ -838,8 +837,7 @@ async fn handle_health_check_probe_renders_warning_on_failure() {
     app.execute_command("deploy build-900");
     app.handle_msg(AppMsg::HealthCheckProbe {
         gen: app.generation,
-        env_name: "prod".into(),
-        region: "us-east-1".into(),
+        key: EnvKey::new("us-east-1", "prod"),
         result: Err("HTTP 404".into()),
     });
     match &app.action_flow {
@@ -866,8 +864,7 @@ async fn handle_health_check_probe_silent_on_ok() {
     app.execute_command("deploy build-900");
     app.handle_msg(AppMsg::HealthCheckProbe {
         gen: app.generation,
-        env_name: "prod".into(),
-        region: "us-east-1".into(),
+        key: EnvKey::new("us-east-1", "prod"),
         result: Ok(()),
     });
     match &app.action_flow {

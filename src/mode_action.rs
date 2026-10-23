@@ -354,6 +354,12 @@ pub(crate) enum RolloutState {
 }
 
 impl ConfirmModal {
+    /// The env the modal confirms a write on, region included: what its
+    /// preflight answers are matched against.
+    pub(crate) fn key(&self) -> crate::app::EnvKey {
+        crate::app::EnvKey::new(self.target_region.clone(), self.target_env.clone())
+    }
+
     /// The environment this write is aimed at: the row's region and name
     /// as they were when the modal opened. The dispatch is sent there,
     /// not to wherever the name resolves by then.

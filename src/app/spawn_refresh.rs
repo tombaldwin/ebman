@@ -590,15 +590,6 @@ impl App {
         }
     }
 
-    /// Whether an answer fetched for the confirm modal in `region` is
-    /// the open modal's. With no modal open the handlers drop it.
-    pub(crate) fn modal_takes(&self, region: &str) -> bool {
-        match self.action_flow.as_ref() {
-            Some(crate::mode_action::ActionFlow::Confirm(m)) => m.target_region == region,
-            _ => true,
-        }
-    }
-
     /// Apply an answer to one of Detail's requests (`pick` names it).
     /// Dropped with Detail closed, or when `ticket` is not that request's
     /// latest: an earlier request's, a closed Detail's, or a same-named

@@ -167,12 +167,7 @@ impl App {
             } => self.handle_app_versions(application, deployed_label, result),
             AppMsg::UpdateCheck(latest) => self.handle_update_check(latest),
             AppMsg::AutoRollbackCheck { env, .. } => self.handle_auto_rollback_check(env),
-            AppMsg::DryRunResult {
-                env_name,
-                result,
-                region,
-                ..
-            } if self.modal_takes(&region) => self.handle_dry_run_result(env_name, result),
+            AppMsg::DryRunResult { key, result, .. } => self.handle_dry_run_result(key, result),
             AppMsg::Alarms { env, result, .. } => self.handle_alarms(env, result),
             AppMsg::WhyRedEvents {
                 session_id, result, ..
@@ -192,39 +187,22 @@ impl App {
             AppMsg::WhyRedDlqMessages {
                 session_id, result, ..
             } => self.handle_why_red_dlq_messages(session_id, result),
-            AppMsg::PreflightEvents {
-                env_name,
-                result,
-                region,
-                ..
-            } if self.modal_takes(&region) => self.handle_preflight_events(env_name, result),
-            AppMsg::VersionPreview {
-                env_name,
-                result,
-                region,
-                ..
-            } if self.modal_takes(&region) => self.handle_version_preview(env_name, result),
-            AppMsg::HealthCheckProbe {
-                env_name,
-                result,
-                region,
-                ..
-            } if self.modal_takes(&region) => self.handle_health_check_probe(env_name, result),
-            AppMsg::UnavailabilityEstimate {
-                env_name,
-                line,
-                region,
-                ..
-            } if self.modal_takes(&region) => self.handle_unavailability_estimate(env_name, line),
+            AppMsg::PreflightEvents { key, result, .. } => {
+                self.handle_preflight_events(key, result)
+            }
+            AppMsg::VersionPreview { key, result, .. } => self.handle_version_preview(key, result),
+            AppMsg::HealthCheckProbe { key, result, .. } => {
+                self.handle_health_check_probe(key, result)
+            }
+            AppMsg::UnavailabilityEstimate { key, line, .. } => {
+                self.handle_unavailability_estimate(key, line)
+            }
             AppMsg::ConfirmModalLint {
-                env_name,
+                key,
                 issues,
                 not_run,
-                region,
                 ..
-            } if self.modal_takes(&region) => {
-                self.handle_confirm_modal_lint(env_name, issues, not_run)
-            }
+            } => self.handle_confirm_modal_lint(key, issues, not_run),
             AppMsg::LintInputsCached {
                 key, tags, healthy, ..
             } => self.handle_lint_inputs_cached(key, tags, healthy),
@@ -342,14 +320,6 @@ impl App {
             AppMsg::DetailQueues { ticket, result, .. } => {
                 self.handle_detail_queues(ticket, result)
             }
-            // An answer for the modal's env name in another region: a
-            // same-named env's modal, since closed.
-            AppMsg::DryRunResult { .. }
-            | AppMsg::PreflightEvents { .. }
-            | AppMsg::VersionPreview { .. }
-            | AppMsg::HealthCheckProbe { .. }
-            | AppMsg::UnavailabilityEstimate { .. }
-            | AppMsg::ConfirmModalLint { .. } => {}
             AppMsg::DlqMessages {
                 env_name,
                 queue_url,
@@ -768,11 +738,11 @@ impl App {
         self.spawn_refresh();
     }
 
-    fn handle_dry_run_result(&mut self, env_name: String, result: Result<Vec<Instance>, String>) {
+    fn handle_dry_run_result(&mut self, key: EnvKey, result: Result<Vec<Instance>, String>) {
         let Some(ActionFlow::Confirm(modal)) = self.action_flow.as_mut() else {
             return;
         };
-        if modal.target_env != env_name {
+        if modal.key() != key {
             return;
         }
         modal.loading_dryrun = false;
@@ -909,11 +879,11 @@ impl App {
         }
     }
 
-    fn handle_preflight_events(&mut self, env_name: String, result: Result<Vec<EbEvent>, String>) {
+    fn handle_preflight_events(&mut self, key: EnvKey, result: Result<Vec<EbEvent>, String>) {
         let Some(ActionFlow::Confirm(modal)) = self.action_flow.as_mut() else {
             return;
         };
-        if modal.target_env != env_name {
+        if modal.key() != key {
             return;
         }
         modal.loading_events = false;
@@ -927,11 +897,11 @@ impl App {
     /// while the fetch was in flight. A failed fetch is rendered
     /// as an inline error message rather than left blank so the
     /// operator knows the preview tried and failed.
-    fn handle_version_preview(&mut self, env_name: String, result: Result<String, String>) {
+    fn handle_version_preview(&mut self, key: EnvKey, result: Result<String, String>) {
         let Some(ActionFlow::Confirm(modal)) = self.action_flow.as_mut() else {
             return;
         };
-        if modal.target_env != env_name {
+        if modal.key() != key {
             return;
         }
         modal.loading_version_preview = false;
@@ -945,11 +915,11 @@ impl App {
     /// modal — clears the loading flag either way. Same drop-on-
     /// floor contract as `handle_version_preview` for cases where
     /// the modal closed mid-flight.
-    fn handle_health_check_probe(&mut self, env_name: String, result: Result<(), String>) {
+    fn handle_health_check_probe(&mut self, key: EnvKey, result: Result<(), String>) {
         let Some(ActionFlow::Confirm(modal)) = self.action_flow.as_mut() else {
             return;
         };
-        if modal.target_env != env_name {
+        if modal.key() != key {
             return;
         }
         modal.loading_health_check = false;
@@ -959,11 +929,11 @@ impl App {
     /// Stuff the pre-deploy unavailability estimate into the modal.
     /// `None` (fetch failed) clears the loading flag and leaves the
     /// line slot empty — UI silently omits the row.
-    fn handle_unavailability_estimate(&mut self, env_name: String, line: Option<(String, bool)>) {
+    fn handle_unavailability_estimate(&mut self, key: EnvKey, line: Option<(String, bool)>) {
         let Some(ActionFlow::Confirm(modal)) = self.action_flow.as_mut() else {
             return;
         };
-        if modal.target_env != env_name {
+        if modal.key() != key {
             return;
         }
         modal.loading_unavailability = false;
@@ -977,14 +947,14 @@ impl App {
     /// modal-open won't land here.
     fn handle_confirm_modal_lint(
         &mut self,
-        env_name: String,
+        key: EnvKey,
         issues: Vec<crate::lint::Issue>,
         not_run: Vec<String>,
     ) {
         let Some(ActionFlow::Confirm(modal)) = self.action_flow.as_mut() else {
             return;
         };
-        if modal.target_env != env_name {
+        if modal.key() != key {
             return;
         }
         modal.loading_lint = false;

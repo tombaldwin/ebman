@@ -2103,8 +2103,7 @@ async fn the_confirm_modal_ignores_an_answer_for_its_name_in_another_region() {
     for (region, body) in [("eu-west-2", "EU-OWN"), ("us-east-1", "HOME-TWIN")] {
         app.handle_msg(AppMsg::VersionPreview {
             gen: app.generation,
-            env_name: "api-prod".into(),
-            region: region.into(),
+            key: EnvKey::new(region, "api-prod"),
             result: Ok(body.into()),
         });
         let Some(crate::app::ActionFlow::Confirm(modal)) = app.action_flow.as_ref() else {
@@ -2684,5 +2683,106 @@ async fn form_answers_carry_the_twin_they_were_fetched_for() {
             }
         };
         assert_eq!(key, EnvKey::new("eu-west-2", "api-prod"), "{command}");
+    }
+}
+
+/// Each of the confirm modal's preflight answers: a same-named env's is
+/// dropped, the modal's own lands. One case per message, since each
+/// handler makes its own check.
+#[tokio::test]
+async fn every_modal_preflight_answer_is_matched_by_region() {
+    use crate::mode_action::ConfirmModal;
+    type Case = (
+        &'static str,
+        fn(EnvKey, u64) -> AppMsg,
+        fn(&ConfirmModal) -> bool,
+    );
+    let cases: &[Case] = &[
+        (
+            "dry run",
+            |key, gen| AppMsg::DryRunResult {
+                gen,
+                key,
+                result: Ok(vec![]),
+            },
+            |m| m.dryrun.is_some(),
+        ),
+        (
+            "events",
+            |key, gen| AppMsg::PreflightEvents {
+                gen,
+                key,
+                result: Ok(vec![]),
+            },
+            |m| m.recent_events.is_some(),
+        ),
+        (
+            "version preview",
+            |key, gen| AppMsg::VersionPreview {
+                gen,
+                key,
+                result: Ok("x".into()),
+            },
+            |m| m.version_preview.is_some(),
+        ),
+        (
+            "health check",
+            |key, gen| AppMsg::HealthCheckProbe {
+                gen,
+                key,
+                result: Ok(()),
+            },
+            |m| m.health_check_probe.is_some(),
+        ),
+        (
+            "unavailability",
+            |key, gen| AppMsg::UnavailabilityEstimate {
+                gen,
+                key,
+                line: Some(("x".into(), false)),
+            },
+            |m| m.unavailability_line.is_some(),
+        ),
+        (
+            "lint",
+            |key, gen| AppMsg::ConfirmModalLint {
+                gen,
+                key,
+                issues: vec![],
+                not_run: vec![],
+            },
+            |m| m.lint_issues.is_some(),
+        ),
+    ];
+    for (label, msg, landed) in cases {
+        let mut app = same_named_in_two_regions();
+        let eu_row = app
+            .view
+            .filtered()
+            .iter()
+            .position(|&i| app.environments[i].region.is_some())
+            .unwrap();
+        app.table_state.select(Some(eu_row));
+        app.execute_command("deploy build-1");
+        let modal = |app: &App| match app.action_flow.as_ref() {
+            Some(crate::app::ActionFlow::Confirm(m)) => m.clone(),
+            _ => panic!("{label}: no modal: {:?}", app.error_message),
+        };
+        // Clear whatever the open itself filled, so only these land.
+        if let Some(crate::app::ActionFlow::Confirm(m)) = app.action_flow.as_mut() {
+            m.dryrun = None;
+            m.recent_events = None;
+            m.version_preview = None;
+            m.health_check_probe = None;
+            m.unavailability_line = None;
+            m.lint_issues = None;
+        }
+        app.handle_msg(msg(EnvKey::new("us-east-1", "api-prod"), app.generation));
+        assert!(
+            !landed(&modal(&app)),
+            "{label}: the home twin's answer landed"
+        );
+        app.handle_msg(msg(EnvKey::new("eu-west-2", "api-prod"), app.generation));
+        assert!(landed(&modal(&app)), "{label}: its own answer was dropped");
     }
 }
