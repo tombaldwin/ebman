@@ -1012,7 +1012,10 @@ mod tests {
             all_alive(&m).iter().map(|h| h.pid).collect::<Vec<_>>(),
             vec![777]
         );
-        declare_session_at(&m, 4242, "new", false).unwrap();
+        // Written directly and synced with a fake probe: declaring would
+        // judge pid 777 with the real one, which is alive on some
+        // machines and not on others.
+        write_marker_full(&session_file(&m, 4242), 4242, "new", false, false, false).unwrap();
         sync_legacy_with(&m, |_| true, |_| None);
         assert_eq!(parse_file(&m).map(|l| l.pid), Some(777), "not clobbered");
         assert_eq!(all_alive(&m).len(), 2);
