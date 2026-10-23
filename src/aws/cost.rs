@@ -182,7 +182,7 @@ impl AwsClient {
                  costs are incomplete and will not be cached"
             );
         }
-        let mut out: Vec<EnvCost> = totals
+        let mut out: Vec<EnvCost> = fold_regionless(totals)
             .into_iter()
             .map(|((env_name, region), cost_usd)| EnvCost {
                 env_name,
@@ -202,4 +202,62 @@ impl AwsClient {
             truncated,
         })
     }
+}
+
+/// Is `r` an AWS region name (`us-east-1`, `us-gov-west-1`, `cn-north-1`)?
+/// Cost Explorer's REGION dimension also holds `global`, `NoRegion` and
+/// empty buckets.
+pub(crate) fn is_region(r: &str) -> bool {
+    let parts: Vec<&str> = r.split('-').collect();
+    parts.len() >= 3
+        && parts.iter().all(|p| !p.is_empty())
+        && parts
+            .last()
+            .is_some_and(|p| p.chars().all(|c| c.is_ascii_digit()))
+}
+
+/// Give spend Cost Explorer filed under no region to the env it belongs
+/// to: the one region a name is listed in, where there is exactly one.
+/// A name in several regions cannot say which env the spend was, so it
+/// is dropped and logged rather than guessed at; one in none keeps no
+/// row, since no env could show it.
+///
+/// Before costs were split by region this spend was summed into the
+/// env's figure, so dropping it silently would under-report.
+pub(crate) fn fold_regionless(
+    totals: std::collections::HashMap<(String, String), f64>,
+) -> std::collections::HashMap<(String, String), f64> {
+    let mut regional = std::collections::HashMap::new();
+    let mut regionless = Vec::new();
+    for ((name, region), usd) in totals {
+        if is_region(&region) {
+            regional.insert((name, region), usd);
+        } else {
+            regionless.push((name, region, usd));
+        }
+    }
+    for (name, region, usd) in regionless {
+        let homes: Vec<(String, String)> = regional
+            .keys()
+            .filter(|(n, _)| *n == name)
+            .cloned()
+            .collect();
+        match homes.as_slice() {
+            [only] => {
+                if let Some(total) = regional.get_mut(only) {
+                    *total += usd;
+                }
+            }
+            _ => tracing::warn!(
+                target: "ebman::aws",
+                env = %name,
+                bucket = %region,
+                usd,
+                regions = homes.len(),
+                "Cost Explorer spend in no region, for an env name in {} regions: not attributed",
+                homes.len()
+            ),
+        }
+    }
+    regional
 }

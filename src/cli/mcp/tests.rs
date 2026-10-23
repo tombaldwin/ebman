@@ -5324,7 +5324,7 @@ fn fleet_cost_names_each_twin_by_region() {
     .into_iter()
     .collect();
     assert_eq!(
-        super::tools::fleet_cost_entries(&costs),
+        super::tools::fleet_cost_entries(&costs).0,
         vec![
             ("api-prod@eu-west-2".to_string(), 20.0),
             ("api-prod@us-east-1".to_string(), 612.0),
@@ -5369,4 +5369,19 @@ fn doctor_says_when_a_freeze_ended_with_its_session() {
         body.contains("incident: db failover") && body.contains("session ended"),
         "{body}"
     );
+}
+
+/// `total_usd_month` is the sum of the `by_env` it is shown with: a key
+/// that names no env is in neither.
+#[test]
+fn fleet_cost_total_matches_its_entries() {
+    let costs: std::collections::HashMap<String, f64> = [
+        ("us-east-1/api-prod".to_string(), 10.0),
+        ("/no-region".to_string(), 99.0),
+    ]
+    .into_iter()
+    .collect();
+    let (entries, total) = super::tools::fleet_cost_entries(&costs);
+    assert_eq!(entries.len(), 1);
+    assert_eq!(total, 10.0);
 }

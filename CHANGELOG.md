@@ -42,7 +42,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   and was grouped by the env-name tag alone, so same-named envs in two
   regions showed one summed cost on both rows, in Detail, in `:why` and
   in `:fleet-cost`. It now groups by tag and region. A cost cache
-  written by 0.46.2 or earlier reads as stale, so `:cost on` refetches.
+  written by 0.46.2 or earlier reads as stale, so `:cost on` refetches,
+  and keeps retrying on `:cost on` until a walk succeeds. Spend Cost
+  Explorer files under no region (`global`, `NoRegion`) goes to the env
+  when one region holds that name, and is not guessed at between twins.
 - **Detail's tabs show the latest answer, not the last to arrive.**
   Events, instances, queues, tags and env vars were bare loading flags,
   so two `^R`s in a row could land the older answer over the newer and

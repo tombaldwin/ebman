@@ -1913,13 +1913,11 @@ impl Server {
             }
         };
         let stale = cache.is_stale(chrono::Utc::now());
-        let by_env: Vec<String> = fleet_cost_entries(&cache.costs)
+        let (entries, total) = fleet_cost_entries(&cache.costs);
+        let by_env: Vec<String> = entries
             .iter()
             .map(|(env, usd)| format!("{}:{usd:.2}", util::json_string(env)))
             .collect();
-        // f64's Sum impl folds from -0.0, so an empty cache would render
-        // "-0.00"; adding 0.0 normalises negative zero to positive.
-        let total: f64 = cache.costs.values().sum::<f64>() + 0.0;
         Ok(format!(
             "{{\"account\":{},\"region\":{},\"fetched_at\":{},\"stale\":{stale},\"total_usd_month\":{total:.2},\"by_env\":{{{}}}}}",
             util::json_string(&account),
@@ -1936,10 +1934,12 @@ impl Server {
 /// `fleet_cost`'s rows from the cache's `REGION/NAME` keys, as
 /// `NAME@REGION` (the form the write tools take) and sorted. Cost
 /// Explorer is account-wide, so one name can be an env in each of two
-/// regions. A key with no region (0.46.2 or earlier) is skipped.
+/// regions. A key with no region (0.46.2 or earlier) is skipped. With
+/// their total, summed from the same entries so the two agree: a key
+/// that names no env is in neither.
 pub(super) fn fleet_cost_entries(
     costs: &std::collections::HashMap<String, f64>,
-) -> Vec<(String, f64)> {
+) -> (Vec<(String, f64)>, f64) {
     let mut out: Vec<(String, f64)> = costs
         .iter()
         .filter_map(|(k, usd)| {
@@ -1948,7 +1948,10 @@ pub(super) fn fleet_cost_entries(
         })
         .collect();
     out.sort_by(|a, b| a.0.cmp(&b.0));
-    out
+    // f64's Sum folds from -0.0, so an empty list would render "-0.00";
+    // adding 0.0 normalises negative zero to positive.
+    let total = out.iter().map(|(_, usd)| usd).sum::<f64>() + 0.0;
+    (out, total)
 }
 
 /// Tool-error formatting: route through the shared credential

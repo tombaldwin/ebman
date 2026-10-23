@@ -703,3 +703,17 @@ async fn a_cost_refresh_keeps_each_rows_region() {
         Some(20.0)
     );
 }
+
+/// A cost cache 0.46.2 wrote keys by bare name, so it reads as stale and
+/// restores nothing. If the one refetch that triggers fails, `:cost on`
+/// must try again rather than answer "already on" over an empty column.
+#[tokio::test]
+async fn cost_on_retries_when_no_walk_has_ever_settled() {
+    let mut app = test_app();
+    app.costs.set_enabled(true);
+    app.costs.restore_cached(Default::default(), None);
+    assert!(app.costs.is_complete() && app.costs.fetched_at().is_none());
+    app.execute_command("cost on");
+    let msg = app.status_message.as_deref().unwrap_or_default();
+    assert!(msg.contains("retrying"), "{msg:?}");
+}

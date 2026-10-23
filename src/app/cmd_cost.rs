@@ -73,9 +73,17 @@ impl App {
             // suppressing a retry that otherwise never came. Answering
             // "already on" made the partial map terminal for the
             // session.
-            if next && !self.costs.is_complete() {
-                self.status_message =
-                    Some("cost: retrying the incomplete Cost Explorer walk…".into());
+            //
+            // Nor only after a truncated walk: with no walk ever settled
+            // (the fetch failed, or the cache was one 0.46.2 wrote by bare
+            // name and so read as stale) there is nothing to stand on
+            // either, and "already on" left `—` in every row.
+            if next && (!self.costs.is_complete() || self.costs.fetched_at().is_none()) {
+                self.status_message = Some(if self.costs.is_complete() {
+                    "cost: retrying the Cost Explorer fetch…".into()
+                } else {
+                    "cost: retrying the incomplete Cost Explorer walk…".into()
+                });
                 self.spawn_cost_fetch();
                 return;
             }

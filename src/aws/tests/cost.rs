@@ -136,3 +136,45 @@ async fn fetch_env_costs_flags_a_truncated_walk() {
         "partial data is still worth rendering — it just must not be cached"
     );
 }
+
+#[test]
+fn spend_in_no_region_goes_to_the_one_env_of_that_name() {
+    use std::collections::HashMap;
+    let key = |n: &str, r: &str| (n.to_string(), r.to_string());
+    let totals: HashMap<(String, String), f64> = [
+        (key("solo", "us-east-1"), 10.0),
+        (key("solo", "global"), 2.5),
+        (key("twin", "us-east-1"), 5.0),
+        (key("twin", "eu-west-2"), 7.0),
+        (key("twin", "NoRegion"), 1.0),
+        (key("orphan", "global"), 3.0),
+        (key("gov", "us-gov-west-1"), 4.0),
+    ]
+    .into_iter()
+    .collect();
+    let folded = crate::aws::fold_regionless(totals);
+    let mut got: Vec<_> = folded.into_iter().collect();
+    got.sort_by(|a, b| a.0.cmp(&b.0));
+    assert_eq!(
+        got,
+        vec![
+            (key("gov", "us-gov-west-1"), 4.0),
+            (key("solo", "us-east-1"), 12.5),
+            (key("twin", "eu-west-2"), 7.0),
+            (key("twin", "us-east-1"), 5.0),
+        ],
+        "folded where one region names the env; never guessed between twins; \
+         no row in a region no env is in"
+    );
+}
+
+#[test]
+fn region_names_are_told_from_cost_explorers_other_buckets() {
+    for r in ["us-east-1", "us-gov-west-1", "cn-north-1", "ap-southeast-4"] {
+        assert!(crate::aws::is_region(r), "{r}");
+    }
+    // One per clause: too few parts, an empty part, a non-numeric tail.
+    for r in ["global", "NoRegion", "", "eu-1", "us--1", "us-east-x"] {
+        assert!(!crate::aws::is_region(r), "{r}");
+    }
+}
