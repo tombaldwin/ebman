@@ -5170,3 +5170,16 @@ From `PLAN.md`, retired with it:
   mutations (dashed match off, `-` dropped from the boundary): CAUGHT.
   The tracked-file scan passed after the change, once the new test's own
   doc comment used AWS's placeholder.
+
+- [x] **The demo cannot show the triage story.** The demo fleet has no
+  Red environment, while the README walkthrough starts from one; the
+  header showed "Last: 10720501s ago". Add one Red web env and one
+  worker with DLQ messages; format ages in human units.
+
+  **Done 2026-10-23.** The fleet already had a Red web env
+  (`poly-staging-api`) and a worker with DLQ messages (`poly-batch`) by
+  the time this was picked up. What remained: the header's "Last" was raw
+  seconds (`format_refresh_label` now humanizes past a minute), and the
+  demo stamped it with the fixture's clock, months back; it now stamps
+  the demo's start. Tests: `format_refresh_label_says_a_long_gap_in_human_units`,
+  `the_demo_header_says_it_refreshed_just_now`; both CAUGHT.

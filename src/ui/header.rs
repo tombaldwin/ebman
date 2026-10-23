@@ -896,7 +896,10 @@ pub(crate) fn format_refresh_label(
         Some(t) => {
             let ago = now.signed_duration_since(t).num_seconds().max(0);
             let until = (interval_s - ago).max(0);
-            format!("{}s ago · next {}s", ago, until)
+            // In human units past a minute: a session left open over a
+            // weekend read `Last: 172800s ago`.
+            let ago = crate::app::humanize_short_age(std::time::Duration::from_secs(ago as u64));
+            format!("{ago} ago · next {until}s")
         }
         None => format!("— · next {interval_s}s"),
     }

@@ -786,6 +786,17 @@ fn format_refresh_label_clamps_overdue_to_zero() {
 }
 
 #[test]
+fn format_refresh_label_says_a_long_gap_in_human_units() {
+    let interval = std::time::Duration::from_secs(15);
+    let now = chrono::Utc::now();
+    for (secs, want) in [(125, "2m ago"), (7_200, "2h ago"), (172_800, "2d ago")] {
+        let label =
+            format_refresh_label(Some(now - chrono::Duration::seconds(secs)), now, interval);
+        assert!(label.starts_with(want), "{secs}s: {label}");
+    }
+}
+
+#[test]
 fn format_refresh_label_handles_no_prior_refresh() {
     let label = format_refresh_label(None, chrono::Utc::now(), std::time::Duration::from_secs(15));
     assert_eq!(label, "— · next 15s");

@@ -675,7 +675,10 @@ pub(crate) fn install(app: &mut App) {
     app.context.account_id = Some("123456789012".into());
     app.context.profile = Some("poly-demo".into());
     app.context.caller_arn = Some("arn:aws:iam::123456789012:user/demo-operator".into());
-    app.last_refresh = Some(fixture_now());
+    // When the demo started, not the fixture's clock: that was months
+    // back by the time anyone ran it, and the header read
+    // `Last: 10720501s ago` beside data that never refreshes anyway.
+    app.last_refresh = Some(chrono::Utc::now());
     app.rebuild_view();
 }
 

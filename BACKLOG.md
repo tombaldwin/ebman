@@ -313,11 +313,6 @@ Tier definitions:
   (`:versions` / `versions` / `list_versions`, `envs` /
   `list_environments`).
 
-- [ ] **The demo cannot show the triage story.** The demo fleet has no
-  Red environment, while the README walkthrough starts from one; the
-  header showed "Last: 10720501s ago". Add one Red web env and one
-  worker with DLQ messages; format ages in human units.
-
 - [ ] **Breadth vs the daily core.** 131 commands; two unrelated
   "freezes" (`f` pauses auto-refresh; `:freeze-deploys` locks writes —
   rename the first to "pause"); consider a `?` "top 15" view. Also:

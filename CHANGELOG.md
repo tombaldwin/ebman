@@ -75,6 +75,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   delete, resend or replay result was matched by env name, so a
   same-named env's late purge cleared this viewer's list and reported
   "DLQ purged" for the wrong env.
+- **The header's "Last" refresh reads in human units** (`2m ago`,
+  `2d ago`), and the demo's is when the demo started: it showed
+  `Last: 10720501s ago`, counted from the fixture's clock.
 - **A write's result no longer closes what the operator has open.**
   Every action result closed the action flow and reset the mode, so an
   unattended one (an auto-rollback, a batch member) arriving while the

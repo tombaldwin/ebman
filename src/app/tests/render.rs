@@ -2446,3 +2446,22 @@ async fn a_narrow_platform_column_keeps_the_newer_version_sign() {
         .unwrap_or_else(|| panic!("{frame}"));
     assert!(row.contains("↑ Tomcat"), "{row}");
 }
+
+/// The demo's "Last" is when the demo started, not the fixture's clock:
+/// that was months back by the time anyone ran it.
+#[tokio::test]
+async fn the_demo_header_says_it_refreshed_just_now() {
+    let mut app = App::new_demo(crate::config::Config::default());
+    let frame = render(&mut app, 220, 30);
+    let line = frame
+        .lines()
+        .find(|l| l.contains("Last: "))
+        .unwrap_or_else(|| panic!("{frame}"));
+    let ago = line.split("Last: ").nth(1).unwrap_or_default();
+    assert!(
+        ago.split_whitespace()
+            .next()
+            .is_some_and(|t| t.ends_with('s')),
+        "seconds ago, not days: {line}"
+    );
+}
