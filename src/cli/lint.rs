@@ -34,7 +34,7 @@ use crate::{audit, aws, config, lint, project};
 ///   "cleared": [{ "rule_id": "...", "env": "...", "title": "..." }, ...]
 /// }
 /// ```
-fn print_baseline_diff_json(new: &[&lint::Issue], cleared: &[&lint::BaselineIssue]) {
+fn baseline_diff_json(new: &[&lint::Issue], cleared: &[&lint::BaselineIssue]) -> String {
     let mut out = String::from("{\"new\":[");
     for (i, issue) in new.iter().enumerate() {
         if i > 0 {
@@ -60,7 +60,7 @@ fn print_baseline_diff_json(new: &[&lint::Issue], cleared: &[&lint::BaselineIssu
         ));
     }
     out.push_str("]}");
-    println!("{out}");
+    out
 }
 
 /// Fully-resolved `ebman lint` arguments: flags parsed, interval and
@@ -932,6 +932,74 @@ pub(crate) fn env_not_found_anywhere(
 /// and 2 a usage error. `--baseline` also exits 1 rather than snapshot
 /// a degraded run.
 pub async fn run(args: &[String]) -> Result<()> {
+    let mut disabled: Vec<String> = config::load_lint_disables();
+    disabled.extend(project::load_lint_disables_from_cwd());
+    let mut fix_disabled: Vec<String> = config::load_lint_fix_disables();
+    fix_disabled.extend(project::load_lint_fix_disables_from_cwd());
+    let setup = LintSetup {
+        disabled,
+        fix_disabled,
+        safety_cfg: config::load(),
+        ambient_profile: std::env::var("AWS_PROFILE").ok(),
+    };
+    let code = lint_body(
+        args,
+        &setup,
+        crate::cli::frozen_refusal,
+        |region| aws::AwsClient::with(None, region),
+        // `ctrl_c` panics outside a Tokio runtime, but `run` is
+        // `#[tokio::main]`-driven so we're always inside one here.
+        async {
+            let _ = tokio::signal::ctrl_c().await;
+        },
+        &mut std::io::stdout(),
+        &mut std::io::stderr(),
+    )
+    .await;
+    // Drain in-flight webhook POSTs (lint --fix audit fan-out,
+    // --watch --webhook cycle posts, a freeze refusal's) before the
+    // process ends — fire-and-forget tasks are cancelled at runtime
+    // drop.
+    if code != 0 {
+        crate::cli::exit_after_drain(code).await;
+    }
+    audit::drain_webhooks(std::time::Duration::from_secs(12)).await;
+    Ok(())
+}
+
+/// What `ebman lint` reads from the operator's machine before it starts:
+/// the disabled rules and fixes (config and project), the safety config,
+/// and `AWS_PROFILE`.
+pub(crate) struct LintSetup {
+    pub disabled: Vec<String>,
+    pub fix_disabled: Vec<String>,
+    pub safety_cfg: config::Config,
+    pub ambient_profile: Option<String>,
+}
+
+/// `ebman lint`'s whole behaviour against its setup, a freeze check
+/// (`frozen_refusal` in production: the refusal, audited, if a freeze
+/// holds), a region → client factory, the `--watch` stop signal
+/// (Ctrl-C) and writers. Returns the exit code.
+pub(crate) async fn lint_body<F, Fut>(
+    args: &[String],
+    setup: &LintSetup,
+    frozen: impl Fn(&str) -> Option<String>,
+    client_for: F,
+    stop: impl std::future::Future<Output = ()>,
+    out: &mut dyn std::io::Write,
+    err: &mut dyn std::io::Write,
+) -> i32
+where
+    F: Fn(Option<String>) -> Fut,
+    Fut: std::future::Future<Output = color_eyre::eyre::Result<aws::AwsClient>>,
+{
+    let LintSetup {
+        disabled,
+        fix_disabled,
+        safety_cfg,
+        ambient_profile: active_profile_for_safety,
+    } = setup;
     let LintArgs {
         env_name,
         regions,
@@ -954,19 +1022,10 @@ pub async fn run(args: &[String]) -> Result<()> {
     } = match parse_lint_args(args) {
         Ok(parsed) => parsed,
         Err(msg) => {
-            eprintln!("{msg}");
-            std::process::exit(2);
+            let _ = writeln!(err, "{msg}");
+            return 2;
         }
     };
-
-    let mut disabled: Vec<String> = config::load_lint_disables();
-    disabled.extend(project::load_lint_disables_from_cwd());
-
-    let mut fix_disabled: Vec<String> = config::load_lint_fix_disables();
-    fix_disabled.extend(project::load_lint_fix_disables_from_cwd());
-
-    let safety_cfg = config::load();
-    let active_profile_for_safety = std::env::var("AWS_PROFILE").ok();
     // `run_cycle` computes its own; this one is for the printing
     // and baseline branches below, which stayed in `run`.
     let multi_region = regions.len() > 1;
@@ -975,11 +1034,10 @@ pub async fn run(args: &[String]) -> Result<()> {
     // :incident (a --dry-run plans nothing, so it stays allowed).
     // This path had the same blind spot action/replay had.
     if fix && yes {
-        crate::cli::refuse_if_frozen(
-            "ebman lint --fix",
-            crate::verb::Verb::SetOption.audit_label(),
-        )
-        .await;
+        if let Some(reason) = frozen(crate::verb::Verb::SetOption.audit_label()) {
+            let _ = writeln!(err, "ebman lint --fix: refusing — {reason}");
+            return 3;
+        }
     }
     if webhook.is_some() {
         // CLI mode installs no tracing subscriber — route webhook
@@ -1019,46 +1077,39 @@ pub async fn run(args: &[String]) -> Result<()> {
     // first ctrl_c() call overrides SIGINT's default disposition for
     // the process lifetime, and no listener is live while a cycle's
     // AWS fetches run — the keypress was silently swallowed).
-    let ctrl_c = tokio::signal::ctrl_c();
-    tokio::pin!(ctrl_c);
+    tokio::pin!(stop);
     loop {
         let cycle_started = chrono::Utc::now();
         if watch && !quiet && !json {
-            println!("--- {} ---", cycle_started.to_rfc3339());
+            let _ = writeln!(out, "--- {} ---", cycle_started.to_rfc3339());
         }
         let report = run_cycle(
             &regions,
             &env_name,
-            &disabled,
+            disabled,
             probe_live,
             fix,
             yes,
             severity_filter,
             &rule_filter,
-            &safety_cfg,
-            &fix_disabled,
-            &active_profile_for_safety,
-            |region| async move { aws::AwsClient::with(None, region).await },
+            safety_cfg,
+            fix_disabled,
+            active_profile_for_safety,
+            &client_for,
             cycle_started,
         )
         .await;
         // What the cycle has to say, before its findings, as when it
         // printed them itself.
-        let _ = render_notes(
-            &report.notes,
-            quiet,
-            json,
-            &mut std::io::stdout().lock(),
-            &mut std::io::stderr().lock(),
-        );
+        let _ = render_notes(&report.notes, quiet, json, out, err);
 
         // The cycle reports a usage error; `run` owns the exit. Same
         // message and same exit code 2 as the `exit_after_drain` call
         // this replaced — moved out so the branch is reachable from a
         // test.
         if let Some(msg) = report.usage_error.as_deref() {
-            eprintln!("ebman lint: {msg}");
-            crate::cli::exit_after_drain(2).await;
+            let _ = writeln!(err, "ebman lint: {msg}");
+            return 2;
         }
 
         // `--webhook URL` (watch mode): POST the cycle's findings when
@@ -1073,7 +1124,10 @@ pub async fn run(args: &[String]) -> Result<()> {
                 // The next full cycle compares against the last GOOD
                 // state, so a real change during the outage still fires.
                 if !quiet {
-                    eprintln!("warning: cycle degraded (fetch failures) — webhook suppressed");
+                    let _ = writeln!(
+                        err,
+                        "warning: cycle degraded (fetch failures) — webhook suppressed"
+                    );
                 }
             } else {
                 let identities: std::collections::BTreeSet<String> =
@@ -1106,12 +1160,13 @@ pub async fn run(args: &[String]) -> Result<()> {
         let baseline_mode = baseline_write.is_some() || baseline_against.is_some();
         if !quiet && !baseline_mode {
             if json {
-                println!(
+                let _ = writeln!(
+                    out,
                     "{}",
                     lint::render_report_json(&report.issues, &report.degrade_reasons)
                 );
             } else if report.issues.is_empty() {
-                println!("✓ No issues found");
+                let _ = writeln!(out, "✓ No issues found");
             } else {
                 for issue in &report.issues {
                     let sev = issue.severity.as_str();
@@ -1122,20 +1177,21 @@ pub async fn run(args: &[String]) -> Result<()> {
                             .get("region")
                             .map(String::as_str)
                             .unwrap_or("-");
-                        println!(
+                        let _ = writeln!(
+                            out,
                             "{region}\t{sev}\t{}\t{env_str}\t{}",
                             issue.rule_id, issue.title
                         );
                     } else {
-                        println!("{sev}\t{}\t{env_str}\t{}", issue.rule_id, issue.title);
+                        let _ =
+                            writeln!(out, "{sev}\t{}\t{env_str}\t{}", issue.rule_id, issue.title);
                     }
                     if let Some(s) = &issue.suggestion {
-                        println!("\t→ {s}");
+                        let _ = writeln!(out, "\t→ {s}");
                     }
                 }
             }
-            use std::io::Write;
-            let _ = std::io::stdout().flush();
+            let _ = out.flush();
         }
 
         // --baseline FILE: snapshot current issues to disk, exit 0.
@@ -1149,19 +1205,21 @@ pub async fn run(args: &[String]) -> Result<()> {
             // run would report the reappeared issues as NEW (or worse,
             // a fully-failed run writes an empty baseline).
             if report.degraded() {
-                eprintln!(
+                let _ = writeln!(
+                    err,
                     "ebman lint --baseline: refusing to snapshot a degraded run \
                      (fetch failures above) — fix access and re-run"
                 );
-                std::process::exit(1);
+                return 1;
             }
             let body = lint::render_issues_json(&report.issues);
             if let Err(e) = std::fs::write(path, &body) {
-                eprintln!("ebman lint --baseline: write {path}: {e}");
-                std::process::exit(1);
+                let _ = writeln!(err, "ebman lint --baseline: write {path}: {e}");
+                return 1;
             }
             if !quiet {
-                eprintln!(
+                let _ = writeln!(
+                    err,
                     "ebman lint --baseline: wrote {} issue(s) to {path}",
                     report.issues.len()
                 );
@@ -1175,15 +1233,15 @@ pub async fn run(args: &[String]) -> Result<()> {
             let baseline_text = match std::fs::read_to_string(path) {
                 Ok(t) => t,
                 Err(e) => {
-                    eprintln!("ebman lint --against-baseline: read {path}: {e}");
-                    std::process::exit(1);
+                    let _ = writeln!(err, "ebman lint --against-baseline: read {path}: {e}");
+                    return 1;
                 }
             };
             let baseline_issues = match lint::parse_baseline(&baseline_text) {
                 Ok(v) => v,
                 Err(e) => {
-                    eprintln!("ebman lint --against-baseline: {e}");
-                    std::process::exit(1);
+                    let _ = writeln!(err, "ebman lint --against-baseline: {e}");
+                    return 1;
                 }
             };
             let BaselineDrift {
@@ -1194,26 +1252,29 @@ pub async fn run(args: &[String]) -> Result<()> {
 
             if !quiet {
                 if json {
-                    print_baseline_diff_json(&new_issues, &cleared);
+                    let _ = writeln!(out, "{}", baseline_diff_json(&new_issues, &cleared));
                 } else {
                     if new_issues.is_empty() && cleared.is_empty() {
-                        println!("✓ No drift vs baseline ({} issues stable)", baseline_count);
+                        let _ = writeln!(
+                            out,
+                            "✓ No drift vs baseline ({baseline_count} issues stable)"
+                        );
                     }
                     for issue in &new_issues {
                         let sev = issue.severity.as_str();
                         let env_str = issue.env_name.as_deref().unwrap_or("-");
-                        println!(
+                        let _ = writeln!(
+                            out,
                             "+ NEW\t{sev}\t{}\t{env_str}\t{}",
                             issue.rule_id, issue.title
                         );
                     }
                     for b in &cleared {
                         let env_str = b.env_name.as_deref().unwrap_or("-");
-                        println!("✓ CLEARED\t{}\t{env_str}\t{}", b.rule_id, b.title);
+                        let _ = writeln!(out, "✓ CLEARED\t{}\t{env_str}\t{}", b.rule_id, b.title);
                     }
                 }
-                use std::io::Write;
-                let _ = std::io::stdout().flush();
+                let _ = out.flush();
             }
 
             last_cycle_clean = new_issues.is_empty();
@@ -1231,13 +1292,11 @@ pub async fn run(args: &[String]) -> Result<()> {
             break;
         }
         // Sleep `interval_secs` or break on Ctrl-C — whichever
-        // fires first. `tokio::signal::ctrl_c` panics if called
-        // outside a Tokio runtime, but `run` is `#[tokio::main]`-
-        // driven so we're always inside one here.
+        // fires first.
         tokio::select! {
-            _ = &mut ctrl_c => {
+            _ = &mut stop => {
                 if !quiet && !json {
-                    eprintln!("(watch interrupted)");
+                    let _ = writeln!(err, "(watch interrupted)");
                 }
                 break;
             }
@@ -1250,15 +1309,7 @@ pub async fn run(args: &[String]) -> Result<()> {
         }
     }
 
-    // Drain in-flight webhook POSTs (lint --fix audit fan-out and
-    // --watch --webhook cycle posts) before the process ends —
-    // fire-and-forget tasks are cancelled at runtime drop.
-    audit::drain_webhooks(std::time::Duration::from_secs(12)).await;
-    let code = lint_exit_code(fix, last_fix_failed, last_cycle_degraded, last_cycle_clean);
-    if code != 0 {
-        std::process::exit(code);
-    }
-    Ok(())
+    lint_exit_code(fix, last_fix_failed, last_cycle_degraded, last_cycle_clean)
 }
 
 #[cfg(test)]
@@ -3619,5 +3670,190 @@ pub(crate) mod cycle_wiring {
             "every region answered: {:?}",
             report.degrade_reasons
         );
+    }
+}
+
+#[cfg(test)]
+mod body {
+    use super::cycle_wiring::{mock_client_inner, MockFaults};
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct Outcome {
+        code: i32,
+        out: String,
+        err: String,
+        clients: usize,
+    }
+
+    fn setup() -> LintSetup {
+        LintSetup {
+            disabled: vec![],
+            fix_disabled: vec![],
+            safety_cfg: config::Config::default(),
+            ambient_profile: None,
+        }
+    }
+
+    /// One lint run over the mock fleet `api` with `faults`, `frozen`
+    /// standing in for the freeze, and a `--watch` stop that is already
+    /// pressed.
+    async fn lint(args: &[&str], faults: MockFaults, frozen: Option<&str>) -> Outcome {
+        let argv: Vec<String> = std::iter::once("lint")
+            .chain(args.iter().copied())
+            .map(String::from)
+            .collect();
+        let clients = AtomicUsize::new(0);
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let code = lint_body(
+            &argv,
+            &setup(),
+            |_: &str| frozen.map(String::from),
+            |_region| {
+                clients.fetch_add(1, Ordering::SeqCst);
+                async move { Ok(mock_client_inner(vec!["api".into()], faults)) }
+            },
+            async {},
+            &mut out,
+            &mut err,
+        )
+        .await;
+        Outcome {
+            code,
+            out: String::from_utf8(out).unwrap(),
+            err: String::from_utf8(err).unwrap(),
+            clients: clients.into_inner(),
+        }
+    }
+
+    /// `update_rejected` also serves `AllAtOnce` on four instances, so
+    /// EBL001 fires.
+    fn findings() -> MockFaults {
+        MockFaults {
+            update_rejected: true,
+            ..Default::default()
+        }
+    }
+
+    fn degraded() -> MockFaults {
+        MockFaults {
+            health_rejected: true,
+            ..Default::default()
+        }
+    }
+
+    fn temp(name: &str) -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("ebman-lint-body-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join("baseline.json")
+    }
+
+    #[tokio::test]
+    async fn exit_codes_follow_the_table() {
+        let r = lint(&["--rules", "EBL001"], MockFaults::default(), None).await;
+        assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+        assert!(r.out.contains("✓ No issues found"), "{}", r.out);
+
+        let r = lint(&[], findings(), None).await;
+        assert_eq!(r.code, 3, "{}", r.err);
+        assert!(r.out.contains("EBL001\tapi\t"), "{}", r.out);
+
+        let r = lint(&["--rules", "EBL001"], degraded(), None).await;
+        assert_eq!(r.code, 1, "clean but incomplete is not clean: {}", r.err);
+
+        let r = lint(&["--fix"], MockFaults::default(), None).await;
+        assert_eq!(r.code, 2, "--fix needs --yes or --dry-run");
+        assert_eq!(r.clients, 0);
+    }
+
+    #[tokio::test]
+    async fn a_freeze_stops_a_fix_but_not_a_read() {
+        let r = lint(
+            &["--fix", "--yes"],
+            findings(),
+            Some("deploys frozen: incident #4321"),
+        )
+        .await;
+        assert_eq!(r.code, 3, "{}", r.err);
+        assert_eq!(r.clients, 0, "refused before any client");
+        assert!(
+            r.err.contains("refusing — deploys frozen: incident #4321"),
+            "{}",
+            r.err
+        );
+
+        let r = lint(&["--fix", "--dry-run"], findings(), Some("deploys frozen")).await;
+        assert_ne!(r.code, 3, "a dry run plans nothing: {}", r.err);
+        let r = lint(&[], findings(), Some("deploys frozen")).await;
+        assert!(r.clients > 0, "a read is not a write");
+    }
+
+    #[tokio::test]
+    async fn a_baseline_grandfathers_findings_and_refuses_a_degraded_snapshot() {
+        let path = temp("snap");
+        let p = path.to_str().unwrap();
+        let r = lint(&["--baseline", p], findings(), None).await;
+        assert_eq!(r.code, 0, "a snapshot always exits 0: {}", r.err);
+        assert!(std::fs::read_to_string(&path).unwrap().contains("EBL001"));
+
+        let r = lint(&["--against-baseline", p], findings(), None).await;
+        assert_eq!(r.code, 0, "{}", r.err);
+        assert!(r.out.contains("No drift vs baseline"), "{}", r.out);
+
+        let fresh = temp("fresh");
+        let r = lint(
+            &["--against-baseline", fresh.to_str().unwrap()],
+            findings(),
+            None,
+        )
+        .await;
+        assert_eq!(r.code, 1, "no baseline to read: {}", r.err);
+        std::fs::write(&fresh, r#"{"issues":[]}"#).unwrap();
+        let r = lint(
+            &["--against-baseline", fresh.to_str().unwrap(), "--json"],
+            findings(),
+            None,
+        )
+        .await;
+        assert_eq!(r.code, 3, "a finding the baseline lacks is new: {}", r.err);
+        let v: serde_json::Value = serde_json::from_str(r.out.trim()).unwrap();
+        let new: Vec<&str> = v["new"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["rule_id"].as_str().unwrap())
+            .collect();
+        assert!(new.contains(&"EBL001"), "{new:?}");
+
+        let degraded_path = temp("degraded");
+        let r = lint(
+            &["--baseline", degraded_path.to_str().unwrap()],
+            degraded(),
+            None,
+        )
+        .await;
+        assert_eq!(r.code, 1, "{}", r.err);
+        assert!(!degraded_path.exists(), "nothing snapshotted");
+        for f in [path, fresh, degraded_path] {
+            let _ = std::fs::remove_dir_all(f.parent().unwrap());
+        }
+    }
+
+    /// The stop signal ends a watch after the cycle in flight, and the
+    /// exit is that cycle's. Bounded: a watch that ignores its stop
+    /// otherwise never returns, and a hung test reports nothing.
+    #[tokio::test(start_paused = true)]
+    async fn a_watch_stops_on_the_signal_with_the_last_cycles_code() {
+        let r = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            lint(&["--watch", "--interval", "60s"], findings(), None),
+        )
+        .await
+        .expect("the watch stopped on the signal");
+        assert_eq!(r.code, 3, "{}", r.err);
+        assert_eq!(r.clients, 1, "one cycle");
+        assert!(r.err.contains("(watch interrupted)"), "{}", r.err);
     }
 }

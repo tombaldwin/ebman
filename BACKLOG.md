@@ -38,17 +38,6 @@ Tier definitions:
 
 #### Refactors and test hygiene
 
-- [ ] **`ebman lint` behind a testable body** *(architecture; found 2026-10-21)*
-
-  Every other subcommand is now a thin `run` over a `*_body` that takes
-  its client (or a region → client factory), the safety decision where
-  it writes, and the writers, and returns its exit code: `envs`,
-  `versions`, `audit`, `audit replay`, `ctl`, `drift`, `explain`,
-  `action`, `action rollout`, `freeze`, `thaw`. `lint`'s `run` is still
-  329 lines that print and exit directly (14 exits); its cycle is
-  already behind `run_cycle`'s client factory and PLAN item 2's typed
-  notes, so what remains is the shell: args, baseline, `--fix`, render.
-
 - [ ] **The App tab editor cannot tell `;label=` inside a metric name
   from a new entry.** Its metrics field joins entries with `; `, so a
   metric named `a;b=c` reads back as two entries (`heap=a`, `b=c|…`) and
@@ -221,8 +210,8 @@ Tier definitions:
   `strip_line_comment` — so this is consolidation, not a fix, but it is
   the house rule. S.
 
-- [ ] **`refuse_if_frozen` decides outside `write_gate::decide`**
-  (`cli/mod.rs:86`, used by `lint --fix`). It hard-codes
+- [ ] **`frozen_refusal` decides outside `write_gate::decide`**
+  (`cli/mod.rs`, used by `lint --fix`). It hard-codes
   `Refusal::Frozen`, skipping `decide`'s precedence: with an unreadable
   safety config AND an active freeze, `lint --fix` reports "frozen"
   rather than "unreadable". S.
@@ -231,8 +220,9 @@ Tier definitions:
   `draw_action` 673, `draw_why_red_overlay` 474, `execute_command` 418
   (a flat dispatch; judged fine), `draw_detail_health` 410, `draw_table`
   408, `App::new` 348, `handle_detail_mode_key` 343, `apply_refresh`
-  334, `draw_help` 321, `lint::run` 318. (`run_rollout`, 402, is now a
-  parser, a 242-line body and a report renderer.) Worth doing first:
+  334, `lint_body` 333 (was `lint::run`), `draw_help` 321.
+  (`run_rollout`, 402, is now a parser, a 242-line body and a report
+  renderer.) Worth doing first:
   `draw_action` (one function per `ActionFlow` arm).
   **Blocked on a ruling for `draw_action`:**
   `every_render_surface_is_accounted_for` counts top-level `fn draw_*`
@@ -243,7 +233,7 @@ Tier definitions:
 #### Correctness and safety, from the 2026-09-25 reviews
 
 - [ ] **`lint --fix --yes` checks the incident freeze once per run.**
-  `refuse_if_frozen` runs up front and `apply_fixes_for_env` passes
+  `frozen_refusal` runs up front and `apply_fixes_for_env` passes
   `active_freeze: None`, deliberately — a per-env check printed the same
   refusal N times. But a freeze declared DURING a long multi-region run
   does not stop later envs, while MCP re-checks after every approval and

@@ -74,36 +74,29 @@ pub(crate) use crate::deploy_poll::{decide_poll, PollDecision};
 /// crate (lib + bin).
 pub(crate) use crate::util::{json_escape as cli_esc, json_string};
 
-/// Cross-process freeze gate for CLI write paths (0.28): refuse when
-/// a live TUI session holds `:freeze-deploys` / `:incident START`
-/// (pid-scoped marker — see `crate::freeze`). Exit 3, same class as
-/// the pin refusal. These paths had the same blind spot the MCP
-/// write tools would have had: a fleet frozen mid-incident could
-/// still be written from a second terminal.
-pub(crate) async fn refuse_if_frozen(prog: &str, action_label: &str) {
-    if let Some(m) = crate::freeze::FreezeStore::real().active() {
-        // Audited like every other refusal. This was the one CLI
-        // refusal path the `stage=refused` work missed: it exits before
-        // reaching `write_refusal`, so a fleet-wide freeze stopping a
-        // `lint --fix` run left no trace while a per-env pin stopping
-        // the same run left one.
-        let refusal = crate::write_gate::Refusal::Frozen;
-        crate::audit::append_action_refused(
-            None,
-            std::env::var("AWS_PROFILE").ok().as_deref(),
-            "-",
-            action_label,
-            "-",
-            refusal.rule(),
-            &refusal.remedy(),
-        );
-        eprintln!("{prog}: refusing — {}", crate::freeze::refusal_message(&m));
-        // Drain first: the refusal's own webhook POST is spawned
-        // fire-and-forget, and `process::exit` cancels spawned tasks —
-        // so the notification that a write was STOPPED was the one an
-        // integration never received.
-        exit_after_drain(3).await;
-    }
+/// Cross-process freeze gate for CLI write paths (0.28): the refusal
+/// when a live TUI session holds `:freeze-deploys` / `:incident START`,
+/// or an `ebman freeze` is in force — audited like every other refusal.
+/// These paths had the same blind spot the MCP write tools would have
+/// had: a fleet frozen mid-incident could still be written from a
+/// second terminal. The caller prints it and exits 3, draining first.
+pub(crate) fn frozen_refusal(action_label: &str) -> Option<String> {
+    let m = crate::freeze::FreezeStore::real().active()?;
+    // Audited. This was the one CLI refusal path the `stage=refused`
+    // work missed: it exits before reaching `write_refusal`, so a
+    // fleet-wide freeze stopping a `lint --fix` run left no trace while
+    // a per-env pin stopping the same run left one.
+    let refusal = crate::write_gate::Refusal::Frozen;
+    crate::audit::append_action_refused(
+        None,
+        std::env::var("AWS_PROFILE").ok().as_deref(),
+        "-",
+        action_label,
+        "-",
+        refusal.rule(),
+        &refusal.remedy(),
+    );
+    Some(crate::freeze::refusal_message(&m))
 }
 
 /// The write gate: freeze first, then the config pin. Returns the
@@ -601,7 +594,7 @@ mod write_gate_input_guard {
     #[test]
     fn refusal_exits_drain_webhooks_first() {
         for (module, f, calls) in [
-            ("cli/mod.rs", "refuse_if_frozen", "eprintln!"),
+            ("cli/lint.rs", "run", "lint_body("),
             ("cli/action.rs", "run", "action_body("),
             ("cli/action.rs", "run_rollout", "rollout_body("),
             ("cli/audit_replay.rs", "run_replay", "audit_replay_body("),

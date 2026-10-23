@@ -5249,3 +5249,23 @@ From `PLAN.md`, retired with it:
   `the_tf_badge_follows_the_resources_region`; three mutations CAUGHT.
   The CLI / MCP drift region is pinned only through `env_for` (no
   testable body yet).
+
+- [x] **`ebman lint` behind a testable body** *(architecture; found 2026-10-21)*
+
+  Every other subcommand is now a thin `run` over a `*_body` that takes
+  its client (or a region → client factory), the safety decision where
+  it writes, and the writers, and returns its exit code: `envs`,
+  `versions`, `audit`, `audit replay`, `ctl`, `drift`, `explain`,
+  `action`, `action rollout`, `freeze`, `thaw`. `lint`'s `run` is still
+  329 lines that print and exit directly (14 exits); its cycle is
+  already behind `run_cycle`'s client factory and PLAN item 2's typed
+  notes, so what remains is the shell: args, baseline, `--fix`, render.
+
+    DONE 2026-10-23. Every subcommand is a thin `run` over a `*_body` that
+    takes its client or a region → client factory, the safety decision
+    (`cli::Refusal`) where it writes, and its writers, and returns its exit
+    code: `audit`, `audit replay`, `ctl`, `drift`, `explain`, `action`,
+    `action rollout`, `lint` (plus the earlier `envs`, `versions`,
+    `freeze`, `thaw`). `every_exit_code_is_documented` reads every
+    code-returning function by signature. Four source-shape guards on
+    `run_rollout` became behavioural tests.
