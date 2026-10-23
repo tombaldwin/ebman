@@ -516,9 +516,15 @@ impl App {
             .position(|r| matches!(r, DisplayRow::Env(_)))
             .unwrap_or(0);
         let pending = self.pending_select.take();
-        if let Some(name) = pending {
+        if let Some(saved) = pending {
+            // `REGION/NAME` names one row; a bare name from an older
+            // state file takes the first row with that name.
+            let key = EnvKey::parse_persisted(&saved);
             let pos = self.view.display().iter().position(|r| match r {
-                DisplayRow::Env(i) => self.env_at(*i).is_some_and(|e| e.name == name),
+                DisplayRow::Env(i) => self.env_at(*i).is_some_and(|e| match &key {
+                    Some(key) => self.env_key(e) == *key,
+                    None => e.name == saved,
+                }),
                 DisplayRow::Separator => false,
             });
             if let Some(p) = pos {

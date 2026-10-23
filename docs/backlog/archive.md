@@ -4990,3 +4990,19 @@ From `PLAN.md`, retired with it:
   `detail_offers_the_upgrade_only_on_the_twin_that_is_behind`. Three
   mutations, each putting the name-keyed lookup back at one site (the
   store, the table read, the Detail read): all CAUGHT.
+
+- [x] **The restored cursor is by env name.** `state.toml`'s
+  `selected_env` is a name, and `pending_select` restores the cursor to
+  the first row with it, so a session that ended on the eu-west-2 twin
+  reopens on the home one. A cursor, not a write (every write takes the
+  row it is started on), but the operator can act on the wrong twin
+  without noticing. Persist `REGION/NAME` as the deploy snapshots do.
+  *Write-routing slice 7, 2026-10-22.*
+
+  **Done 2026-10-23.** `App::persisted_selection` saves
+  `EnvKey::to_persisted` (`REGION/NAME`); `restore_or_clamp_selection`
+  matches a parsed key against `App::env_key`, and a bare name (0.46.2 and
+  earlier) by name. Tests: `the_saved_cursor_names_the_twin_it_was_on`,
+  `a_saved_cursor_comes_back_on_the_twin_it_names`. Three mutations
+  (save by name, restore by name, drop the bare-name fallback): all
+  CAUGHT, the last only after its case was moved off the first row.

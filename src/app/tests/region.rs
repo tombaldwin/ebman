@@ -2435,3 +2435,44 @@ async fn detail_offers_the_upgrade_only_on_the_twin_that_is_behind() {
         );
     }
 }
+
+#[tokio::test]
+async fn the_saved_cursor_names_the_twin_it_was_on() {
+    let mut app = twins_and_staging();
+    let eu = app
+        .view
+        .display()
+        .iter()
+        .position(|r| matches!(r, DisplayRow::Env(1)))
+        .expect("eu twin shown");
+    app.table_state.select(Some(eu));
+    assert_eq!(
+        app.persisted_selection().as_deref(),
+        Some("eu-west-2/api-prod")
+    );
+}
+
+#[tokio::test]
+async fn a_saved_cursor_comes_back_on_the_twin_it_names() {
+    for (saved, want) in [
+        ("eu-west-2/api-prod", ("api-prod", "eu-west-2")),
+        ("us-east-1/api-prod", ("api-prod", "us-east-1")),
+        // A bare name, as 0.46.2 and earlier saved it, still restores by
+        // name. Not the first row, so the fallback cannot pass for it.
+        ("api-staging", ("api-staging", "us-east-1")),
+    ] {
+        let mut app = twins_and_staging();
+        assert_eq!(app.context.region, "us-east-1", "fixture's home region");
+        app.table_state.select(None);
+        app.pending_select = Some(saved.into());
+        app.restore_or_clamp_selection();
+        let got = app
+            .selected_env()
+            .map(|e| (e.name.clone(), app.region_for(e)));
+        assert_eq!(
+            got,
+            Some((want.0.to_string(), want.1.to_string())),
+            "restoring {saved}"
+        );
+    }
+}

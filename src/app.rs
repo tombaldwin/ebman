@@ -2196,6 +2196,13 @@ impl App {
         self.rebuild_view();
     }
 
+    /// The selected row as `state.toml` keeps it: `REGION/NAME`, not the
+    /// name. Under `:region all` a name can be listed once per region,
+    /// and by name the cursor came back on the first of them.
+    pub(crate) fn persisted_selection(&self) -> Option<String> {
+        self.selected_env().map(|e| self.env_key(e).to_persisted())
+    }
+
     /// Write the session's sort, filter and selection to
     /// `state.toml` so the next launch resumes where this one stopped.
     ///
@@ -2212,7 +2219,7 @@ impl App {
         if self.demo_mode {
             return;
         }
-        let selected = self.selected_env().map(|e| e.name.clone());
+        let selected = self.persisted_selection();
         // Persist the operator's *intent* first, then fall back to the
         // effective state. Override-wins matters when the user has
         // dispatched `:region X` (so `override_region` is `Some(X)`) but

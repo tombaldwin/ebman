@@ -121,14 +121,6 @@ Tier definitions:
   also hosts discovery orchestration. Pure moves, 1–2 h. *0.46 release
   review.*
 
-- [ ] **The restored cursor is by env name.** `state.toml`'s
-  `selected_env` is a name, and `pending_select` restores the cursor to
-  the first row with it, so a session that ended on the eu-west-2 twin
-  reopens on the home one. A cursor, not a write (every write takes the
-  row it is started on), but the operator can act on the wrong twin
-  without noticing. Persist `REGION/NAME` as the deploy snapshots do.
-  *Write-routing slice 7, 2026-10-22.*
-
 - [ ] **Audit writers take a typed label, and the verb spelling guard
   goes.** `no_surface_spells_a_shared_verb_itself` (`src/verb.rs`) bans
   any production literal `"Deploy"` / `"Rebuild"` / `"Terminate"` /

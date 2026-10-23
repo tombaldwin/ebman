@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **The stale-platform sign follows the env, not its name.** Under
+  `:region all` two same-named envs on different platform versions
+  shared one answer, so the twin on the current platform could be
+  tinted stale and offered an upgrade in Detail.
+- **The cursor comes back on the env it was on.** `state.toml` saved
+  the selected env's name, so a session that ended on the eu-west-2
+  twin reopened on the home one. It now saves `REGION/NAME`; a bare
+  name from an older file still restores by name.
+
 ## [0.46.2] - 2026-10-23
 
 ### Changed

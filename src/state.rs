@@ -18,6 +18,8 @@ pub(crate) struct PersistedState {
     /// tab. `None` means "never set" — the app falls back to the
     /// `EventTimeFormat` default (UTC). Stored as `"utc"|"local"|"age"`.
     pub event_time_format: Option<crate::app::EventTimeFormat>,
+    /// The row the cursor was on, as `REGION/NAME` (`EnvKey::to_persisted`).
+    /// A bare name, as 0.46.2 and earlier wrote it, still restores by name.
     pub selected_env: Option<String>,
     pub pinned: BTreeSet<String>,
     pub pinned_apps: BTreeSet<String>,
