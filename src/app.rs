@@ -659,9 +659,8 @@ pub(crate) enum AppMsg {
     /// What discovery found for the App tab's editor.
     AppTabDiscovered {
         gen: u64,
-        /// The region the lookups ran in: with `env_name`, the cache key.
-        region: String,
-        env_name: String,
+        /// The env the lookups ran for, region included: the cache key.
+        key: EnvKey,
         /// The run it answers: only the latest run's answer ends it (an
         /// older one may answer after the stale timeout let a newer one
         /// start).

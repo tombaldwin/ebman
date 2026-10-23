@@ -51,23 +51,6 @@ Tier definitions:
   output is PLAN item 2's typed-report question, so it waits on that
   ruling.
 
-- [ ] **Detail and the App tab carry an `EnvKey`, not a name.** Detail
-  answers are matched to Detail's env in two halves (region by the
-  `detail_takes` / `modal_takes` guards in `handle_msg`, name inside
-  `apply_detail_msg`), five `Detail*` messages use per-open `Ticket`s
-  instead, and the App tab's functions take a name and rebuild the
-  region (`discovery_key(&str)`): three patterns for a new `Detail*`
-  message to copy, and a variant with `region` but no guarded arm falls
-  into the drop arm silently. **Recommended fix:** `DetailState` gains
-  `key: EnvKey` at open; `Detail*` messages carry `key` instead of
-  `(env_name, region)`; `apply_detail_msg` compares the key, which
-  deletes `detail_takes` and its drop arm; the App tab functions take
-  `&EnvKey`, which deletes `discovery_key(&str)` and gives
-  `App::detail_key()`. `cfg.app_tabs.envs` stays by name. Touches
-  app_tab_form, spawn_detail, detail_nav, msg and ui, so it waits for
-  the next cycle. *0.46 release review (architecture, Important), with
-  the shape from its re-review.*
-
 - [ ] **The App tab editor cannot tell `;label=` inside a metric name
   from a new entry.** Its metrics field joins entries with `; `, so a
   metric named `a;b=c` reads back as two entries (`heap=a`, `b=c|…`) and
@@ -85,12 +68,11 @@ Tier definitions:
     `split_env_ref`;
   - `EnvKey` lives in `polled.rs` but is the crate-wide target identity:
     move it to `env_ref.rs`;
-  - Detail's key is recomputed at ~17 sites (absorbed by the `EnvKey`
-    item above);
   - four region-wide writes use `EnvKey::new(region, "")`: a named
     constructor;
-  - `AppTabDiscovered`, `LogTailOpened`, `DeleteAppVersion` carry
-    `(env_name, region)` pairs where an `EnvKey` would do.
+  - `LogTailOpened`, `DeleteAppVersion` carry `(env_name, region)`
+    pairs where an `EnvKey` would do (`AppTabDiscovered` done
+    2026-10-23).
 
 - [ ] **Audit-line boilerplate.** ~30 `append_action_dispatched` and ~11
   `append_action_completed` sites pass account / profile / region by

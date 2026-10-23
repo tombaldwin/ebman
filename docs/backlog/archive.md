@@ -5050,3 +5050,37 @@ From `PLAN.md`, retired with it:
   (spawns each fetch twice for real, delivers the older answer last).
   Mutations: each handler settling whatever is in flight, all five
   CAUGHT; the guard's scanner on the old shape, CAUGHT.
+
+- [x] **Detail and the App tab carry an `EnvKey`, not a name.** Detail
+  answers are matched to Detail's env in two halves (region by the
+  `detail_takes` / `modal_takes` guards in `handle_msg`, name inside
+  `apply_detail_msg`), five `Detail*` messages use per-open `Ticket`s
+  instead, and the App tab's functions take a name and rebuild the
+  region (`discovery_key(&str)`): three patterns for a new `Detail*`
+  message to copy, and a variant with `region` but no guarded arm falls
+  into the drop arm silently. **Recommended fix:** `DetailState` gains
+  `key: EnvKey` at open; `Detail*` messages carry `key` instead of
+  `(env_name, region)`; `apply_detail_msg` compares the key, which
+  deletes `detail_takes` and its drop arm; the App tab functions take
+  `&EnvKey`, which deletes `discovery_key(&str)` and gives
+  `App::detail_key()`. `cfg.app_tabs.envs` stays by name. Touches
+  app_tab_form, spawn_detail, detail_nav, msg and ui, so it waits for
+  the next cycle. *0.46 release review (architecture, Important), with
+  the shape from its re-review.*
+
+  **Done 2026-10-23, in three commits.** (1) `DetailState::key`, fixed at
+  open, and `App::detail_key()`; twelve sites stopped rebuilding it from
+  the snapshot. (2) Rather than `Detail*` messages carrying the key, every
+  Detail fetch now settles by ticket (the five bare loading flags first,
+  in their own item, then the log tail), and tickets are process-wide,
+  so a same-named env's answer matches no request; `DetailLogGroups`, the
+  one one-shot answer, carries the key. `detail_takes`, its guarded arms
+  and their drop arm are gone. (3) The App tab's `app_tab_source`,
+  `discovered_for`, `discovery_running`, `spawn_app_discovery` and
+  `top_errors_group` take `&EnvKey`, `AppTabDiscovered` carries one, and
+  `discovery_key(&str)` is deleted. Mutations: the key at open, the log
+  tail's progress and result checks, the log-groups key, discovery's
+  `current` check and its application lookup: all CAUGHT. The `current`
+  case only after its test stopped passing on a stale ticket: the home
+  twin's answer carried the eu run's ticket and was dropped before the
+  region was ever compared.

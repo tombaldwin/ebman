@@ -882,7 +882,7 @@ async fn what_discovery_found_does_not_survive_a_context_switch() {
     // Another account's `api-prod` has its own alarms, cache and logs:
     // showing the first account's findings on it would be wrong.
     let mut app = test_app();
-    let key = app.discovery_key("api-prod");
+    let key = test_key(&app, "api-prod");
     app.caches
         .app_tab_discovery
         .discovered
@@ -926,18 +926,18 @@ async fn discovery_for_a_same_named_env_in_another_region_is_not_this_ones() {
     app.table_state.select(Some(away_row));
     app.open_detail();
     assert_eq!(
-        app.discovery_key("api-prod"),
+        test_key(&app, "api-prod"),
         crate::app::EnvKey::new("eu-west-2", "api-prod"),
         "Detail's env, by its own region, not the first row of that name"
     );
-    let key = app.discovery_key("api-prod");
+    let key = test_key(&app, "api-prod");
     assert_eq!(
         app.discovery_client(&key).region_for_tests(),
         "eu-west-2",
         "the lookups run where the env is"
     );
     // And the spawn itself uses that key, not a name or the home region.
-    app.spawn_app_discovery("api-prod".into());
+    app.spawn_app_discovery(test_key(&app, "api-prod"));
     let running: Vec<_> = app
         .caches
         .app_tab_discovery
@@ -959,7 +959,7 @@ async fn discovery_for_a_same_named_env_in_another_region_is_not_this_ones() {
         .discovered
         .insert(crate::app::EnvKey::new("us-east-1", "api-prod"), found);
     assert!(
-        app.discovered_for("api-prod").is_none(),
+        app.discovered_for(&test_key(&app, "api-prod")).is_none(),
         "us-east-1's findings are not shown on eu-west-2's env"
     );
 
@@ -971,11 +971,20 @@ async fn discovery_for_a_same_named_env_in_another_region_is_not_this_ones() {
     let loading = || Some(crate::form::FormState::Loading);
     assert_eq!(app.form.as_ref().map(|f| f.state.clone()), loading());
     for (region, still_loading) in [("us-east-1", true), ("eu-west-2", false)] {
+        // Each answers a run of its own, so it is the region, not a
+        // stale ticket, that decides whether it fills the form.
+        let key = EnvKey::new(region, "api-prod");
+        let ticket = app
+            .caches
+            .app_tab_discovery
+            .discovering
+            .entry(key.clone())
+            .or_default()
+            .begin();
         app.handle_msg(AppMsg::AppTabDiscovered {
             gen: app.generation,
-            region: region.into(),
-            env_name: "api-prod".into(),
-            ticket: discovery_ticket(&app, "api-prod"),
+            key,
+            ticket,
             found: Box::default(),
         });
         assert_eq!(
@@ -1012,7 +1021,7 @@ async fn a_discovery_is_for_the_envs_own_region_whichever_row_is_first() {
             .expect("the eu-west-2 row");
         app.table_state.select(Some(away_row));
         app.open_detail();
-        let key = app.discovery_key("api-prod");
+        let key = test_key(&app, "api-prod");
         assert_eq!(key.region, "eu-west-2", "away first: {away_first}");
         assert_eq!(
             app.discovery_app_name(&key).as_deref(),
@@ -2167,8 +2176,8 @@ async fn discovery_does_not_run_for_an_env_it_cannot_place() {
     // from: an empty name made that lookup fail and the tab report a
     // failed discovery. Nothing starts, so nothing shows as running.
     let mut app = test_app();
-    app.spawn_app_discovery("ghost".into());
-    assert!(!app.discovery_running("ghost"));
+    app.spawn_app_discovery(test_key(&app, "ghost"));
+    assert!(!app.discovery_running(&test_key(&app, "ghost")));
     assert!(app.caches.app_tab_discovery.discovering.is_empty());
 }
 

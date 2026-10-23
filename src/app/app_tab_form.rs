@@ -432,8 +432,9 @@ impl App {
         let Some(detail) = self.detail.as_ref() else {
             return;
         };
-        let env = detail.env_name.clone();
-        let region = self.region_for(&detail.env_snapshot);
+        let key = detail.key.clone();
+        let env = key.name.clone();
+        let region = key.region.clone();
         // Built from the file as it is now: a hand edit since the last
         // refresh would otherwise be missing from the form, and saving
         // the form replaces the env's lines on disk.
@@ -463,20 +464,20 @@ impl App {
             .caches
             .app_tab_discovery
             .discovered
-            .get(&self.discovery_key(&env))
+            .get(&key)
             .filter(|f| f.failed.is_empty())
             .cloned()
         {
-            self.fill_app_tab_form(&env, &found);
+            self.fill_app_tab_form(&key, &found);
             return;
         }
-        self.spawn_app_discovery(env);
+        self.spawn_app_discovery(key);
     }
 
-    /// Start discovery for `env` unless it is already running. Demo mode
+    /// Start discovery for `key` unless it is already running. Demo mode
     /// answers at once with nothing, without calling AWS.
-    pub(crate) fn spawn_app_discovery(&mut self, env: String) {
-        let key = self.discovery_key(&env);
+    pub(crate) fn spawn_app_discovery(&mut self, key: EnvKey) {
+        let env = key.name.clone();
         if self.demo_mode {
             // Not cached: demo mode found nothing because it looked at
             // nothing, and the tab should keep saying what to configure.
@@ -489,14 +490,13 @@ impl App {
                 .begin();
             let _ = self.msg_tx.send(AppMsg::AppTabDiscovered {
                 gen: self.generation,
-                region: key.region,
-                env_name: env,
+                key,
                 ticket,
                 found: Box::default(),
             });
             return;
         }
-        if self.discovery_running(&env) {
+        if self.discovery_running(&key) {
             return;
         }
         // An env we hold no row or snapshot for has no application to
@@ -519,7 +519,6 @@ impl App {
             self.cfg.app_tabs.envs.get(&env),
         );
         let client = self.discovery_client(&key);
-        let region = key.region;
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         tokio::spawn(async move {
@@ -534,8 +533,7 @@ impl App {
             };
             let _ = tx.send(AppMsg::AppTabDiscovered {
                 gen,
-                region,
-                env_name: env,
+                key,
                 ticket,
                 found: Box::new(found),
             });
@@ -544,11 +542,11 @@ impl App {
 
     /// Whether `env`'s discovery is running, and not so long that its
     /// result must have been lost.
-    pub(crate) fn discovery_running(&self, env: &str) -> bool {
+    pub(crate) fn discovery_running(&self, env: &EnvKey) -> bool {
         self.caches
             .app_tab_discovery
             .discovering
-            .get(&self.discovery_key(env))
+            .get(env)
             .and_then(crate::app::Fetch::in_flight_since)
             .is_some_and(|t| t.elapsed() < DISCOVERY_STALE)
     }
@@ -556,9 +554,10 @@ impl App {
     /// Where `env`'s App tab comes from: its config, else what discovery
     /// found evidence for (drawn as a suggestion), else nothing. Every
     /// place that asks "is this env set up?" asks this, so the tab, its
-    /// key strip, its fetch and its discovery cannot disagree.
-    pub(crate) fn app_tab_source(&self, env: &str) -> AppTabSource<'_> {
-        match self.cfg.app_tabs.envs.get(env) {
+    /// key strip, its fetch and its discovery cannot disagree. Config is
+    /// by name (`app.NAME.*`, by ruling); what discovery found is by env.
+    pub(crate) fn app_tab_source(&self, env: &EnvKey) -> AppTabSource<'_> {
+        match self.cfg.app_tabs.envs.get(&env.name) {
             Some(spec) => AppTabSource::Configured(spec),
             None => match self.discovered_for(env) {
                 Some(found) if crate::app_discover::preview_spec(found).is_some() => {
@@ -570,27 +569,8 @@ impl App {
     }
 
     /// What discovery found for `env` this session, if anything.
-    pub(crate) fn discovered_for(&self, env: &str) -> Option<&Discovered> {
-        self.caches
-            .app_tab_discovery
-            .discovered
-            .get(&self.discovery_key(env))
-    }
-
-    /// The discovery caches' key for `env`: (region, env). The Detail
-    /// view's own env by its snapshot's region (it may have left the
-    /// list). Every caller asks about Detail's env; any other name is
-    /// read as a typed one, so a name listed in two regions is not
-    /// guessed at and falls back to home with one that is not listed.
-    pub(super) fn discovery_key(&self, env: &str) -> EnvKey {
-        let region = match self.detail.as_ref().filter(|d| d.env_name == env) {
-            Some(d) => self.region_for(&d.env_snapshot),
-            None => match self.env_by_ref(env) {
-                Ok(e) => self.region_for(&e),
-                Err(_) => self.context.region.clone(),
-            },
-        };
-        EnvKey::new(region, env)
+    pub(crate) fn discovered_for(&self, env: &EnvKey) -> Option<&Discovered> {
+        self.caches.app_tab_discovery.discovered.get(env)
     }
 
     /// The EB application of the env `key` names, for its env variables:
@@ -600,7 +580,7 @@ impl App {
     pub(super) fn discovery_app_name(&self, key: &EnvKey) -> Option<String> {
         self.detail
             .as_ref()
-            .filter(|d| d.env_name == key.name && self.region_for(&d.env_snapshot) == key.region)
+            .filter(|d| d.key == *key)
             .map(|d| d.env_snapshot.application.clone())
             .or_else(|| {
                 self.environments
@@ -636,36 +616,37 @@ impl App {
         }
         // Another region's same-named env is not the one on screen: its
         // answer is cached for it, and fills nothing here.
-        let current = key == self.discovery_key(&key.name);
-        let env_name = key.name.clone();
+        let current = self.detail_key().as_ref() == Some(&key);
         if !self.demo_mode {
             self.caches
                 .app_tab_discovery
                 .discovered
-                .insert(key, found.clone());
+                .insert(key.clone(), found.clone());
         }
         if !current {
             return;
         }
-        self.fill_app_tab_form(&env_name, &found);
+        self.fill_app_tab_form(&key, &found);
         // An unconfigured env's App tab on screen: preview what was found.
         let on_tab = self
             .detail
             .as_ref()
-            .is_some_and(|d| d.env_name == env_name && d.tab() == DetailTab::App);
-        if on_tab && !self.app_tab_source(&env_name).is_configured() && self.form.is_none() {
-            self.spawn_detail_app(env_name);
+            .is_some_and(|d| d.tab() == DetailTab::App);
+        if on_tab && !self.app_tab_source(&key).is_configured() && self.form.is_none() {
+            self.spawn_detail_app(key.name);
         }
     }
 
-    /// Merge `found` into the open editor for `env_name`, if there is one.
-    fn fill_app_tab_form(&mut self, env_name: &str, found: &Discovered) {
+    /// Merge `found` into the open editor for `key`, if there is one.
+    /// Callers pass Detail's key, which the form was opened for.
+    fn fill_app_tab_form(&mut self, key: &EnvKey, found: &Discovered) {
         let Some(form) = self.form.as_mut() else {
             return;
         };
-        if form.env_name != env_name || !matches!(form.submit, crate::form::FormSubmit::AppTab) {
+        if form.env_name != key.name || !matches!(form.submit, crate::form::FormSubmit::AppTab) {
             return;
         }
+        let env_name = key.name.as_str();
         apply_discovery(&mut form.fields, found);
         form.banner = if found.failed.is_empty() {
             format!("app.{env_name}.* in config.toml; suggestions say what found them")

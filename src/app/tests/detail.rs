@@ -2700,8 +2700,7 @@ async fn the_app_tab_editor_opens_fills_and_refuses_bad_entries() {
     found.failed = vec![("custom metrics".into(), "AccessDenied".into())];
     app.handle_msg(AppMsg::AppTabDiscovered {
         gen: app.generation,
-        region: app.discovery_key("other").region,
-        env_name: "other".into(),
+        key: test_key(&app, "other"),
         ticket: discovery_ticket(&app, "other"),
         found: Box::new(found.clone()),
     });
@@ -2711,8 +2710,7 @@ async fn the_app_tab_editor_opens_fills_and_refuses_bad_entries() {
     );
     app.handle_msg(AppMsg::AppTabDiscovered {
         gen: app.generation,
-        region: app.discovery_key("api-prod").region,
-        env_name: "api-prod".into(),
+        key: test_key(&app, "api-prod"),
         ticket: discovery_ticket(&app, "api-prod"),
         found: Box::new(found),
     });
@@ -2873,7 +2871,7 @@ async fn discovery_is_reused_on_open_rerun_on_ctrl_r_and_never_wedged() {
     let d = app.detail.as_mut().unwrap();
     d.tab_idx = d.tabs.iter().position(|t| *t == DetailTab::App).unwrap();
     app.detail_refresh_on_open();
-    assert!(app.discovery_running("api-prod"));
+    assert!(app.discovery_running(&test_key(&app, "api-prod")));
     let settle = |app: &mut App| {
         app.detail
             .as_mut()
@@ -2885,7 +2883,7 @@ async fn discovery_is_reused_on_open_rerun_on_ctrl_r_and_never_wedged() {
     };
 
     app.caches.app_tab_discovery.discovering.clear();
-    let key = app.discovery_key("api-prod");
+    let key = test_key(&app, "api-prod");
     app.caches
         .app_tab_discovery
         .discovered
@@ -2893,19 +2891,22 @@ async fn discovery_is_reused_on_open_rerun_on_ctrl_r_and_never_wedged() {
     settle(&mut app);
     app.detail_refresh_on_open();
     assert!(
-        !app.discovery_running("api-prod"),
+        !app.discovery_running(&test_key(&app, "api-prod")),
         "opening reuses what was found"
     );
     settle(&mut app);
     app.detail_refresh_active_tab();
-    assert!(app.discovery_running("api-prod"), "^R looks again");
+    assert!(
+        app.discovery_running(&test_key(&app, "api-prod")),
+        "^R looks again"
+    );
 
     // A run whose answer never came (dropped by a context switch, a task
     // that died) stops counting as running, so it is started again.
     let long_ago = std::time::Instant::now()
         .checked_sub(std::time::Duration::from_secs(120))
         .expect("clock past two minutes");
-    let key = app.discovery_key("api-prod");
+    let key = test_key(&app, "api-prod");
     let run = app
         .caches
         .app_tab_discovery
@@ -2914,10 +2915,16 @@ async fn discovery_is_reused_on_open_rerun_on_ctrl_r_and_never_wedged() {
         .or_default();
     let _ = run.begin();
     run.backdate(long_ago);
-    assert!(!app.discovery_running("api-prod"), "lost, not running");
+    assert!(
+        !app.discovery_running(&test_key(&app, "api-prod")),
+        "lost, not running"
+    );
     settle(&mut app);
     app.detail_refresh_active_tab();
-    assert!(app.discovery_running("api-prod"), "and started again");
+    assert!(
+        app.discovery_running(&test_key(&app, "api-prod")),
+        "and started again"
+    );
 }
 
 /// A preview result that lands after the env got config is not drawn as
@@ -2973,11 +2980,11 @@ async fn a_preview_result_landing_after_a_save_is_dropped() {
 async fn demo_mode_does_not_pass_off_an_empty_discovery() {
     let mut app = test_app();
     app.demo_mode = true;
-    app.spawn_app_discovery("api-prod".into());
+    app.spawn_app_discovery(test_key(&app, "api-prod"));
     let msg = app.msg_rx.try_recv().expect("answered at once");
     app.handle_msg(msg);
     assert!(app.caches.app_tab_discovery.discovered.is_empty());
-    assert!(!app.discovery_running("api-prod"));
+    assert!(!app.discovery_running(&test_key(&app, "api-prod")));
 }
 
 /// An older discovery that answers after a newer one started does not
@@ -2985,7 +2992,7 @@ async fn demo_mode_does_not_pass_off_an_empty_discovery() {
 #[tokio::test]
 async fn only_the_latest_discoverys_answer_clears_its_marker() {
     let mut app = test_app();
-    let key = app.discovery_key("api-prod");
+    let key = test_key(&app, "api-prod");
     let run = app
         .caches
         .app_tab_discovery
@@ -2996,15 +3003,17 @@ async fn only_the_latest_discoverys_answer_clears_its_marker() {
     let newer = run.begin();
     let answer = |ticket| AppMsg::AppTabDiscovered {
         gen: 0,
-        region: "us-east-1".into(),
-        env_name: "api-prod".into(),
+        key: EnvKey::new("us-east-1", "api-prod"),
         ticket,
         found: Box::default(),
     };
     app.handle_msg(answer(older));
-    assert!(app.discovery_running("api-prod"), "still running");
+    assert!(
+        app.discovery_running(&test_key(&app, "api-prod")),
+        "still running"
+    );
     app.handle_msg(answer(newer));
-    assert!(!app.discovery_running("api-prod"));
+    assert!(!app.discovery_running(&test_key(&app, "api-prod")));
 }
 
 /// A ticket settles only the latest request's answer; `reset` drops
@@ -3300,9 +3309,12 @@ fn app_config_is_replaced_only_through_set_app_tabs() {
 async fn an_envs_app_tab_comes_from_config_then_a_preview_then_nothing() {
     use crate::app::AppTabSource;
     let mut app = detail_on("api-prod");
-    assert_eq!(app.app_tab_source("api-prod"), AppTabSource::NotSetUp);
+    assert_eq!(
+        app.app_tab_source(&test_key(&app, "api-prod")),
+        AppTabSource::NotSetUp
+    );
 
-    let key = app.discovery_key("api-prod");
+    let key = test_key(&app, "api-prod");
     let mut found = crate::app_discover::Discovered::default();
     found.discovery.app_log = Some("var/log/app.log".into());
     app.caches
@@ -3310,13 +3322,13 @@ async fn an_envs_app_tab_comes_from_config_then_a_preview_then_nothing() {
         .discovered
         .insert(key.clone(), found.clone());
     assert_eq!(
-        app.app_tab_source("api-prod"),
+        app.app_tab_source(&test_key(&app, "api-prod")),
         AppTabSource::NotSetUp,
         "found, but nothing an env variable names"
     );
     found.discovery.rds_found = vec![("db-a".into(), "DB_HOST".into())];
     app.caches.app_tab_discovery.discovered.insert(key, found);
-    let preview = app.app_tab_source("api-prod");
+    let preview = app.app_tab_source(&test_key(&app, "api-prod"));
     assert!(!preview.is_configured());
     assert_eq!(
         preview.spec().map(|s| s.rds),
@@ -3324,7 +3336,7 @@ async fn an_envs_app_tab_comes_from_config_then_a_preview_then_nothing() {
     );
 
     app.set_app_tabs(crate::config::parse("app.api-prod.alarm_prefix = \"x-\"\n").app_tabs);
-    let configured = app.app_tab_source("api-prod");
+    let configured = app.app_tab_source(&test_key(&app, "api-prod"));
     assert!(configured.is_configured(), "config wins, even with no rows");
     assert_eq!(configured.spec().map(|s| s.rds), Some(vec![]));
 
@@ -3343,7 +3355,8 @@ async fn an_envs_app_tab_comes_from_config_then_a_preview_then_nothing() {
     });
     assert_eq!(asked.len(), 1, "{asked:#?}: ask app_tab_source");
     assert!(
-        asked[0].starts_with("src/app/app_tab_form.rs: match self.cfg.app_tabs.envs.get(env)"),
+        asked[0]
+            .starts_with("src/app/app_tab_form.rs: match self.cfg.app_tabs.envs.get(&env.name)"),
         "{asked:#?}"
     );
     // A preview is made from what discovery found only by AppTabSource,
@@ -3697,7 +3710,7 @@ mod lifecycle_model {
 #[tokio::test]
 async fn a_superseded_discovery_answer_changes_nothing() {
     let mut app = test_app();
-    let key = app.discovery_key("api-prod");
+    let key = test_key(&app, "api-prod");
     let run = app
         .caches
         .app_tab_discovery
@@ -3713,8 +3726,7 @@ async fn a_superseded_discovery_answer_changes_nothing() {
     };
     let answer = |ticket, prefix: &str| AppMsg::AppTabDiscovered {
         gen: 0,
-        region: "us-east-1".into(),
-        env_name: "api-prod".into(),
+        key: EnvKey::new("us-east-1", "api-prod"),
         ticket,
         found: found(prefix),
     };

@@ -456,13 +456,23 @@ pub(super) fn home_key(name: &str) -> crate::app::EnvKey {
     crate::app::EnvKey::new("us-east-1", name)
 }
 
+/// The key a test means by `name`: Detail's env when Detail is on that
+/// name, else the home region's.
+pub(super) fn test_key(app: &App, name: &str) -> crate::app::EnvKey {
+    app.detail
+        .as_ref()
+        .filter(|d| d.env_name == name)
+        .map(|d| d.key.clone())
+        .unwrap_or_else(|| home_key(name))
+}
+
 /// The ticket of `env`'s discovery run in flight, or, with none, a fresh
 /// one that answers no run: what an `AppTabDiscovered` in a test carries.
 pub(super) fn discovery_ticket(app: &App, env: &str) -> crate::app::Ticket {
     app.caches
         .app_tab_discovery
         .discovering
-        .get(&app.discovery_key(env))
+        .get(&test_key(app, env))
         .and_then(crate::app::Fetch::ticket_in_flight)
         .unwrap_or_else(|| crate::app::Fetch::<()>::default().begin())
 }

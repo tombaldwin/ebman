@@ -468,15 +468,15 @@ impl App {
         // No config yet: find what the env uses, kept for the
         // session, so the tab can say so rather than point at a
         // file.
-        if !self.app_tab_source(&env_name).is_configured() {
+        let key = self.detail_key();
+        if let Some(key) = key.filter(|k| !self.app_tab_source(k).is_configured()) {
             // `^R` looks again: resources come and go, and a
             // result cached for the session would never see them.
             if trigger == RefreshTrigger::Asked {
-                let key = self.discovery_key(&env_name);
                 self.caches.app_tab_discovery.discovered.remove(&key);
             }
-            if self.discovered_for(&env_name).is_none() {
-                self.spawn_app_discovery(env_name.clone());
+            if self.discovered_for(&key).is_none() {
+                self.spawn_app_discovery(key);
             }
         }
         self.spawn_detail_app(env_name);

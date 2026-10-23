@@ -289,11 +289,13 @@ impl App {
             .map(|d| d.metrics_range_secs)
             .unwrap_or(3600);
         // No Detail view: nothing would take the answer.
-        let Some(ticket) = self.detail.as_mut().map(|d| d.app_tab.metrics.begin()) else {
+        let Some(d) = self.detail.as_mut() else {
             return;
         };
+        let ticket = d.app_tab.metrics.begin();
+        let key = d.key.clone();
         // No config: preview what discovery found evidence for, if any.
-        let spec = self.app_tab_source(&env_name).spec();
+        let spec = self.app_tab_source(&key).spec();
         // In demo mode: the configured rows, empty, so the tab still
         // shows what is configured and says why there are no values.
         let demo_rows = spec
@@ -327,7 +329,7 @@ impl App {
     /// The log group `env`'s top-errors query would scan, or `None` when
     /// there is none to run: no `app.ENV.log_group`, or demo mode. The
     /// spawn and the tab's "^R runs it" line both ask this.
-    pub(crate) fn top_errors_group(&self, env: &str) -> Option<String> {
+    pub(crate) fn top_errors_group(&self, env: &crate::app::EnvKey) -> Option<String> {
         if self.demo_mode {
             return None;
         }
@@ -335,7 +337,7 @@ impl App {
             crate::app::AppTabSource::Configured(spec) => spec
                 .log_group
                 .as_deref()
-                .map(|g| crate::app_tab::top_errors_log_group(env, g)),
+                .map(|g| crate::app_tab::top_errors_log_group(&env.name, g)),
             _ => None,
         }
     }
@@ -345,7 +347,10 @@ impl App {
     /// per GB scanned; never stacked on one still running; never in
     /// demo mode.
     pub(super) fn spawn_detail_top_errors(&mut self, env_name: String) {
-        let Some(group) = self.top_errors_group(&env_name) else {
+        let Some(group) = self
+            .detail_key()
+            .and_then(|key| self.top_errors_group(&key))
+        else {
             return;
         };
         let Some(d) = self.detail.as_mut() else {

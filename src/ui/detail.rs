@@ -158,7 +158,7 @@ pub(super) fn draw_detail(f: &mut Frame, area: Rect, app: &mut App) {
     // Snapshot the fields the footer block needs before we drop the immutable
     // borrow and reach for `app.detail.as_mut()` to write metrics_body_rect.
     // Read before `detail`'s borrow ends, for the key strip's wording.
-    let configured = app.app_tab_source(&detail.env_name).is_configured();
+    let configured = app.app_tab_source(&detail.key).is_configured();
     let footer_state = DetailFooterState {
         auto_refresh: detail.auto_refresh,
         error: detail.error.as_ref().map(|e| e.message.clone()),

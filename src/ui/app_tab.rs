@@ -24,7 +24,7 @@ pub(super) fn draw_detail_app(
         lines.push(Line::from(Span::styled(format!("config: {e}"), red)));
     }
     alarm_line(&mut lines, &detail.cw_alarms, theme);
-    match app.app_tab_source(env) {
+    match app.app_tab_source(&detail.key) {
         crate::app::AppTabSource::NotSetUp => {
             not_set_up(&mut lines, env, detail, app, area.width, None)
         }
@@ -45,7 +45,7 @@ pub(super) fn draw_detail_app(
         }
     }
     instance_rows(&mut lines, &detail.instances, area.width, theme);
-    let queryable = app.top_errors_group(env).is_some();
+    let queryable = app.top_errors_group(&detail.key).is_some();
     top_error_rows(&mut lines, &detail.app_tab.top_errors, queryable, theme);
     let mut title = format!("App · {}", humanize_range(detail.metrics_range_secs));
     if theme.icons == IconStyle::Ascii {
@@ -228,14 +228,14 @@ fn not_set_up(
     let strong = Style::default()
         .fg(theme.title)
         .add_modifier(Modifier::BOLD);
-    if app.discovery_running(env) {
+    if app.discovery_running(&detail.key) {
         lines.push(Line::from(Span::styled(
             format!("Not set up yet. Looking for what {env} uses…"),
             muted,
         )));
         return;
     }
-    let Some(found) = preview.or_else(|| app.discovered_for(env)) else {
+    let Some(found) = preview.or_else(|| app.discovered_for(&detail.key)) else {
         lines.push(Line::from(Span::styled(
             format!(
                 "No App tab config for {env}: press e to set it up, or add \

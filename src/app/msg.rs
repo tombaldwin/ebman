@@ -154,12 +154,8 @@ impl App {
                 d.app_tab.metrics.settle_ticket(ticket, r);
             }),
             AppMsg::AppTabDiscovered {
-                region,
-                env_name,
-                ticket,
-                found,
-                ..
-            } => self.handle_app_tab_discovered(EnvKey::new(region, env_name), ticket, *found),
+                key, ticket, found, ..
+            } => self.handle_app_tab_discovered(key, ticket, *found),
             AppMsg::DetailTopErrors {
                 env_name,
                 ticket,
