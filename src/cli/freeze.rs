@@ -198,13 +198,25 @@ pub(crate) fn thaw_body(args: &[String], out: &mut dyn Write, err: &mut dyn Writ
 /// `ebman freeze`: the process entry, exiting with [`freeze_body`]'s code.
 pub async fn run_freeze(args: &[String]) -> Result<()> {
     let code = freeze_body(args, &mut std::io::stdout(), &mut std::io::stderr());
-    std::process::exit(code);
+    // Draining: the declare / thaw writes an audit line whose webhook
+    // POST a bare `process::exit` cancels.
+    if code != 0 {
+        crate::cli::exit_after_drain(code).await;
+    }
+    crate::cli::drain_before_return().await;
+    Ok(())
 }
 
 /// `ebman thaw`: the process entry, exiting with [`thaw_body`]'s code.
 pub async fn run_thaw(args: &[String]) -> Result<()> {
     let code = thaw_body(args, &mut std::io::stdout(), &mut std::io::stderr());
-    std::process::exit(code);
+    // Draining: the declare / thaw writes an audit line whose webhook
+    // POST a bare `process::exit` cancels.
+    if code != 0 {
+        crate::cli::exit_after_drain(code).await;
+    }
+    crate::cli::drain_before_return().await;
+    Ok(())
 }
 
 #[cfg(test)]

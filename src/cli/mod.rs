@@ -598,6 +598,8 @@ mod write_gate_input_guard {
             ("cli/action.rs", "run", "action_body("),
             ("cli/action.rs", "run_rollout", "rollout_body("),
             ("cli/audit_replay.rs", "run_replay", "audit_replay_body("),
+            ("cli/freeze.rs", "run_freeze", "freeze_body("),
+            ("cli/freeze.rs", "run_thaw", "thaw_body("),
         ] {
             let src = crate::app::tests::scan::production_source(module);
             let body = crate::app::tests::scan::fn_bodies(&src)
@@ -619,6 +621,18 @@ mod write_gate_input_guard {
                 body.contains(calls),
                 "{module}: `{f}` was not found: {body}"
             );
+            // Replay is the one write `main` wires no webhook for (its
+            // `audit` arm reads), so its shell does — before the body,
+            // or the body's refusal line is written with none to reach.
+            if f == "run_replay" {
+                let init = body
+                    .find("init_from_config_disk(")
+                    .expect("run_replay must wire the webhook its audit lines fire");
+                assert!(
+                    init < body.find(calls).unwrap(),
+                    "{module}: `{f}` wires the webhook after its body has run"
+                );
+            }
         }
     }
 

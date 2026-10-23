@@ -190,6 +190,12 @@ fn replay_plan(entry: &audit_log::AuditEntry) -> Result<ReplayPlan, String> {
 }
 
 pub(crate) async fn run_replay(args: &[String]) -> Result<()> {
+    // Replay writes its own audit lines (unlike ad-hoc single-env
+    // `ebman action` dispatches): replay exists for incident review,
+    // so the trail must show what was re-run and from which line.
+    // `main`'s `audit` arm wires no webhook, so this does — before the
+    // body, or a refusal's `stage=refused` line never reaches it.
+    audit_log::init_from_config_disk();
     let code = audit_replay_body(
         args,
         &util::cache_dir().join("audit.log"),
@@ -337,12 +343,6 @@ where
         );
         return 3;
     }
-
-    // Replay writes its own audit lines (unlike ad-hoc single-env
-    // `ebman action` dispatches): replay exists for incident review,
-    // so the trail must show what was re-run and from which line.
-    // init wires the notify_webhook fan-out for those lines.
-    audit_log::init_from_config_disk();
 
     let aws = match client_for(plan.profile.clone(), plan.region.clone()).await {
         Ok(c) => c,
