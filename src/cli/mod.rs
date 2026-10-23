@@ -230,6 +230,34 @@ pub(crate) fn write_refusal_unaudited(
     Some((refusal, message, pin_profile))
 }
 
+/// What decides whether a CLI write may go: `(env, profile, region,
+/// verb)` to the refusal, if any. A testable body takes one, so a test
+/// sees a refusal without the real config or freeze; production passes
+/// [`real_refusal`].
+pub(crate) trait Refusal:
+    Fn(&str, Option<&str>, Option<&str>, &str) -> Option<String>
+{
+}
+impl<T: Fn(&str, Option<&str>, Option<&str>, &str) -> Option<String>> Refusal for T {}
+
+/// [`write_refusal`] against the operator's config and the live freeze:
+/// the audited funnel every CLI write goes through.
+pub(crate) fn real_refusal(
+    env: &str,
+    profile: Option<&str>,
+    region: Option<&str>,
+    action_label: &str,
+) -> Option<String> {
+    write_refusal(
+        &crate::config::load(),
+        env,
+        &profile.map(str::to_string),
+        crate::freeze::FreezeStore::real().active(),
+        region,
+        action_label,
+    )
+}
+
 /// A refusal from [`write_refusal`] naming `subject` rather than the
 /// bare env: it phrases the pin case as "refusing ENV — …", and a
 /// caller dispatching something richer ("Restart on ENV") says that.
@@ -253,15 +281,7 @@ pub(crate) async fn refuse_write(
     region: Option<&str>,
     action_label: &str,
 ) {
-    let profile = profile.map(str::to_string);
-    if let Some(reason) = write_refusal(
-        &crate::config::load(),
-        env,
-        &profile,
-        crate::freeze::FreezeStore::real().active(),
-        region,
-        action_label,
-    ) {
+    if let Some(reason) = real_refusal(env, profile, region, action_label) {
         eprintln!("{prog}: {}", refusal_naming(reason, env, subject));
         // Same reason as `refuse_if_frozen`: without the drain the
         // refusal's webhook POST dies with the process.

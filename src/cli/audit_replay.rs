@@ -195,16 +195,7 @@ pub(crate) async fn run_replay(args: &[String]) -> Result<()> {
         &util::cache_dir().join("audit.log"),
         // Safety pins gate every dispatch site, CLI included (house
         // rule), through the audited funnel, freeze included.
-        |env: &str, profile: Option<&str>, region: Option<&str>, label: &str| {
-            crate::cli::write_refusal(
-                &crate::config::load(),
-                env,
-                &profile.map(str::to_string),
-                crate::freeze::FreezeStore::real().active(),
-                region,
-                label,
-            )
-        },
+        crate::cli::real_refusal,
         std::env::var("AWS_PROFILE").ok(),
         aws::AwsClient::with,
         &mut std::io::stdout().lock(),
@@ -220,14 +211,6 @@ pub(crate) async fn run_replay(args: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// What decides whether a write may go: `(env, profile, region, verb)`
-/// to the refusal, if any. [`crate::cli::write_refusal`] in production.
-pub(crate) trait Refusal:
-    Fn(&str, Option<&str>, Option<&str>, &str) -> Option<String>
-{
-}
-impl<T: Fn(&str, Option<&str>, Option<&str>, &str) -> Option<String>> Refusal for T {}
-
 /// `ebman audit replay`'s whole behaviour against any log, safety
 /// decision, client factory (`profile, region`) and writers. Returns the
 /// exit code. `ambient_profile` is `AWS_PROFILE`: the profile a line
@@ -235,7 +218,7 @@ impl<T: Fn(&str, Option<&str>, Option<&str>, &str) -> Option<String>> Refusal fo
 pub(crate) async fn audit_replay_body<F, Fut>(
     args: &[String],
     log: &std::path::Path,
-    refusal: impl Refusal,
+    refusal: impl crate::cli::Refusal,
     ambient_profile: Option<String>,
     client_for: F,
     out: &mut dyn std::io::Write,
