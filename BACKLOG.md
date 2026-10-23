@@ -121,13 +121,6 @@ Tier definitions:
   also hosts discovery orchestration. Pure moves, 1–2 h. *0.46 release
   review.*
 
-- [ ] **The stale-platform tint is keyed by env name.**
-  `ViewState::stale_platforms` is a `HashMap<String, String>`, so under
-  `:region all` two same-named envs on different platform versions share
-  one answer: the newer twin can be tinted stale, or the stale one not.
-  Display only (no write reads it). Key it by `EnvKey` like the other
-  fleet-view caches. *Write-routing slice 7, 2026-10-22.*
-
 - [ ] **The restored cursor is by env name.** `state.toml`'s
   `selected_env` is a name, and `pending_select` restores the cursor to
   the first row with it, so a session that ended on the eu-west-2 twin

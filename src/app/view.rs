@@ -464,15 +464,17 @@ impl App {
 
         // Stale-platform lookup: parse each env's solution stack against the
         // available-versions catalogue once here, so the render path looks
-        // up `env_name → newer version` instead of re-parsing per row per
-        // frame. Empty while `latest_stacks` hasn't loaded yet.
-        let mut stale_platforms: HashMap<String, String> = HashMap::new();
+        // up `env → newer version` instead of re-parsing per row per
+        // frame. Empty while `latest_stacks` hasn't loaded yet. Keyed by
+        // `EnvKey`: under `:region all` two same-named envs can run
+        // different platform versions, and by name they shared one answer.
+        let mut stale_platforms = std::collections::BTreeMap::new();
         if !self.caches.latest_stacks.is_empty() {
             for e in &self.environments {
                 if let Some(newer) =
                     crate::aws::newer_stack_version(&e.solution_stack, &self.caches.latest_stacks)
                 {
-                    stale_platforms.insert(e.name.clone(), newer);
+                    stale_platforms.insert(crate::app::EnvKey::of(e, &self.context.region), newer);
                 }
             }
         }

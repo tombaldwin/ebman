@@ -28,7 +28,7 @@ use crossterm::event::KeyEvent;
 use ratatui::style::Color;
 use tui_common::TextInput;
 
-use super::{DisplayRow, SortKey, ViewMode};
+use super::{DisplayRow, EnvKey, SortKey, ViewMode};
 
 pub(crate) struct ViewState {
     /// Row density (`:compact`).
@@ -51,7 +51,7 @@ pub(crate) struct ViewState {
     filtered: Vec<usize>,
     display: Vec<DisplayRow>,
     app_colors: HashMap<String, Color>,
-    stale_platforms: HashMap<String, String>,
+    stale_platforms: std::collections::BTreeMap<EnvKey, String>,
     stale: bool,
     /// Whether the current stale episode has already been logged. `Cell`
     /// because `assert_fresh` runs from `&self` accessors on the render
@@ -79,7 +79,7 @@ impl ViewState {
             filtered: Vec::new(),
             display: Vec::new(),
             app_colors: HashMap::new(),
-            stale_platforms: HashMap::new(),
+            stale_platforms: std::collections::BTreeMap::new(),
             // Empty caches over an empty `environments` are correct, not
             // stale — the first refresh rebuilds them anyway.
             stale: false,
@@ -197,9 +197,9 @@ impl ViewState {
         &self.app_colors
     }
 
-    /// `env name → newer platform version`, for envs on a superseded
+    /// `env → newer platform version`, for envs on a superseded
     /// solution stack. Empty until `latest_stacks` has been fetched.
-    pub(crate) fn stale_platforms(&self) -> &HashMap<String, String> {
+    pub(crate) fn stale_platforms(&self) -> &std::collections::BTreeMap<EnvKey, String> {
         self.assert_fresh();
         &self.stale_platforms
     }
@@ -215,7 +215,7 @@ impl ViewState {
         filtered: Vec<usize>,
         display: Vec<DisplayRow>,
         app_colors: HashMap<String, Color>,
-        stale_platforms: HashMap<String, String>,
+        stale_platforms: std::collections::BTreeMap<EnvKey, String>,
     ) {
         self.filtered = filtered;
         self.display = display;
@@ -273,7 +273,7 @@ mod tests {
     }
 
     fn store_empty(v: &mut ViewState) {
-        v.store(Vec::new(), Vec::new(), HashMap::new(), HashMap::new());
+        v.store(Vec::new(), Vec::new(), HashMap::new(), Default::default());
     }
 
     #[test]
@@ -332,7 +332,7 @@ mod tests {
             vec![0, 2],
             vec![DisplayRow::Env(0), DisplayRow::Env(2)],
             HashMap::new(),
-            HashMap::new(),
+            Default::default(),
         );
         assert!(!v.is_stale());
         assert_eq!(v.filtered(), &[0, 2]);
@@ -377,7 +377,7 @@ mod tests {
         for k in unconsumed {
             let mut v = view();
             v.set_filter("prod");
-            v.store(Vec::new(), Vec::new(), HashMap::new(), HashMap::new());
+            v.store(Vec::new(), Vec::new(), HashMap::new(), Default::default());
             let before = v.filter().text().to_string();
             let before_col = v.filter().cursor_col();
             let consumed = v.filter_handle_key(k);
@@ -397,7 +397,7 @@ mod tests {
     #[test]
     fn a_consumed_key_does_dirty_the_cache() {
         let mut v = view();
-        v.store(Vec::new(), Vec::new(), HashMap::new(), HashMap::new());
+        v.store(Vec::new(), Vec::new(), HashMap::new(), Default::default());
         assert!(v.filter_handle_key(key(KeyCode::Char('p'), KeyModifiers::NONE)));
         assert!(v.is_stale());
         assert_eq!(v.filter().text(), "p");

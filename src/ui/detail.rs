@@ -67,7 +67,7 @@ pub(super) fn draw_detail(f: &mut Frame, area: Rect, app: &mut App) {
     // part of that group: if Platform is dropped for width the badge
     // goes with it rather than floating loose after Region.
     let mut platform_group = kv("Platform", &env.platform, &theme.chrome());
-    if let Some(newer) = app.view.stale_platforms().get(&env.name) {
+    if let Some(newer) = app.view.stale_platforms().get(&app.env_key(env)) {
         platform_group.push(Span::styled(
             format!("  {}v{newer} available", stale_glyph(theme.icons)),
             Style::default()

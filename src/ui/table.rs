@@ -900,7 +900,7 @@ pub(crate) fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
                     instance_counts_stale: app.caches.env_instance_counts.is_stale(&key),
                     history: app.caches.history.get(&key),
                     newly_red: app.caches.newly_red.contains(&key),
-                    stale_platform: app.view.stale_platforms().get(&e.name),
+                    stale_platform: app.view.stale_platforms().get(&key),
                     cost: app.costs.get(&e.name),
                     firing_alarms: app.caches.firing_alarms.get(&key).map_or(0, Vec::len),
                     alarms_unknown: app.caches.firing_alarms.is_stale(&key),

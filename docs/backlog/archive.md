@@ -4975,3 +4975,18 @@ From `PLAN.md`, retired with it:
   `assume_role_under_test_refuses_without_calling_sts`, CAUGHT with the
   refusal disabled (run with AWS config, credentials and IMDS pointed at
   nothing, so the mutant could not reach STS either).
+
+- [x] **The stale-platform tint is keyed by env name.**
+  `ViewState::stale_platforms` is a `HashMap<String, String>`, so under
+  `:region all` two same-named envs on different platform versions share
+  one answer: the newer twin can be tinted stale, or the stale one not.
+  Display only (no write reads it). Key it by `EnvKey` like the other
+  fleet-view caches. *Write-routing slice 7, 2026-10-22.*
+
+  **Done 2026-10-23.** `ViewState::stale_platforms` is a
+  `BTreeMap<EnvKey, String>` (EnvKey has no `Hash`, by design), filled with
+  `EnvKey::of` and read by the row's key in the table and by
+  `App::env_key` in Detail. Tests: `the_stale_platform_sign_follows_the_twin_that_is_behind`,
+  `detail_offers_the_upgrade_only_on_the_twin_that_is_behind`. Three
+  mutations, each putting the name-keyed lookup back at one site (the
+  store, the table read, the Detail read): all CAUGHT.

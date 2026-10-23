@@ -2377,3 +2377,61 @@ fn regions_beside_home_counts_only_the_others() {
     assert_eq!(app.regions_beside_home(), 2);
     assert!(app.fans_beyond_home());
 }
+
+/// `api-prod` at home on the current platform and its eu-west-2 twin one
+/// behind, under `:region all`.
+fn twins_on_two_platforms() -> App {
+    let mut app = test_app();
+    let stack = |v: &str| format!("64bit Amazon Linux 2023 v{v} running Tomcat 9 Corretto 17");
+    let mut home = mk_env("api-prod", "poly", "Web", "Green");
+    home.platform = "Tomcat 9 Corretto 17".into();
+    home.solution_stack = stack("5.4.0");
+    let mut eu = home.clone();
+    eu.region = Some("eu-west-2".into());
+    eu.solution_stack = stack("5.1.0");
+    app.environments = vec![home, eu];
+    app.multi_regions = vec!["eu-west-2".into(), app.context.region.clone()];
+    app.caches.latest_stacks = crate::aws::latest_stack_versions(&[stack("5.4.0")]);
+    app.view.invalidate();
+    app.rebuild_view();
+    app
+}
+
+#[tokio::test]
+async fn the_stale_platform_sign_follows_the_twin_that_is_behind() {
+    // Keyed by name, the eu-west-2 twin's answer reached the home row:
+    // the current env read as stale.
+    let mut app = twins_on_two_platforms();
+    let frame = render(&mut app, 200, 20);
+    let row = |region: &str| {
+        frame
+            .lines()
+            .find(|l| l.contains("api-prod") && l.contains(region))
+            .unwrap_or_else(|| panic!("no {region} row:\n{frame}"))
+            .to_string()
+    };
+    let home = app.context.region.clone();
+    assert!(row("eu-west-2").contains('↑'), "{}", row("eu-west-2"));
+    assert!(!row(&home).contains('↑'), "{}", row(&home));
+}
+
+#[tokio::test]
+async fn detail_offers_the_upgrade_only_on_the_twin_that_is_behind() {
+    for (index, offered) in [(0, false), (1, true)] {
+        let mut app = twins_on_two_platforms();
+        let row = app
+            .view
+            .display()
+            .iter()
+            .position(|r| matches!(r, DisplayRow::Env(i) if *i == index))
+            .expect("row shown");
+        app.table_state.select(Some(row));
+        app.open_detail();
+        let frame = render(&mut app, 200, 40);
+        assert_eq!(
+            frame.contains("v5.4.0 available"),
+            offered,
+            "twin {index}:\n{frame}"
+        );
+    }
+}
