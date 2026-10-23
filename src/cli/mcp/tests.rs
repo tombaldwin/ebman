@@ -5344,3 +5344,29 @@ async fn fleet_cost_keys_are_env_refs() {
         "every key names its region: {keys:?}"
     );
 }
+
+/// A freeze that lifted because its TUI exited is news to an agent's
+/// user: doctor says so, rather than only "writes available".
+///
+/// Synchronous, driving its own runtime: the record is shared with every
+/// test that declares a freeze (each clears it), so the lock is held for
+/// the call, and a lock may not be held across an `.await`.
+#[test]
+fn doctor_says_when_a_freeze_ended_with_its_session() {
+    let _guard = crate::freeze::MARKER_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    crate::freeze::write_test_ended(&crate::freeze::marker_path(), "incident: db failover");
+    let body = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime")
+        .block_on(call(&demo_server(), "doctor", json!({})))
+        .1
+        .to_string();
+    crate::freeze::clear_ended();
+    assert!(
+        body.contains("incident: db failover") && body.contains("session ended"),
+        "{body}"
+    );
+}

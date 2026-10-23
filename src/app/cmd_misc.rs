@@ -370,9 +370,20 @@ impl App {
     /// (status toast) if no freeze was active. Audit-logged either
     /// way so the audit stream captures the lifecycle.
     pub(crate) fn cmd_thaw_deploys(&mut self) {
-        let was_frozen = self.deploy_freeze.take().is_some();
+        let mut was_frozen = self.deploy_freeze.take().is_some();
+        // A freeze declared with `ebman freeze` is lifted here too: this
+        // is an explicit thaw. Another live session's is not, and says so.
+        let mut held_elsewhere = None;
         if !self.demo_mode {
             crate::freeze::clear_marker_if_own();
+            match crate::freeze::thaw_persistent_at(&self.freeze_marker) {
+                crate::freeze::Thaw::Lifted(_) => was_frozen = true,
+                crate::freeze::Thaw::HeldBySession(m) if m.pid != std::process::id() => {
+                    held_elsewhere = Some(m)
+                }
+                _ => {}
+            }
+            self.foreign_freeze = self.foreign_freeze_now();
         }
         let was_frozen_str = was_frozen.to_string();
         crate::audit::append_action_dispatched(
@@ -383,7 +394,18 @@ impl App {
             "",
             &[("was_frozen", was_frozen_str.as_str())],
         );
-        if was_frozen {
+        if let Some(m) = held_elsewhere {
+            self.pin_error(format!(
+                "{} — still frozen: it is {}; lift it there with `{}`",
+                if was_frozen {
+                    "this session's freeze cleared"
+                } else {
+                    "nothing of this session's to thaw"
+                },
+                m.holder(),
+                m.remedy()
+            ));
+        } else if was_frozen {
             self.pin_status("freeze cleared — deploys + writes re-enabled");
         } else {
             self.pin_status("no freeze active — nothing to thaw");

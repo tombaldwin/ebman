@@ -507,6 +507,14 @@ pub struct App {
     /// `config_file`'s stamp when its `app.` lines were last read, so a
     /// hand edit shows without a restart; `None` when there was no file.
     pub(crate) config_seen: Option<crate::config::ConfigStamp>,
+    /// Where the cross-process freeze marker is read from. The real one
+    /// in a session; a file of its own for a test App, so one test's
+    /// freeze cannot refuse another's writes.
+    pub(crate) freeze_marker: std::path::PathBuf,
+    /// A freeze this session did not declare (another TUI's, or
+    /// `ebman freeze`), as of the last refresh: the header's chip. The
+    /// write gate reads the marker itself rather than this.
+    pub(crate) foreign_freeze: Option<crate::freeze::FreezeMarker>,
     pending_select: Option<String>,
     aws: Arc<AwsClient>,
     generation: u64,
@@ -1436,6 +1444,8 @@ impl App {
             last_rendered_buffer: None,
             notify_bell: config.notify_bell,
             config_seen: crate::config::stamp_of(&config_file),
+            freeze_marker: crate::freeze::marker_path(),
+            foreign_freeze: None,
             config_file: Some(config_file),
             cfg: ResolvedConfig {
                 notify_webhook: config.notify_webhook.clone(),
@@ -1521,6 +1531,7 @@ impl App {
         // Derive the tf-managed name set from the loaded tfstate
         // so the env-table badge can do O(1) lookups per row.
         app.refresh_tf_managed_envs();
+        app.announce_freeze_state();
         Ok(app)
     }
 
@@ -1726,6 +1737,12 @@ impl App {
             notify_bell: config.notify_bell,
             config_seen: None,
             config_file: None,
+            freeze_marker: {
+                static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                crate::util::cache_dir().join(format!("freeze-app-{n}.json"))
+            },
+            foreign_freeze: None,
             cfg: ResolvedConfig {
                 notify_webhook: config.notify_webhook.clone(),
                 safety_read_only: config.safety_read_only,

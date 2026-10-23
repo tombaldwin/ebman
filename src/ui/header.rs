@@ -38,6 +38,23 @@ pub(crate) fn build_chain_pills(app: &App) -> Vec<(String, Color, Color)> {
             theme.health_red,
         ));
     }
+    // A write freeze this session did not declare: another TUI's, or
+    // `ebman freeze`. Its writes refuse, so the operator must see why
+    // before trying one. Not the `FROZEN` pill below, which is `f`'s
+    // paused auto-refresh.
+    if let Some(m) = app.foreign_freeze.as_ref() {
+        let who = if m.persistent {
+            "ebman freeze".to_string()
+        } else {
+            format!("pid {}", m.pid)
+        };
+        let label = if m.reason.is_empty() {
+            format!("WRITES FROZEN ({who})")
+        } else {
+            format!("WRITES FROZEN ({who}): {}", m.reason)
+        };
+        chain.push((label, fg(theme.health_red), theme.health_red));
+    }
     // Incident banner — `:incident START` is active. First in the
     // chain after alerts: during an incident this is the one signal
     // everyone sharing the terminal must see, so it survives the

@@ -916,6 +916,9 @@ impl App {
         result: Result<Vec<Environment>, String>,
         partial_errors: Vec<String>,
     ) {
+        // The header's copy of any freeze another process declared. Each
+        // refresh, so one declared with `ebman freeze` shows within a tick.
+        self.foreign_freeze = self.foreign_freeze_now();
         // The fan-out set changed while this listing was in flight, so
         // it describes the wrong regions: either single-region rows
         // arriving after `:region all`, or every region's rows arriving

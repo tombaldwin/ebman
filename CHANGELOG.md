@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- **`ebman freeze [--incident] [REASON…]` and `ebman thaw`: a fleet
+  freeze no session owns.** `:freeze-deploys` and `:incident START`
+  last as long as the TUI that declared them, so quitting it or losing
+  the SSH connection lifted a freeze mid-incident, and nothing without a
+  TUI could declare one. `ebman freeze` holds until `ebman thaw` (or
+  `:thaw-deploys`); `--status` says what is in force. And a TUI freeze
+  that ends with its session is now said rather than swallowed: for a
+  day the TUI shows it on startup, `ebman freeze --status` prints it,
+  and MCP `doctor` reports it.
+
 ### Changed
 
 - **MCP `fleet_cost` keys `by_env` as `NAME@REGION`**, the form the
@@ -44,6 +56,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   for the writes; a DLQ batch could be cut off after its deletes went
   out, with no completed audit lines and "timed out" told to the agent.
   The dispatch now gets the usual 30 seconds after the ask's window.
+- **A TUI honours another TUI's freeze.** The TUI's write gate read
+  only its own session's freeze, so a second TUI could deploy through
+  the first one's `:incident START`. It now reads the marker every
+  surface reads, refuses with the holder's name, and shows
+  `WRITES FROZEN` in the header.
 
 ## [0.46.2] - 2026-10-23
 

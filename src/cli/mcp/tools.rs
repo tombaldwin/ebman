@@ -1286,7 +1286,8 @@ impl Server {
         // incident it reported writes as available, and an incident is
         // exactly when a triage agent calls this. A local file read,
         // so it costs nothing the AWS-free contract forbids.
-        let frozen = crate::freeze::read_active().is_some();
+        let freeze = crate::freeze::read_active();
+        let frozen = freeze.is_some();
         // Every write is refused when the safety config cannot be
         // parsed — `write_gate::decide` checks that FIRST and
         // unconditionally. Reporting only `safety_read_only` here said
@@ -1327,14 +1328,22 @@ impl Server {
                     .into(),
             );
         }
-        if frozen {
-            notes.push(
-                "A deploy freeze is active (set from a TUI session), so every write is \
-                 refused while it stands. It is the one restriction here that can lift \
-                 without anything restarting — the operator clears it with :thaw-deploys \
-                 or :incident END."
-                    .into(),
-            );
+        if let Some(m) = freeze.as_ref() {
+            notes.push(format!(
+                "A deploy freeze is active ({}), so every write is refused while it \
+                 stands. It is the one restriction here that can lift without anything \
+                 restarting — the operator clears it with `{}`.",
+                m.holder(),
+                m.remedy()
+            ));
+        } else if let Some(ended) = crate::freeze::read_ended() {
+            // A freeze that lifted because its TUI exited, not because
+            // anyone decided: the agent's user should hear it.
+            notes.push(format!(
+                "No freeze is active now, but {}. Tell your user: it lifted because a \
+                 session ended, not because anyone decided to.",
+                ended.message()
+            ));
         }
         if self.safety_cfg.safety_read_only {
             notes.push(

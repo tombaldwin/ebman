@@ -276,12 +276,11 @@ Tier definitions:
   started `--read-only` is one keystroke from writable. Options: sticky
   for the session, or a typed confirm to lift it.
 
-- [ ] **The incident freeze dies with the TUI session.** `:incident` /
-  `:freeze-deploys` last as long as the process: quitting, or losing an
-  SSH connection, lifts a fleet-wide freeze mid-incident. There is no
-  CLI or MCP way to declare one. Shape: `ebman freeze`, persistent until
-  an explicit thaw, and "the freeze lifted because the session ended"
-  surfaced to the next reader.
+- [ ] **An MCP tool to declare a freeze.** `ebman freeze` (2026-10-23)
+  gave the CLI one; an agent still cannot stop writes. Declaring only
+  restricts, so it is safe to grant without an ask, but it is a new
+  tool on the registry surface and lifting must stay with the operator.
+  Left out of the freeze work by design (`docs/design/persistent-freeze.md`).
 
 - [ ] **`--help` on every subcommand, and a complete exit-code table.**
   `lint --help` fails with "unknown flag" (verified); the review

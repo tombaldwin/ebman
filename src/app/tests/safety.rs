@@ -2306,3 +2306,84 @@ async fn a_swap_picked_from_the_action_menu_records_the_sources_region() {
         _ => panic!("no confirm modal: {:?}", app.error_message),
     }
 }
+
+// ── A freeze this session did not declare (`ebman freeze`, another TUI) ──
+
+fn app_with_prod() -> App {
+    let mut app = test_app();
+    app.environments = vec![mk_env("api-prod", "poly", "Web", "Green")];
+    app.rebuild_view();
+    app
+}
+
+#[tokio::test]
+async fn an_ebman_freeze_refuses_a_tui_write() {
+    let mut app = app_with_prod();
+    crate::freeze::write_test_marker(&app.freeze_marker, 0, "release window", true);
+    assert!(app.deny_write(&home_key("api-prod"), "restart"));
+    let msg = app.error_message.clone().unwrap_or_default();
+    assert!(
+        msg.contains("release window") && msg.contains("ebman thaw"),
+        "{msg}"
+    );
+}
+
+#[tokio::test]
+async fn another_sessions_freeze_refuses_a_tui_write_and_this_ones_own_does_not() {
+    // pid 1 is alive and started first: another session's live marker.
+    let mut app = app_with_prod();
+    crate::freeze::write_test_marker(&app.freeze_marker, 1, "incident: db", false);
+    assert!(app.deny_write(&home_key("api-prod"), "restart"));
+
+    // This process's own marker is this session's freeze, which
+    // `deploy_freeze` already decides; on its own it refuses nothing.
+    let mut app = app_with_prod();
+    crate::freeze::write_test_marker(&app.freeze_marker, std::process::id(), "mine", false);
+    assert!(!app.deny_write(&home_key("api-prod"), "restart"));
+}
+
+#[tokio::test]
+async fn the_header_names_a_freeze_from_elsewhere() {
+    let mut app = app_with_prod();
+    crate::freeze::write_test_marker(&app.freeze_marker, 0, "release window", true);
+    app.announce_freeze_state();
+    let frame = render(&mut app, 200, 20);
+    assert!(
+        frame.contains("WRITES FROZEN (ebman freeze): release window"),
+        "{frame}"
+    );
+}
+
+#[tokio::test]
+async fn thaw_deploys_lifts_an_ebman_freeze_but_not_another_sessions() {
+    let mut app = app_with_prod();
+    crate::freeze::write_test_marker(&app.freeze_marker, 0, "release window", true);
+    app.execute_command("thaw-deploys");
+    assert!(app.foreign_freeze_now().is_none(), "lifted");
+    assert!(!app.deny_write(&home_key("api-prod"), "restart"));
+
+    let mut app = app_with_prod();
+    crate::freeze::write_test_marker(&app.freeze_marker, 1, "incident: db", false);
+    app.execute_command("thaw-deploys");
+    assert!(
+        app.foreign_freeze_now().is_some(),
+        "another session's stays"
+    );
+    let err = app.error_message.clone().unwrap_or_default();
+    assert!(
+        err.contains("still frozen") && err.contains("pid 1"),
+        "{err}"
+    );
+}
+
+#[tokio::test]
+async fn startup_says_when_a_freeze_ended_with_its_session() {
+    let mut app = app_with_prod();
+    crate::freeze::write_test_ended(&app.freeze_marker, "incident: db failover");
+    app.announce_freeze_state();
+    let err = app.error_message.clone().unwrap_or_default();
+    assert!(
+        err.contains("incident: db failover") && err.contains("ebman freeze"),
+        "{err}"
+    );
+}

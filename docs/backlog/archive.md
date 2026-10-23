@@ -5100,3 +5100,22 @@ From `PLAN.md`, retired with it:
   tool) because it gives the same guarantee a write already has on a
   client that cannot ask. Test: `a_late_approval_leaves_the_dispatch_its_full_bound`,
   CAUGHT with the budget put back to `ASK_TIMEOUT_SECS`.
+
+- [x] **The incident freeze dies with the TUI session.** `:incident` /
+  `:freeze-deploys` last as long as the process: quitting, or losing an
+  SSH connection, lifts a fleet-wide freeze mid-incident. There is no
+  CLI or MCP way to declare one. Shape: `ebman freeze`, persistent until
+  an explicit thaw, and "the freeze lifted because the session ended"
+  surfaced to the next reader.
+
+  **Done 2026-10-23** (design: `docs/design/persistent-freeze.md`).
+  `ebman freeze [--incident] [REASON…]` / `--status` / `ebman thaw`; the
+  marker gains `persistent` and keeps pid 1 for older readers; a stale
+  session marker leaves `freeze-ended.json`, shown by the TUI on startup,
+  `--status` and MCP `doctor` for a day. Found on the way and fixed: the
+  TUI's gate never read the marker, so a second TUI ignored the first's
+  freeze; it now honours every live marker but its own session's, with a
+  `WRITES FROZEN` header chip. `:thaw-deploys` lifts a persistent freeze
+  too, never another live session's. Fifteen mutations across the marker,
+  CLI, TUI gate, header, thaw, startup notice and doctor: all CAUGHT. Not
+  done, by design: an MCP tool to declare a freeze (new BACKLOG item).

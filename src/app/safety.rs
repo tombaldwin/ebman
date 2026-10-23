@@ -244,6 +244,32 @@ impl App {
         Some(self.render_refusal(&self.refusal_for(env_name)?))
     }
 
+    /// On startup: show a freeze already in force, and say so when one
+    /// ended with its TUI session in the last day, since nothing else
+    /// would tell the operator it lifted by accident.
+    pub(crate) fn announce_freeze_state(&mut self) {
+        if self.demo_mode {
+            return;
+        }
+        self.foreign_freeze = self.foreign_freeze_now();
+        if let Some(ended) = crate::freeze::read_ended_beside(&self.freeze_marker) {
+            self.pin_error(ended.message());
+        }
+    }
+
+    /// A freeze in force that this session did not declare: another
+    /// TUI's, or one from `ebman freeze`. Read from the marker now, not
+    /// from the header's copy, so a freeze declared a second ago refuses
+    /// this write. Only this session's own marker is excluded; a demo
+    /// session reads none, its writes being inert anyway.
+    pub(crate) fn foreign_freeze_now(&self) -> Option<crate::freeze::FreezeMarker> {
+        if self.demo_mode {
+            return None;
+        }
+        crate::freeze::read_active_at(&self.freeze_marker)
+            .filter(|m| m.persistent || m.pid != std::process::id())
+    }
+
     /// The typed decision for `env_name`, before any wording is applied.
     ///
     /// Split out from `read_only_reason` because a refusal now has to be
@@ -268,7 +294,7 @@ impl App {
             // toggle, or "choosing in advance never to allow writes"
             // means nothing the moment someone presses a key.
             global_read_only: self.read_only || self.cfg.safety_read_only,
-            frozen: self.deploy_freeze.is_some(),
+            frozen: self.deploy_freeze.is_some() || self.foreign_freeze_now().is_some(),
             safety_envs: &self.cfg.safety_envs,
             safety_accounts: &self.cfg.safety_accounts,
         })
@@ -300,7 +326,12 @@ impl App {
                 // this module exists to avoid. Refuse with less detail
                 // instead.
                 let Some(freeze) = self.deploy_freeze.as_ref() else {
-                    return "deploys frozen".into();
+                    // Another session's freeze, or `ebman freeze`: its
+                    // own sentence, which names how to lift it.
+                    return match self.foreign_freeze_now() {
+                        Some(m) => crate::freeze::refusal_message(&m),
+                        None => "deploys frozen".into(),
+                    };
                 };
                 let age = (chrono::Utc::now() - freeze.frozen_at).num_seconds().max(0);
                 let age =

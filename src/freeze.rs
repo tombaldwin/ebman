@@ -65,7 +65,8 @@ impl FreezeMarker {
 /// corrupt and letting them through.
 const PERSISTENT_PID: u32 = 1;
 
-fn marker_path() -> PathBuf {
+/// The real marker's path, for an `App` to read others' freezes from.
+pub(crate) fn marker_path() -> PathBuf {
     crate::util::cache_dir().join("freeze.json")
 }
 
@@ -85,6 +86,28 @@ pub(crate) fn write_persistent_marker(reason: &str, incident: bool) -> std::io::
     write_marker_full(&marker_path(), PERSISTENT_PID, reason, incident, true)?;
     clear_ended();
     Ok(())
+}
+
+/// A marker at `path` with any owner, for a test standing in for
+/// another session (`pid`) or for `ebman freeze` (`persistent`).
+#[cfg(test)]
+pub(crate) fn write_test_marker(path: &Path, pid: u32, reason: &str, persistent: bool) {
+    let pid = if persistent { PERSISTENT_PID } else { pid };
+    write_marker_full(path, pid, reason, false, persistent).expect("test marker written");
+}
+
+/// An ended-freeze record beside the marker at `marker`, as a reader
+/// that found a session's marker stale would leave it.
+#[cfg(test)]
+pub(crate) fn write_test_ended(marker: &Path, reason: &str) {
+    let m = FreezeMarker {
+        pid: 4242,
+        reason: reason.into(),
+        incident: true,
+        at: chrono::Utc::now().to_rfc3339(),
+        persistent: false,
+    };
+    write_ended_at(&marker.with_file_name(ENDED_FILE), &m);
 }
 
 fn write_marker_at(path: &Path, pid: u32, reason: &str, incident: bool) -> std::io::Result<()> {
@@ -156,9 +179,14 @@ pub(crate) enum Thaw {
 /// Never another live session's freeze, which only that session (or
 /// deleting the file) may end.
 pub(crate) fn thaw_persistent() -> Thaw {
-    let thaw = thaw_persistent_with(&marker_path(), pid_alive, process_start_epoch);
+    thaw_persistent_at(&marker_path())
+}
+
+/// [`thaw_persistent`] at `path`, for the same reason as [`read_active_at`].
+pub(crate) fn thaw_persistent_at(path: &Path) -> Thaw {
+    let thaw = thaw_persistent_with(path, pid_alive, process_start_epoch);
     if matches!(thaw, Thaw::Lifted(_)) {
-        clear_ended();
+        let _ = std::fs::remove_file(path.with_file_name(ENDED_FILE));
     }
     thaw
 }
@@ -210,7 +238,13 @@ pub(crate) fn refusal_message(marker: &FreezeMarker) -> String {
 /// alive. A dead-pid marker is stale (crashed TUI) — ignored and
 /// removed so it can't confuse later readers.
 pub(crate) fn read_active() -> Option<FreezeMarker> {
-    read_active_with(&marker_path(), pid_alive, process_start_epoch)
+    read_active_at(&marker_path())
+}
+
+/// [`read_active`] at `path`: the TUI reads through its own, so a test
+/// App does not see another test's freeze.
+pub(crate) fn read_active_at(path: &Path) -> Option<FreezeMarker> {
+    read_active_with(path, pid_alive, process_start_epoch)
 }
 
 /// How far after the marker a process must have started before we call
@@ -342,10 +376,12 @@ fn write_ended_at(path: &Path, m: &FreezeMarker) {
 
 /// A session freeze that ended with its session in the last day, if any.
 pub(crate) fn read_ended() -> Option<EndedFreeze> {
-    read_ended_at(
-        &crate::util::cache_dir().join(ENDED_FILE),
-        chrono::Utc::now(),
-    )
+    read_ended_beside(&marker_path())
+}
+
+/// [`read_ended`] for the marker at `marker`: its record sits beside it.
+pub(crate) fn read_ended_beside(marker: &Path) -> Option<EndedFreeze> {
+    read_ended_at(&marker.with_file_name(ENDED_FILE), chrono::Utc::now())
 }
 
 fn read_ended_at(path: &Path, now: chrono::DateTime<chrono::Utc>) -> Option<EndedFreeze> {
