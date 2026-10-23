@@ -3302,3 +3302,34 @@ async fn a_twin_result_completes_the_twin_it_was_dispatched_to() {
     );
     assert!(app.pending_actions[1].completed.is_some());
 }
+
+/// An auto-rollback answers whenever its call returns. Its result must
+/// not close whatever the operator has open: here a form, which was
+/// left behind with no mode to show it.
+#[tokio::test]
+async fn an_unattended_result_leaves_the_operators_form_open() {
+    let mut app = test_app();
+    app.environments = vec![mk_env("prod", "shop", "Web", "Red")];
+    app.rebuild_view();
+    app.form = Some(crate::form::Form::loading(
+        "capacity",
+        "prod",
+        "us-east-1",
+        "capacity",
+        vec![],
+        crate::form::FormSubmit::OptionSettings { mappings: vec![] },
+    ));
+    app.mode = Mode::Form;
+    let pending = app.push_pending("Auto-rollback", "prod");
+    app.handle_msg(crate::app::action_result(
+        &app.audit_ident(),
+        app.generation,
+        pending,
+        Action::Deploy,
+        "prod".into(),
+        "us-east-1".into(),
+        Ok(()),
+    ));
+    assert_eq!(app.mode, Mode::Form, "still editing");
+    assert!(app.form.is_some());
+}

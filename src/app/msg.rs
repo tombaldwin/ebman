@@ -631,16 +631,18 @@ impl App {
         // Stamp the matching pending-actions entry with the outcome so the
         // panel shows ✓ / ✗ instead of "in flight".
         self.complete_pending(pending, result.clone());
+        // Leaves the action flow and the mode alone. The confirm modal
+        // closed when the dispatch was queued, so whatever is open now
+        // was opened since: an unattended result (an auto-rollback, a
+        // batch member) closing it threw the operator out of a form or
+        // an overlay mid-edit, leaving the form behind with no mode to
+        // show it.
         match result {
             Ok(()) => {
-                self.close_action_flow();
                 self.status_message = Some(format!("{} on {env_name} dispatched", action.label()));
                 self.spawn_refresh();
             }
             Err(msg) => {
-                // Keep the confirm modal open via a Running→error
-                // transition; simpler: close flow, surface the error.
-                self.close_action_flow();
                 self.error_message =
                     Some(format!("{} on {env_name} failed: {msg}", action.label()));
             }

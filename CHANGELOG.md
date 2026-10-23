@@ -63,6 +63,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   twin and opened on the other could be filled with the first one's
   settings, or offered subnets and certificates from the wrong region,
   and Submit would write them.
+- **A write's result no longer closes what the operator has open.**
+  Every action result closed the action flow and reset the mode, so an
+  unattended one (an auto-rollback, a batch member) arriving while the
+  operator was in a form or an overlay threw them out of it, leaving
+  the form behind with no way to see it.
 - **A TUI honours another TUI's freeze.** The TUI's write gate read
   only its own session's freeze, so a second TUI could deploy through
   the first one's `:incident START`. It now reads the marker every
