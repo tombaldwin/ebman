@@ -281,6 +281,11 @@ pub(crate) const AWS_DOC_ACCOUNT_IDS: &[&str] = &[
 /// checksums are hex, and hex routinely holds a twelve-digit run
 /// between two letters.
 ///
+/// Also the console's display form, three groups of four joined by `-`
+/// (`1234-5678-9012`), bounded the same way and by no further `-`, so a
+/// longer dashed number is not taken for one. Checked against the
+/// placeholders and repdigits by its digits.
+///
 /// Not candidates: [`AWS_DOC_ACCOUNT_IDS`], and repdigits
 /// (`000000000000`, `111111111111`, …). The risk this exists for is a
 /// real value that LOOKS like a fixture, and nobody mistakes a
@@ -295,6 +300,16 @@ pub(crate) fn account_id_candidates(text: &str) -> Vec<(usize, &str)> {
         while i < bytes.len() {
             if !bytes[i].is_ascii_digit() {
                 i += 1;
+                continue;
+            }
+            if let Some(end) = dashed_id_at(bytes, i) {
+                let run = &line[i..end];
+                let digits: String = run.chars().filter(char::is_ascii_digit).collect();
+                let repdigit = digits.bytes().all(|b| b == digits.as_bytes()[0]);
+                if !repdigit && !AWS_DOC_ACCOUNT_IDS.contains(&digits.as_str()) {
+                    hits.push((idx + 1, run));
+                }
+                i = end;
                 continue;
             }
             let start = i;
@@ -315,6 +330,22 @@ pub(crate) fn account_id_candidates(text: &str) -> Vec<(usize, &str)> {
         }
     }
     hits
+}
+
+/// The end of a `dddd-dddd-dddd` account ID starting at `start`, if one
+/// does: bounded on both sides by neither a word character nor `-`.
+fn dashed_id_at(bytes: &[u8], start: usize) -> Option<usize> {
+    let is_word = |b: u8| b.is_ascii_alphanumeric() || b == b'_' || b == b'-';
+    if start > 0 && is_word(bytes[start - 1]) {
+        return None;
+    }
+    let end = start + 14;
+    let shape = bytes.get(start..end)?;
+    let ok = shape.iter().enumerate().all(|(k, b)| match k {
+        4 | 9 => *b == b'-',
+        _ => b.is_ascii_digit(),
+    });
+    (ok && bytes.get(end).is_none_or(|b| !is_word(*b))).then_some(end)
 }
 
 /// Where the names of clients whose data must never ship are listed,
@@ -1085,6 +1116,28 @@ mod account_ids {
             format!("{id}4"),     // thirteen digits
             format!("4{id}"),     // thirteen digits
             id[..11].to_string(), // eleven digits
+        ] {
+            assert!(account_id_candidates(&text).is_empty(), "{text}");
+        }
+    }
+
+    /// The console shows an account ID as `1234-5678-9012`; pasted from
+    /// there it is the same leak.
+    #[test]
+    fn the_consoles_dashed_form_is_found() {
+        let id = plausible();
+        let dashed = format!("{}-{}-{}", &id[..4], &id[4..8], &id[8..]);
+        let text = format!("account: {dashed} (prod)");
+        assert_eq!(account_id_candidates(&text), vec![(1, dashed.as_str())]);
+        // Placeholders and repdigits, dashed, are still not candidates.
+        assert!(account_id_candidates("1234-5678-9012").is_empty());
+        assert!(account_id_candidates("7777-7777-7777").is_empty());
+        // A longer dashed number, or one inside a word, is not one.
+        for text in [
+            format!("{dashed}-1111"),
+            format!("2222-{dashed}"),
+            format!("x{dashed}"),
+            format!("{dashed}x"),
         ] {
             assert!(account_id_candidates(&text).is_empty(), "{text}");
         }

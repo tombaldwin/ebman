@@ -5158,3 +5158,15 @@ From `PLAN.md`, retired with it:
   naming `deny_write` as a restriction; the auto-fix list (EBL001/004/006,
   missing 009 and 019), now pinned to `lint/rules.rs` by
   `the_auto_fixed_rules_are_documented` (CAUGHT with the old list).
+
+- [x] **The account-ID guard misses the dashed form** (`1234-5678-9012`,
+  as the AWS console displays IDs). A limit of 7cb8335's detector, not a
+  false pass. Teach it the 4-4-4 shape; do not list values.
+
+  **Done 2026-10-23.** `account_id_candidates` also finds
+  `dddd-dddd-dddd`, bounded by neither a word character nor `-` (so a
+  longer dashed number is not one), checked against the placeholders and
+  repdigits by its digits. Test: `the_consoles_dashed_form_is_found`;
+  mutations (dashed match off, `-` dropped from the boundary): CAUGHT.
+  The tracked-file scan passed after the change, once the new test's own
+  doc comment used AWS's placeholder.

@@ -255,10 +255,6 @@ Tier definitions:
   `KNOWN` — a stop condition. Should it count dispatch-reachable
   surfaces, or should helpers be named `render_*`?
 
-- [ ] **The account-ID guard misses the dashed form** (`1234-5678-9012`,
-  as the AWS console displays IDs). A limit of 7cb8335's detector, not a
-  false pass. Teach it the 4-4-4 shape; do not list values.
-
 #### Correctness and safety, from the 2026-09-25 reviews
 
 - [ ] **`lint --fix --yes` checks the incident freeze once per run.**
