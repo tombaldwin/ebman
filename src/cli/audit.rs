@@ -181,7 +181,9 @@ pub(crate) fn audit_body(
         if !json {
             let _ = writeln!(out, "(no audit entries — log not yet created)");
         }
-        return (0, tail.args.tail.then_some(tail));
+        // Done, even under `--tail`: there is no log to follow, and a
+        // script tailing a fresh machine's log must not hang.
+        return (0, None);
     }
     let bytes = match std::fs::read(path) {
         Ok(b) => b,
@@ -371,6 +373,19 @@ mod tests {
         assert_eq!(objects[0]["target"], "api-prod");
         let (_, _, _, tail) = body(&["audit", "--tail"], &path);
         assert!(tail, "--tail follows");
+        // From the end of what was printed, or the follow repeats it.
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let (_, tail) = audit_body(
+            &argv(&["audit", "--tail"]),
+            &path,
+            chrono::Utc::now(),
+            &mut out,
+            &mut err,
+        );
+        assert_eq!(
+            tail.map(|t| t.offset),
+            Some(std::fs::metadata(&path).unwrap().len())
+        );
     }
 
     #[test]
@@ -392,6 +407,9 @@ mod tests {
             out.is_empty(),
             "nothing but JSON on stdout under --json: {out}"
         );
+        let (code, _, _, tail) = body(&["audit", "--tail"], &missing);
+        assert_eq!(code, 0);
+        assert!(!tail, "no log to follow: done, not a hang");
     }
 
     /// `--tail` advances past complete lines only, and starts over on a
