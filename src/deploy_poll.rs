@@ -1,5 +1,5 @@
 //! Wait-for-Green polling state machine shared between the CLI
-//! (`cli::action::run_deploy` / `run_rollout`) and the TUI
+//! (`cli::action::deploy` / `rollout_body`) and the TUI
 //! (`App::spawn_rollout_dispatch`).
 //!
 //! Pure — no AWS, no clock, no I/O — so the exit-code matrix is

@@ -371,7 +371,7 @@ pub(crate) struct CycleReport {
     /// function extracted to make the cycle testable. No test can
     /// cover a branch that kills the test binary, so the single most
     /// likely `ebman lint --env X` mistake was the one path the seam
-    /// could not reach. `run` owns the exit; the cycle reports.
+    /// could not reach. `lint_body` owns the exit; the cycle reports.
     pub usage_error: Option<String>,
     /// What the operator is told, in the order it happened. The cycle
     /// records; `run` renders ([`render_notes`]). It printed from inside
@@ -1031,7 +1031,7 @@ where
         ambient_profile: active_profile_for_safety,
     } = &setup;
     // `run_cycle` computes its own; this one is for the printing
-    // and baseline branches below, which stayed in `run`.
+    // and baseline branches below.
     let multi_region = regions.len() > 1;
     // Cross-process fleet freeze: a real fix dispatch (--fix --yes)
     // must refuse while a live TUI session holds :freeze-deploys /
@@ -1107,10 +1107,8 @@ where
         // printed them itself.
         let _ = render_notes(&report.notes, quiet, json, out, err);
 
-        // The cycle reports a usage error; `run` owns the exit. Same
-        // message and same exit code 2 as the `exit_after_drain` call
-        // this replaced — moved out so the branch is reachable from a
-        // test.
+        // The cycle reports a usage error; the body owns the exit
+        // code, 2, as it did when the cycle exited itself.
         if let Some(msg) = report.usage_error.as_deref() {
             let _ = writeln!(err, "ebman lint: {msg}");
             return 2;

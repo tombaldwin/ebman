@@ -84,8 +84,7 @@ impl CliAction {
     /// dispatch (`RestartAppServer`).
     fn audit_label(self) -> &'static str {
         match self {
-            // Matches the two `append_action_dispatched` sites in
-            // `run_deploy`.
+            // Matches the `append_action_dispatched` sites in `deploy`.
             CliAction::Deploy => crate::verb::Verb::Deploy.audit_label(),
             CliAction::Verb(v) => v.audit_label(),
         }
@@ -902,7 +901,7 @@ pub(crate) fn unattempted_regions<'a>(
 /// rather than an exit — it halts through the same path a failed region
 /// takes, and the untouched regions come out as `skipped`.
 ///
-/// Re-read per region on purpose. The gate at the top of `run_rollout`
+/// Re-read per region on purpose. The gate at the top of `rollout_body`
 /// fires once, before pre-flight; with no cap on `--wait-for-green` and
 /// none on region count, a sequential rollout can dispatch its last
 /// region hours later. A freeze is not static config like a pin — it is
@@ -1985,7 +1984,7 @@ mod rollout_freeze_tests {
     /// A freeze declared *during* a rollout has to stop the regions
     /// that haven't dispatched yet.
     ///
-    /// The gate at the top of `run_rollout` fires once, before
+    /// The gate at the top of `rollout_body` fires once, before
     /// pre-flight. There is no cap on `--wait-for-green` and none on
     /// region count, so a sequential rollout can dispatch its last
     /// region hours after that check — and the backlog justified the
