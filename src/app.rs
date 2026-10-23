@@ -280,10 +280,6 @@ pub struct App {
     /// to restart, because static profile credentials carry no expiry
     /// and the SDK's providers never re-resolve them.
     pub(crate) aws_built_at: Instant,
-    /// When the active Detail tab's last refresh was fired. Paired
-    /// with `DetailState::tab_loading` to keep the auto-refresh tick
-    /// from stacking fetches on a scan slower than the tick.
-    pub(crate) detail_fetch_started: Option<Instant>,
     /// Set while a background home-client refresh is in flight, so the
     /// 15-second tick can't stack them.
     pub(crate) aws_refresh_in_flight: bool,
@@ -1367,7 +1363,6 @@ impl App {
             rebuild_epoch: 0,
             fanout_epoch: 0,
             aws_built_at: Instant::now(),
-            detail_fetch_started: None,
             aws_refresh_in_flight: false,
             // Restore persisted snapshots so a cross-session `:rollback`
             // / auto-rollback still has a target. Malformed lines are
@@ -1669,7 +1664,6 @@ impl App {
             rebuild_epoch: 0,
             fanout_epoch: 0,
             aws_built_at: Instant::now(),
-            detail_fetch_started: None,
             aws_refresh_in_flight: false,
             deploy_snapshots: std::collections::BTreeMap::new(),
             armed_watchdogs: std::collections::BTreeMap::new(),

@@ -1096,7 +1096,7 @@ pub(crate) struct ResolvedConfig {
 ///
 /// That last row is what a four-variant enum would lose. `spawn_detail_*`
 /// sets the in-flight flag without clearing the data, deliberately, so a
-/// refresh does not blank the panel. `DetailState::tab_loading` still
+/// refresh does not blank the panel. `DetailState::tab_loading_since` still
 /// has to report it as in flight, and the render still has to *not*
 /// draw a spinner over data that is on screen. Pinned by
 /// `the_alarms_pair_encodes_two_orthogonal_facts_not_one_redundant_state`.
@@ -1292,7 +1292,7 @@ impl<T> Fetch<T> {
     }
 
     /// Is a request outstanding? True during a refresh even when a
-    /// previous result is still displayed — `tab_loading` needs that.
+    /// previous result is still displayed — `tab_loading_since` needs that.
     pub(crate) fn in_flight(&self) -> bool {
         self.request.in_flight()
     }

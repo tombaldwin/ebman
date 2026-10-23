@@ -460,33 +460,35 @@ async fn the_detail_tick_does_not_stack_a_slow_scan() {
     // assertions below are about the tick, not the open.
     detail.instances_request = Default::default();
     detail.events_request = Default::default();
-    app.detail_fetch_started = None;
     assert!(
-        !app.detail.as_ref().unwrap().tab_loading(),
+        app.detail.as_ref().unwrap().tab_loading_since().is_none(),
         "nothing outstanding yet"
     );
 
     // First refresh fires and marks the tab loading.
+    let instances = |app: &App| {
+        app.detail
+            .as_ref()
+            .unwrap()
+            .instances_request
+            .ticket_in_flight()
+    };
     app.detail_refresh_active_tab();
-    assert!(app.detail.as_ref().unwrap().instances_request.in_flight());
-    let fired_at = app.detail_fetch_started.expect("stamped");
+    let fired = instances(&app).expect("the refresh fired");
 
     // A tick landing while it's still running is a no-op.
     app.detail_refresh_active_tab();
     assert_eq!(
-        app.detail_fetch_started,
-        Some(fired_at),
+        instances(&app),
+        Some(fired),
         "a second refresh must not have been fired"
     );
 
     // Once the result lands, the next tick proceeds.
     app.detail.as_mut().unwrap().instances_request = Default::default();
     app.detail_refresh_active_tab();
-    assert_ne!(
-        app.detail_fetch_started,
-        Some(fired_at),
-        "a finished fetch must not block the next one"
-    );
+    let next = instances(&app).expect("the next refresh fired");
+    assert_ne!(next, fired, "a finished fetch must not block the next one");
 }
 
 #[tokio::test]
@@ -508,20 +510,26 @@ async fn a_lost_detail_fetch_does_not_wedge_the_tab() {
         .expect("Instances tab present");
 
     app.detail_refresh_active_tab();
-    // Flag stuck on; the fetch is older than the stuck threshold.
-    app.detail_fetch_started =
-        Some(std::time::Instant::now() - std::time::Duration::from_secs(121));
-    let stale = app.detail_fetch_started;
+    // Still outstanding, and older than the stuck threshold.
+    let d = app.detail.as_mut().unwrap();
+    let stale = d.instances_request.ticket_in_flight().expect("in flight");
+    d.instances_request
+        .backdate(std::time::Instant::now() - std::time::Duration::from_secs(121));
     app.detail_refresh_active_tab();
     assert_ne!(
-        app.detail_fetch_started, stale,
+        app.detail
+            .as_ref()
+            .unwrap()
+            .instances_request
+            .ticket_in_flight(),
+        Some(stale),
         "an outstanding fetch this old is lost, not slow — retry it"
     );
 }
 
 #[tokio::test]
 async fn every_detail_tab_reports_its_own_loading_state() {
-    // `tab_loading` gates the refresh, so a tab whose flag it forgot
+    // `tab_loading_since` gates the refresh, so a tab whose flag it forgot
     // would silently lose its in-flight guard — and one that read the
     // WRONG flag would refuse to refresh whenever some unrelated tab
     // was busy.
@@ -544,12 +552,16 @@ async fn every_detail_tab_reports_its_own_loading_state() {
     d.cw_alarms = Default::default();
     d.recent_versions = Default::default();
     d.app_tab.metrics = Default::default();
-    d.log_tail.stage = crate::app::LogTailStage::Idle;
+    d.log_tail.request = Default::default();
 
     // Every flag off: no tab claims to be loading.
     for idx in 0..d.tabs.len() {
         d.tab_idx = idx;
-        assert!(!d.tab_loading(), "{:?} with no flags set", d.tab());
+        assert!(
+            d.tab_loading_since().is_none(),
+            "{:?} with no flags set",
+            d.tab()
+        );
     }
 
     // Each flag turns on exactly the tabs that own it.
@@ -611,7 +623,9 @@ async fn every_detail_tab_reports_its_own_loading_state() {
         ),
         (
             "log tail",
-            |d| d.log_tail.stage = crate::app::LogTailStage::Polling,
+            |d| {
+                let _ = d.log_tail.request.begin();
+            },
             &[DetailTab::Logs],
         ),
     ];
@@ -633,13 +647,13 @@ async fn every_detail_tab_reports_its_own_loading_state() {
         d.cw_alarms = Default::default();
         d.recent_versions = Default::default();
         d.app_tab.metrics = Default::default();
-        d.log_tail.stage = crate::app::LogTailStage::Idle;
+        d.log_tail.request = Default::default();
         set(d);
         for idx in 0..d.tabs.len() {
             d.tab_idx = idx;
             let tab = d.tab();
             assert_eq!(
-                d.tab_loading(),
+                d.tab_loading_since().is_some(),
                 owners.contains(&tab),
                 "{label} loading, on the {tab:?} tab"
             );
@@ -790,13 +804,16 @@ async fn the_alarms_pair_encodes_two_orthogonal_facts_not_one_redundant_state() 
 
     // Idle: nothing held, nothing running.
     d.cw_alarms = Default::default();
-    assert!(!d.tab_loading(), "idle must not claim to be loading");
+    assert!(
+        d.tab_loading_since().is_none(),
+        "idle must not claim to be loading"
+    );
     assert!(!d.cw_alarms.is_first_load());
     assert!(d.cw_alarms.ready().is_none() && d.cw_alarms.error().is_none());
 
     // First load: running, nothing to show, so the spinner is on.
     let _ = d.cw_alarms.begin();
-    assert!(d.tab_loading(), "first load is in flight");
+    assert!(d.tab_loading_since().is_some(), "first load is in flight");
     assert!(
         d.cw_alarms.is_first_load(),
         "nothing to show yet, so ui/detail.rs draws `fetching alarms…`"
@@ -804,7 +821,10 @@ async fn the_alarms_pair_encodes_two_orthogonal_facts_not_one_redundant_state() 
 
     // Settled with data.
     d.cw_alarms.settle_now(Ok(alarm()));
-    assert!(!d.tab_loading(), "settled must not claim to be loading");
+    assert!(
+        d.tab_loading_since().is_none(),
+        "settled must not claim to be loading"
+    );
     assert!(!d.cw_alarms.is_first_load());
     assert_eq!(d.cw_alarms.ready().map(Vec::len), Some(1));
 
@@ -812,7 +832,7 @@ async fn the_alarms_pair_encodes_two_orthogonal_facts_not_one_redundant_state() 
     // the previous result still displayed.
     let _ = d.cw_alarms.begin();
     assert!(
-        d.tab_loading(),
+        d.tab_loading_since().is_some(),
         "a refresh must still report in-flight even when data is present"
     );
     assert!(
@@ -827,7 +847,7 @@ async fn the_alarms_pair_encodes_two_orthogonal_facts_not_one_redundant_state() 
 
     // Settled and failed. Distinct from idle, and `ready` must not lie.
     d.cw_alarms.settle_now(Err("DescribeAlarms denied".into()));
-    assert!(!d.tab_loading());
+    assert!(d.tab_loading_since().is_none());
     assert!(d.cw_alarms.ready().is_none(), "a failure is not a value");
     assert!(d.cw_alarms.error().is_some_and(|e| e.contains("denied")));
 }
@@ -1883,7 +1903,6 @@ async fn the_app_tab_refresh_brings_the_instance_list_along() {
     d.instances_request = Default::default();
     d.app_tab.metrics.settle_now(Ok(Default::default()));
     d.cw_alarms.settle_now(Ok(Vec::new()));
-    app.detail_fetch_started = None;
     app.detail_refresh_active_tab();
     let d = app.detail.as_ref().unwrap();
     assert!(
@@ -2099,7 +2118,6 @@ async fn top_errors_runs_when_a_person_asks_and_only_then() {
     );
     assert!(running(&reopen(10)), "a 10-minute-old one is rerun");
     let mut app = reopen(1);
-    app.detail_fetch_started = None;
     app.detail
         .as_mut()
         .unwrap()
@@ -2608,11 +2626,9 @@ async fn the_app_tab_refresh_re_reads_its_config() {
     app.detail.as_mut().unwrap().tab_idx = 1;
     assert_eq!(app.detail.as_ref().unwrap().tab(), DetailTab::App);
     let _ = app.detail.as_mut().unwrap().app_tab.metrics.begin();
-    app.detail_fetch_started = Some(std::time::Instant::now());
     app.detail_refresh_active_tab();
     assert_eq!(namespace(&app), None, "not under a fetch in flight");
 
-    app.detail_fetch_started = None;
     app.detail.as_mut().unwrap().app_tab.metrics.reset();
     app.detail_refresh_active_tab();
     assert_eq!(namespace(&app).as_deref(), Some("Hand"));
@@ -2781,7 +2797,6 @@ async fn saving_the_app_tab_writes_then_applies() {
 
     // A fetch in flight under the old config, which the guard honours.
     let _ = app.detail.as_mut().unwrap().app_tab.metrics.begin();
-    app.detail_fetch_started = Some(std::time::Instant::now());
     app.submit_app_tab_form();
 
     assert!(app.form.is_none(), "saved and closed");
@@ -2860,7 +2875,6 @@ async fn discovery_is_reused_on_open_rerun_on_ctrl_r_and_never_wedged() {
             .app_tab
             .metrics
             .settle_now(Ok(Default::default()));
-        app.detail_fetch_started = None;
     };
 
     app.caches.app_tab_discovery.discovering.clear();
@@ -3145,12 +3159,11 @@ async fn an_emptied_app_tab_on_screen_is_fetched_again() {
     let d = app.detail.as_mut().unwrap();
     d.app_tab.metrics.reset();
     d.cw_alarms.reset();
-    app.detail_fetch_started = None;
     app.refetch_what_an_edit_emptied();
     assert_eq!(fetched(&mut app), (true, true), "both blank: both fetched");
     assert!(
-        app.detail_fetch_started.is_some(),
-        "and timed as a refresh is"
+        app.detail.as_ref().unwrap().tab_loading_since().is_some(),
+        "and guarded as a refresh is"
     );
 
     // Series shown, alarms reset by a prefix edit: alarms alone.
@@ -3232,7 +3245,6 @@ async fn a_prefix_only_save_under_a_fetch_in_flight_refetches_the_alarms() {
     let t = d.cw_alarms.begin();
     d.cw_alarms.settle_ticket(t, Ok(Vec::new()));
     let _ = d.app_tab.metrics.begin();
-    app.detail_fetch_started = Some(std::time::Instant::now());
     app.submit_app_tab_form();
     assert!(app.form.is_none(), "saved");
     assert!(std::fs::read_to_string(&path)

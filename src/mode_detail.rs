@@ -421,7 +421,7 @@ pub(crate) struct AppTabState {
     /// The series (`app.ENV.*` config, or discovery's preview).
     pub metrics: crate::app::Fetch<crate::app_tab::AppMetrics>,
     /// The top errors (Logs Insights over `app.ENV.log_group`). Not in
-    /// `tab_loading`: a query can outlast the metrics refresh, and must
+    /// `tab_loading_since`: a query can outlast the metrics refresh, and must
     /// not hold it up. `spawn_detail_top_errors` refuses to stack instead.
     pub top_errors: crate::app::Fetch<crate::app_tab::TopErrors>,
 }
@@ -544,19 +544,6 @@ impl DetailState {
         self.tabs[self.tab_idx]
     }
 
-    /// Whether the active tab already has a fetch outstanding.
-    ///
-    /// Read by `detail_refresh_active_tab` so a 15-second auto-refresh
-    /// tick — or a held key — can't stack requests on top of a slow
-    /// one. `SCAN_PAGES` is worst-case 500 sequential round trips with
-    /// no timeout and no cancel, so a scan that outlives the tick used
-    /// to be joined by another every 15 seconds for as long as it ran.
-    ///
-    /// Derived from the existing `*_request` fetches rather than a new
-    /// piece of state, because those are already cleared by every
-    /// result handler — a separate in-flight marker would need its own
-    /// clearing discipline and would wedge the tab the first time one
-    /// was missed.
     /// Record a failure against the fetch that produced it.
     pub(crate) fn set_error(&mut self, source: DetailFetch, message: String) {
         self.error = Some(DetailError { source, message });
@@ -570,31 +557,45 @@ impl DetailState {
         }
     }
 
-    pub(crate) fn tab_loading(&self) -> bool {
+    /// Whether the active tab already has a fetch outstanding, and since
+    /// when.
+    ///
+    /// Read by `detail_refresh_active_tab` so a 15-second auto-refresh
+    /// tick — or a held key — can't stack requests on top of a slow
+    /// one. `SCAN_PAGES` is worst-case 500 sequential round trips with
+    /// no timeout and no cancel, so a scan that outlives the tick used
+    /// to be joined by another every 15 seconds for as long as it ran.
+    ///
+    /// Returns when the tab's newest outstanding fetch began, if one is.
+    /// Derived from the tab's own requests, each of which records when it
+    /// began, so the refresh guard's age check measures the fetch that is
+    /// actually out. It read an App-wide stamp before, a second clock that
+    /// had to be reset on open and stamped at three places. The latest
+    /// answer finishes a request; a lost one never does, which is what
+    /// the guard's age cap is for.
+    pub(crate) fn tab_loading_since(&self) -> Option<std::time::Instant> {
+        let newest = |starts: &[Option<std::time::Instant>]| starts.iter().flatten().max().copied();
         match self.tab() {
             // The Health tab is a rollup: it fires up to four fetches
             // and any one of them still running means the refresh it
             // belongs to hasn't finished.
-            DetailTab::Health => {
-                self.events_request.in_flight()
-                    || self.cw_alarms.in_flight()
-                    || self.recent_versions.in_flight()
-                    || self.queues_request.in_flight()
-            }
-            DetailTab::Events => self.events_request.in_flight(),
-            DetailTab::Instances => self.instances_request.in_flight(),
-            DetailTab::Queue => self.queues_request.in_flight(),
-            DetailTab::Metrics => self.metrics_request.in_flight(),
+            DetailTab::Health => newest(&[
+                self.events_request.in_flight_since(),
+                self.cw_alarms.in_flight_since(),
+                self.recent_versions.in_flight_since(),
+                self.queues_request.in_flight_since(),
+            ]),
+            DetailTab::Events => self.events_request.in_flight_since(),
+            DetailTab::Instances => self.instances_request.in_flight_since(),
+            DetailTab::Queue => self.queues_request.in_flight_since(),
+            DetailTab::Metrics => self.metrics_request.in_flight_since(),
             // Not `instances_request`: the eager instance fetch from
             // opening Detail would then block the tab's own first fetch.
-            DetailTab::App => self.app_tab.metrics.in_flight(),
-            DetailTab::Logs => matches!(
-                self.log_tail.stage,
-                LogTailStage::Requesting | LogTailStage::Polling | LogTailStage::Fetching
-            ),
+            DetailTab::App => self.app_tab.metrics.in_flight_since(),
+            DetailTab::Logs => self.log_tail.request.in_flight_since(),
             // Config's two fetches are fired on open, not by the tab
             // refresh, so there is nothing here to stack.
-            DetailTab::Config => false,
+            DetailTab::Config => None,
         }
     }
 

@@ -54,8 +54,6 @@ impl App {
         }
         tabs.push(DetailTab::Logs);
         tabs.push(DetailTab::Config);
-        // A previous env's outstanding fetch must not gate this one.
-        self.detail_fetch_started = None;
         let key = self.env_key(&env);
         let detail = DetailState {
             env_name: env.name.clone(),
@@ -429,11 +427,6 @@ impl App {
         if alarms {
             self.spawn_detail_alarms(env);
         }
-        if series || alarms {
-            // As a refresh would, so the tick's stuck check measures from
-            // this fetch rather than an older one.
-            self.detail_fetch_started = Some(std::time::Instant::now());
-        }
     }
 
     /// The App tab's part of a refresh: its instance rows and alarm line
@@ -493,10 +486,9 @@ impl App {
         // tick — each one a fresh fan of sequential AWS calls against
         // an account that is, by the time anyone is watching this
         // screen, usually having a bad day already.
-        if detail.tab_loading()
-            && self
-                .detail_fetch_started
-                .is_some_and(|t| t.elapsed() < Self::DETAIL_FETCH_STUCK_AFTER)
+        if detail
+            .tab_loading_since()
+            .is_some_and(|t| t.elapsed() < Self::DETAIL_FETCH_STUCK_AFTER)
         {
             return;
         }
@@ -536,7 +528,6 @@ impl App {
             DetailTab::Logs => self.spawn_detail_logs(env_name),
             DetailTab::Config => {}
         }
-        self.detail_fetch_started = Some(Instant::now());
     }
 
     pub(crate) fn handle_detail_search_key(&mut self, key: KeyEvent) {
