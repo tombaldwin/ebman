@@ -426,7 +426,7 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
     ),
     cmd(
         "thaw-deploys",
-        ":thaw-deploys — clear the session-scoped freeze set by :freeze-deploys",
+        ":thaw-deploys — clear this session's :freeze-deploys, or a freeze declared with `ebman freeze`; another live session's freeze is that session's to lift",
         Category::Lifecycle,
         CommandKind::ZeroArg,
     ),
