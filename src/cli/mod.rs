@@ -33,6 +33,7 @@ pub mod ctl;
 pub mod drift;
 pub mod envs;
 pub mod explain;
+pub mod freeze;
 pub mod lint;
 pub mod mcp;
 pub mod versions;
@@ -55,6 +56,8 @@ pub const SUBCOMMANDS: &[&str] = &[
     "explain",
     "versions",
     "completions",
+    "freeze",
+    "thaw",
 ];
 
 /// Re-exports from the shared deploy-poll module. CLI subcommand

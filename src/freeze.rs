@@ -12,6 +12,13 @@
 //! persist (demo freeze is play-acting). Single file, last-writer-wins
 //! across concurrent TUI sessions — documented, not defended against.
 //! Deleting the file is the manual unfreeze of last resort.
+//!
+//! A *persistent* marker (`ebman freeze`, 0.47) belongs to no session:
+//! it holds until an explicit thaw (`ebman thaw`, or `:thaw-deploys`).
+//! And a session marker found stale is not dropped silently any more:
+//! the reader leaves `freeze-ended.json` behind, so the next person to
+//! look learns that a freeze ended with its session rather than by a
+//! decision. See `docs/design/persistent-freeze.md`.
 
 use std::path::{Path, PathBuf};
 
@@ -23,18 +30,40 @@ pub(crate) struct FreezeMarker {
     /// `:incident END`); false for a plain `:freeze-deploys`.
     pub incident: bool,
     pub at: String,
+    /// Declared with `ebman freeze`: no session owns it, and it holds
+    /// until an explicit thaw.
+    pub persistent: bool,
 }
 
 impl FreezeMarker {
     /// The operator-facing remedy string for a refusal message.
     pub(crate) fn remedy(&self) -> &'static str {
-        if self.incident {
+        if self.persistent {
+            "ebman thaw"
+        } else if self.incident {
             ":incident END"
         } else {
             ":thaw-deploys"
         }
     }
+
+    /// Who holds it, for a refusal or a status line.
+    pub(crate) fn holder(&self) -> String {
+        if self.persistent {
+            "declared with `ebman freeze`".to_string()
+        } else {
+            format!("held by a TUI session (pid {})", self.pid)
+        }
+    }
 }
+
+/// The pid a persistent marker is written with. Every ebman since 0.28
+/// reads the marker as active while its pid is alive and started before
+/// the marker; pid 1 always is. So a binary too old to know
+/// `persistent` (an MCP server spawned before an upgrade) still refuses
+/// writes under one, rather than reading a marker with no pid as
+/// corrupt and letting them through.
+const PERSISTENT_PID: u32 = 1;
 
 fn marker_path() -> PathBuf {
     crate::util::cache_dir().join("freeze.json")
@@ -45,12 +74,32 @@ fn marker_path() -> PathBuf {
 /// silently-absent marker fails OPEN (agent + CLI writes are NOT
 /// blocked) while the operator believes the fleet is frozen.
 pub(crate) fn write_marker(reason: &str, incident: bool) -> std::io::Result<()> {
-    write_marker_at(&marker_path(), std::process::id(), reason, incident)
+    write_marker_at(&marker_path(), std::process::id(), reason, incident)?;
+    clear_ended();
+    Ok(())
+}
+
+/// Write a persistent marker (`ebman freeze`): no session owns it.
+/// Same failure contract as [`write_marker`].
+pub(crate) fn write_persistent_marker(reason: &str, incident: bool) -> std::io::Result<()> {
+    write_marker_full(&marker_path(), PERSISTENT_PID, reason, incident, true)?;
+    clear_ended();
+    Ok(())
 }
 
 fn write_marker_at(path: &Path, pid: u32, reason: &str, incident: bool) -> std::io::Result<()> {
+    write_marker_full(path, pid, reason, incident, false)
+}
+
+fn write_marker_full(
+    path: &Path,
+    pid: u32,
+    reason: &str,
+    incident: bool,
+    persistent: bool,
+) -> std::io::Result<()> {
     let body = format!(
-        "{{\"pid\":{pid},\"reason\":{},\"incident\":{incident},\"at\":{}}}\n",
+        "{{\"pid\":{pid},\"reason\":{},\"incident\":{incident},\"at\":{},\"persistent\":{persistent}}}\n",
         crate::util::json_string(reason),
         crate::util::json_string(&chrono::Utc::now().to_rfc3339()),
     );
@@ -86,9 +135,50 @@ pub fn clear_marker_if_own() {
 
 fn clear_if_pid_at(path: &Path, own_pid: u32) {
     if let Some(m) = parse_file(path) {
-        if m.pid == own_pid {
+        if m.pid == own_pid && !m.persistent {
             let _ = std::fs::remove_file(path);
         }
+    }
+}
+
+/// What an explicit thaw found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Thaw {
+    /// A persistent freeze, now lifted.
+    Lifted(FreezeMarker),
+    /// A live TUI session's freeze: that session's to lift.
+    HeldBySession(FreezeMarker),
+    /// No freeze in force.
+    Nothing,
+}
+
+/// `ebman thaw` / `:thaw-deploys` on a persistent freeze: lift it.
+/// Never another live session's freeze, which only that session (or
+/// deleting the file) may end.
+pub(crate) fn thaw_persistent() -> Thaw {
+    let thaw = thaw_persistent_with(&marker_path(), pid_alive, process_start_epoch);
+    if matches!(thaw, Thaw::Lifted(_)) {
+        clear_ended();
+    }
+    thaw
+}
+
+fn thaw_persistent_with(
+    path: &Path,
+    alive: impl Fn(u32) -> bool,
+    start_epoch: impl Fn(u32) -> Option<i64>,
+) -> Thaw {
+    match read_active_with(path, alive, start_epoch) {
+        Some(m) if m.persistent => {
+            // Only the marker that was read: a session that declared its
+            // own freeze since must keep it.
+            if parse_file(path).as_ref() == Some(&m) {
+                let _ = std::fs::remove_file(path);
+            }
+            Thaw::Lifted(m)
+        }
+        Some(m) => Thaw::HeldBySession(m),
+        None => Thaw::Nothing,
     }
 }
 
@@ -104,6 +194,11 @@ pub(crate) fn refusal_message(marker: &FreezeMarker) -> String {
     } else {
         marker.reason.as_str()
     };
+    if marker.persistent {
+        return format!(
+            "fleet freeze active ({reason}) — declared with `ebman freeze`; lift with `ebman thaw`"
+        );
+    }
     format!(
         "fleet freeze active ({reason}) — lift with `{}` in the owning TUI (pid {})",
         marker.remedy(),
@@ -174,6 +269,10 @@ fn read_active_with(
     start_epoch: impl Fn(u32) -> Option<i64>,
 ) -> Option<FreezeMarker> {
     let m = parse_file(path)?;
+    // No session owns it: it holds until an explicit thaw.
+    if m.persistent {
+        return Some(m);
+    }
     // `at` is RFC3339 text on disk. An unparseable timestamp means we
     // cannot judge reuse, so fall back to "assume owner" — closed.
     let at_epoch = chrono::DateTime::parse_from_rfc3339(&m.at)
@@ -190,8 +289,80 @@ fn read_active_with(
     // drop a VALID cross-process freeze.
     if parse_file(path).map(|m2| m2.pid) == Some(m.pid) {
         let _ = std::fs::remove_file(path);
+        // Said, not swallowed: a freeze that ended because its session
+        // did is news to whoever looks next.
+        write_ended_at(&path.with_file_name(ENDED_FILE), &m);
     }
     None
+}
+
+const ENDED_FILE: &str = "freeze-ended.json";
+
+/// How long an ended freeze is reported.
+const ENDED_REPORT_HOURS: i64 = 24;
+
+/// A session freeze that ended because its session did, as the reader
+/// that found it stale recorded it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct EndedFreeze {
+    pub marker: FreezeMarker,
+    pub ended_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl EndedFreeze {
+    /// One line for the TUI, `ebman freeze --status` and `doctor`.
+    pub(crate) fn message(&self) -> String {
+        let reason = if self.marker.reason.is_empty() {
+            "no reason given"
+        } else {
+            self.marker.reason.as_str()
+        };
+        format!(
+            "a fleet freeze ({reason}) ended when its TUI session (pid {}) exited, found at {} \
+             — if it should still hold, declare it with `ebman freeze`",
+            self.marker.pid,
+            self.ended_at.format("%Y-%m-%d %H:%M UTC")
+        )
+    }
+}
+
+fn write_ended_at(path: &Path, m: &FreezeMarker) {
+    let body = format!(
+        "{{\"pid\":{},\"reason\":{},\"incident\":{},\"at\":{},\"ended_at\":{}}}\n",
+        m.pid,
+        crate::util::json_string(&m.reason),
+        m.incident,
+        crate::util::json_string(&m.at),
+        crate::util::json_string(&chrono::Utc::now().to_rfc3339()),
+    );
+    if let Err(e) = crate::util::write_secure(path, body.as_bytes()) {
+        tracing::warn!(error = %e, "could not record that a freeze ended with its session");
+    }
+}
+
+/// A session freeze that ended with its session in the last day, if any.
+pub(crate) fn read_ended() -> Option<EndedFreeze> {
+    read_ended_at(
+        &crate::util::cache_dir().join(ENDED_FILE),
+        chrono::Utc::now(),
+    )
+}
+
+fn read_ended_at(path: &Path, now: chrono::DateTime<chrono::Utc>) -> Option<EndedFreeze> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let marker = parse_marker(&text)?;
+    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let ended_at = chrono::DateTime::parse_from_rfc3339(v.get("ended_at")?.as_str()?)
+        .ok()?
+        .with_timezone(&chrono::Utc);
+    (now.signed_duration_since(ended_at).num_hours() < ENDED_REPORT_HOURS)
+        .then_some(EndedFreeze { marker, ended_at })
+}
+
+/// Forget an ended freeze: a freeze or a thaw since is the operator's
+/// answer to it.
+pub(crate) fn clear_ended() {
+    let _ = std::fs::remove_file(crate::util::cache_dir().join(ENDED_FILE));
 }
 
 fn parse_file(path: &Path) -> Option<FreezeMarker> {
@@ -214,6 +385,10 @@ pub(crate) fn parse_marker(text: &str) -> Option<FreezeMarker> {
             .and_then(|s| s.as_str())
             .unwrap_or("")
             .to_string(),
+        persistent: v
+            .get("persistent")
+            .and_then(|b| b.as_bool())
+            .unwrap_or(false),
     })
 }
 
@@ -621,6 +796,7 @@ mod tests {
             reason: "prod incident".into(),
             incident: false,
             at: "2026-08-22T10:00:00Z".into(),
+            persistent: false,
         };
         let msg = refusal_message(&m);
         assert!(msg.contains("prod incident"), "{msg}");
@@ -730,5 +906,95 @@ mod tests {
             super::read_active().is_none(),
             "clearing our own marker must lift the freeze"
         );
+    }
+
+    #[test]
+    fn a_persistent_marker_holds_whatever_its_pid_says() {
+        let p = tmp("persistent");
+        write_marker_full(&p, PERSISTENT_PID, "change freeze", false, true).unwrap();
+        let m = read_active_with(&p, |_| false, |_| None).expect("held with no live owner");
+        assert!(m.persistent);
+        assert_eq!(m.remedy(), "ebman thaw");
+        assert!(p.exists(), "a reader must not clean it up as stale");
+        let _ = std::fs::remove_file(&p);
+    }
+
+    /// The compat half of the design: a reader that does not know
+    /// `persistent` judges the marker by its pid alone, and pid 1 is
+    /// alive and started before any marker, so it still refuses writes.
+    #[test]
+    fn a_reader_blind_to_persistent_still_holds_the_freeze() {
+        let marker_at = chrono::Utc::now().timestamp();
+        assert!(marker_owner_is_live(
+            pid_alive(PERSISTENT_PID),
+            process_start_epoch(PERSISTENT_PID),
+            Some(marker_at)
+        ));
+    }
+
+    #[test]
+    fn a_session_thaw_never_clears_a_persistent_marker() {
+        let p = tmp("persistent-own");
+        write_marker_full(&p, std::process::id(), "x", false, true).unwrap();
+        clear_if_pid_at(&p, std::process::id());
+        assert!(p.exists());
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn thaw_lifts_a_persistent_freeze_and_leaves_a_session_one() {
+        let p = tmp("thaw-persistent");
+        write_marker_full(&p, PERSISTENT_PID, "x", false, true).unwrap();
+        assert!(matches!(
+            thaw_persistent_with(&p, |_| true, |_| None),
+            Thaw::Lifted(_)
+        ));
+        assert!(!p.exists());
+        assert_eq!(thaw_persistent_with(&p, |_| true, |_| None), Thaw::Nothing);
+
+        write_marker_at(&p, 4242, "session", true).unwrap();
+        assert!(matches!(
+            thaw_persistent_with(&p, |_| true, |_| None),
+            Thaw::HeldBySession(m) if m.pid == 4242
+        ));
+        assert!(
+            p.exists(),
+            "a live session's freeze is that session's to lift"
+        );
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn a_session_freeze_found_stale_is_recorded_not_swallowed() {
+        let dir = std::env::temp_dir().join(format!("ebman-freeze-ended-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("freeze.json");
+        write_marker_at(&p, 4242, "incident: db failover", true).unwrap();
+        assert!(read_active_with(&p, |_| false, |_| None).is_none());
+        let ended = read_ended_at(&dir.join(ENDED_FILE), chrono::Utc::now()).expect("recorded");
+        assert_eq!(ended.marker.reason, "incident: db failover");
+        assert!(
+            ended.message().contains("ebman freeze"),
+            "{}",
+            ended.message()
+        );
+        // Reported for a day, then not.
+        let later = chrono::Utc::now() + chrono::Duration::hours(ENDED_REPORT_HOURS);
+        assert!(read_ended_at(&dir.join(ENDED_FILE), later).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_persistent_refusal_names_ebman_thaw() {
+        let p = tmp("persistent-msg");
+        write_marker_full(&p, PERSISTENT_PID, "release freeze", false, true).unwrap();
+        let m = parse_file(&p).unwrap();
+        let msg = refusal_message(&m);
+        assert!(
+            msg.contains("ebman thaw") && msg.contains("release freeze"),
+            "{msg}"
+        );
+        assert!(!msg.contains("pid"), "no session to name: {msg}");
+        let _ = std::fs::remove_file(&p);
     }
 }

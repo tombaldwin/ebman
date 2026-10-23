@@ -62,6 +62,9 @@ ebman audit replay LINE_ID [--yes]                                          # re
 ebman explain EBL### [--env NAME] [--json] [--dry-run] [--no-cache]        # LLM-backed explanation of a lint issue (opt-in)
 ebman versions --env NAME [--json]                                          # application versions for env's app, newest-first
 ebman completions <bash|zsh|fish>                                           # print a shell completion script to stdout (no AWS)
+ebman freeze [--incident] [REASON…]                                         # freeze every ebman write until `ebman thaw` (no AWS)
+ebman freeze --status                                                       # what freeze is in force, and any that ended with its session
+ebman thaw                                                                  # lift a freeze declared with `ebman freeze`
 ```
 
 Exit-code convention (CI scripts can branch on these): `0` clean, `1` AWS-layer error, `2` usage error, `3` issues / drift found.
@@ -77,9 +80,32 @@ out because a script branching on "issues found" will otherwise
 misread them:
 
 - A write refused before it started — a `safety.envs.*` / `safety.accounts.*`
-  pin, read-only mode, or an active `:freeze-deploys` / `:incident`
-  marker from a live TUI session. Nothing was dispatched; the reason
-  goes to stderr.
+  pin, read-only mode, an active `:freeze-deploys` / `:incident` marker
+  from a live TUI session, or a freeze declared with `ebman freeze`.
+  Nothing was dispatched; the reason goes to stderr.
+- `ebman thaw` refusing to lift a live TUI session's freeze, which only
+  that session may lift.
+
+### A freeze that outlives the session (`ebman freeze`, 0.47+)
+
+`:freeze-deploys` and `:incident START` last as long as the TUI that
+declared them: quitting it, or losing the SSH connection, lifts them.
+`ebman freeze [--incident] [REASON…]` declares one that belongs to no
+session and holds until `ebman thaw` (or `:thaw-deploys` in a TUI).
+Every surface honours it: the TUI, `ebman action` / `audit replay` /
+`lint --fix`, and the MCP write tools. It writes no AWS and needs no
+credentials; the declaration and the lift are audit lines
+(`persistent=true via=cli`).
+
+When a TUI freeze does end with its session, the next reader records
+it, and for a day the TUI says so on startup, `ebman freeze --status`
+prints it, and MCP `doctor` reports it, so the next person learns the
+freeze ended by accident rather than by decision.
+
+`ebman freeze` exits `1` when it could not write the marker: the fleet
+is **not** frozen, and it says so. An MCP server or CLI older than 0.47
+also refuses writes under a persistent freeze; its refusal names the
+wrong remedy (`:thaw-deploys` in pid 1), so lift it with `ebman thaw`.
 - A `rollout` **halted part-way** by a freeze declared while it was
   running. Regions already dispatched stay dispatched; the rest are not
   attempted. This exits `3` even though no region *failed*, because the

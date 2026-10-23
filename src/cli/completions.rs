@@ -132,6 +132,16 @@ const SUBS: &[Sub] = &[
         args: &["--env", "--json"],
     },
     Sub {
+        name: "freeze",
+        desc: "Freeze every ebman write until `ebman thaw`",
+        args: &["--incident", "--status"],
+    },
+    Sub {
+        name: "thaw",
+        desc: "Lift a freeze declared with `ebman freeze`",
+        args: &[],
+    },
+    Sub {
         name: "completions",
         desc: "Emit a shell completion script",
         args: &["bash", "zsh", "fish"],

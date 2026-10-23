@@ -74,6 +74,15 @@ async fn main() -> Result<()> {
             }
             "explain" => return ebman::cli::explain::run(&args).await,
             "versions" => return ebman::cli::versions::run(&args).await,
+            // Audited: a fleet freeze and its lift are writes to policy.
+            "freeze" => {
+                ebman::audit::init_from_config_disk();
+                return ebman::cli::freeze::run_freeze(&args).await;
+            }
+            "thaw" => {
+                ebman::audit::init_from_config_disk();
+                return ebman::cli::freeze::run_thaw(&args).await;
+            }
             // Pure printer: no AWS, no audit, no config read.
             "completions" => return ebman::cli::completions::run(&args).await,
             // A bare non-flag word that isn't a known subcommand is a
@@ -423,6 +432,17 @@ SUBCOMMANDS:
                                                   description}}. Default text mode marks the
                                                   currently-deployed label with `*`. Exit codes:
                                                   0 ok, 1 aws err, 2 usage.
+    freeze [--incident] [REASON...]              Freeze every ebman write fleet-wide (TUI, CLI, MCP)
+                                                  until `ebman thaw`, whatever is running: unlike
+                                                  :freeze-deploys, it does not end with a TUI
+                                                  session. --status says what is in force, and any
+                                                  TUI freeze that ended with its session in the last
+                                                  day. Exit codes: 0 ok, 1 not written (NOT frozen),
+                                                  2 usage.
+    thaw                                         Lift a freeze declared with `ebman freeze`. Refuses
+                                                  (exit 3) a live TUI session's freeze, which that
+                                                  session lifts. Exit codes: 0 lifted or nothing to
+                                                  lift, 2 usage, 3 refused.
     completions <bash|zsh|fish>                  Emit a shell completion script to stdout. Static:
                                                   subcommands + flags, not live env names. Install:
                                                   zsh  -> ebman completions zsh  > \"${{fpath[1]}}/_ebman\"
