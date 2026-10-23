@@ -4,6 +4,21 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.46.2] - 2026-10-23
+
+### Changed
+
+- **`clipboard-win` 5.4.3**, replacing the yanked 5.4.1. Windows only;
+  no released binary contained it.
+
+### Security
+
+- **`ctutils` 0.4.5, for RUSTSEC-2026-0385** (non-constant-time mask
+  generation and `u128` comparisons). It reaches the binary through
+  `digest`/`hmac`, which the AWS SDK signs requests with. The exposure
+  is a timing side channel on the operator's own machine; 0.46.1's
+  binaries carry 0.4.2.
+
 ## [0.46.1] - 2026-10-22
 
 ### Fixed
@@ -4316,7 +4331,7 @@ Initial public release. Headline surface:
 - Published to crates.io as `ebman`.
 - Homebrew tap at `tombaldwin/homebrew-tap`.
 
-[Unreleased]: https://github.com/tombaldwin/ebman/compare/v0.46.1...HEAD
+[Unreleased]: https://github.com/tombaldwin/ebman/compare/v0.46.2...HEAD
 [0.39.1]: https://github.com/tombaldwin/ebman/compare/v0.39.0...v0.39.1
 [0.39.0]: https://github.com/tombaldwin/ebman/compare/v0.38.0...v0.39.0
 [0.38.0]: https://github.com/tombaldwin/ebman/compare/v0.37.0...v0.38.0
