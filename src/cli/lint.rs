@@ -3684,6 +3684,8 @@ mod body {
         out: String,
         err: String,
         clients: usize,
+        /// The verb label the gate was asked about, if it was.
+        verb: Option<String>,
     }
 
     fn setup() -> LintSetup {
@@ -3704,11 +3706,15 @@ mod body {
             .map(String::from)
             .collect();
         let clients = AtomicUsize::new(0);
+        let verb_asked = std::sync::Mutex::new(None);
         let (mut out, mut err) = (Vec::new(), Vec::new());
         let code = lint_body(
             &argv,
             &setup(),
-            |_: &str| frozen.map(String::from),
+            |verb: &str| {
+                *verb_asked.lock().unwrap() = Some(verb.to_string());
+                frozen.map(String::from)
+            },
             |_region| {
                 clients.fetch_add(1, Ordering::SeqCst);
                 async move { Ok(mock_client_inner(vec!["api".into()], faults)) }
@@ -3723,6 +3729,7 @@ mod body {
             out: String::from_utf8(out).unwrap(),
             err: String::from_utf8(err).unwrap(),
             clients: clients.into_inner(),
+            verb: verb_asked.into_inner().unwrap(),
         }
     }
 
@@ -3783,6 +3790,7 @@ mod body {
             "{}",
             r.err
         );
+        assert_eq!(r.verb.as_deref(), Some("SetOption"));
 
         let r = lint(&["--fix", "--dry-run"], findings(), Some("deploys frozen")).await;
         assert_ne!(r.code, 3, "a dry run plans nothing: {}", r.err);

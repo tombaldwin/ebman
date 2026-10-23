@@ -732,6 +732,8 @@ mod body {
         err: String,
         /// The profile the safety decision was asked about, if it was.
         asked_profile: Option<Option<String>>,
+        /// The verb label the gate was asked about, if it was.
+        verb: Option<String>,
         /// The `(profile, region)` a client was built for, if one was.
         built: Option<(Option<String>, Option<String>)>,
     }
@@ -749,13 +751,15 @@ mod body {
             .collect();
         let path = log(lines);
         let asked = Mutex::new(None);
+        let verb_asked = Mutex::new(None);
         let built = Mutex::new(None);
         let (mut out, mut err) = (Vec::new(), Vec::new());
         let code = audit_replay_body(
             &argv,
             &path,
-            |env: &str, profile: Option<&str>, _region: Option<&str>, _verb: &str| {
+            |env: &str, profile: Option<&str>, _region: Option<&str>, verb: &str| {
                 *asked.lock().unwrap() = Some(profile.map(String::from));
+                *verb_asked.lock().unwrap() = Some(verb.to_string());
                 refuse.map(|why| format!("refusing {env} — {why}"))
             },
             Some("ambient".into()),
@@ -773,6 +777,7 @@ mod body {
             out: String::from_utf8(out).unwrap(),
             err: String::from_utf8(err).unwrap(),
             asked_profile: asked.into_inner().unwrap(),
+            verb: verb_asked.into_inner().unwrap(),
             built: built.into_inner().unwrap(),
         }
     }
@@ -799,6 +804,7 @@ mod body {
         // are checked against the ambient profile that will mean.
         assert_eq!(r.built, Some((None, Some("eu-west-1".into()))));
         assert_eq!(r.asked_profile, Some(Some("ambient".into())));
+        assert_eq!(r.verb.as_deref(), Some("RestartAppServer"));
     }
 
     /// A replay is audited as a pair that names the line it replays.

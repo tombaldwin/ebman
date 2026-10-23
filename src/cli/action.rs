@@ -1380,6 +1380,8 @@ mod body {
         err: String,
         /// The profile the safety decision was asked about, if it was.
         asked: Option<Option<String>>,
+        /// The verb label the gate was asked about, if it was.
+        verb: Option<String>,
         client_built: bool,
     }
 
@@ -1393,13 +1395,15 @@ mod body {
             .map(String::from)
             .collect();
         let asked = Mutex::new(None);
+        let verb_asked = Mutex::new(None);
         let built = Mutex::new(false);
         let (mut out, mut err) = (Vec::new(), Vec::new());
         let code = action_body(
             &argv,
             Some("ops".into()),
-            |env: &str, profile: Option<&str>, _: Option<&str>, _: &str| {
+            |env: &str, profile: Option<&str>, _: Option<&str>, verb: &str| {
                 *asked.lock().unwrap() = Some(profile.map(String::from));
+                *verb_asked.lock().unwrap() = Some(verb.to_string());
                 refuse.map(|why| format!("refusing {env} — {why}"))
             },
             |_, _| {
@@ -1415,6 +1419,7 @@ mod body {
             out: String::from_utf8(out).unwrap(),
             err: String::from_utf8(err).unwrap(),
             asked: asked.into_inner().unwrap(),
+            verb: verb_asked.into_inner().unwrap(),
             client_built: built.into_inner().unwrap(),
         }
     }
@@ -1483,6 +1488,8 @@ mod body {
         assert_eq!(f.restarted.num_calls(), 1);
         assert!(r.out.contains("ok: restart on api dispatched"), "{}", r.out);
         assert_eq!(r.asked, Some(Some("ops".into())));
+        // The audit vocabulary, so a refusal and a dispatch correlate.
+        assert_eq!(r.verb.as_deref(), Some("RestartAppServer"));
 
         let r = action(&["restart", "--env", "api"], Some("frozen"), None).await;
         assert_eq!(r.code, 3, "{}", r.err);
@@ -2128,6 +2135,8 @@ mod rollout {
         built: Vec<(Option<String>, String)>,
         /// The profile the pins were checked for, if they were.
         asked: Option<Option<String>>,
+        /// The verb label the gate was asked about, if it was.
+        verb: Option<String>,
     }
 
     /// Run a rollout over `fleet`. `refuse` refuses it up front;
@@ -2155,14 +2164,16 @@ mod rollout {
         let dispatched = Arc::new(AtomicUsize::new(0));
         let built = Mutex::new(Vec::new());
         let asked = Mutex::new(None);
+        let verb_asked = Mutex::new(None);
         let (mut out, mut err) = (Vec::new(), Vec::new());
         let progress: Progress = Arc::new(|_: &str| {});
         let seen = dispatched.clone();
         let code = rollout_body(
             &argv,
             Some("ops".into()),
-            |env: &str, profile: Option<&str>, _: Option<&str>, _: &str| {
+            |env: &str, profile: Option<&str>, _: Option<&str>, verb: &str| {
                 *asked.lock().unwrap() = Some(profile.map(String::from));
+                *verb_asked.lock().unwrap() = Some(verb.to_string());
                 refuse.map(|why| format!("refusing {env} — {why}"))
             },
             |profile: Option<String>, region: Option<String>| {
@@ -2194,6 +2205,7 @@ mod rollout {
             dispatched: dispatched.load(Ordering::SeqCst),
             built: built.into_inner().unwrap(),
             asked: asked.into_inner().unwrap(),
+            verb: verb_asked.into_inner().unwrap(),
         }
     }
 
@@ -2294,6 +2306,7 @@ mod rollout {
         .await;
         assert_eq!(r.code, 0, "{}", r.err);
         assert_eq!(r.asked, Some(Some("prod-admin".into())));
+        assert_eq!(r.verb.as_deref(), Some("Rollout"));
         assert!(
             r.built
                 .iter()
