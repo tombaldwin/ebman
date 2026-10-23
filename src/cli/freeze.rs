@@ -27,12 +27,20 @@ fn parse_freeze_args(args: &[String]) -> Result<FreezeCmd, String> {
     let mut incident = false;
     let mut status = false;
     let mut words: Vec<&str> = Vec::new();
+    let mut flags_done = false;
     for arg in args.iter().skip(1) {
         match arg.as_str() {
+            other if flags_done => words.push(other),
+            // A reason that starts with `-` follows a bare `--`.
+            "--" => flags_done = true,
             "--incident" => incident = true,
             "--status" => status = true,
-            other if other.starts_with("--") => {
-                return Err(format!("ebman freeze: unknown flag '{other}'"));
+            // Any dash, not just `--`: a mistyped `-x` became the reason
+            // and froze the fleet with it.
+            other if other.starts_with('-') => {
+                return Err(format!(
+                    "ebman freeze: unknown flag '{other}' (a reason starting with '-' goes after `--`)"
+                ));
             }
             other => words.push(other),
         }
@@ -163,7 +171,8 @@ pub(crate) fn thaw_body(args: &[String], out: &mut dyn Write, err: &mut dyn Writ
             );
             match still_held {
                 // Lifted, but writes are still refused: a script must
-                // not read "lifted" as all clear.
+                // not read "lifted" as all clear, so not 0 either — 3,
+                // as when the session's freeze is all there is.
                 Some(s) => {
                     let _ = writeln!(
                         out,
@@ -172,12 +181,13 @@ pub(crate) fn thaw_body(args: &[String], out: &mut dyn Write, err: &mut dyn Writ
                         s.holder(),
                         s.remedy()
                     );
+                    3
                 }
                 None => {
                     let _ = writeln!(out, "fleet freeze lifted");
+                    0
                 }
             }
-            0
         }
         crate::freeze::Thaw::HeldBySession(m) => {
             let _ = writeln!(
@@ -255,6 +265,17 @@ mod tests {
             Ok(FreezeCmd::Status)
         );
         assert!(parse_freeze_args(&argv(&["freeze", "--status", "x"])).is_err());
+        assert!(
+            parse_freeze_args(&argv(&["freeze", "-x", "db"])).is_err(),
+            "a mistyped flag is no reason"
+        );
+        assert_eq!(
+            parse_freeze_args(&argv(&["freeze", "--", "-5%", "traffic"])),
+            Ok(FreezeCmd::Declare {
+                reason: "-5% traffic".into(),
+                incident: false
+            })
+        );
         assert!(parse_freeze_args(&argv(&["freeze", "--frozen"])).is_err());
     }
 
@@ -298,7 +319,7 @@ mod tests {
         let (code, _) = run(freeze_body, &["freeze", "change"]);
         assert_eq!(code, 0);
         let (code, text) = run(thaw_body, &["thaw"]);
-        assert_eq!(code, 0, "{text}");
+        assert_eq!(code, 3, "still frozen is not all clear: {text}");
         assert!(
             text.contains("still frozen") && !text.contains("fleet freeze lifted"),
             "{text}"

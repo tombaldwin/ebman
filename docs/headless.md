@@ -85,7 +85,7 @@ Each subcommand's codes in full (pinned to the source by a test):
 | `ebman ctl` | 0 ok · 1 socket or command error · 2 usage |
 | `ebman mcp` | 0 ok · 2 usage |
 | `ebman freeze` | 0 declared or status printed · 1 not written, NOT frozen · 2 usage |
-| `ebman thaw` | 0 lifted or nothing to lift · 2 usage · 3 refused, a live TUI session holds it |
+| `ebman thaw` | 0 lifted or nothing to lift · 2 usage · 3 still frozen: a live TUI session holds it (refused, or ours lifted and theirs not) |
 
 `ebman audit --action NAME` matches every spelling of one operation. Since 0.45 every surface writes one spelling per verb (`RestartAppServer`, `SetOption`), but older logs also carry `Restart` and `UpdateOptionSettings`; either name finds both.
 

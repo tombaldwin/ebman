@@ -153,7 +153,7 @@ pub const SUBCOMMANDS_HELP: &str = r#"    envs [--json]                         
     thaw                                         Lift a freeze declared with `ebman freeze`. Refuses
                                                   (exit 3) a live TUI session's freeze, which that
                                                   session lifts. Exit codes: 0 lifted or nothing to
-                                                  lift, 2 usage, 3 refused.
+                                                  lift, 2 usage, 3 still frozen.
     completions <bash|zsh|fish>                  Emit a shell completion script to stdout. Static:
                                                   subcommands + flags, not live env names. Install:
                                                   zsh  -> ebman completions zsh  > "${fpath[1]}/_ebman"
