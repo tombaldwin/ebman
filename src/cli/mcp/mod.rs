@@ -100,6 +100,25 @@ const _: () = assert!(
 const _: () = assert!(ASK_TIMEOUT_SECS > TOOL_TIMEOUT_SECS * 5);
 const _: () = assert!(ASK_TIMEOUT_SECS <= 900);
 
+/// The whole `confirm_action` call on a connection that can be asked:
+/// the ask's budget, then the AWS bound for the dispatch it approved.
+///
+/// It was `ASK_TIMEOUT_SECS` alone. The clock starts before the
+/// question is sent and does not stop when the answer comes, so an
+/// approval at the end of the ask window left about 20 seconds for the
+/// writes. A DLQ batch caught by that had sent its deletes when the
+/// outer timeout dropped the future: its dispatched lines never got
+/// completed lines, and the agent was told "timed out" about writes
+/// that went out. An approval at the last second now leaves the
+/// dispatch the same bound a write gets on a client that cannot ask.
+const CONFIRM_TIMEOUT_SECS: u64 = ASK_TIMEOUT_SECS + TOOL_TIMEOUT_SECS;
+
+const _: () = assert!(
+    CONFIRM_TIMEOUT_SECS >= ASK_WAIT_SECS + TOOL_TIMEOUT_SECS,
+    "an approval at the end of the ask must leave the dispatch at least \
+     the AWS bound, or the outer timeout drops writes already sent"
+);
+
 /// What an operator said when asked.
 ///
 /// Three outcomes, not two. "They said no" and "nobody answered" are
@@ -331,7 +350,7 @@ pub(crate) fn ask_outcome_from(reply: &Value) -> AskOutcome {
 /// too, because nothing will stop to ask.
 pub(crate) fn call_timeout_secs(tool: &str, client_can_elicit: bool) -> u64 {
     if tool == writes::CONFIRM_TOOL && client_can_elicit {
-        ASK_TIMEOUT_SECS
+        CONFIRM_TIMEOUT_SECS
     } else {
         TOOL_TIMEOUT_SECS
     }

@@ -5084,3 +5084,19 @@ From `PLAN.md`, retired with it:
   case only after its test stopped passing on a stale ticket: the home
   twin's answer carried the eu run's ticket and was dropped before the
   region was ever compared.
+
+- [x] **An approval near the end of the ask window leaves ~20 s to
+  dispatch.** `ASK_WAIT_SECS` is 280 of a 300 s outer budget. A
+  10-message DLQ batch (a re-read plus ~20 SQS calls) can hit the outer
+  timeout after writes happened: the dispatched lines then have no
+  completed lines and the agent is told "timed out" for writes that
+  went out. Plausible, not reproduced.
+
+  **Done 2026-10-23.** `call_timeout_secs` gives `confirm_action` on an
+  ask-capable connection `CONFIRM_TIMEOUT_SECS` = `ASK_TIMEOUT_SECS` +
+  `TOOL_TIMEOUT_SECS` (330 s), with a compile-time assert that it covers
+  `ASK_WAIT_SECS` plus a full dispatch bound. Chosen over detaching the
+  dispatch from the call (which would need `Arc<Server>` through every
+  tool) because it gives the same guarantee a write already has on a
+  client that cannot ask. Test: `a_late_approval_leaves_the_dispatch_its_full_bound`,
+  CAUGHT with the budget put back to `ASK_TIMEOUT_SECS`.

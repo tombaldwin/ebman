@@ -238,7 +238,7 @@ rather than at first use, so a bad registration fails when you make it
 rather than the first time an agent tries to write. `setup` is the
 same: 0, or 2 on a usage error.
 
-Tool calls run concurrently with a 30s bound — except `confirm_action` on a client that can be asked, which gets five minutes, because the bound is waiting on a person rather than on AWS; expired-credential errors surface as the `aws sso login --profile X` hint so the agent can relay it. Failures come back as `isError` tool results, not protocol errors.
+Tool calls run concurrently with a 30s bound — except `confirm_action` on a client that can be asked, which gets five minutes for the person to answer and then the usual 30s to dispatch what they approved; expired-credential errors surface as the `aws sso login --profile X` hint so the agent can relay it. Failures come back as `isError` tool results, not protocol errors.
 
 ### Writes
 

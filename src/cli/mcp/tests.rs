@@ -3601,7 +3601,7 @@ fn only_the_call_that_asks_a_human_gets_a_humans_budget() {
     // that can be asked.
     assert_eq!(
         call_timeout_secs(writes::CONFIRM_TOOL, true),
-        ASK_TIMEOUT_SECS
+        CONFIRM_TIMEOUT_SECS
     );
     // A connection that cannot be asked keeps the AWS bound —
     // nothing will stop to ask, so a long budget would only make a
@@ -4283,6 +4283,18 @@ fn the_ask_resolves_inside_the_call_that_carries_it() {
         ASK_WAIT_SECS < call_timeout_secs(writes::CONFIRM_TOOL, true),
         "an ask given its container's whole budget never returns its own \
              answer — the outer timeout wins and nothing is audited"
+    );
+}
+
+/// And an approval at the last moment of the ask still leaves the
+/// dispatch the AWS bound. With the ask's budget alone it had about 20
+/// seconds, and a DLQ batch could be dropped mid-dispatch: deletes sent,
+/// no completed lines, and "timed out" reported to the agent.
+#[test]
+fn a_late_approval_leaves_the_dispatch_its_full_bound() {
+    assert!(
+        call_timeout_secs(writes::CONFIRM_TOOL, true) >= ASK_WAIT_SECS + TOOL_TIMEOUT_SECS,
+        "the outer budget must cover the whole ask and then a dispatch"
     );
 }
 

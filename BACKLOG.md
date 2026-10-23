@@ -245,13 +245,6 @@ Tier definitions:
   rollout re-checks per region. **Design fork, hence skipped:** on a
   mid-run freeze, skip the remaining envs or abort the run?
 
-- [ ] **An approval near the end of the ask window leaves ~20 s to
-  dispatch.** `ASK_WAIT_SECS` is 280 of a 300 s outer budget. A
-  10-message DLQ batch (a re-read plus ~20 SQS calls) can hit the outer
-  timeout after writes happened: the dispatched lines then have no
-  completed lines and the agent is told "timed out" for writes that
-  went out. Plausible, not reproduced.
-
 - [ ] **The pre-deploy lint still fetches its own way.** Since 0.45 it
   shares everything after the fetch with `:lint` / `:explain` (the
   snapshot, `lint::inputs::assemble`, `LintSnapshot::finish`), and a

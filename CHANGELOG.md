@@ -38,6 +38,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   settles by ticket, as the Metrics and App tabs already did, and so
   does the Logs tab's tail: a `^R` mid-tail no longer lets the first
   tail's answer replace the second's.
+- **An MCP approval at the end of the ask window still dispatches in
+  full.** `confirm_action`'s five minutes covered the ask and the
+  dispatch together, so an approval near the end left about 20 seconds
+  for the writes; a DLQ batch could be cut off after its deletes went
+  out, with no completed audit lines and "timed out" told to the agent.
+  The dispatch now gets the usual 30 seconds after the ask's window.
 
 ## [0.46.2] - 2026-10-23
 
