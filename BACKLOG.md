@@ -38,18 +38,16 @@ Tier definitions:
 
 #### Refactors and test hygiene
 
-- [ ] **The rest of the CLI behind a testable body** *(architecture; found 2026-10-21)*
+- [ ] **`ebman lint` behind a testable body** *(architecture; found 2026-10-21)*
 
-  `ebman envs` and `ebman versions` are now a thin `run` (parse, build
-  the client, exit) over a body that takes the client and the output
-  writers, driven in tests with a mocked SDK. `action`, `drift`,
-  `explain`, `lint`, `audit` and `ctl` still build their clients inside
-  (one per region for the fan-outs) and print and `process::exit`
-  directly: about 150 prints and 70 exits, so their exit-code matrices
-  are checked by hand against the docs at each release. They need a
-  client factory (region → client) rather than a client, and `lint`'s
-  output is PLAN item 2's typed-report question, so it waits on that
-  ruling.
+  Every other subcommand is now a thin `run` over a `*_body` that takes
+  its client (or a region → client factory), the safety decision where
+  it writes, and the writers, and returns its exit code: `envs`,
+  `versions`, `audit`, `audit replay`, `ctl`, `drift`, `explain`,
+  `action`, `action rollout`, `freeze`, `thaw`. `lint`'s `run` is still
+  329 lines that print and exit directly (14 exits); its cycle is
+  already behind `run_cycle`'s client factory and PLAN item 2's typed
+  notes, so what remains is the shell: args, baseline, `--fix`, render.
 
 - [ ] **The App tab editor cannot tell `;label=` inside a metric name
   from a new entry.** Its metrics field joins entries with `; `, so a
@@ -232,10 +230,9 @@ Tier definitions:
 - [ ] **Functions over the 300-line trigger** (2026-09-25 count):
   `draw_action` 673, `draw_why_red_overlay` 474, `execute_command` 418
   (a flat dispatch; judged fine), `draw_detail_health` 410, `draw_table`
-  408, `run_rollout` 402, `App::new` 348, `handle_detail_mode_key` 343,
-  `apply_refresh` 334, `draw_help` 321, `lint::run` 318. Worth doing
-  first: `run_rollout` (parses args inline with `eprintln!` exits — the
-  side-channel class PLAN.md item 2 is closing in lint) and
+  408, `App::new` 348, `handle_detail_mode_key` 343, `apply_refresh`
+  334, `draw_help` 321, `lint::run` 318. (`run_rollout`, 402, is now a
+  parser, a 242-line body and a report renderer.) Worth doing first:
   `draw_action` (one function per `ActionFlow` arm).
   **Blocked on a ruling for `draw_action`:**
   `every_render_surface_is_accounted_for` counts top-level `fn draw_*`

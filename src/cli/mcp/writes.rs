@@ -257,12 +257,6 @@ impl Server {
 
     /// The write gate for both MCP phases.
     ///
-    /// Named `gate_refusal` rather than `refuse_write` because
-    /// `cli::refuse_write` is a different function with different
-    /// behaviour — it loads the config, prints, and exits the process.
-    /// Two same-named neighbours where one exits and one returns is a
-    /// misreading waiting to happen.
-    ///
     /// Demo goes through the pure half: a demo server still reads the
     /// REAL cross-process freeze marker, so `ebman mcp serve --demo
     /// --allow-writes` attempted during a live `:freeze-deploys` was

@@ -229,32 +229,6 @@ fn parse_action_args(args: &[String]) -> Result<ActionArgs, ActionArgError> {
     })
 }
 
-/// Safety-pin gate for every `ebman action` dispatch — the shared
-/// `Config::pin_reason` check that `audit replay` and `lint --fix`
-/// use, matched against the ambient `AWS_PROFILE`. Exit 3 (refused),
-/// same as the replay refusal. Without this, the largest CLI write
-/// surface bypassed `safety.envs.*` / `safety.accounts.*` entirely
-/// (0.26 max-review C3 — the class the 0.14.1 patch fixed for
-/// `lint --fix`).
-/// The CLI's write gate: freeze first, then the per-env pin.
-///
-/// One function so the two call sites can't drift from each other,
-/// and so the ORDER is defined once — it used to be two bare calls in
-/// sequence, which is how it came to differ from the MCP gate's.
-/// `explicit` is the profile the write will actually run under, when
-/// the subcommand takes one. It is not optional politeness: the gate
-/// resolves `safety.accounts.NAME.read_only` against the profile it is
-/// given, so feeding it the ambient `AWS_PROFILE` while dispatching
-/// under `--profile X` checks the pin on the wrong account entirely.
-/// `rollout` did exactly that, and it is the biggest write the CLI has.
-async fn refuse_write(prog: &'static str, env: &str, explicit: Option<&str>, action_label: &str) {
-    let ambient = std::env::var("AWS_PROFILE").ok();
-    let profile = explicit.or(ambient.as_deref());
-    // No region: the gate runs before any AWS client is built, and the
-    // rules it applies are region-independent.
-    crate::cli::refuse_write(prog, env, env, profile, None, action_label).await;
-}
-
 /// `ebman action` — dispatch one write, or a `rollout` across many.
 ///
 /// Every dispatch goes through the same pins, freeze and read-only
@@ -601,6 +575,21 @@ fn auto_rollback_impossible(auto_rollback_secs: Option<u64>, snapshot_label: &st
     auto_rollback_secs.is_some() && snapshot_label.is_empty()
 }
 
+/// Where a rollout's per-region progress goes: stderr in production,
+/// shared by the tasks of a parallel rollout, which a borrowed writer
+/// cannot reach.
+pub(crate) type Progress = std::sync::Arc<dyn Fn(&str) + Send + Sync>;
+
+/// What every region of one rollout dispatches: shared by its tasks.
+struct Wave {
+    env: String,
+    version: String,
+    wait_for_green_secs: Option<u64>,
+    rollout_id: String,
+    quiet: bool,
+    progress: Progress,
+}
+
 /// Per-region dispatch helper shared by sequential + parallel paths.
 /// Calls `deploy_version`; optionally polls until Green (or the
 /// `--wait-for-green` deadline elapses). Emits the per-region
@@ -609,15 +598,21 @@ fn auto_rollback_impossible(auto_rollback_secs: Option<u64>, snapshot_label: &st
 /// when dispatch fails or the deadline elapses without Green.
 async fn dispatch_one_region(
     client: &aws::AwsClient,
-    env: &str,
-    version: &str,
-    wait_for_green_secs: Option<u64>,
-    rollout_id: &str,
     region: &str,
-    quiet: bool,
+    w: &Wave,
 ) -> Result<(), String> {
+    let Wave {
+        env,
+        version,
+        rollout_id,
+        quiet,
+        progress,
+        ..
+    } = w;
     if !quiet {
-        eprintln!("rollout: dispatching to {region} (env={env}, version={version})");
+        progress(&format!(
+            "rollout: dispatching to {region} (env={env}, version={version})"
+        ));
     }
     audit::append_rollout(
         rollout_id,
@@ -635,26 +630,28 @@ async fn dispatch_one_region(
         Ok(()) => Ok(()),
         Err(e) => {
             let msg = format!("deploy_version: {e}");
-            eprintln!("rollout[{region}]: {msg}");
+            progress(&format!("rollout[{region}]: {msg}"));
             Err(msg)
         }
     };
     if outcome.is_ok() {
-        if let Some(secs) = wait_for_green_secs {
+        if let Some(secs) = w.wait_for_green_secs {
             let start = tokio::time::Instant::now();
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                 let envs = match client.list_environments().await {
                     Ok(envs) => envs,
                     Err(e) => {
-                        eprintln!("rollout[{region}]: list_environments during poll: {e}");
+                        progress(&format!(
+                            "rollout[{region}]: list_environments during poll: {e}"
+                        ));
                         outcome = Err(format!("poll: {e}"));
                         break;
                     }
                 };
                 let (status, health) = envs
                     .iter()
-                    .find(|e| e.name == env)
+                    .find(|e| &e.name == env)
                     .map(|e| (e.status.clone(), e.health.clone()))
                     .unwrap_or_default();
                 let elapsed = start.elapsed().as_secs();
@@ -666,14 +663,14 @@ async fn dispatch_one_region(
                 match decide_poll(&status, &health, elapsed, Some(secs), None, false) {
                     PollDecision::KeepPolling => {
                         if !quiet {
-                            eprintln!(
+                            progress(&format!(
                                 "rollout[{region}]: t={elapsed}s status={status} health={health}"
-                            );
+                            ));
                         }
                     }
                     PollDecision::Success => {
                         if !quiet {
-                            eprintln!("rollout[{region}]: reached Green at t={elapsed}s");
+                            progress(&format!("rollout[{region}]: reached Green at t={elapsed}s"));
                         }
                         break;
                     }
@@ -681,7 +678,7 @@ async fn dispatch_one_region(
                         let msg = format!(
                             "did not reach Green within {secs}s (status={status}, health={health})"
                         );
-                        eprintln!("rollout[{region}]: {msg}");
+                        progress(&format!("rollout[{region}]: {msg}"));
                         outcome = Err(msg);
                         break;
                     }
@@ -702,21 +699,122 @@ async fn dispatch_one_region(
     outcome
 }
 
-/// `ebman action rollout --version LABEL --regions r1,r2,r3 --env NAME --yes [...]`
-/// `take_value` for the rollout parser, which exits directly (its
-/// error paths all print + exit 2 inline).
-fn rollout_value<'a, I: Iterator<Item = &'a String>>(
-    iter: &mut I,
-    flag: &str,
-    what: &str,
-) -> String {
-    match crate::cli::take_value(iter, "ebman action rollout", flag, what) {
-        Ok(v) => v,
-        Err(msg) => {
-            eprintln!("{msg}");
-            std::process::exit(2);
+/// `ebman action rollout`'s flags, parsed and validated.
+#[derive(Debug)]
+struct RolloutArgs {
+    env: String,
+    version: String,
+    /// Deduplicated, in the operator's order.
+    regions: Vec<String>,
+    profile: Option<String>,
+    wait_for_green_secs: Option<u64>,
+    staggered_secs: Option<u64>,
+    yes: bool,
+    json: bool,
+    quiet: bool,
+    parallel: bool,
+    max_concurrency: Option<usize>,
+    /// Effective: `--parallel` implies it.
+    continue_on_fail: bool,
+}
+
+/// Pure parser for `ebman action rollout`: every usage error (exit 2)
+/// is decided here, before the pins are consulted or a client is built.
+fn parse_rollout_args(args: &[String]) -> Result<RolloutArgs, String> {
+    const PROG: &str = "ebman action rollout";
+    let take = |iter: &mut std::iter::Skip<std::slice::Iter<'_, String>>,
+                flag: &str,
+                what: &str| { crate::cli::take_value(iter, PROG, flag, what) };
+    let mut env_name: Option<String> = None;
+    let mut version: Option<String> = None;
+    let mut regions_csv: Option<String> = None;
+    let mut wait_for_green: Option<String> = None;
+    let mut profile: Option<String> = None;
+    let mut yes = false;
+    let mut json = false;
+    let mut quiet = false;
+    let mut parallel = false;
+    let mut max_concurrency: Option<usize> = None;
+    let mut continue_on_fail = false;
+    let mut staggered: Option<String> = None;
+    let mut iter = args.iter().skip(2);
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--env" => env_name = Some(take(&mut iter, "--env", "an env name")?),
+            "--version" => version = Some(take(&mut iter, "--version", "a version label")?),
+            "--regions" => regions_csv = Some(take(&mut iter, "--regions", "a region list")?),
+            "--wait-for-green" => {
+                wait_for_green = Some(take(&mut iter, "--wait-for-green", "a duration")?)
+            }
+            "--profile" => profile = Some(take(&mut iter, "--profile", "a profile name")?),
+            "--yes" => yes = true,
+            "--json" => json = true,
+            "--quiet" => quiet = true,
+            "--parallel" => parallel = true,
+            "--max-concurrency" => {
+                let Some(v) = iter.next() else {
+                    return Err(format!("{PROG}: --max-concurrency expects an integer"));
+                };
+                let Ok(n) = v.parse::<usize>() else {
+                    return Err(format!(
+                        "{PROG}: --max-concurrency expects an integer, got '{v}'"
+                    ));
+                };
+                if n == 0 {
+                    return Err(format!("{PROG}: --max-concurrency must be > 0"));
+                }
+                max_concurrency = Some(n);
+            }
+            "--continue-on-fail" => continue_on_fail = true,
+            "--staggered" => staggered = Some(take(&mut iter, "--staggered", "a duration")?),
+            other => return Err(format!("{PROG}: unknown flag '{other}'")),
         }
     }
+    let env = env_name.ok_or(format!("{PROG}: --env NAME is required"))?;
+    let version = version.ok_or(format!("{PROG}: --version LABEL is required"))?;
+    let regions_csv = regions_csv.ok_or(format!(
+        "{PROG}: --regions r1,r2,r3 is required (comma-separated, no spaces)"
+    ))?;
+    let mut regions: Vec<String> = crate::util::split_csv(&regions_csv);
+    // Dedupe preserving order — `r1,r1` used to dispatch twice, the
+    // second racing the first ("already updating") and marking the
+    // rollout partial for a self-inflicted reason.
+    let mut seen = std::collections::HashSet::new();
+    regions.retain(|r| seen.insert(r.clone()));
+    if regions.is_empty() {
+        return Err(format!("{PROG}: --regions list is empty"));
+    }
+    let secs = |flag: &str, value: Option<String>| match value {
+        Some(s) => aws::parse_window_ms(&s)
+            .map(|ms| Some((ms / 1000) as u64))
+            .ok_or(format!(
+                "{PROG}: {flag} expects a duration like `5m` / `30m` / `1h`"
+            )),
+        None => Ok(None),
+    };
+    let wait_for_green_secs = secs("--wait-for-green", wait_for_green)?;
+    let staggered_secs = secs("--staggered", staggered)?;
+    let continue_on_fail = validate_rollout_flags(
+        parallel,
+        staggered_secs,
+        max_concurrency,
+        wait_for_green_secs,
+        continue_on_fail,
+    )?;
+    Ok(RolloutArgs {
+        env,
+        version,
+        regions,
+        profile,
+        wait_for_green_secs,
+        staggered_secs,
+        yes,
+        json,
+        quiet,
+        parallel,
+        max_concurrency,
+        continue_on_fail,
+    })
 }
 
 /// Validate the mutually-exclusive rollout flags, and resolve the
@@ -796,9 +894,10 @@ pub(crate) fn rollout_freeze_halt() -> Option<String> {
         .map(|m| crate::freeze::refusal_message(&m))
 }
 
-/// — cross-region deploy with pre-flight + per-region dispatch +
-/// audit-log correlation. Sequential by default (halt on first
-/// failure); `--parallel` fans out concurrently with optional
+/// `ebman action rollout --version LABEL --regions r1,r2,r3 --env NAME
+/// --yes [...]` — cross-region deploy with pre-flight + per-region
+/// dispatch + audit-log correlation. Sequential by default (halt on
+/// first failure); `--parallel` fans out concurrently with optional
 /// `--max-concurrency N` cap; `--continue-on-fail` attempts every
 /// region in sequential mode; `--staggered Nm` waits N minutes
 /// between regions in sequential mode (canary-style rollouts).
@@ -807,176 +906,149 @@ pub(crate) fn rollout_freeze_halt() -> Option<String> {
 /// - 0 all regions dispatched successfully
 /// - 1 AWS-layer error before any region dispatched
 /// - 2 usage error (mutually-exclusive flags, missing required args)
-/// - 3 one or more region dispatches failed
+/// - 3 refused, or one or more region dispatches failed or were halted
 async fn run_rollout(args: &[String]) -> Result<()> {
-    let mut env_name: Option<String> = None;
-    let mut version: Option<String> = None;
-    let mut regions_csv: Option<String> = None;
-    let mut wait_for_green: Option<String> = None;
-    let mut profile: Option<String> = None;
-    let mut yes = false;
-    let mut json = false;
-    let mut quiet = false;
-    let mut parallel = false;
-    let mut max_concurrency: Option<usize> = None;
-    let mut continue_on_fail = false;
-    let mut staggered: Option<String> = None;
-    let mut iter = args.iter().skip(2);
-    while let Some(arg) = iter.next() {
-        match arg.as_str() {
-            "--env" => env_name = Some(rollout_value(&mut iter, "--env", "an env name")),
-            "--version" => version = Some(rollout_value(&mut iter, "--version", "a version label")),
-            "--regions" => {
-                regions_csv = Some(rollout_value(&mut iter, "--regions", "a region list"))
-            }
-            "--wait-for-green" => {
-                wait_for_green = Some(rollout_value(&mut iter, "--wait-for-green", "a duration"))
-            }
-            "--profile" => profile = Some(rollout_value(&mut iter, "--profile", "a profile name")),
-            "--yes" => yes = true,
-            "--json" => json = true,
-            "--quiet" => quiet = true,
-            "--parallel" => parallel = true,
-            "--max-concurrency" => {
-                let Some(v) = iter.next() else {
-                    eprintln!("ebman action rollout: --max-concurrency expects an integer");
-                    std::process::exit(2);
-                };
-                let Ok(n) = v.parse::<usize>() else {
-                    eprintln!(
-                        "ebman action rollout: --max-concurrency expects an integer, got '{v}'"
-                    );
-                    std::process::exit(2);
-                };
-                if n == 0 {
-                    eprintln!("ebman action rollout: --max-concurrency must be > 0");
-                    std::process::exit(2);
-                }
-                max_concurrency = Some(n);
-            }
-            "--continue-on-fail" => continue_on_fail = true,
-            "--staggered" => {
-                staggered = Some(rollout_value(&mut iter, "--staggered", "a duration"))
-            }
-            other => {
-                eprintln!("ebman action rollout: unknown flag '{other}'");
-                std::process::exit(2);
-            }
-        }
-    }
-    let Some(env) = env_name else {
-        eprintln!("ebman action rollout: --env NAME is required");
-        std::process::exit(2);
-    };
-    let Some(version) = version else {
-        eprintln!("ebman action rollout: --version LABEL is required");
-        std::process::exit(2);
-    };
-    let Some(regions_csv) = regions_csv else {
-        eprintln!(
-            "ebman action rollout: --regions r1,r2,r3 is required (comma-separated, no spaces)"
-        );
-        std::process::exit(2);
-    };
-    let mut regions: Vec<String> = crate::util::split_csv(&regions_csv);
-    // Dedupe preserving order — `r1,r1` used to dispatch twice, the
-    // second racing the first ("already updating") and marking the
-    // rollout partial for a self-inflicted reason.
-    let mut seen = std::collections::HashSet::new();
-    regions.retain(|r| seen.insert(r.clone()));
-    if regions.is_empty() {
-        eprintln!("ebman action rollout: --regions list is empty");
-        std::process::exit(2);
-    }
-    // Same pin gate as the single-env verbs — a rollout is a deploy
-    // fan-out of one env name across regions.
-    // The profile this rollout will actually dispatch under —
-    // `--profile` if given, else ambient. Gating on the ambient
-    // one while dispatching under another checks the pin on the
-    // wrong account.
-    refuse_write("ebman action rollout", &env, profile.as_deref(), "Rollout").await;
-    let wait_for_green_secs = match wait_for_green.as_deref() {
-        Some(s) => match aws::parse_window_ms(s) {
-            Some(ms) => Some((ms / 1000) as u64),
-            None => {
-                eprintln!(
-                    "ebman action rollout: --wait-for-green expects a duration like `5m` / `30m` / `1h`"
-                );
-                std::process::exit(2);
-            }
+    let code = rollout_body(
+        args,
+        std::env::var("AWS_PROFILE").ok(),
+        crate::cli::real_refusal,
+        aws::AwsClient::with,
+        rollout_freeze_halt,
+        // Unlocked handles: a parallel rollout's tasks print progress
+        // from other worker threads, which a lock held for the whole
+        // run would block for good.
+        RolloutIo {
+            out: &mut std::io::stdout(),
+            err: &mut std::io::stderr(),
+            progress: std::sync::Arc::new(|line: &str| eprintln!("{line}")),
         },
-        None => None,
-    };
-    let staggered_secs = match staggered.as_deref() {
-        Some(s) => match aws::parse_window_ms(s) {
-            Some(ms) => Some((ms / 1000) as u64),
-            None => {
-                eprintln!(
-                    "ebman action rollout: --staggered expects a duration like `5m` / `30m` / `1h`"
-                );
-                std::process::exit(2);
-            }
-        },
-        None => None,
-    };
+    )
+    .await;
+    // Every exit drains: a refusal's or a region's audit line may have
+    // a webhook POST in flight.
+    if code != 0 {
+        crate::cli::exit_after_drain(code).await;
+    }
+    crate::cli::drain_before_return().await;
+    Ok(())
+}
 
-    // Flag combination validation.
-    let continue_on_fail = match validate_rollout_flags(
-        parallel,
-        staggered_secs,
-        max_concurrency,
+/// Where a rollout writes: its report, its own messages, and the
+/// per-region progress its tasks emit.
+pub(crate) struct RolloutIo<'a> {
+    pub out: &'a mut dyn std::io::Write,
+    pub err: &'a mut dyn std::io::Write,
+    pub progress: Progress,
+}
+
+/// `ebman action rollout`'s whole behaviour against any safety
+/// decision, per-region client factory (`profile, region`), live freeze
+/// check (re-read between regions) and writers. Returns the exit code.
+/// `ambient_profile` is `AWS_PROFILE`, which `--profile` overrides for
+/// both the dispatch and the pins.
+pub(crate) async fn rollout_body<F, Fut>(
+    args: &[String],
+    ambient_profile: Option<String>,
+    refusal: impl crate::cli::Refusal,
+    client_for: F,
+    freeze_halt: impl Fn() -> Option<String>,
+    io: RolloutIo<'_>,
+) -> i32
+where
+    F: Fn(Option<String>, Option<String>) -> Fut,
+    Fut: std::future::Future<Output = Result<aws::AwsClient>>,
+{
+    let RolloutIo { out, err, progress } = io;
+    let RolloutArgs {
+        env,
+        version,
+        regions,
+        profile,
         wait_for_green_secs,
+        staggered_secs,
+        yes,
+        json,
+        quiet,
+        parallel,
+        max_concurrency,
         continue_on_fail,
-    ) {
-        Ok(v) => v,
+    } = match parse_rollout_args(args) {
+        Ok(parsed) => parsed,
         Err(msg) => {
-            eprintln!("{msg}");
-            std::process::exit(2);
+            let _ = writeln!(err, "{msg}");
+            return 2;
         }
     };
+    // Same pin gate as the single-env verbs — a rollout is a deploy
+    // fan-out of one env name across regions. Checked for the profile
+    // this rollout will actually dispatch under — `--profile` if given,
+    // else ambient. Gating on the ambient one while dispatching under
+    // another checks the pin on the wrong account. No region: the rules
+    // it applies are region-independent.
+    let pin_profile = profile.as_deref().or(ambient_profile.as_deref());
+    if let Some(reason) = refusal(&env, pin_profile, None, "Rollout") {
+        let _ = writeln!(err, "ebman action rollout: {reason}");
+        return 3;
+    }
 
     if !quiet {
-        eprintln!(
+        let _ = writeln!(
+            err,
             "rollout: pre-flighting {} region(s) for env '{env}' version '{version}'",
             regions.len()
         );
     }
     let mut per_region: Vec<(String, aws::AwsClient)> = Vec::with_capacity(regions.len());
     for region in &regions {
-        let client = match aws::AwsClient::with(profile.clone(), Some(region.clone())).await {
+        let client = match client_for(profile.clone(), Some(region.clone())).await {
             Ok(c) => c,
             Err(e) => {
-                eprintln!(
+                let _ = writeln!(
+                    err,
                     "ebman action rollout: failed to construct client for region '{region}': {e}"
                 );
-                std::process::exit(1);
+                return 1;
             }
         };
         let envs = match client.list_environments().await {
             Ok(envs) => envs,
             Err(e) => {
-                eprintln!("ebman action rollout: list_environments in '{region}' failed: {e}");
-                std::process::exit(1);
+                let _ = writeln!(
+                    err,
+                    "ebman action rollout: list_environments in '{region}' failed: {e}"
+                );
+                return 1;
             }
         };
         if !envs.iter().any(|e| e.name == env) {
-            eprintln!(
+            let _ = writeln!(
+                err,
                 "ebman action rollout: env '{env}' not found in region '{region}' — rollout halted before dispatching"
             );
-            std::process::exit(2);
+            return 2;
         }
         per_region.push((region.clone(), client));
     }
 
+    // After the pre-flight on purpose: the operator learns an env is
+    // missing from a region BEFORE being asked to confirm.
     if !yes {
-        eprintln!(
+        let _ = writeln!(
+            err,
             "ebman action rollout: would dispatch to {} region(s); re-run with --yes to confirm",
             regions.len()
         );
-        std::process::exit(2);
+        return 2;
     }
 
-    let rollout_id = format!("rollout-{}", chrono::Utc::now().format("%Y%m%dT%H%M%SZ"));
+    let wave = std::sync::Arc::new(Wave {
+        env,
+        version,
+        wait_for_green_secs,
+        rollout_id: format!("rollout-{}", chrono::Utc::now().format("%Y%m%dT%H%M%SZ")),
+        quiet,
+        progress,
+    });
     // Arc-wrap clients so both sequential and parallel paths can
     // share them. Each AwsClient holds Arc'd SDK clients internally
     // (cheap clone), but the outer struct isn't Clone — wrap once
@@ -999,7 +1071,8 @@ async fn run_rollout(args: &[String]) -> Result<()> {
         // output renderer sorts by the input `regions` order when
         // emitting.
         if !quiet {
-            eprintln!(
+            let _ = writeln!(
+                err,
                 "rollout: dispatching {} region(s) in parallel{}",
                 regions.len(),
                 max_concurrency
@@ -1023,28 +1096,9 @@ async fn run_rollout(args: &[String]) -> Result<()> {
             per_region.into_iter().collect();
         // Seed initial batch.
         for _ in 0..cap.min(queue.len()) {
-            let Some((region, client)) = queue.pop_front() else {
-                break;
-            };
-            let env_for = env.clone();
-            let version_for = version.clone();
-            let rollout_id_for = rollout_id.clone();
-            let quiet_for = quiet;
-            let region_for_inner = region.clone();
-            let handle = joinset.spawn(async move {
-                let outcome = dispatch_one_region(
-                    &client,
-                    &env_for,
-                    &version_for,
-                    wait_for_green_secs,
-                    &rollout_id_for,
-                    &region_for_inner,
-                    quiet_for,
-                )
-                .await;
-                (region_for_inner, outcome)
-            });
-            id_to_region.insert(handle.id(), region);
+            if let Some(next) = queue.pop_front() {
+                spawn_region(&mut joinset, &mut id_to_region, &wave, next);
+            }
         }
         // Drain + reseed as capacity frees up. `join_next_with_id` lets us
         // attribute join failures (panic/cancel) back to a region.
@@ -1055,8 +1109,7 @@ async fn run_rollout(args: &[String]) -> Result<()> {
                     (r, outcome)
                 }
                 Err(e) => {
-                    let id = e.id();
-                    let region = id_to_region.remove(&id).unwrap_or_default();
+                    let region = id_to_region.remove(&e.id()).unwrap_or_default();
                     (region, Err(format!("join: {e}")))
                 }
             };
@@ -1067,32 +1120,14 @@ async fn run_rollout(args: &[String]) -> Result<()> {
             // the queue leaves the rest to `unattempted_regions`, which
             // reports them as skipped.
             if !queue.is_empty() {
-                if let Some(reason) = rollout_freeze_halt() {
-                    eprintln!("ebman action rollout: halting — {reason}");
+                if let Some(reason) = freeze_halt() {
+                    let _ = writeln!(err, "ebman action rollout: halting — {reason}");
                     queue.clear();
                     halted_by_freeze = true;
                 }
             }
-            if let Some((next_region, next_client)) = queue.pop_front() {
-                let env_for = env.clone();
-                let version_for = version.clone();
-                let rollout_id_for = rollout_id.clone();
-                let quiet_for = quiet;
-                let region_for_inner = next_region.clone();
-                let handle = joinset.spawn(async move {
-                    let outcome = dispatch_one_region(
-                        &next_client,
-                        &env_for,
-                        &version_for,
-                        wait_for_green_secs,
-                        &rollout_id_for,
-                        &region_for_inner,
-                        quiet_for,
-                    )
-                    .await;
-                    (region_for_inner, outcome)
-                });
-                id_to_region.insert(handle.id(), next_region);
+            if let Some(next) = queue.pop_front() {
+                spawn_region(&mut joinset, &mut id_to_region, &wave, next);
             }
         }
     } else {
@@ -1104,28 +1139,19 @@ async fn run_rollout(args: &[String]) -> Result<()> {
             if !first_region {
                 if let Some(stagger) = staggered_secs {
                     if !quiet {
-                        eprintln!("rollout: staggering {stagger}s before next region");
+                        let _ = writeln!(err, "rollout: staggering {stagger}s before next region");
                     }
                     tokio::time::sleep(std::time::Duration::from_secs(stagger)).await;
                 }
             }
             first_region = false;
             // A freeze declared since the last region halts the rest.
-            if let Some(reason) = rollout_freeze_halt() {
-                eprintln!("ebman action rollout: halting — {reason}");
+            if let Some(reason) = freeze_halt() {
+                let _ = writeln!(err, "ebman action rollout: halting — {reason}");
                 halted_by_freeze = true;
                 break;
             }
-            let outcome = dispatch_one_region(
-                client,
-                &env,
-                &version,
-                wait_for_green_secs,
-                &rollout_id,
-                region,
-                quiet,
-            )
-            .await;
+            let outcome = dispatch_one_region(client, region, &wave).await;
             outcomes.push((region.clone(), outcome));
             if !continue_on_fail && matches!(outcomes.last(), Some((_, Err(_)))) {
                 break;
@@ -1151,64 +1177,92 @@ async fn run_rollout(args: &[String]) -> Result<()> {
 
     let any_failure = outcomes.iter().any(|(_, r)| r.is_err());
     if !quiet {
-        if json {
-            let mut out = String::from("{");
-            out.push_str(&format!(
-                "\"rollout_id\":\"{}\",\"env\":\"{}\",\"version\":\"{}\",\"regions\":[",
-                cli_esc(&rollout_id),
-                cli_esc(&env),
-                cli_esc(&version),
-            ));
-            for (i, (region, result)) in outcomes.iter().enumerate() {
-                if i > 0 {
-                    out.push(',');
-                }
-                match result {
-                    Ok(()) => {
-                        out.push_str(&format!(
-                            "{{\"region\":\"{}\",\"ok\":true}}",
-                            cli_esc(region)
-                        ));
-                    }
-                    Err(e) => {
-                        out.push_str(&format!(
-                            "{{\"region\":\"{}\",\"ok\":false,\"err\":\"{}\"}}",
-                            cli_esc(region),
-                            cli_esc(e),
-                        ));
-                    }
-                }
-            }
-            for region in unattempted_regions(&regions, &outcomes) {
-                out.push_str(&format!(
-                    ",{{\"region\":\"{}\",\"ok\":false,\"err\":\"skipped (rollout halted)\"}}",
-                    cli_esc(region)
-                ));
-            }
-            out.push_str("]}");
-            println!("{}", out);
-        } else {
-            println!("rollout_id={rollout_id}");
-            for (region, result) in &outcomes {
-                match result {
-                    Ok(()) => println!("{region}\tok"),
-                    Err(e) => println!("{region}\terr\t{e}"),
-                }
-            }
-            for region in unattempted_regions(&regions, &outcomes) {
-                println!("{region}\tskipped (rollout halted)");
-            }
-        }
+        let _ = writeln!(out, "{}", rollout_report(&wave, &regions, &outcomes, json));
     }
 
     // 3 covers both: regions failed, or regions were never attempted
     // because a freeze halted the run. Either way the rollout did not
     // do what was asked, and a CI gate must not read it as success.
     if any_failure || halted_by_freeze {
-        crate::cli::exit_after_drain(3).await;
+        return 3;
     }
-    crate::cli::drain_before_return().await;
-    Ok(())
+    0
+}
+
+/// Start one region of a parallel rollout, remembering which region
+/// the task is so a panicked or cancelled one is still reported by name.
+fn spawn_region(
+    joinset: &mut tokio::task::JoinSet<(String, Result<(), String>)>,
+    id_to_region: &mut std::collections::HashMap<tokio::task::Id, String>,
+    wave: &std::sync::Arc<Wave>,
+    (region, client): (String, std::sync::Arc<aws::AwsClient>),
+) {
+    let wave = wave.clone();
+    let inner = region.clone();
+    let handle = joinset.spawn(async move {
+        let outcome = dispatch_one_region(&client, &inner, &wave).await;
+        (inner, outcome)
+    });
+    id_to_region.insert(handle.id(), region);
+}
+
+/// A rollout's report: one row per region in the operator's order, the
+/// regions never attempted as `skipped (rollout halted)`.
+fn rollout_report(
+    wave: &Wave,
+    regions: &[String],
+    outcomes: &[(String, Result<(), String>)],
+    json: bool,
+) -> String {
+    let Wave {
+        rollout_id,
+        env,
+        version,
+        ..
+    } = wave;
+    let skipped = unattempted_regions(regions, outcomes);
+    if json {
+        let mut out = String::from("{");
+        out.push_str(&format!(
+            "\"rollout_id\":\"{}\",\"env\":\"{}\",\"version\":\"{}\",\"regions\":[",
+            cli_esc(rollout_id),
+            cli_esc(env),
+            cli_esc(version),
+        ));
+        let rows = outcomes
+            .iter()
+            .map(|(region, result)| match result {
+                Ok(()) => format!("{{\"region\":\"{}\",\"ok\":true}}", cli_esc(region)),
+                Err(e) => format!(
+                    "{{\"region\":\"{}\",\"ok\":false,\"err\":\"{}\"}}",
+                    cli_esc(region),
+                    cli_esc(e),
+                ),
+            })
+            .chain(skipped.iter().map(|region| {
+                format!(
+                    "{{\"region\":\"{}\",\"ok\":false,\"err\":\"skipped (rollout halted)\"}}",
+                    cli_esc(region)
+                )
+            }))
+            .collect::<Vec<_>>()
+            .join(",");
+        out.push_str(&rows);
+        out.push_str("]}");
+        out
+    } else {
+        let mut lines = vec![format!("rollout_id={rollout_id}")];
+        for (region, result) in outcomes {
+            lines.push(match result {
+                Ok(()) => format!("{region}\tok"),
+                Err(e) => format!("{region}\terr\t{e}"),
+            });
+        }
+        for region in skipped {
+            lines.push(format!("{region}\tskipped (rollout halted)"));
+        }
+        lines.join("\n")
+    }
 }
 
 #[cfg(test)]
@@ -1839,157 +1893,6 @@ mod rollout_flag_tests {
 mod rollout_freeze_tests {
     use super::rollout_freeze_halt;
 
-    /// The `--yes` gate must exist, be negated, and sit BEFORE the
-    /// dispatch.
-    ///
-    /// A structural pin, and honest about being one: it cannot prove the
-    /// gate does the right thing, only that it is there, the right way
-    /// round, and in the right place. `delete !` on it inverts the
-    /// meaning — `--yes` would refuse and *omitting* it would dispatch a
-    /// multi-region rollout — and that mutation is unreachable from a
-    /// behavioural test, because the gate sits after the per-region
-    /// pre-flight and an integration test without credentials exits at
-    /// `list_environments` long before it.
-    ///
-    /// Moving the gate earlier would make it testable and was considered
-    /// and rejected: today the operator learns an env is missing from a
-    /// region BEFORE being asked to confirm, and reversing that on the
-    /// widest-blast-radius command the CLI has is the wrong trade. The
-    /// behavioural version needs a fake client layer, which BACKLOG.md
-    /// records as not worth building for its own sake.
-    #[test]
-    fn the_yes_gate_guards_the_dispatch() {
-        let src = crate::app::tests::scan::production_source("cli/action.rs");
-        let body = src
-            .split_once("\nasync fn run_rollout")
-            .expect("run_rollout moved or was renamed")
-            .1;
-        assert!(
-            !body.contains("mod rollout_freeze_tests"),
-            "the slice ran past the function into this test module"
-        );
-
-        let gate = body.find("if !yes {").expect(
-            "run_rollout must refuse to dispatch without --yes. Dropping \
-             the `!` inverts it: --yes would refuse and omitting it would \
-             dispatch to every region.",
-        );
-        let dispatch = body
-            .find("let rollout_id = format!")
-            .expect("the dispatch preamble moved");
-        assert!(
-            gate < dispatch,
-            "the --yes gate must come BEFORE the dispatch, not after it"
-        );
-
-        // And the gate must STOP, not merely complain.
-        //
-        // Checking the condition alone left a worse hole than the
-        // inversion it was written for: dropping the `exit(2)` leaves
-        // the warning printing — "would dispatch to N region(s); re-run
-        // with --yes to confirm" — and then dispatches to every region
-        // anyway. The operator sees the exact message that says it
-        // stopped. Verified NOT CAUGHT by mutation before this was
-        // added.
-        let gate_body = &body[gate..dispatch];
-        assert!(
-            gate_body.contains("std::process::exit(2)"),
-            "the --yes gate must exit, not just print — without this a \
-             rollout dispatches to every region after telling the \
-             operator it would not: {gate_body}"
-        );
-        // The count in that message is what the operator decides on, so
-        // it has to be the real one.
-        assert!(
-            gate_body.contains("regions.len()"),
-            "the confirmation prompt must report the real region count: \
-             {gate_body}"
-        );
-    }
-
-    /// The canary for the gate guard above.
-    ///
-    /// It slices between two `find` offsets, so a slice that came back
-    /// empty — or that stopped matching — would satisfy every
-    /// `contains` in the negative direction and pass silently.
-    #[test]
-    fn the_yes_gate_guard_can_see_its_landmarks() {
-        let sample = "if !yes {\n eprintln!(\"x {}\", regions.len());\n \
-                      std::process::exit(2);\n}\nlet rollout_id = format!(";
-        let gate = sample.find("if !yes {").expect("condition is findable");
-        let dispatch = sample
-            .find("let rollout_id = format!")
-            .expect("dispatch is findable");
-        assert!(gate < dispatch);
-        let gate_body = &sample[gate..dispatch];
-        assert!(gate_body.contains("std::process::exit(2)"));
-        assert!(gate_body.contains("regions.len()"));
-        // And the negative: a gate that only prints must not satisfy it.
-        let toothless = "if !yes {\n eprintln!(\"x\");\n}\n";
-        assert!(
-            !toothless.contains("std::process::exit(2)"),
-            "a non-exiting gate must be distinguishable"
-        );
-    }
-
-    /// A freeze halt must not exit 0.
-    ///
-    /// `any_failure` is computed from the outcomes, and a freeze halt
-    /// produces none — the regions it stops were never dispatched, so
-    /// they have no outcome to be an error. Without a separate flag the
-    /// run exits 0 and a CI gate reads a rollout that stopped mid-way
-    /// as a rollout that completed.
-    ///
-    /// Found reviewing this change rather than writing it: the halt
-    /// itself was correct and its exit code was not.
-    #[test]
-    fn a_freeze_halt_is_tracked_separately_from_failures() {
-        let src = crate::app::tests::scan::production_source("cli/action.rs");
-        let body = src
-            .split_once("\nasync fn run_rollout")
-            .expect("run_rollout moved or was renamed")
-            .1;
-
-        // Both halt sites set it...
-        assert_eq!(
-            body.matches("halted_by_freeze = true;").count(),
-            2,
-            "both dispatch loops must record that they halted — the \
-             sequential one and the parallel one"
-        );
-        // ...and the exit consults it alongside any_failure.
-        assert!(
-            body.contains("if any_failure || halted_by_freeze {"),
-            "the exit code must account for a freeze halt; otherwise a \
-             rollout stopped part-way reports success"
-        );
-    }
-
-    /// Both dispatch loops must actually consult the halt.
-    ///
-    /// The behavioural test above proves the predicate answers
-    /// correctly; it says nothing about anything calling it. Deleting
-    /// the sequential loop's check leaves that test green — verified —
-    /// which is the same shape as a renderer proven to work down a path
-    /// production never takes. This pins the wiring.
-    #[test]
-    fn both_dispatch_loops_consult_the_freeze() {
-        let src = crate::app::tests::scan::production_source("cli/action.rs");
-        let body = src
-            .split_once("\nasync fn run_rollout")
-            .expect("run_rollout moved or was renamed")
-            .1;
-        // Stop at the next top-level item so the test module below
-        // cannot pad the count.
-        let calls = body.matches("rollout_freeze_halt()").count();
-        assert_eq!(
-            calls, 2,
-            "run_rollout must consult rollout_freeze_halt in BOTH dispatch \
-             loops — the sequential one between regions, the parallel one \
-             before reseeding an un-started wave. Found {calls}."
-        );
-    }
-
     /// A freeze declared *during* a rollout has to stop the regions
     /// that haven't dispatched yet.
     ///
@@ -2035,6 +1938,357 @@ mod rollout_freeze_tests {
         assert!(
             rollout_freeze_halt().is_none(),
             "lifting the freeze releases the halt"
+        );
+    }
+}
+
+#[cfg(test)]
+mod rollout {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    /// How one region of the test fleet answers.
+    #[derive(Clone, Copy, PartialEq)]
+    enum Region {
+        Ok,
+        /// `UpdateEnvironment` is refused.
+        DeployFails,
+        /// The env does not exist there.
+        NoEnv,
+        /// Still `Updating` on the first two polls after the dispatch.
+        Slow,
+    }
+
+    /// A region's client: lists `api` (unless `NoEnv`), and answers
+    /// `UpdateEnvironment` for `api` / `build-2`, counting into
+    /// `dispatched` every one that succeeds.
+    fn region_client(region: &str, how: Region, dispatched: Arc<AtomicUsize>) -> aws::AwsClient {
+        use aws_sdk_elasticbeanstalk::operation::describe_environments::DescribeEnvironmentsOutput;
+        use aws_sdk_elasticbeanstalk::operation::update_environment::{
+            UpdateEnvironmentError, UpdateEnvironmentOutput,
+        };
+        use aws_sdk_elasticbeanstalk::types::EnvironmentDescription;
+        let listings = Arc::new(AtomicUsize::new(0));
+        let listing =
+            aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::describe_environments)
+                .then_output(move || {
+                    // The pre-flight is listing 0, the first poll listing 1.
+                    let n = listings.fetch_add(1, Ordering::SeqCst);
+                    let (status, health) = match how {
+                        Region::Slow if (1..=2).contains(&n) => ("Updating", "Grey"),
+                        _ => ("Ready", "Green"),
+                    };
+                    let mut b = DescribeEnvironmentsOutput::builder();
+                    if how != Region::NoEnv {
+                        b = b.environments(
+                            EnvironmentDescription::builder()
+                                .environment_name("api")
+                                .application_name("shop")
+                                .version_label("build-1")
+                                .status(status.into())
+                                .health(health.into())
+                                .build(),
+                        );
+                    }
+                    b.build()
+                });
+        let deploy = aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::update_environment)
+            .match_requests(|r| {
+                r.environment_name() == Some("api") && r.version_label() == Some("build-2")
+            });
+        let deploy = if how == Region::DeployFails {
+            deploy.then_error(|| {
+                UpdateEnvironmentError::generic(
+                    aws_smithy_types::error::ErrorMetadata::builder()
+                        .code("InvalidParameterValue")
+                        .message("already updating")
+                        .build(),
+                )
+            })
+        } else {
+            deploy.then_output(move || {
+                dispatched.fetch_add(1, Ordering::SeqCst);
+                UpdateEnvironmentOutput::builder().build()
+            })
+        };
+        let eb = aws_smithy_mocks::mock_client!(
+            aws_sdk_elasticbeanstalk,
+            aws_smithy_mocks::RuleMode::MatchAny,
+            [&listing, &deploy]
+        );
+        let cfg = aws_config::SdkConfig::builder()
+            .region(aws_config::Region::new(region.to_string()))
+            .behavior_version(aws_config::BehaviorVersion::latest())
+            .build();
+        aws::AwsClient::for_tests(
+            eb,
+            aws_sdk_sqs::Client::new(&cfg),
+            aws_sdk_cloudwatch::Client::new(&cfg),
+            aws_sdk_cloudwatchlogs::Client::new(&cfg),
+            aws_sdk_s3::Client::new(&cfg),
+            aws_sdk_ec2::Client::new(&cfg),
+        )
+    }
+
+    struct Outcome {
+        code: i32,
+        out: String,
+        err: String,
+        /// Successful `UpdateEnvironment` calls, across every region.
+        dispatched: usize,
+        /// The `(profile, region)` of each client built, in order.
+        built: Vec<(Option<String>, String)>,
+        /// The profile the pins were checked for, if they were.
+        asked: Option<Option<String>>,
+    }
+
+    /// Run a rollout over `fleet`. `refuse` refuses it up front;
+    /// `freeze_after` declares a freeze once that many regions have
+    /// dispatched.
+    async fn rollout(
+        args: &[&str],
+        fleet: &'static [(&'static str, Region)],
+        refuse: Option<&str>,
+        freeze_after: Option<usize>,
+    ) -> Outcome {
+        let argv: Vec<String> = ["action", "rollout"]
+            .iter()
+            .chain(args)
+            .map(|s| s.to_string())
+            .collect();
+        let dispatched = Arc::new(AtomicUsize::new(0));
+        let built = Mutex::new(Vec::new());
+        let asked = Mutex::new(None);
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let progress: Progress = Arc::new(|_: &str| {});
+        let seen = dispatched.clone();
+        let code = rollout_body(
+            &argv,
+            Some("ops".into()),
+            |env: &str, profile: Option<&str>, _: Option<&str>, _: &str| {
+                *asked.lock().unwrap() = Some(profile.map(String::from));
+                refuse.map(|why| format!("refusing {env} — {why}"))
+            },
+            |profile: Option<String>, region: Option<String>| {
+                let region = region.expect("a rollout names every region");
+                built.lock().unwrap().push((profile, region.clone()));
+                let how = fleet.iter().find(|(r, _)| *r == region).map(|(_, h)| *h);
+                let dispatched = dispatched.clone();
+                async move {
+                    how.map(|h| region_client(&region, h, dispatched))
+                        .ok_or_else(|| color_eyre::eyre::eyre!("no credentials for {region}"))
+                }
+            },
+            move || {
+                freeze_after
+                    .filter(|n| seen.load(Ordering::SeqCst) >= *n)
+                    .map(|_| "deploys frozen: incident #4321".to_string())
+            },
+            RolloutIo {
+                out: &mut out,
+                err: &mut err,
+                progress,
+            },
+        )
+        .await;
+        Outcome {
+            code,
+            out: String::from_utf8(out).unwrap(),
+            err: String::from_utf8(err).unwrap(),
+            dispatched: dispatched.load(Ordering::SeqCst),
+            built: built.into_inner().unwrap(),
+            asked: asked.into_inner().unwrap(),
+        }
+    }
+
+    const THREE: &[(&str, Region)] = &[
+        ("us-east-1", Region::Ok),
+        ("eu-west-2", Region::Ok),
+        ("ap-south-1", Region::Ok),
+    ];
+    const ARGS: &[&str] = &[
+        "--env",
+        "api",
+        "--version",
+        "build-2",
+        "--regions",
+        "us-east-1,eu-west-2,ap-south-1",
+    ];
+
+    fn with<'a>(extra: &[&'a str]) -> Vec<&'a str> {
+        ARGS.iter().copied().chain(extra.iter().copied()).collect()
+    }
+
+    #[tokio::test]
+    async fn every_region_is_dispatched_in_order() {
+        let r = rollout(&with(&["--yes"]), THREE, None, None).await;
+        assert_eq!(r.code, 0, "{}", r.err);
+        assert_eq!(r.dispatched, 3);
+        let rows: Vec<&str> = r.out.lines().skip(1).collect();
+        assert_eq!(rows, ["us-east-1\tok", "eu-west-2\tok", "ap-south-1\tok"]);
+    }
+
+    /// In parallel, us-east-1 reaches Green last, so it completes last;
+    /// the report still lists it first.
+    #[tokio::test(start_paused = true)]
+    async fn a_parallel_report_is_in_the_operators_order() {
+        let fleet: &[(&str, Region)] = &[
+            ("us-east-1", Region::Slow),
+            ("eu-west-2", Region::Ok),
+            ("ap-south-1", Region::Ok),
+        ];
+        let r = rollout(
+            &with(&["--yes", "--parallel", "--json", "--wait-for-green", "5m"]),
+            fleet,
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(r.code, 0, "{}", r.err);
+        let v: serde_json::Value = serde_json::from_str(r.out.trim()).unwrap();
+        let regions: Vec<&str> = v["regions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|x| x["region"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            regions,
+            ["us-east-1", "eu-west-2", "ap-south-1"],
+            "the operator's order, not completion order"
+        );
+    }
+
+    /// Without `--yes` the pre-flight runs (an env missing anywhere is
+    /// said before the question) and nothing is dispatched: exit 2 with
+    /// the real region count. With it, the dispatch goes ahead — so an
+    /// inverted gate fails one half or the other.
+    #[tokio::test]
+    async fn the_yes_gate_stops_the_dispatch_after_the_preflight() {
+        let r = rollout(ARGS, THREE, None, None).await;
+        assert_eq!(r.code, 2, "{}", r.err);
+        assert_eq!(r.dispatched, 0, "nothing dispatched without --yes");
+        assert_eq!(r.built.len(), 3, "every region pre-flighted first");
+        assert!(r.err.contains("would dispatch to 3 region(s)"), "{}", r.err);
+
+        let missing: &[(&str, Region)] = &[
+            ("us-east-1", Region::Ok),
+            ("eu-west-2", Region::NoEnv),
+            ("ap-south-1", Region::Ok),
+        ];
+        let r = rollout(&with(&["--yes"]), missing, None, None).await;
+        assert_eq!((r.code, r.dispatched), (2, 0), "{}", r.err);
+        assert!(
+            r.err.contains("not found in region 'eu-west-2'"),
+            "{}",
+            r.err
+        );
+    }
+
+    /// `--profile` is the account the rollout writes to, so it is the
+    /// account whose pins are checked — not the ambient `AWS_PROFILE`.
+    #[tokio::test]
+    async fn the_pins_are_checked_for_the_profile_that_dispatches() {
+        let r = rollout(
+            &with(&["--yes", "--profile", "prod-admin"]),
+            THREE,
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(r.code, 0, "{}", r.err);
+        assert_eq!(r.asked, Some(Some("prod-admin".into())));
+        assert!(
+            r.built
+                .iter()
+                .all(|(p, _)| p.as_deref() == Some("prod-admin")),
+            "{:?}",
+            r.built
+        );
+
+        let r = rollout(&with(&["--yes"]), THREE, None, None).await;
+        assert_eq!(
+            r.asked,
+            Some(Some("ops".into())),
+            "no --profile: the ambient one"
+        );
+        assert!(r.built.iter().all(|(p, _)| p.is_none()), "{:?}", r.built);
+
+        let r = rollout(&with(&["--yes"]), THREE, Some("pinned read-only"), None).await;
+        assert_eq!(r.code, 3, "{}", r.err);
+        assert!(r.built.is_empty(), "a refusal builds no client");
+    }
+
+    #[tokio::test]
+    async fn a_failed_region_halts_the_rest_unless_told_to_carry_on() {
+        let flaky: &[(&str, Region)] = &[
+            ("us-east-1", Region::Ok),
+            ("eu-west-2", Region::DeployFails),
+            ("ap-south-1", Region::Ok),
+        ];
+        let r = rollout(&with(&["--yes"]), flaky, None, None).await;
+        assert_eq!((r.code, r.dispatched), (3, 1), "{}", r.err);
+        assert!(
+            r.out.contains("eu-west-2\terr\t")
+                && r.out.contains("ap-south-1\tskipped (rollout halted)"),
+            "{}",
+            r.out
+        );
+
+        let r = rollout(&with(&["--yes", "--continue-on-fail"]), flaky, None, None).await;
+        assert_eq!((r.code, r.dispatched), (3, 2), "{}", r.err);
+        assert!(r.out.contains("ap-south-1\tok"), "{}", r.out);
+    }
+
+    /// A freeze declared once the first region has gone stops the rest,
+    /// in both dispatch loops, and the run is not a success: 3.
+    #[tokio::test]
+    async fn a_freeze_declared_mid_rollout_halts_both_loops() {
+        for extra in [
+            &["--yes"][..],
+            &["--yes", "--parallel", "--max-concurrency", "1"][..],
+        ] {
+            let r = rollout(&with(extra), THREE, None, Some(1)).await;
+            assert_eq!(r.code, 3, "{extra:?}: {}", r.err);
+            assert_eq!(r.dispatched, 1, "{extra:?}");
+            assert!(
+                r.err.contains("halting — deploys frozen: incident #4321"),
+                "{extra:?}: {}",
+                r.err
+            );
+            assert!(
+                r.out.contains("eu-west-2\tskipped (rollout halted)")
+                    && r.out.contains("ap-south-1\tskipped (rollout halted)"),
+                "{extra:?}: {}",
+                r.out
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn usage_and_unreachable_regions() {
+        let r = rollout(
+            &with(&["--yes", "--parallel", "--staggered", "5m"]),
+            THREE,
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(r.code, 2, "{}", r.err);
+        assert!(
+            r.asked.is_none(),
+            "a usage error is decided before the pins"
+        );
+        let r = rollout(&["--env", "api", "--version", "build-2"], THREE, None, None).await;
+        assert_eq!(r.code, 2, "no --regions");
+        let two: &[(&str, Region)] = &[("us-east-1", Region::Ok)];
+        let r = rollout(&with(&["--yes"]), two, None, None).await;
+        assert_eq!(
+            (r.code, r.dispatched),
+            (1, 0),
+            "eu-west-2 has no client: {}",
+            r.err
         );
     }
 }

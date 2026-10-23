@@ -119,8 +119,8 @@ pub(crate) async fn refuse_if_frozen(prog: &str, action_label: &str) {
 ///
 /// Promoting the best of the four rather than writing a fifth. It takes
 /// its inputs rather than reading them so the MCP server can keep
-/// testing it hermetically; `refuse_write` below is the CLI's
-/// read-the-world-and-exit wrapper.
+/// testing it hermetically; [`real_refusal`] below reads the world for
+/// the CLI's write bodies, whose shells drain before exiting 3.
 pub(crate) fn write_refusal(
     safety_cfg: &crate::config::Config,
     env: &str,
@@ -268,27 +268,6 @@ pub(crate) fn refusal_naming(reason: String, env: &str, subject: &str) -> String
         .unwrap_or(reason)
 }
 
-/// CLI wrapper over [`write_refusal`]: read the world, print, exit 3.
-///
-/// `subject` is what the message names — usually the env, but
-/// `audit replay` says "restart on api-prod", which is more useful and
-/// worth keeping.
-pub(crate) async fn refuse_write(
-    prog: &str,
-    subject: &str,
-    env: &str,
-    profile: Option<&str>,
-    region: Option<&str>,
-    action_label: &str,
-) {
-    if let Some(reason) = real_refusal(env, profile, region, action_label) {
-        eprintln!("{prog}: {}", refusal_naming(reason, env, subject));
-        // Same reason as `refuse_if_frozen`: without the drain the
-        // refusal's webhook POST dies with the process.
-        exit_after_drain(3).await;
-    }
-}
-
 /// Shared value-flag guard: reject a missing value or a following
 /// flag consumed as one. Class fix from the 0.26 max-review — a
 /// swallowed value silently changed semantics (`lint --fix --yes
@@ -397,7 +376,7 @@ mod write_gate_guard {
             "if let Some(r) = write_refusal(&cfg, env, &p, f) {"
         ));
         assert!(!reaches_past_the_gate(
-            "refuse_write(prog, subject, env, profile)"
+            "real_refusal(env, profile, region, action_label)"
         ));
     }
 
@@ -610,102 +589,29 @@ mod write_refusal_tests {
 
 #[cfg(test)]
 mod write_gate_input_guard {
-    /// A subcommand that takes `--profile` must feed it to the gate.
-    ///
-    /// `cli_write_paths_do_not_reach_past_the_shared_gate` catches a
-    /// path that skips the gate. It is structurally blind to one that
-    /// *calls* the gate with the wrong account — which is how
-    /// `action rollout` dispatched under `--profile X` while resolving
-    /// `safety.accounts.*.read_only` against the ambient `AWS_PROFILE`.
-    /// A pin on X was simply never consulted.
-    ///
-    /// Scanning is the only way to reach this: the CLI wrapper exits
-    /// the process, so its call sites cannot be exercised in-process.
-    #[test]
-    fn a_subcommand_with_its_own_profile_flag_passes_it_to_the_gate() {
-        let src = std::fs::read_to_string("src/cli/action.rs").expect("read action.rs");
-        // Split into top-level fn bodies so "does this fn parse
-        // --profile" and "what did this fn pass" are asked of the SAME
-        // function, not of the file.
-        let mut offenders: Vec<String> = Vec::new();
-        let mut current_fn = String::new();
-        let mut body = String::new();
-        let check = |name: &str, body: &str, offenders: &mut Vec<String>| {
-            if name.is_empty() || !body.contains("\"--profile\"") {
-                return;
-            }
-            for line in body.lines() {
-                let t = line.trim_start();
-                if t.starts_with("refuse_write(") && t.contains(", None)") {
-                    offenders.push(format!("{name}: {}", t.trim()));
-                }
-            }
-        };
-        // A top-level fn, whatever its visibility. The original test was
-        // `starts_with("pub ")`, which is FALSE for `pub(crate) fn` — so
-        // narrowing one function's visibility would have made this guard
-        // merge its body into the previous function's and stop seeing the
-        // thing it exists to see, silently and while still passing.
-        fn is_top_level_fn(line: &str) -> bool {
-            if line.starts_with(char::is_whitespace) {
-                return false;
-            }
-            let rest = match line.find(") ") {
-                // strip `pub(crate) ` / `pub(super) ` / `pub(in path) `
-                Some(i) if line.starts_with("pub(") => &line[i + 2..],
-                _ => line.strip_prefix("pub ").unwrap_or(line),
-            };
-            rest.starts_with("fn ") || rest.starts_with("async fn ")
-        }
-        for line in src.lines() {
-            if is_top_level_fn(line) {
-                check(&current_fn, &body, &mut offenders);
-                current_fn = line
-                    .split("fn ")
-                    .nth(1)
-                    .unwrap_or("")
-                    .split('(')
-                    .next()
-                    .unwrap_or("")
-                    .to_string();
-                body.clear();
-            }
-            body.push('\n');
-            body.push_str(line);
-        }
-        check(&current_fn, &body, &mut offenders);
-
-        assert!(
-            offenders.is_empty(),
-            "these subcommands parse `--profile` but hand the write gate \
-             `None`, so the account pin is resolved against the ambient \
-             AWS_PROFILE instead of the account the write runs under: \
-             {offenders:?}"
-        );
-    }
-
-    /// Both process-exiting refusal paths must drain webhooks first.
+    /// Every process-exiting refusal path must drain webhooks first.
     ///
     /// `fire_webhook` is spawned fire-and-forget and `process::exit`
     /// cancels spawned tasks, so the notification that a write was
     /// STOPPED was the one an integration never received — while the
     /// notification that one SUCCEEDED arrived, because the success
-    /// paths already drain. Pinned by source because the alternative is
-    /// exiting the test process.
+    /// paths already drain. The write bodies return their refusal's 3,
+    /// so the exit is their shell's; pinned by source because the
+    /// alternative is exiting the test process.
     #[test]
     fn refusal_exits_drain_webhooks_first() {
-        let src = std::fs::read_to_string("src/cli/mod.rs").expect("read own source");
-        for f in [
-            "pub(crate) async fn refuse_if_frozen",
-            "pub(crate) async fn refuse_write",
+        for (module, f, calls) in [
+            ("cli/mod.rs", "refuse_if_frozen", "eprintln!"),
+            ("cli/action.rs", "run", "action_body("),
+            ("cli/action.rs", "run_rollout", "rollout_body("),
+            ("cli/audit_replay.rs", "run_replay", "audit_replay_body("),
         ] {
-            let body = src
-                .split(f)
-                .nth(1)
-                .unwrap_or_else(|| panic!("{f} is defined here"))
-                .split("\n}")
-                .next()
-                .expect("has a body");
+            let src = crate::app::tests::scan::production_source(module);
+            let body = crate::app::tests::scan::fn_bodies(&src)
+                .into_iter()
+                .find(|(name, _)| name == f)
+                .unwrap_or_else(|| panic!("{module}: `{f}` is defined"))
+                .1;
             assert!(
                 body.contains("exit_after_drain("),
                 "{f} must drain before exiting, or the refusal's webhook \
@@ -715,10 +621,10 @@ mod write_gate_input_guard {
                 !body.contains("std::process::exit("),
                 "{f} must not bypass the draining exit: {body}"
             );
-            // Canary: prove the body extraction found something real.
+            // Canary: prove the body extraction found the real one.
             assert!(
-                body.contains("eprintln!"),
-                "body extraction is not finding {f}: {body}"
+                body.contains(calls),
+                "{module}: `{f}` was not found: {body}"
             );
         }
     }
