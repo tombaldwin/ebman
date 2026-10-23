@@ -245,6 +245,13 @@ now head the list.*
 
 ### Released
 
+**0.46.1 (2026-10-23)**: the header shows `+N` under `:region all`;
+`:region NAME` and a config edit to `extra_regions` re-derive a running
+fan-out; `:region all` with no extras says so and drops the REGION
+column; Homebrew installs shell completions; the release workflow's
+notes scan no longer dirties the checkout. Not live-checked against
+real AWS before the tag; the fan-out paths are covered by tests only.
+
 **0.46.0 (2026-10-22)**: firing alarms and the platform version on the
 fleet view (and in `ebman envs` / `list_environments`); the App tab with
 in-UI editing and discovery; writes, audit lines and Detail routed by
