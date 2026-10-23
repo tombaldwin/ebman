@@ -5140,3 +5140,21 @@ From `PLAN.md`, retired with it:
   `action`'s 4 and 5. Mutations: main's help dispatch removed (by hand,
   `mutate.sh` refuses main.rs), a code dropped from the table, the flag
   position rule: all CAUGHT.
+
+- [x] **Six doc contradictions** (reviewer-verified): `commands.md:3`
+  says tab-completion is not implemented (`keys.md:46` documents it, and
+  it exists); `commands.md:66` says five write verbs (eight);
+  `headless.md:51` omits EBL009's auto-fix; `headless.md:140-147` lists
+  worker queues and `:why` as not exposed over MCP, and says DLQ writes
+  need `--allow-writes`; `headless.md:257` names `deny_write`, an
+  internal function, as if it were config; `safety-and-privacy.md:264`
+  repeats a sentence.
+
+  **Done 2026-10-23.** Re-checked all six: two had been fixed since
+  (`commands.md` now says eight write verbs; the repeated freeze sentence
+  in `safety-and-privacy.md` went with the persistent-freeze work), and
+  the MCP surface lines in `headless.md` were already corrected. Fixed:
+  `commands.md`'s "tab-completion is not implemented"; `headless.md`
+  naming `deny_write` as a restriction; the auto-fix list (EBL001/004/006,
+  missing 009 and 019), now pinned to `lint/rules.rs` by
+  `the_auto_fixed_rules_are_documented` (CAUGHT with the old list).

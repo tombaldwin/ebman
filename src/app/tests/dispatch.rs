@@ -1970,6 +1970,47 @@ mod docs_drift {
     /// Every literal exit code a subcommand's module can exit with is in
     /// its row of the exit-code table. `ebman action` exited 4 and 5
     /// while the docs listed 0-3.
+    /// The rules whose fix `--fix` applies itself (`FixAction::SetOption`),
+    /// read from `lint/rules.rs`: each `SetOption` belongs to the rule id
+    /// named last before it.
+    fn auto_fixed_rules(statements: &[String]) -> Vec<String> {
+        let mut current: Option<String> = None;
+        let mut out = Vec::new();
+        for st in statements {
+            let t = st.trim().trim_end_matches(',');
+            if t.len() == 8 && t.starts_with("\"EBL") && t.ends_with('"') {
+                current = Some(t.trim_matches('"').to_string());
+            }
+            if st.contains("FixAction::SetOption") {
+                if let Some(id) = &current {
+                    out.push(id.clone());
+                }
+            }
+        }
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    /// `docs/headless.md` lists the rules `lint --fix` remediates on its
+    /// own. It said EBL001/004/006 while EBL009 and EBL019 shipped fixes.
+    #[test]
+    fn the_auto_fixed_rules_are_documented() {
+        let src = super::super::scan::production_source("lint/rules.rs");
+        let fixed = auto_fixed_rules(&super::super::scan::statements_of(&src));
+        assert!(fixed.len() >= 4, "reader broken: {fixed:?}");
+        let listed = fixed
+            .iter()
+            .map(|id| id.trim_start_matches("EBL").to_string())
+            .collect::<Vec<_>>()
+            .join("/");
+        let docs = std::fs::read_to_string("docs/headless.md").expect("read headless.md");
+        assert!(
+            docs.contains(&format!("(EBL{listed} ship with fixes)")),
+            "docs/headless.md must list the auto-fixed rules as EBL{listed}"
+        );
+    }
+
     #[test]
     fn every_exit_code_is_documented() {
         let docs = std::fs::read_to_string("docs/headless.md").expect("read headless.md");

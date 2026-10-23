@@ -306,15 +306,6 @@ Tier definitions:
   tool on the registry surface and lifting must stay with the operator.
   Left out of the freeze work by design (`docs/design/persistent-freeze.md`).
 
-- [ ] **Six doc contradictions** (reviewer-verified): `commands.md:3`
-  says tab-completion is not implemented (`keys.md:46` documents it, and
-  it exists); `commands.md:66` says five write verbs (eight);
-  `headless.md:51` omits EBL009's auto-fix; `headless.md:140-147` lists
-  worker queues and `:why` as not exposed over MCP, and says DLQ writes
-  need `--allow-writes`; `headless.md:257` names `deny_write`, an
-  internal function, as if it were config; `safety-and-privacy.md:264`
-  repeats a sentence.
-
 - [ ] **The docs read as a design log.** Operator pages carry history
   and rationale ("Measured, 2026-09-19 …", "Before 0.30 …"), and
   CHANGELOG entries name internal tests. Split each page into reference

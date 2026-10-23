@@ -1,6 +1,6 @@
 # Command reference
 
-Type `:` to open the command bar. Tab-completion is not implemented, but `Ctrl-K` fuzzy-searches every command + env + view + plugin. Press `?` in-app for a context-aware help screen built from the same registry.
+Type `:` to open the command bar. `Tab` / `Shift-Tab` complete the command name, and an env name for the commands that take one (see [keys.md](keys.md)); `Ctrl-K` fuzzy-searches every command + env + view + plugin. Press `?` in-app for a context-aware help screen built from the same registry.
 
 ## View / filter / sort
 

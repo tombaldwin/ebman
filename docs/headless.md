@@ -49,7 +49,7 @@ ebman action rollout ... --parallel [--max-concurrency N]                  # fan
 ebman action rollout ... --continue-on-fail                                # sequential but attempt every region
 ebman action rollout ... --staggered 5m --wait-for-green 10m               # canary: wait Nm between regions
 ebman lint   [--env NAME] [--regions r1,r2,r3] [--json]                    # rule-engine diagnostics; exit 3 on issues
-ebman lint   --fix (--yes | --dry-run) [--rules ID1,ID2] [--env NAME]      # opt-in auto-remediation (EBL001/004/006 ship with fixes)
+ebman lint   --fix (--yes | --dry-run) [--rules ID1,ID2] [--env NAME]      # opt-in auto-remediation (EBL001/004/006/009/019 ship with fixes)
 ebman lint   --watch [--interval 60s] [--json] [--severity warn]           # cron-friendly monitoring loop; Ctrl-C to exit
 ebman lint   --watch --webhook URL                                          # POST findings to a webhook when the issue set changes
 ebman lint   --probe-live                                                   # enable EBL016: live HTTP probe of each env's health-check URL
@@ -308,7 +308,7 @@ Run `doctor` to see which case you are in: it reports what your client
 declared and what this connection may do.
 
 **What it does not change.** Standing restrictions are untouched:
-`safety.read_only`, pins, freeze and `deny_write` all still refuse, and
+`safety.read_only`, pins, a freeze and `--read-only` all still refuse, and
 the ask never appears because there is nothing to approve. An operator
 who has said no in config has said no, and no dialog overrides it.
 Config may only say no — there is deliberately no config key that
