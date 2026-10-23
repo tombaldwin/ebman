@@ -62,7 +62,8 @@ pub(crate) fn freeze_body(args: &[String], out: &mut dyn Write, err: &mut dyn Wr
             0
         }
         Ok(FreezeCmd::Declare { reason, incident }) => {
-            if let Err(e) = crate::freeze::write_persistent_marker(&reason, incident) {
+            if let Err(e) = crate::freeze::FreezeStore::real().declare_persistent(&reason, incident)
+            {
                 let _ = writeln!(
                     err,
                     "ebman freeze: could not write the freeze marker ({e}) — the fleet is NOT frozen"
@@ -106,7 +107,7 @@ pub(crate) fn freeze_body(args: &[String], out: &mut dyn Write, err: &mut dyn Wr
 
 /// What is in force, and any freeze that ended with its session.
 fn status_text() -> String {
-    let holders = crate::freeze::read_all_at(&crate::freeze::marker_path());
+    let holders = crate::freeze::FreezeStore::real().all();
     let mut lines: Vec<String> = if holders.is_empty() {
         vec!["not frozen".to_string()]
     } else {
@@ -124,7 +125,7 @@ fn status_text() -> String {
             .collect()
     };
     if holders.is_empty() {
-        if let Some(ended) = crate::freeze::read_ended() {
+        if let Some(ended) = crate::freeze::FreezeStore::real().ended() {
             lines.push(format!("note: {}", ended.message()));
         }
     }
@@ -138,8 +139,11 @@ pub(crate) fn thaw_body(args: &[String], out: &mut dyn Write, err: &mut dyn Writ
         let _ = writeln!(err, "ebman thaw: takes no arguments (got '{extra}')");
         return 2;
     }
-    match crate::freeze::thaw_persistent() {
-        crate::freeze::Thaw::Lifted(m) => {
+    match crate::freeze::FreezeStore::real().thaw() {
+        crate::freeze::Thaw::Lifted {
+            marker: m,
+            still_held,
+        } => {
             let label = if m.incident {
                 "IncidentEnd"
             } else {
@@ -157,7 +161,22 @@ pub(crate) fn thaw_body(args: &[String], out: &mut dyn Write, err: &mut dyn Writ
                     ("via", "cli"),
                 ],
             );
-            let _ = writeln!(out, "fleet freeze lifted");
+            match still_held {
+                // Lifted, but writes are still refused: a script must
+                // not read "lifted" as all clear.
+                Some(s) => {
+                    let _ = writeln!(
+                        out,
+                        "the `ebman freeze` freeze is lifted, but the fleet is still frozen: \
+                         it is {}; lift it there with `{}`",
+                        s.holder(),
+                        s.remedy()
+                    );
+                }
+                None => {
+                    let _ = writeln!(out, "fleet freeze lifted");
+                }
+            }
             0
         }
         crate::freeze::Thaw::HeldBySession(m) => {
@@ -234,12 +253,12 @@ mod tests {
         let _guard = crate::freeze::MARKER_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        crate::freeze::clear_marker_if_own();
-        let _ = crate::freeze::thaw_persistent();
+        crate::freeze::FreezeStore::real().clear_session(std::process::id());
+        let _ = crate::freeze::FreezeStore::real().thaw();
 
         let (code, text) = run(freeze_body, &["freeze", "release", "window"]);
         assert_eq!(code, 0, "{text}");
-        let m = crate::freeze::read_active().expect("frozen");
+        let m = crate::freeze::FreezeStore::real().active().expect("frozen");
         assert!(m.persistent && m.reason == "release window");
 
         let (code, text) = run(freeze_body, &["freeze", "--status"]);
@@ -251,15 +270,28 @@ mod tests {
 
         let (code, text) = run(thaw_body, &["thaw"]);
         assert_eq!(code, 0, "{text}");
-        assert!(crate::freeze::read_active().is_none());
+        assert!(crate::freeze::FreezeStore::real().active().is_none());
 
         // A session's own freeze (this process is alive) is not ours.
-        crate::freeze::write_marker("tui freeze", false).unwrap();
+        crate::freeze::FreezeStore::real()
+            .declare_session(std::process::id(), "tui freeze", false)
+            .unwrap();
         let (code, text) = run(thaw_body, &["thaw"]);
         assert_eq!(code, 3, "{text}");
         assert!(text.contains(":thaw-deploys"), "{text}");
-        assert!(crate::freeze::read_active().is_some());
-        crate::freeze::clear_marker_if_own();
+        assert!(crate::freeze::FreezeStore::real().active().is_some());
+
+        // Both: the persistent one lifts, and the output says the session's
+        // still holds rather than "lifted", which a script reads as clear.
+        let (code, _) = run(freeze_body, &["freeze", "change"]);
+        assert_eq!(code, 0);
+        let (code, text) = run(thaw_body, &["thaw"]);
+        assert_eq!(code, 0, "{text}");
+        assert!(
+            text.contains("still frozen") && !text.contains("fleet freeze lifted"),
+            "{text}"
+        );
+        crate::freeze::FreezeStore::real().clear_session(std::process::id());
 
         let (code, _) = run(thaw_body, &["thaw", "now"]);
         assert_eq!(code, 2);

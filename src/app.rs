@@ -500,7 +500,7 @@ pub struct App {
     /// Where the cross-process freeze marker is read from. The real one
     /// in a session; a file of its own for a test App, so one test's
     /// freeze cannot refuse another's writes.
-    pub(crate) freeze_marker: std::path::PathBuf,
+    pub(crate) freeze: crate::freeze::FreezeStore,
     /// A freeze this session did not declare (another TUI's, or
     /// `ebman freeze`), as of the last refresh: the header's chip. The
     /// write gate reads the marker itself rather than this.
@@ -1424,7 +1424,7 @@ impl App {
             last_rendered_buffer: None,
             notify_bell: config.notify_bell,
             config_seen: crate::config::stamp_of(&config_file),
-            freeze_marker: crate::freeze::marker_path(),
+            freeze: crate::freeze::FreezeStore::real(),
             foreign_freeze: None,
             foreign_freeze_checked: None,
             config_file: Some(config_file),
@@ -1715,10 +1715,12 @@ impl App {
             notify_bell: config.notify_bell,
             config_seen: None,
             config_file: None,
-            freeze_marker: {
+            freeze: {
                 static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
                 let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                crate::util::cache_dir().join(format!("freeze-app-{n}.json"))
+                crate::freeze::FreezeStore::at(
+                    crate::util::cache_dir().join(format!("freeze-app-{n}.json")),
+                )
             },
             foreign_freeze: None,
             foreign_freeze_checked: None,

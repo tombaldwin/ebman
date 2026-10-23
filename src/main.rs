@@ -249,7 +249,7 @@ async fn main() -> Result<()> {
     // (pid-scoped: another session's marker is left alone; a CRASHED
     // session's marker dies with its pid via the readers' liveness
     // check).
-    ebman::freeze::clear_marker_if_own();
+    app_inst.release_own_freeze();
     // Belt-and-braces: persist state regardless of how `run()` exited.
     // The internal call at the end of `run()` only fires on the Ok path,
     // so a `terminal.draw()?` error mid-shutdown (which can happen when

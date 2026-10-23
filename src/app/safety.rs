@@ -258,7 +258,7 @@ impl App {
         if self.foreign_freeze.is_some() || self.deploy_freeze.is_some() {
             return;
         }
-        if let Some(ended) = crate::freeze::read_ended_beside(&self.freeze_marker) {
+        if let Some(ended) = self.freeze.ended() {
             self.pin_error(ended.message());
         }
     }
@@ -279,6 +279,13 @@ impl App {
         self.foreign_freeze = self.foreign_freeze_now();
     }
 
+    /// Release this session's own freeze: a clean exit, from `main`.
+    pub fn release_own_freeze(&self) {
+        if !self.demo_mode {
+            self.freeze.clear_session(std::process::id());
+        }
+    }
+
     /// A freeze in force that this session did not declare: another
     /// TUI's, or one from `ebman freeze`. Read from the marker now, not
     /// from the header's copy, so a freeze declared a second ago refuses
@@ -288,8 +295,12 @@ impl App {
         if self.demo_mode {
             return None;
         }
-        crate::freeze::read_active_at(&self.freeze_marker)
-            .filter(|m| m.persistent || m.pid != std::process::id())
+        // Over every holder, not just the first: this session's own
+        // file can sort ahead of another session's freeze.
+        self.freeze
+            .all()
+            .into_iter()
+            .find(|m| m.persistent || m.pid != std::process::id())
     }
 
     /// The typed decision for `env_name`, before any wording is applied.

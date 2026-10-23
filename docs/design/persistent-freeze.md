@@ -40,9 +40,12 @@ And one found while reading the code:
   it, and `ebman freeze` replaced a session's marker so a later thaw
   lifted the session's freeze too.
 - **`freeze.json` stays, as a mirror for older binaries.** ebman before
-  0.47 reads only that file. It mirrors one live holder (persistent
-  first) and is marked `"mirror": true`, so a new reader does not count
-  it twice; one without the mark was written by an older TUI and is a
+  0.47 reads only that file, and removes it when its pid is dead. It
+  names one LIVE holder (persistent first, then the earliest-declared
+  session) and is marked `"mirror": true`, so a new reader does not
+  count it twice. Every read puts it right when it is missing or names a
+  holder that has gone (a reap, an older TUI's clear), so older readers
+  are back under the freeze within one read by any 0.47+ process; one without the mark was written by an older TUI and is a
   holder of its own, never overwritten while its process lives. A
   persistent freeze's mirror carries `pid: 1`, which an older reader
   takes for a live owner that started before the marker, so it refuses
@@ -70,6 +73,15 @@ And one found while reading the code:
   freeze that has not ended. The same was true of the single marker
   since 0.28; `ebman freeze`, which no pid owns, is the freeze to use
   across such boundaries.
+- **A reaper racing a write** of the very file it judged stale removes
+  the new write: it re-reads and compares before removing, but the
+  window between the two is not locked. For a `freeze.d/` file that
+  needs the same pid reused at that moment; for an older TUI writing
+  `freeze.json`, the next 0.47+ read restores a mirror only if a 0.47+
+  holder exists.
+- **ebman before 0.47 records nothing** when it reaps a stale marker, so
+  a freeze that ended with its session is said only when a 0.47+ reader
+  found it.
 - **A reaper racing a declare** can record an ended freeze just after a
   new freeze cleared the record. The TUI and `doctor` show the note only
   with no freeze in force, so it cannot tell an operator to declare a

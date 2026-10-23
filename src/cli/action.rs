@@ -744,7 +744,9 @@ pub(crate) fn unattempted_regions<'a>(
 /// region hours later. A freeze is not static config like a pin — it is
 /// a live incident signal, and it arrives mid-flight by definition.
 pub(crate) fn rollout_freeze_halt() -> Option<String> {
-    crate::freeze::read_active().map(|m| crate::freeze::refusal_message(&m))
+    crate::freeze::FreezeStore::real()
+        .active()
+        .map(|m| crate::freeze::refusal_message(&m))
 }
 
 /// — cross-region deploy with pre-flight + per-region dispatch +
@@ -1673,7 +1675,7 @@ mod rollout_freeze_tests {
         let _guard = crate::freeze::MARKER_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        crate::freeze::clear_marker_if_own();
+        crate::freeze::FreezeStore::real().clear_session(std::process::id());
 
         assert!(
             rollout_freeze_halt().is_none(),
@@ -1681,7 +1683,9 @@ mod rollout_freeze_tests {
              this check would halt every rollout it is asked about"
         );
 
-        crate::freeze::write_marker("incident #4321", true).expect("marker written");
+        crate::freeze::FreezeStore::real()
+            .declare_session(std::process::id(), "incident #4321", true)
+            .expect("marker written");
         let reason = rollout_freeze_halt().expect(
             "a freeze declared mid-rollout must halt the remaining regions — \
              this is the window the single start-gate left open",
@@ -1691,7 +1695,7 @@ mod rollout_freeze_tests {
             "the halt must name the freeze the operator declared: {reason}"
         );
 
-        crate::freeze::clear_marker_if_own();
+        crate::freeze::FreezeStore::real().clear_session(std::process::id());
         assert!(
             rollout_freeze_halt().is_none(),
             "lifting the freeze releases the halt"

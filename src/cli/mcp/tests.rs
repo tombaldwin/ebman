@@ -5356,7 +5356,7 @@ fn doctor_says_when_a_freeze_ended_with_its_session() {
     let _guard = crate::freeze::MARKER_LOCK
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    crate::freeze::write_test_ended(&crate::freeze::marker_path(), "incident: db failover");
+    crate::freeze::FreezeStore::real().write_test_ended("incident: db failover");
     let body = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -5364,7 +5364,7 @@ fn doctor_says_when_a_freeze_ended_with_its_session() {
         .block_on(call(&demo_server(), "doctor", json!({})))
         .1
         .to_string();
-    crate::freeze::clear_ended();
+    crate::freeze::FreezeStore::real().clear_ended();
     assert!(
         body.contains("incident: db failover") && body.contains("session ended"),
         "{body}"

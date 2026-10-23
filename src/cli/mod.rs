@@ -81,7 +81,7 @@ pub(crate) use crate::util::{json_escape as cli_esc, json_string};
 /// write tools would have had: a fleet frozen mid-incident could
 /// still be written from a second terminal.
 pub(crate) async fn refuse_if_frozen(prog: &str, action_label: &str) {
-    if let Some(m) = crate::freeze::read_active() {
+    if let Some(m) = crate::freeze::FreezeStore::real().active() {
         // Audited like every other refusal. This was the one CLI
         // refusal path the `stage=refused` work missed: it exits before
         // reaching `write_refusal`, so a fleet-wide freeze stopping a
@@ -248,7 +248,7 @@ pub(crate) async fn refuse_write(
         &crate::config::load(),
         env,
         &profile,
-        crate::freeze::read_active(),
+        crate::freeze::FreezeStore::real().active(),
         region,
         action_label,
     ) {

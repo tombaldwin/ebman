@@ -20,9 +20,11 @@
 //! Demo-mode TUIs never persist.
 //!
 //! The legacy `freeze.json` is kept as a mirror of one live holder for
-//! ebman older than 0.47, which reads only that file. A mirror is
-//! marked so; one without the mark was written by an older TUI and is a
-//! holder in its own right. Deleting `freeze.d/` and `freeze.json` is
+//! ebman older than 0.47, which reads only that file, and every read
+//! puts it right. A mirror is marked so; one without the mark was
+//! written by an older TUI and is a holder in its own right. Everything
+//! goes through a [`FreezeStore`]: the CLI and MCP use the real one, a
+//! TUI the one its `App` holds. Deleting `freeze.d/` and `freeze.json` is
 //! the manual unfreeze of last resort. See
 //! `docs/design/persistent-freeze.md`.
 
@@ -81,119 +83,369 @@ impl FreezeMarker {
     }
 }
 
-/// The pid a persistent marker's legacy mirror carries. ebman before
+/// The pid a persistent freeze's legacy mirror carries. ebman before
 /// 0.47 reads only `freeze.json`, as active while its pid is alive and
 /// started before the marker; pid 1 always is, on a host. So an older
 /// binary (an MCP server spawned before an upgrade) still refuses writes
 /// under a persistent freeze. In a container whose pid 1 started after
 /// the marker, an older binary judges it reused and removes the mirror;
 /// the holder file in `freeze.d/` is untouched and every 0.47+ reader
-/// still honours it.
+/// still honours it, and repairs the mirror when it next reads.
 const PERSISTENT_PID: u32 = 1;
 
-/// The legacy marker path. The holders live in [`holders_dir`] beside it.
-pub(crate) fn marker_path() -> PathBuf {
-    crate::util::cache_dir().join("freeze.json")
+/// How "is this holder's process still the one that declared it?" is
+/// answered. The real probes in production; fakes in a test, so a
+/// fixture's pid is not judged against whatever happens to run on the
+/// machine (pid 777 was alive on a dev box and dead on CI).
+#[derive(Clone, Copy)]
+pub(crate) struct Liveness {
+    alive: fn(u32) -> bool,
+    start_epoch: fn(u32) -> Option<i64>,
 }
 
-/// Where the holder files for `marker` live: `freeze.json` → `freeze.d/`.
-fn holders_dir(marker: &Path) -> PathBuf {
-    marker.with_extension("d")
-}
-
-fn persistent_file(marker: &Path) -> PathBuf {
-    holders_dir(marker).join("persistent.json")
-}
-
-fn session_file(marker: &Path, pid: u32) -> PathBuf {
-    holders_dir(marker).join(format!("session-{pid}.json"))
-}
-
-/// The ended-freeze record for `marker`: `freeze.json` →
-/// `freeze.ended.json`, so a test App's marker has its own.
-fn ended_file(marker: &Path) -> PathBuf {
-    marker.with_extension("ended.json")
-}
-
-/// Declare this TUI session's freeze. Returns `Err` when persistence
-/// failed — the caller MUST surface that, because a silently-absent
-/// marker fails OPEN (agent + CLI writes are NOT blocked) while the
-/// operator believes the fleet is frozen.
-#[cfg(test)]
-pub(crate) fn write_marker(reason: &str, incident: bool) -> std::io::Result<()> {
-    declare_session_at(&marker_path(), std::process::id(), reason, incident)
-}
-
-/// [`write_marker`] for `marker`, as session `pid`. Writes its own
-/// holder file only, so no other holder is replaced.
-pub(crate) fn declare_session_at(
-    marker: &Path,
-    pid: u32,
-    reason: &str,
-    incident: bool,
-) -> std::io::Result<()> {
-    write_marker_full(
-        &session_file(marker, pid),
-        pid,
-        reason,
-        incident,
-        false,
-        false,
-    )?;
-    sync_legacy(marker);
-    clear_ended_beside(marker);
-    Ok(())
-}
-
-/// Declare a persistent freeze (`ebman freeze`): no session owns it.
-/// Same failure contract as [`write_marker`].
-pub(crate) fn write_persistent_marker(reason: &str, incident: bool) -> std::io::Result<()> {
-    declare_persistent_at(&marker_path(), reason, incident)
-}
-
-/// [`write_persistent_marker`] for `marker`.
-pub(crate) fn declare_persistent_at(
-    marker: &Path,
-    reason: &str,
-    incident: bool,
-) -> std::io::Result<()> {
-    write_marker_full(
-        &persistent_file(marker),
-        PERSISTENT_PID,
-        reason,
-        incident,
-        true,
-        false,
-    )?;
-    sync_legacy(marker);
-    clear_ended_beside(marker);
-    Ok(())
-}
-
-/// A holder for `marker` with any owner, for a test standing in for
-/// another session (`pid`) or for `ebman freeze` (`persistent`).
-#[cfg(test)]
-pub(crate) fn write_test_marker(marker: &Path, pid: u32, reason: &str, persistent: bool) {
-    let written = if persistent {
-        declare_persistent_at(marker, reason, false)
-    } else {
-        declare_session_at(marker, pid, reason, false)
+impl Liveness {
+    pub(crate) const REAL: Liveness = Liveness {
+        alive: pid_alive,
+        start_epoch: process_start_epoch,
     };
-    written.expect("test marker written");
+
+    /// Every pid alive, no start time known: holders are judged by what
+    /// is on disk.
+    #[cfg(test)]
+    pub(crate) const ALL_ALIVE: Liveness = Liveness {
+        alive: |_| true,
+        start_epoch: |_| None,
+    };
+
+    /// No pid alive: every session holder is stale.
+    #[cfg(test)]
+    pub(crate) const NONE_ALIVE: Liveness = Liveness {
+        alive: |_| false,
+        start_epoch: |_| None,
+    };
+
+    /// Does `m`'s owner still hold it? Always, for a persistent freeze.
+    fn holds(&self, m: &FreezeMarker) -> bool {
+        if m.persistent {
+            return true;
+        }
+        // `at` is RFC3339 text on disk. An unparseable timestamp means we
+        // cannot judge reuse, so fall back to "assume owner" — closed.
+        let at_epoch = chrono::DateTime::parse_from_rfc3339(&m.at)
+            .map(|t| t.timestamp())
+            .ok();
+        marker_owner_is_live((self.alive)(m.pid), (self.start_epoch)(m.pid), at_epoch)
+    }
 }
 
-/// An ended-freeze record for `marker`, as a reader that found a
-/// session's marker stale would leave it.
-#[cfg(test)]
-pub(crate) fn write_test_ended(marker: &Path, reason: &str) {
-    let m = FreezeMarker {
-        pid: 4242,
-        reason: reason.into(),
-        incident: true,
-        at: chrono::Utc::now().to_rfc3339(),
-        persistent: false,
-    };
-    write_ended_at(&ended_file(marker), &m);
+/// One file on disk that may hold a freeze, parsed once.
+#[derive(Debug, Clone)]
+struct Holder {
+    path: PathBuf,
+    marker: FreezeMarker,
+    /// The legacy `freeze.json` rather than a file in `freeze.d/`.
+    legacy: bool,
+    /// A legacy file written as a mirror: never a holder of its own.
+    mirror: bool,
+}
+
+/// Where the freeze lives: `freeze.d/` holder files, the legacy
+/// `freeze.json` mirror beside them, and the ended record. A value, so
+/// every surface reaches the freeze one way: the CLI and MCP through
+/// [`FreezeStore::real`], the TUI through the store its `App` holds (a
+/// test App has one of its own).
+#[derive(Clone)]
+pub(crate) struct FreezeStore {
+    /// The legacy marker, `freeze.json`. The holders' directory and the
+    /// ended record are derived from it.
+    marker: PathBuf,
+    liveness: Liveness,
+}
+
+impl std::fmt::Debug for FreezeStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FreezeStore")
+            .field("marker", &self.marker)
+            .finish()
+    }
+}
+
+impl FreezeStore {
+    /// The store every process shares, under the cache directory.
+    pub(crate) fn real() -> Self {
+        Self::at(crate::util::cache_dir().join("freeze.json"))
+    }
+
+    /// A store at `marker` (the legacy file's path), judged by the real
+    /// probes.
+    pub(crate) fn at(marker: PathBuf) -> Self {
+        Self {
+            marker,
+            liveness: Liveness::REAL,
+        }
+    }
+
+    /// [`at`](Self::at), judged by `liveness`.
+    #[cfg(test)]
+    pub(crate) fn with_liveness(marker: PathBuf, liveness: Liveness) -> Self {
+        Self { marker, liveness }
+    }
+
+    /// The legacy marker's path.
+    #[cfg(test)]
+    pub(crate) fn marker(&self) -> &Path {
+        &self.marker
+    }
+
+    fn holders_dir(&self) -> PathBuf {
+        self.marker.with_extension("d")
+    }
+
+    fn persistent_file(&self) -> PathBuf {
+        self.holders_dir().join("persistent.json")
+    }
+
+    fn session_file(&self, pid: u32) -> PathBuf {
+        self.holders_dir().join(format!("session-{pid}.json"))
+    }
+
+    fn ended_file(&self) -> PathBuf {
+        self.marker.with_extension("ended.json")
+    }
+
+    /// Declare session `pid`'s freeze. Writes its own holder file only,
+    /// so no other holder is replaced. `Err` when it could not be
+    /// written — the caller MUST surface that, because an absent marker
+    /// fails OPEN (agent + CLI writes are NOT blocked) while the
+    /// operator believes the fleet is frozen.
+    pub(crate) fn declare_session(
+        &self,
+        pid: u32,
+        reason: &str,
+        incident: bool,
+    ) -> std::io::Result<()> {
+        write_marker_full(&self.session_file(pid), pid, reason, incident, false, false)?;
+        self.sync_legacy(&self.holders());
+        self.clear_ended();
+        Ok(())
+    }
+
+    /// Declare a persistent freeze (`ebman freeze`): no session owns it.
+    /// Same failure contract as [`declare_session`](Self::declare_session).
+    pub(crate) fn declare_persistent(&self, reason: &str, incident: bool) -> std::io::Result<()> {
+        write_marker_full(
+            &self.persistent_file(),
+            PERSISTENT_PID,
+            reason,
+            incident,
+            true,
+            false,
+        )?;
+        self.sync_legacy(&self.holders());
+        self.clear_ended();
+        Ok(())
+    }
+
+    /// End session `pid`'s freeze, and only that: a session's thaw or
+    /// exit must not clear another session's freeze or a persistent one.
+    pub(crate) fn clear_session(&self, pid: u32) {
+        let _ = std::fs::remove_file(self.session_file(pid));
+        self.sync_legacy(&self.holders());
+    }
+
+    /// `ebman thaw` / `:thaw-deploys` on a persistent freeze: lift it.
+    /// Never a live session's freeze, which only that session (or
+    /// deleting its file) may end.
+    pub(crate) fn thaw(&self) -> Thaw {
+        let file = self.persistent_file();
+        // Lifted only if this call removed it: a thaw racing another must
+        // not report, and audit, a lift it did not make.
+        let lifted = parse_file(&file).filter(|_| std::fs::remove_file(&file).is_ok());
+        let still_held = self.all().into_iter().next();
+        match lifted {
+            Some(marker) => {
+                self.clear_ended();
+                Thaw::Lifted { marker, still_held }
+            }
+            None => match still_held {
+                Some(m) => Thaw::HeldBySession(m),
+                None => Thaw::Nothing,
+            },
+        }
+    }
+
+    /// Every freeze in force, the persistent one first, then sessions in
+    /// the order they were declared. A session file whose process is
+    /// gone is removed as it is read and recorded as an ended freeze,
+    /// and the legacy mirror is put right whenever it does not name a
+    /// live holder (a reap, an older TUI's clear, a mirror that names a
+    /// dead pid).
+    pub(crate) fn all(&self) -> Vec<FreezeMarker> {
+        let mut live = Vec::new();
+        for h in self.holders() {
+            if h.mirror {
+                continue;
+            }
+            if self.liveness.holds(&h.marker) {
+                live.push(h);
+            } else {
+                self.reap(&h);
+            }
+        }
+        self.sync_legacy(&live);
+        live.into_iter().map(|h| h.marker).collect()
+    }
+
+    /// A freeze in force, if any: the persistent one first.
+    pub(crate) fn active(&self) -> Option<FreezeMarker> {
+        self.all().into_iter().next()
+    }
+
+    /// A session freeze that ended with its session in the last day.
+    pub(crate) fn ended(&self) -> Option<EndedFreeze> {
+        read_ended_at(&self.ended_file(), chrono::Utc::now())
+    }
+
+    /// Forget an ended freeze: a freeze or a thaw since is the
+    /// operator's answer to it.
+    pub(crate) fn clear_ended(&self) {
+        let _ = std::fs::remove_file(self.ended_file());
+    }
+
+    /// A holder with any owner, for a test standing in for another
+    /// session (`pid`) or for `ebman freeze` (`persistent`).
+    #[cfg(test)]
+    pub(crate) fn write_test_marker(&self, pid: u32, reason: &str, persistent: bool) {
+        let written = if persistent {
+            self.declare_persistent(reason, false)
+        } else {
+            self.declare_session(pid, reason, false)
+        };
+        written.expect("test marker written");
+    }
+
+    /// Record an ended freeze, as a reader that found it stale does.
+    #[cfg(test)]
+    pub(crate) fn write_test_ended(&self, reason: &str) {
+        let m = FreezeMarker {
+            pid: 4242,
+            reason: reason.into(),
+            incident: true,
+            at: chrono::Utc::now().to_rfc3339(),
+            persistent: false,
+        };
+        write_ended_at(&self.ended_file(), &m);
+    }
+
+    /// Every file that may hold a freeze, parsed once: the persistent
+    /// holder, the sessions in declaration order, then the legacy file.
+    fn holders(&self) -> Vec<Holder> {
+        let dir_holder = |path: PathBuf| {
+            parse_file(&path).map(|marker| Holder {
+                path,
+                marker,
+                legacy: false,
+                mirror: false,
+            })
+        };
+        let mut out: Vec<Holder> = dir_holder(self.persistent_file()).into_iter().collect();
+        let mut sessions: Vec<Holder> = std::fs::read_dir(self.holders_dir())
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.starts_with("session-") && n.ends_with(".json"))
+            })
+            .filter_map(dir_holder)
+            .collect();
+        sessions.sort_by(|a, b| a.marker.at.cmp(&b.marker.at).then(a.path.cmp(&b.path)));
+        out.extend(sessions);
+        if let Ok(text) = std::fs::read_to_string(&self.marker) {
+            if let Some(marker) = parse_marker(&text) {
+                out.push(Holder {
+                    path: self.marker.clone(),
+                    marker,
+                    legacy: true,
+                    mirror: is_mirror_text(&text),
+                });
+            }
+        }
+        out
+    }
+
+    /// Remove a holder found stale and record it as ended, but only if
+    /// the file is still the one judged: between the read and here it
+    /// could have been rewritten with a live freeze, and a blind remove
+    /// would silently drop it.
+    fn reap(&self, h: &Holder) {
+        if parse_file(&h.path).as_ref() == Some(&h.marker) {
+            let _ = std::fs::remove_file(&h.path);
+            // Said, not swallowed: a freeze that ended because its
+            // session did is news to whoever looks next.
+            write_ended_at(&self.ended_file(), &h.marker);
+        }
+    }
+
+    /// Keep the legacy `freeze.json` naming a LIVE holder, for ebman
+    /// older than 0.47, which reads only that file and removes it when
+    /// its pid is dead: a mirror naming a dead session failed open for
+    /// those readers while a live freeze held. Left alone when it is an
+    /// older TUI's own marker (no mirror mark) and that TUI lives.
+    /// Judged without reaping, so mirroring never ends a freeze.
+    fn sync_legacy(&self, holders: &[Holder]) {
+        let live = |h: &&Holder| self.liveness.holds(&h.marker);
+        if holders
+            .iter()
+            .filter(|h| h.legacy && !h.mirror)
+            .any(|h| live(&h))
+        {
+            return;
+        }
+        let current = parse_file(&self.marker);
+        match holders.iter().filter(|h| !h.legacy).find(live) {
+            Some(h) => {
+                let m = &h.marker;
+                let up_to_date = current.as_ref().is_some_and(|c| {
+                    c.pid == m.pid && c.reason == m.reason && c.persistent == m.persistent
+                }) && is_mirror(&self.marker);
+                if !up_to_date {
+                    let _ = write_marker_full(
+                        &self.marker,
+                        m.pid,
+                        &m.reason,
+                        m.incident,
+                        m.persistent,
+                        true,
+                    );
+                }
+            }
+            None => {
+                if current.is_some() {
+                    let _ = std::fs::remove_file(&self.marker);
+                }
+            }
+        }
+    }
+}
+
+/// What an explicit thaw found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Thaw {
+    /// A persistent freeze, now lifted. `still_held` is a live session's
+    /// freeze, if one remains: writes are still refused, and saying the
+    /// fleet is thawed would be wrong.
+    Lifted {
+        marker: FreezeMarker,
+        still_held: Option<FreezeMarker>,
+    },
+    /// No persistent freeze, but a live TUI session holds one: that
+    /// session's to lift.
+    HeldBySession(FreezeMarker),
+    /// No freeze in force.
+    Nothing,
 }
 
 /// Write one marker body to `path`, atomically. `mirror` marks the
@@ -238,157 +490,15 @@ fn write_marker_full(
     Ok(())
 }
 
-/// Keep the legacy `freeze.json` showing one live holder, for ebman
-/// older than 0.47, which reads only that file. Left alone when an
-/// older TUI wrote it (no mirror mark) and is still alive: it is that
-/// session's own marker.
-fn sync_legacy(marker: &Path) {
-    sync_legacy_with(marker, pid_alive, process_start_epoch);
-}
-
-fn sync_legacy_with(
-    marker: &Path,
-    alive: impl Fn(u32) -> bool + Copy,
-    start_epoch: impl Fn(u32) -> Option<i64> + Copy,
-) {
-    if old_tui_marker_live(marker, alive, start_epoch) {
-        return;
-    }
-    // As written, not judged: an older reader judges the mirror's pid
-    // itself, and reaping here would end a freeze as a side effect of
-    // declaring another.
-    match dir_holder_files(marker).first() {
-        Some(h) => {
-            let _ = write_marker_full(marker, h.pid, &h.reason, h.incident, h.persistent, true);
-        }
-        None => {
-            let _ = std::fs::remove_file(marker);
-        }
-    }
-}
-
-/// Is `freeze.json` an older TUI's own marker (no mirror mark) whose
-/// process lives? Judged without reaping.
-fn old_tui_marker_live(
-    marker: &Path,
-    alive: impl Fn(u32) -> bool,
-    start_epoch: impl Fn(u32) -> Option<i64>,
-) -> bool {
-    let Some(m) = parse_file(marker) else {
-        return false;
-    };
-    !is_mirror(marker) && owner_live(&m, alive, start_epoch)
-}
-
-fn is_mirror(path: &Path) -> bool {
-    std::fs::read_to_string(path)
+fn is_mirror_text(text: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(text)
         .ok()
-        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
         .and_then(|v| v.get("mirror").and_then(|b| b.as_bool()))
         .unwrap_or(false)
 }
 
-/// Does `m`'s owner still hold it? Always, for a persistent marker.
-fn owner_live(
-    m: &FreezeMarker,
-    alive: impl Fn(u32) -> bool,
-    start_epoch: impl Fn(u32) -> Option<i64>,
-) -> bool {
-    if m.persistent {
-        return true;
-    }
-    // `at` is RFC3339 text on disk. An unparseable timestamp means we
-    // cannot judge reuse, so fall back to "assume owner" — closed.
-    let at_epoch = chrono::DateTime::parse_from_rfc3339(&m.at)
-        .map(|t| t.timestamp())
-        .ok();
-    marker_owner_is_live(alive(m.pid), start_epoch(m.pid), at_epoch)
-}
-
-/// The holder files in `freeze.d/` as written, persistent first, then
-/// sessions in name order.
-fn dir_holder_files(marker: &Path) -> Vec<FreezeMarker> {
-    dir_holder_paths(marker)
-        .iter()
-        .filter_map(|p| parse_file(p))
-        .collect()
-}
-
-fn dir_holder_paths(marker: &Path) -> Vec<PathBuf> {
-    let mut out = vec![persistent_file(marker)];
-    if let Ok(entries) = std::fs::read_dir(holders_dir(marker)) {
-        let mut sessions: Vec<PathBuf> = entries
-            .flatten()
-            .map(|e| e.path())
-            .filter(|p| {
-                p.file_name()
-                    .and_then(|n| n.to_str())
-                    .is_some_and(|n| n.starts_with("session-") && n.ends_with(".json"))
-            })
-            .collect();
-        sessions.sort();
-        out.extend(sessions);
-    }
-    out
-}
-
-/// End this process's session freeze, and only that: a thaw in one TUI
-/// session must not clear another session's freeze or a persistent one.
-pub fn clear_marker_if_own() {
-    clear_session_at(&marker_path(), std::process::id());
-}
-
-/// [`clear_marker_if_own`] for `marker`, as session `pid`.
-pub(crate) fn clear_session_at(marker: &Path, pid: u32) {
-    let _ = std::fs::remove_file(session_file(marker, pid));
-    sync_legacy(marker);
-}
-
-/// What an explicit thaw found.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Thaw {
-    /// A persistent freeze, now lifted.
-    Lifted(FreezeMarker),
-    /// No persistent freeze, but a live TUI session holds one: that
-    /// session's to lift.
-    HeldBySession(FreezeMarker),
-    /// No freeze in force.
-    Nothing,
-}
-
-/// `ebman thaw` / `:thaw-deploys` on a persistent freeze: lift it.
-/// Never a live session's freeze, which only that session (or deleting
-/// its file) may end.
-pub(crate) fn thaw_persistent() -> Thaw {
-    thaw_persistent_at(&marker_path())
-}
-
-/// [`thaw_persistent`] for `marker`.
-pub(crate) fn thaw_persistent_at(marker: &Path) -> Thaw {
-    let thaw = thaw_persistent_with(marker, pid_alive, process_start_epoch);
-    if matches!(thaw, Thaw::Lifted(_)) {
-        clear_ended_beside(marker);
-    }
-    thaw
-}
-
-fn thaw_persistent_with(
-    marker: &Path,
-    alive: impl Fn(u32) -> bool + Copy,
-    start_epoch: impl Fn(u32) -> Option<i64> + Copy,
-) -> Thaw {
-    let file = persistent_file(marker);
-    // Lifted only if this call removed it: a thaw racing another must
-    // not report, and audit, a lift it did not make.
-    let lifted = parse_file(&file).filter(|_| std::fs::remove_file(&file).is_ok());
-    sync_legacy_with(marker, alive, start_epoch);
-    match lifted {
-        Some(m) => Thaw::Lifted(m),
-        None => match read_all_with(marker, alive, start_epoch).into_iter().next() {
-            Some(m) => Thaw::HeldBySession(m),
-            None => Thaw::Nothing,
-        },
-    }
+fn is_mirror(path: &Path) -> bool {
+    std::fs::read_to_string(path).is_ok_and(|t| is_mirror_text(&t))
 }
 
 /// The one refusal sentence for an active fleet freeze.
@@ -411,90 +521,6 @@ pub(crate) fn refusal_message(marker: &FreezeMarker) -> String {
         marker.remedy(),
         marker.pid
     )
-}
-
-/// A freeze in force, if any: the persistent one first, else a live
-/// session's. Reaps stale session files as it reads (see
-/// [`read_all_at`]).
-pub(crate) fn read_active() -> Option<FreezeMarker> {
-    read_active_at(&marker_path())
-}
-
-/// [`read_active`] for `marker`: the TUI reads through its own, so a
-/// test App does not see another test's freeze.
-pub(crate) fn read_active_at(marker: &Path) -> Option<FreezeMarker> {
-    read_all_at(marker).into_iter().next()
-}
-
-/// Every freeze in force for `marker`, the persistent one first. A
-/// session file whose process is gone is removed as it is read, and
-/// recorded as an ended freeze; so is a legacy marker an older TUI left.
-pub(crate) fn read_all_at(marker: &Path) -> Vec<FreezeMarker> {
-    read_all_with(marker, pid_alive, process_start_epoch)
-}
-
-fn read_all_with(
-    marker: &Path,
-    alive: impl Fn(u32) -> bool + Copy,
-    start_epoch: impl Fn(u32) -> Option<i64> + Copy,
-) -> Vec<FreezeMarker> {
-    let mut all = dir_holders_with(marker, alive, start_epoch);
-    if let Some(old) = legacy_holder_with(marker, alive, start_epoch) {
-        all.push(old);
-    }
-    all
-}
-
-/// The live holders in `freeze.d/`, persistent first. Stale session
-/// files are removed and recorded.
-fn dir_holders_with(
-    marker: &Path,
-    alive: impl Fn(u32) -> bool + Copy,
-    start_epoch: impl Fn(u32) -> Option<i64> + Copy,
-) -> Vec<FreezeMarker> {
-    dir_holder_paths(marker)
-        .iter()
-        .filter_map(|p| live_or_reap(marker, p, alive, start_epoch))
-        .collect()
-}
-
-/// The legacy marker as a holder: only one an older TUI wrote (no mirror
-/// mark) and whose process lives; reaped when it does not. A mirror is
-/// never a holder of its own; the file it mirrors is.
-fn legacy_holder_with(
-    marker: &Path,
-    alive: impl Fn(u32) -> bool + Copy,
-    start_epoch: impl Fn(u32) -> Option<i64> + Copy,
-) -> Option<FreezeMarker> {
-    if is_mirror(marker) {
-        return None;
-    }
-    live_or_reap(marker, marker, alive, start_epoch)
-}
-
-/// The session marker at `path` if its process lives; otherwise remove
-/// it, record it as ended, and return `None`.
-fn live_or_reap(
-    marker: &Path,
-    path: &Path,
-    alive: impl Fn(u32) -> bool,
-    start_epoch: impl Fn(u32) -> Option<i64>,
-) -> Option<FreezeMarker> {
-    let m = parse_file(path)?;
-    if owner_live(&m, &alive, &start_epoch) {
-        return Some(m);
-    }
-    // Dead pid, or the pid was reused → stale. Re-read immediately
-    // before removing, and only delete if the file is STILL the dead
-    // one: between our read and here it could have been rewritten with a
-    // live freeze, and a blind remove would silently drop it.
-    if parse_file(path).as_ref() == Some(&m) {
-        let _ = std::fs::remove_file(path);
-        // Said, not swallowed: a freeze that ended because its session
-        // did is news to whoever looks next.
-        write_ended_at(&ended_file(marker), &m);
-    }
-    None
 }
 
 /// How far after the marker a process must have started before we call
@@ -584,16 +610,6 @@ fn write_ended_at(path: &Path, m: &FreezeMarker) {
     }
 }
 
-/// A session freeze that ended with its session in the last day, if any.
-pub(crate) fn read_ended() -> Option<EndedFreeze> {
-    read_ended_beside(&marker_path())
-}
-
-/// [`read_ended`] for `marker`.
-pub(crate) fn read_ended_beside(marker: &Path) -> Option<EndedFreeze> {
-    read_ended_at(&ended_file(marker), chrono::Utc::now())
-}
-
 fn read_ended_at(path: &Path, now: chrono::DateTime<chrono::Utc>) -> Option<EndedFreeze> {
     let text = std::fs::read_to_string(path).ok()?;
     let marker = parse_marker(&text)?;
@@ -603,18 +619,6 @@ fn read_ended_at(path: &Path, now: chrono::DateTime<chrono::Utc>) -> Option<Ende
         .with_timezone(&chrono::Utc);
     (now.signed_duration_since(ended_at).num_hours() < ENDED_REPORT_HOURS)
         .then_some(EndedFreeze { marker, ended_at })
-}
-
-/// Forget an ended freeze: a freeze or a thaw since is the operator's
-/// answer to it.
-#[cfg(test)]
-pub(crate) fn clear_ended() {
-    clear_ended_beside(&marker_path());
-}
-
-/// [`clear_ended`] for `marker`.
-pub(crate) fn clear_ended_beside(marker: &Path) {
-    let _ = std::fs::remove_file(ended_file(marker));
 }
 
 fn parse_file(path: &Path) -> Option<FreezeMarker> {
@@ -848,43 +852,43 @@ mod tests {
         assert_eq!(start_epoch_from(1_000_000, 100, -1), None);
     }
 
-    /// A fresh marker path in a directory of its own: `freeze.json`,
-    /// with `freeze.d/` and the ended record beside it.
-    fn fresh(name: &str) -> PathBuf {
+    /// A store in a directory of its own, judged by `liveness`.
+    fn store(name: &str, liveness: Liveness) -> FreezeStore {
         let dir = std::env::temp_dir().join(format!("ebman-freeze-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        dir.join("freeze.json")
+        FreezeStore::with_liveness(dir.join("freeze.json"), liveness)
     }
 
-    fn done(marker: &Path) {
-        let _ = std::fs::remove_dir_all(marker.parent().unwrap());
+    fn done(s: &FreezeStore) {
+        let _ = std::fs::remove_dir_all(s.marker().parent().unwrap());
     }
 
-    /// Every pid alive: the holders are judged by what is on disk.
-    fn all_alive(marker: &Path) -> Vec<FreezeMarker> {
-        read_all_with(marker, |_| true, |_| None)
+    fn pids(s: &FreezeStore) -> Vec<u32> {
+        s.all().iter().map(|m| m.pid).collect()
     }
 
     #[test]
     fn a_session_marker_round_trips() {
-        let m = fresh("rt");
-        declare_session_at(&m, 4242, "the \"big\" one\nline2", true).unwrap();
-        let got = parse_file(&session_file(&m, 4242)).expect("its own file");
+        let s = store("rt", Liveness::ALL_ALIVE);
+        s.declare_session(4242, "the \"big\" one\nline2", true)
+            .unwrap();
+        let got = parse_file(&s.session_file(4242)).expect("its own file");
         assert_eq!(got.pid, 4242);
         assert_eq!(got.reason, "the \"big\" one\nline2");
         assert!(got.incident && !got.persistent);
         assert_eq!(got.remedy(), ":incident END");
-        done(&m);
+        done(&s);
     }
 
     #[test]
     fn a_dead_sessions_freeze_is_reaped_and_recorded() {
-        let m = fresh("dead");
-        declare_session_at(&m, 4242, "incident: db failover", true).unwrap();
-        assert!(read_all_with(&m, |_| false, |_| None).is_empty());
-        assert!(!session_file(&m, 4242).exists(), "removed by the reader");
-        let ended = read_ended_at(&ended_file(&m), chrono::Utc::now()).expect("recorded");
+        let s = store("dead", Liveness::NONE_ALIVE);
+        s.declare_session(4242, "incident: db failover", true)
+            .unwrap();
+        assert!(s.all().is_empty());
+        assert!(!s.session_file(4242).exists(), "removed by the reader");
+        let ended = s.ended().expect("recorded");
         assert_eq!(ended.marker.reason, "incident: db failover");
         assert!(
             ended.message().contains("ebman freeze"),
@@ -893,20 +897,20 @@ mod tests {
         );
         let later = chrono::Utc::now() + chrono::Duration::hours(ENDED_REPORT_HOURS);
         assert!(
-            read_ended_at(&ended_file(&m), later).is_none(),
+            read_ended_at(&s.ended_file(), later).is_none(),
             "reported for a day"
         );
-        done(&m);
+        done(&s);
     }
 
     #[test]
     fn a_live_sessions_freeze_holds_and_is_not_reaped() {
-        let m = fresh("live");
-        declare_session_at(&m, 4242, "deploy freeze", false).unwrap();
-        assert_eq!(all_alive(&m).len(), 1);
-        assert!(session_file(&m, 4242).exists());
-        assert!(read_ended_at(&ended_file(&m), chrono::Utc::now()).is_none());
-        done(&m);
+        let s = store("live", Liveness::ALL_ALIVE);
+        s.declare_session(4242, "deploy freeze", false).unwrap();
+        assert_eq!(pids(&s), vec![4242]);
+        assert!(s.session_file(4242).exists());
+        assert!(s.ended().is_none());
+        done(&s);
     }
 
     /// The reviewers' case: `ebman freeze`, then a TUI's `:incident
@@ -914,87 +918,137 @@ mod tests {
     /// replace the persistent marker and then delete it.
     #[test]
     fn a_sessions_end_never_lifts_a_persistent_freeze() {
-        let m = fresh("c1");
-        declare_persistent_at(&m, "change freeze", false).unwrap();
-        declare_session_at(&m, 4242, "incident: db", true).unwrap();
-        clear_session_at(&m, 4242);
-        let held = all_alive(&m);
+        let s = store("c1", Liveness::ALL_ALIVE);
+        s.declare_persistent("change freeze", false).unwrap();
+        s.declare_session(4242, "incident: db", true).unwrap();
+        s.clear_session(4242);
+        let held = s.all();
         assert_eq!(held.len(), 1, "{held:?}");
         assert!(held[0].persistent && held[0].reason == "change freeze");
-        done(&m);
+        done(&s);
     }
 
     /// And the other way round: `ebman freeze` over a live session, then
-    /// `ebman thaw`, must leave the session's freeze in force.
+    /// `ebman thaw`, must leave the session's freeze in force, and say so.
     #[test]
-    fn a_thaw_never_lifts_a_sessions_freeze() {
-        let m = fresh("i1");
-        declare_session_at(&m, 4242, "incident: db", true).unwrap();
-        declare_persistent_at(&m, "change freeze", false).unwrap();
+    fn a_thaw_never_lifts_a_sessions_freeze_and_says_it_holds() {
+        let s = store("i1", Liveness::ALL_ALIVE);
+        s.declare_session(4242, "incident: db", true).unwrap();
+        s.declare_persistent("change freeze", false).unwrap();
         assert!(matches!(
-            thaw_persistent_with(&m, |_| true, |_| None),
-            Thaw::Lifted(_)
+            s.thaw(),
+            Thaw::Lifted { still_held: Some(h), .. } if h.pid == 4242
         ));
-        let held = all_alive(&m);
-        assert_eq!(held.len(), 1, "{held:?}");
-        assert_eq!(held[0].pid, 4242);
-        assert!(matches!(
-            thaw_persistent_with(&m, |_| true, |_| None),
-            Thaw::HeldBySession(s) if s.pid == 4242
-        ));
-        assert!(session_file(&m, 4242).exists(), "that session's to lift");
-        done(&m);
+        assert_eq!(pids(&s), vec![4242]);
+        assert!(matches!(s.thaw(), Thaw::HeldBySession(h) if h.pid == 4242));
+        assert!(s.session_file(4242).exists(), "that session's to lift");
+        done(&s);
     }
 
     #[test]
     fn one_session_ending_leaves_anothers_freeze() {
-        let m = fresh("two");
-        declare_session_at(&m, 111, "a", false).unwrap();
-        declare_session_at(&m, 222, "b", false).unwrap();
-        clear_session_at(&m, 222);
-        let held = all_alive(&m);
-        assert_eq!(held.iter().map(|h| h.pid).collect::<Vec<_>>(), vec![111]);
-        done(&m);
+        let s = store("two", Liveness::ALL_ALIVE);
+        s.declare_session(111, "a", false).unwrap();
+        s.declare_session(222, "b", false).unwrap();
+        s.clear_session(222);
+        assert_eq!(pids(&s), vec![111]);
+        done(&s);
     }
 
     #[test]
     fn thaw_reports_a_lift_only_when_it_made_one() {
-        let m = fresh("thaw");
-        assert_eq!(thaw_persistent_with(&m, |_| true, |_| None), Thaw::Nothing);
-        declare_persistent_at(&m, "x", false).unwrap();
+        let s = store("thaw", Liveness::ALL_ALIVE);
+        assert_eq!(s.thaw(), Thaw::Nothing);
+        s.declare_persistent("x", false).unwrap();
         assert!(matches!(
-            thaw_persistent_with(&m, |_| true, |_| None),
-            Thaw::Lifted(_)
+            s.thaw(),
+            Thaw::Lifted {
+                still_held: None,
+                ..
+            }
         ));
-        assert!(!persistent_file(&m).exists());
-        assert_eq!(thaw_persistent_with(&m, |_| true, |_| None), Thaw::Nothing);
-        done(&m);
+        assert!(!s.persistent_file().exists());
+        assert_eq!(s.thaw(), Thaw::Nothing);
+        done(&s);
     }
 
     /// ebman before 0.47 reads only `freeze.json`. It mirrors a live
     /// holder, parseable by the old reader, and goes when none is left.
     #[test]
     fn the_legacy_file_mirrors_a_live_holder_for_older_readers() {
-        let m = fresh("mirror");
-        declare_session_at(&m, std::process::id(), "s", false).unwrap();
-        let legacy = parse_file(&m).expect("mirrored");
-        assert_eq!(legacy.pid, std::process::id());
-        declare_persistent_at(&m, "p", false).unwrap();
-        let legacy = parse_file(&m).expect("still mirrored");
+        let s = store("mirror", Liveness::ALL_ALIVE);
+        s.declare_session(4242, "s", false).unwrap();
+        assert_eq!(parse_file(s.marker()).map(|l| l.pid), Some(4242));
+        s.declare_persistent("p", false).unwrap();
+        let legacy = parse_file(s.marker()).expect("still mirrored");
         assert!(
             legacy.persistent && legacy.pid == PERSISTENT_PID,
             "persistent first"
         );
-        assert_eq!(
-            all_alive(&m).len(),
-            2,
-            "a mirror is not a holder of its own"
+        assert_eq!(s.all().len(), 2, "a mirror is not a holder of its own");
+        let _ = s.thaw();
+        assert_eq!(parse_file(s.marker()).map(|l| l.pid), Some(4242));
+        s.clear_session(4242);
+        assert!(!s.marker().exists(), "no holder, no mirror");
+        done(&s);
+    }
+
+    /// A stale holder sorting first must not be what the mirror names:
+    /// an older reader removes a mirror whose pid is dead, and writes go
+    /// through while a live session holds.
+    #[test]
+    fn the_mirror_names_a_live_holder_not_the_first_file() {
+        let dir = store("mirror-live", Liveness::ALL_ALIVE);
+        let marker = dir.marker().to_path_buf();
+        // Pid 1 alive, everything else dead; the dead one declared first.
+        let s = FreezeStore::with_liveness(
+            marker,
+            Liveness {
+                alive: |p| p == 1,
+                start_epoch: |_| None,
+            },
         );
-        thaw_persistent_with(&m, |_| true, |_| None);
-        assert_eq!(parse_file(&m).map(|l| l.pid), Some(std::process::id()));
-        clear_session_at(&m, std::process::id());
-        assert!(!m.exists(), "no holder, no mirror");
-        done(&m);
+        write_marker_full(&s.session_file(9999), 9999, "dead", false, false, false).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        s.declare_session(1, "live", false).unwrap();
+        assert_eq!(
+            parse_file(s.marker()).map(|l| l.pid),
+            Some(1),
+            "names the live one"
+        );
+        done(&s);
+    }
+
+    /// When the mirrored holder dies, the next read reaps it and points
+    /// the mirror at a holder that lives.
+    #[test]
+    fn a_reap_repairs_the_mirror() {
+        let s = store("repair", Liveness::ALL_ALIVE);
+        s.declare_session(4242, "first", false).unwrap();
+        s.declare_session(1, "second", false).unwrap();
+        assert_eq!(parse_file(s.marker()).map(|l| l.pid), Some(4242));
+        let judged = FreezeStore::with_liveness(
+            s.marker().to_path_buf(),
+            Liveness {
+                alive: |p| p == 1,
+                start_epoch: |_| None,
+            },
+        );
+        assert_eq!(pids(&judged), vec![1]);
+        assert_eq!(parse_file(s.marker()).map(|l| l.pid), Some(1));
+        done(&s);
+    }
+
+    /// A 0.46 TUI's clear removes `freeze.json` though a persistent freeze
+    /// holds; the next read puts the mirror back.
+    #[test]
+    fn a_missing_mirror_is_restored_on_read() {
+        let s = store("restore", Liveness::ALL_ALIVE);
+        s.declare_persistent("p", false).unwrap();
+        std::fs::remove_file(s.marker()).unwrap();
+        assert_eq!(s.all().len(), 1);
+        assert!(parse_file(s.marker()).is_some_and(|l| l.persistent));
+        done(&s);
     }
 
     /// A `freeze.json` an older TUI wrote (no mirror mark) is that
@@ -1002,75 +1056,71 @@ mod tests {
     /// mirror, reaped when it dies.
     #[test]
     fn an_older_tuis_marker_is_a_holder_of_its_own() {
-        let m = fresh("old");
+        let s = store("old", Liveness::ALL_ALIVE);
         crate::util::write_secure(
-            &m,
+            s.marker(),
             br#"{"pid":777,"reason":"old tui","incident":false,"at":"2026-10-23T00:00:00Z"}"#,
         )
         .unwrap();
+        assert_eq!(pids(&s), vec![777]);
+        s.declare_session(4242, "new", false).unwrap();
         assert_eq!(
-            all_alive(&m).iter().map(|h| h.pid).collect::<Vec<_>>(),
-            vec![777]
+            parse_file(s.marker()).map(|l| l.pid),
+            Some(777),
+            "not clobbered"
         );
-        // Written directly and synced with a fake probe: declaring would
-        // judge pid 777 with the real one, which is alive on some
-        // machines and not on others.
-        write_marker_full(&session_file(&m, 4242), 4242, "new", false, false, false).unwrap();
-        sync_legacy_with(&m, |_| true, |_| None);
-        assert_eq!(parse_file(&m).map(|l| l.pid), Some(777), "not clobbered");
-        assert_eq!(all_alive(&m).len(), 2);
-        assert!(read_all_with(&m, |p| p != 777, |_| None)
-            .iter()
-            .all(|h| h.pid != 777));
-        assert!(
-            !m.exists() || parse_file(&m).is_some_and(|l| l.pid != 777),
-            "reaped"
+        assert_eq!(s.all().len(), 2);
+        let judged = FreezeStore::with_liveness(
+            s.marker().to_path_buf(),
+            Liveness {
+                alive: |p| p != 777,
+                start_epoch: |_| None,
+            },
         );
-        done(&m);
+        assert_eq!(pids(&judged), vec![4242], "reaped");
+        assert_eq!(
+            parse_file(s.marker()).map(|l| l.pid),
+            Some(4242),
+            "and mirrored"
+        );
+        done(&s);
     }
 
-    /// A reader that judged a session stale must not delete it if the
-    /// file was rewritten with a live freeze in the meantime.
+    /// A reaper must not delete a holder rewritten with a live freeze
+    /// between its read and its remove.
     #[test]
     fn reaping_does_not_delete_a_freshly_rewritten_marker() {
-        let m = fresh("toctou");
-        declare_session_at(&m, 4242, "dead session", false).unwrap();
-        let file = session_file(&m, 4242);
-        let rewritten = std::cell::Cell::new(false);
-        let held = read_all_with(
-            &m,
-            |_pid| {
-                if !rewritten.get() {
-                    write_marker_full(&file, 4242, "rewritten live", true, false, false).unwrap();
-                    rewritten.set(true);
-                }
-                false
-            },
-            |_| None,
-        );
-        assert!(held.is_empty(), "the stale read is not returned");
+        let s = store("toctou", Liveness::NONE_ALIVE);
+        s.declare_session(4242, "dead session", false).unwrap();
+        let read = s
+            .holders()
+            .into_iter()
+            .find(|h| !h.legacy)
+            .expect("the session file");
+        write_marker_full(&read.path, 4242, "rewritten live", true, false, false).unwrap();
+        s.reap(&read);
         assert_eq!(
-            parse_file(&file).map(|f| f.reason),
+            parse_file(&read.path).map(|f| f.reason),
             Some("rewritten live".into())
         );
-        done(&m);
+        done(&s);
     }
 
     #[test]
     fn a_corrupt_holder_never_blocks() {
-        let m = fresh("corrupt");
-        std::fs::create_dir_all(holders_dir(&m)).unwrap();
-        crate::util::write_secure(&persistent_file(&m), b"not json").unwrap();
-        crate::util::write_secure(&session_file(&m, 1), b"{").unwrap();
-        assert!(all_alive(&m).is_empty());
-        done(&m);
+        let s = store("corrupt", Liveness::ALL_ALIVE);
+        std::fs::create_dir_all(s.holders_dir()).unwrap();
+        crate::util::write_secure(&s.persistent_file(), b"not json").unwrap();
+        crate::util::write_secure(&s.session_file(1), b"{").unwrap();
+        assert!(s.all().is_empty());
+        done(&s);
     }
 
     #[test]
     fn a_persistent_freeze_holds_whatever_any_pid_says() {
-        let m = fresh("persistent");
-        declare_persistent_at(&m, "change freeze", false).unwrap();
-        let held = read_all_with(&m, |_| false, |_| None);
+        let s = store("persistent", Liveness::NONE_ALIVE);
+        s.declare_persistent("change freeze", false).unwrap();
+        let held = s.all();
         assert!(held.len() == 1 && held[0].persistent, "{held:?}");
         assert_eq!(held[0].remedy(), "ebman thaw");
         let msg = refusal_message(&held[0]);
@@ -1079,7 +1129,7 @@ mod tests {
             "{msg}"
         );
         assert!(!msg.contains("pid"), "no session to name: {msg}");
-        done(&m);
+        done(&s);
     }
 
     /// A reused pid must not read as a live freeze.
@@ -1245,63 +1295,32 @@ mod tests {
         );
     }
 
-    /// The three thin wrappers — `marker_path`, `write_marker`,
-    /// `read_active` — round-trip a real marker.
-    ///
-    /// `cargo mutants` reported all three as survivors, for the same
-    /// reason `pid_alive` was one: the parameterised cores
-    /// (`write_marker_at`, `read_active_with`, `clear_if_pid_at`) are
-    /// well tested against explicit paths and fake probes, while the
-    /// wrappers that supply the REAL path and the REAL probe are
-    /// exercised by nothing.
-    ///
-    /// `write_marker`'s own doc comment names the stakes: a silently
-    /// absent marker "fails OPEN (agent + CLI writes are NOT blocked)
-    /// while the operator believes the fleet is frozen". Each survivor
-    /// produces exactly that — `write_marker -> Ok(())` reports success
-    /// having written nothing, and `read_active -> None` never sees a
-    /// marker that is there.
-    ///
-    /// Safe against the shared test cache dir: `cache_dir()` is
-    /// per-process under `cfg(test)`, `:freeze-deploys` tests already
-    /// write real markers, and this clears up after itself.
+    /// The real store round-trips a session freeze through the real
+    /// path and the real probes: this process is alive, so its own freeze
+    /// reads back, and clearing it lifts it.
     #[test]
-    fn a_written_marker_is_readable_through_the_real_path() {
+    fn the_real_store_round_trips_through_the_real_path() {
         // Exclusive access to the shared marker path; see MARKER_LOCK.
         let _guard = super::MARKER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        super::clear_marker_if_own();
-
-        super::write_marker("incident #4321", true).expect("marker must be written");
-
-        let path = super::marker_path();
+        let s = FreezeStore::real();
         assert!(
-            path.ends_with("freeze.json"),
-            "the marker must land at the real path, not a default: {}",
-            path.display()
+            s.marker().ends_with("freeze.json"),
+            "{}",
+            s.marker().display()
         );
-        assert!(
-            session_file(&path, std::process::id()).exists(),
-            "nothing was written beside {}",
-            path.display()
-        );
-
-        let found = super::read_active().expect(
-            "a marker written by THIS live process must read back as active — \
-             otherwise a freeze silently fails open while the operator \
-             believes the fleet is frozen",
+        s.clear_session(std::process::id());
+        s.declare_session(std::process::id(), "incident #4321", true)
+            .expect("marker must be written");
+        assert!(s.session_file(std::process::id()).exists());
+        let found = s.active().expect(
+            "a freeze declared by THIS live process must read back as active — \
+             otherwise it fails open while the operator believes the fleet is frozen",
         );
         assert_eq!(found.reason, "incident #4321");
-        assert!(
-            found.incident,
-            "the incident flag must survive the round trip"
-        );
+        assert!(found.incident);
         assert_eq!(found.pid, std::process::id());
-
-        super::clear_marker_if_own();
-        assert!(
-            super::read_active().is_none(),
-            "clearing our own marker must lift the freeze"
-        );
+        s.clear_session(std::process::id());
+        assert!(s.active().is_none(), "clearing our own freeze must lift it");
     }
 
     /// The compat half of the design: a reader that does not know
