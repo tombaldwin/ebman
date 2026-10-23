@@ -1033,4 +1033,13 @@ mod tests {
         assert!(!msg.contains("pid"), "no session to name: {msg}");
         let _ = std::fs::remove_file(&p);
     }
+
+    proptest::proptest! {
+        /// Every write path reads the marker; a corrupt one must read as
+        /// no freeze or a freeze, never a panic in a write gate.
+        #[test]
+        fn parse_marker_never_panics(s in "(?s).{0,200}") {
+            let _ = parse_marker(&s);
+        }
+    }
 }

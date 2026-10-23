@@ -232,4 +232,13 @@ env."us-east-1/staging" = 3.00
         assert!(c.is_stale(at(2026, 5, 21)));
         assert!(!c.costs.contains_key("prod-api"));
     }
+
+    proptest::proptest! {
+        /// The cache file is ours, but a crash or a full disk can leave
+        /// it truncated, and `:cost on` reads it first.
+        #[test]
+        fn parse_never_panics(s in "(?s).{0,300}") {
+            let _ = parse(&s);
+        }
+    }
 }

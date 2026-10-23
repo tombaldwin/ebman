@@ -1040,6 +1040,24 @@ pub(crate) fn append_red_transition(
     write_audit_line(account, profile, region, &detail);
 }
 
+/// One standard audit line, newline included: what [`write_audit_line`]
+/// appends. Pure, so the writer and `parse_audit_line` can be held to
+/// each other.
+fn audit_line(
+    when: &str,
+    account: Option<&str>,
+    profile: Option<&str>,
+    region: &str,
+    detail: &str,
+) -> String {
+    format!(
+        "{when}\t{}\t{}\t{}\t{detail}\n",
+        field_token("account", account.unwrap_or("-")),
+        field_token("profile", profile.unwrap_or("-")),
+        field_token("region", region),
+    )
+}
+
 fn write_audit_line(account: Option<&str>, profile: Option<&str>, region: &str, detail: &str) {
     let dir = crate::util::cache_dir();
     if std::fs::create_dir_all(&dir).is_err() {
@@ -1056,12 +1074,7 @@ fn write_audit_line(account: Option<&str>, profile: Option<&str>, region: &str, 
     // profile name is operator-chosen free text, so a bare interpolation
     // here can forge a `region=` token that every consumer reads instead
     // of the real one.
-    let line = format!(
-        "{when}\t{}\t{}\t{}\t{detail}\n",
-        field_token("account", account.unwrap_or("-")),
-        field_token("profile", profile.unwrap_or("-")),
-        field_token("region", region),
-    );
+    let line = audit_line(&when, account, profile, region, detail);
     use std::io::Write;
     if let Ok(mut f) = crate::util::open_append_secure(&path) {
         let _ = f.write_all(line.as_bytes());
@@ -2300,6 +2313,46 @@ mod parser_properties {
         /// The same, biased toward input that looks *nearly* valid —
         /// random text mostly misses the interesting branches, and the
         /// dangerous states are half-formed records, not noise.
+        /// The writer and the parser agree: a line built from any
+        /// operator-chosen text (a profile name, an env name, an extra's
+        /// value) is ONE entry, whose fields read back as what was
+        /// written, after the escaping the format documents (`"` to `'`,
+        /// line breaks and tabs to spaces). A value that split the line
+        /// or leaked into a neighbouring field is how a forged entry gets
+        /// into `ebman audit replay`.
+        #[test]
+        fn a_written_line_reads_back_as_written(
+            profile in "(?s).{0,24}",
+            target in "(?s).{0,24}",
+            value in "(?s).{0,40}",
+        ) {
+            let fields = [
+                ("action", super::Field::Text("RestartAppServer")),
+                ("target", super::Field::Text(&target)),
+                ("note", super::Field::Text(&value)),
+            ];
+            let detail = super::detail_from("dispatched", &fields);
+            let line = super::audit_line(
+                "2026-10-23T10:00:00+00:00",
+                Some("123456789012"),
+                Some(&profile),
+                "eu-west-2",
+                &detail,
+            );
+            prop_assert_eq!(line.lines().count(), 1, "one line: {:?}", line);
+            let e = super::parse_audit_line(&line).expect("parses");
+            // A lone `-` is the format's "absent" (how the writer
+            // records a missing account or profile), so it reads back
+            // as nothing.
+            let esc = |s: &str| Some(super::escape_value(s)).filter(|v| v != "-");
+            prop_assert_eq!(e.profile, esc(&profile));
+            prop_assert_eq!(e.region.as_deref(), Some("eu-west-2"));
+            prop_assert_eq!(e.stage.as_deref(), Some("dispatched"));
+            prop_assert_eq!(e.action.as_deref(), Some("RestartAppServer"));
+            prop_assert_eq!(e.target, esc(&target));
+            prop_assert_eq!(e.extras.get("note").cloned(), esc(&value));
+        }
+
         #[test]
         fn parse_audit_line_survives_near_miss_records(
             ts in "[0-9TZ:.-]{0,30}",

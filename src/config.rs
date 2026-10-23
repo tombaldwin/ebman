@@ -2618,3 +2618,35 @@ mod app_line_properties {
         }
     }
 }
+
+#[cfg(test)]
+mod parser_properties {
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(1500))]
+
+        /// `config.toml` is hand-edited and every surface parses it on
+        /// startup, so a line the parser chokes on would stop ebman
+        /// opening at all. It must degrade to errors, never panic.
+        #[test]
+        fn config_parse_never_panics(s in "(?s).{0,400}") {
+            let _ = super::parse(&s);
+        }
+
+        /// Near-valid lines under the prefixes with their own scanners:
+        /// `safety.` (which fails closed), `app.` (the App tab) and
+        /// `accounts.`.
+        #[test]
+        fn config_parse_survives_near_miss_lines(
+            prefix in "(safety\\.envs|safety\\.accounts|app|accounts|lint|alarm)",
+            name in "[a-zA-Z0-9_.-]{0,16}",
+            field in "[a-z_]{0,16}",
+            value in "[a-zA-Z0-9 \"=;|,._/-]{0,60}",
+        ) {
+            let _ = super::parse(&format!("{prefix}.{name}.{field} = {value}"));
+            let _ = super::parse(&format!("{prefix}.{name}.{field} = \"{value}\""));
+            let _ = super::parse(&format!("{prefix}.{name} = {value}"));
+        }
+    }
+}
