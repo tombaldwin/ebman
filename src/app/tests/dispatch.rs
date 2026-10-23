@@ -1968,6 +1968,49 @@ mod docs_drift {
         out
     }
 
+    /// The codes a parser hands its shell in an `*ArgError { msg, code }`
+    /// for it to return: a field line `code: N,` or an inline
+    /// `{ msg, code: N }`. Shapes, not the bare word: `code: 3` inside a
+    /// message string is not a code.
+    fn forwarded_codes(statements: &[String]) -> std::collections::BTreeSet<u8> {
+        let mut out = std::collections::BTreeSet::new();
+        for st in statements {
+            for line in st.lines() {
+                let t = line.trim();
+                let rest = t
+                    .strip_prefix("code: ")
+                    .or_else(|| t.split("{ msg, code: ").nth(1));
+                if let Some(rest) = rest {
+                    let mut chars = rest.chars();
+                    if let (Some(d), Some(next)) =
+                        (chars.next().and_then(|c| c.to_digit(10)), chars.next())
+                    {
+                        if next == ',' || next == ' ' {
+                            out.insert(d as u8);
+                        }
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn the_forwarded_code_reader_sees_both_shapes_and_no_prose() {
+        let st: Vec<String> = [
+            "return Err(ActionArgError {",
+            "    msg: \"x\".into(),",
+            "    code: 3,",
+            "});",
+            ".map_err(|msg| ActionArgError { msg, code: 4 })",
+            "eprintln!(\"exit code: 5 means\");",
+        ]
+        .iter()
+        .map(|l| l.to_string())
+        .collect();
+        assert_eq!(forwarded_codes(&st), [3, 4].into_iter().collect());
+    }
+
     /// The functions in `src` that return an exit code: their signature
     /// returns `i32` or `(i32, ...)`.
     fn exit_fns(src: &str) -> Vec<String> {
@@ -2171,12 +2214,35 @@ pub(crate) fn exit_code(failed: bool) -> i32 {
             // hands back an exit code returns: the subcommand's testable
             // body, and any helper it returns through (`lint_exit_code`).
             // By signature, not by name, so no helper is out of sight.
+            let fns = exit_fns(&src);
             let mut used = std::collections::BTreeSet::new();
-            for f in exit_fns(&src).iter().filter(|f| !others.contains(f)) {
+            for f in fns.iter().filter(|f| !others.contains(f)) {
                 used.extend(body_return_codes(&src, f));
             }
             if others.is_empty() {
-                used.extend(exit_codes_in(&super::super::scan::statements_of(&src)));
+                let statements = super::super::scan::statements_of(&src);
+                used.extend(exit_codes_in(&statements));
+                used.extend(forwarded_codes(&statements));
+            }
+            // The reader found what it should: a subcommand with a body
+            // has it read, by signature, and its codes in `used`. A body
+            // whose return type stopped reading as a code, or a filter
+            // that lost it, would otherwise leave `used` short and the
+            // comparison below vacuously true.
+            let own = body_of(sub);
+            if super::super::scan::fn_bodies(&src)
+                .iter()
+                .any(|(n, _)| *n == own)
+            {
+                assert!(
+                    fns.contains(&own),
+                    "{module}: `{own}` no longer reads as returning an exit code"
+                );
+                let codes = body_return_codes(&src, &own);
+                assert!(
+                    !codes.is_empty() && codes.is_subset(&used),
+                    "{module}: `{own}`'s codes {codes:?} are not all read: {used:?}"
+                );
             }
             let listed = documented_codes(&docs, sub)
                 .unwrap_or_else(|| panic!("no exit-code row for `ebman {sub}`"));
