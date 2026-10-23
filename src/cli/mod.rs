@@ -86,17 +86,28 @@ pub(crate) fn frozen_refusal(action_label: &str) -> Option<String> {
     // work missed: it exits before reaching `write_refusal`, so a
     // fleet-wide freeze stopping a `lint --fix` run left no trace while
     // a per-env pin stopping the same run left one.
-    let refusal = crate::write_gate::Refusal::Frozen;
-    crate::audit::append_action_refused(
-        None,
+    audit_frozen(
         std::env::var("AWS_PROFILE").ok().as_deref(),
         "-",
         action_label,
         "-",
+    );
+    Some(crate::freeze::refusal_message(&m))
+}
+
+/// The `stage=refused` line for a write the fleet freeze stopped: the
+/// freeze's rule and remedy, as the gate would give them.
+pub(crate) fn audit_frozen(profile: Option<&str>, region: &str, action_label: &str, target: &str) {
+    let refusal = crate::write_gate::Refusal::Frozen;
+    crate::audit::append_action_refused(
+        None,
+        profile,
+        region,
+        action_label,
+        target,
         refusal.rule(),
         &refusal.remedy(),
     );
-    Some(crate::freeze::refusal_message(&m))
 }
 
 /// The write gate: freeze first, then the config pin. Returns the

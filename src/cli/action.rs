@@ -1212,6 +1212,16 @@ where
             .sort_by_key(|(region, _)| *region_order.get(region.as_str()).unwrap_or(&usize::MAX));
     }
 
+    // The regions a freeze stopped were refused, and are audited so:
+    // without a line the log showed the regions that ran and nothing
+    // for the rest, and the webhook watching for stopped writes never
+    // heard. A region a failure halted is not refused — no gate spoke.
+    if halted_by_freeze {
+        for region in unattempted_regions(&regions, &outcomes) {
+            crate::cli::audit_frozen(pin_profile, region, "Rollout", &wave.env);
+        }
+    }
+
     let any_failure = outcomes.iter().any(|(_, r)| r.is_err());
     if !quiet {
         let _ = writeln!(out, "{}", rollout_report(&wave, &regions, &outcomes, json));
@@ -2483,6 +2493,36 @@ mod rollout {
                 .count(),
             3
         );
+    }
+
+    /// The regions a freeze stopped are audited as refused, each under
+    /// its own region, so the log and the webhook see what never ran.
+    #[tokio::test]
+    async fn the_regions_a_freeze_stopped_are_audited_as_refused() {
+        use crate::cli::audit_delta::{lines_for, mark};
+        let before = mark();
+        let args = [
+            "--env",
+            "audited-halt",
+            "--version",
+            "build-2",
+            "--regions",
+            "us-east-1,eu-west-2,ap-south-1",
+            "--yes",
+        ];
+        let r = rollout(&args, THREE, None, Some(1)).await;
+        assert_eq!(r.code, 3, "{}", r.err);
+        let refused: Vec<String> = lines_for(&before, "audited-halt")
+            .into_iter()
+            .filter(|l| l.contains("stage=refused"))
+            .collect();
+        assert_eq!(refused.len(), 2, "{refused:#?}");
+        for (line, region) in refused.iter().zip(["eu-west-2", "ap-south-1"]) {
+            assert!(
+                line.contains(&format!("region={region}")) && line.contains("action=Rollout"),
+                "{line}"
+            );
+        }
     }
 
     /// A freeze before the first region: every row skipped, and the
