@@ -1137,6 +1137,27 @@ fn seeding_a_lazy_client_wins_over_get_or_init() {
 }
 
 #[tokio::test]
+async fn assume_role_under_test_refuses_without_calling_sts() {
+    // A role client for a row in another region under `:account NAME`
+    // resolves through here. Unseeded, it must fail at once rather
+    // than read `~/.aws` and send an AssumeRole.
+    let spec = crate::config::AccountSpec {
+        role_arn: "arn:aws:iam::111111111111:role/poly-readonly".into(),
+        source_profile: Some("poly-dev".into()),
+        region: Some("eu-west-2".into()),
+        ..Default::default()
+    };
+    let err = crate::aws::cached_role_client("poly-unseeded", &spec)
+        .await
+        .err()
+        .expect("an unseeded role client is refused under test");
+    assert!(
+        err.to_string().contains("not reachable from a test"),
+        "refused for the right reason: {err}"
+    );
+}
+
+#[tokio::test]
 async fn with_under_test_reads_no_aws_config_and_holds_no_credentials() {
     // A spawned `:region all` refresh reaches `AwsClient::with` from a
     // test. Built from `~/.aws` it would carry the developer's

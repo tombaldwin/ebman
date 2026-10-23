@@ -4949,3 +4949,29 @@ From `PLAN.md`, retired with it:
   `extra_regions` plus the new home region (`fanout_regions`,
   `apply_rebuild`). Chosen over ending the fan-out: the operator picked
   multi-region mode, and a region switch is not a request to leave it.
+
+## Robustness pass, 2026-10-23
+
+- [x] **A test cannot reach AWS through a remote-region client.**
+  Under `cfg(test)` nothing stops `RegionClient::resolve` for a region
+  other than home: it builds a real `AwsClient` (`aws_config` reads
+  `~/.aws`) and the spawned call would go out with the developer's
+  credentials. Tests that open Detail, `:why` or the DLQ viewer on a
+  row in another region stay off the network only because
+  `#[tokio::test]` is current-thread and their bodies never await, so
+  the spawned task is never polled. One added `.await` changes that
+  silently. Fix: a `cfg(test)` refusal in `resolve` for the remote arms
+  (tests that need a remote client seed the cache, as the role-cache
+  tests do), plus a guard test that a remote resolve fails offline.
+  `cached_client_reuses_one_client_per_profile_and_region` builds real
+  clients on purpose and needs its own seam.
+
+  **Done 2026-10-23.** The profile arm was already closed by 0.46.1
+  (`AwsClient::with` is offline under `cfg(test)`, which
+  `cached_client` builds through). The account arm was not:
+  `AwsClient::assume_role` read `~/.aws` and sent `sts:AssumeRole`. It now
+  refuses under `cfg(test)`; tests that need a role client seed the cache
+  (`seed_role_cache_for_tests`). Guard:
+  `assume_role_under_test_refuses_without_calling_sts`, CAUGHT with the
+  refusal disabled (run with AWS config, credentials and IMDS pointed at
+  nothing, so the mutant could not reach STS either).

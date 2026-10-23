@@ -292,6 +292,17 @@ impl AwsClient {
         target_name: &str,
         spec: &crate::config::AccountSpec,
     ) -> Result<Self> {
+        // `with` is offline under test; this read `~/.aws` and called
+        // STS with the developer's credentials. Under `:account NAME` a
+        // Detail or `:why` on a row in another region reaches it through
+        // `cached_role_client`, held off the network only by a test
+        // body that never awaited. Tests that need a role client seed
+        // the cache.
+        if cfg!(test) {
+            return Err(eyre!(
+                "sts:AssumeRole is not reachable from a test; seed the role cache instead"
+            ));
+        }
         // Stage 1: load the source-profile creds + region.
         let mut builder = aws_config::defaults(aws_config::BehaviorVersion::latest());
         if let Some(p) = spec.source_profile.as_ref() {

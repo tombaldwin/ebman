@@ -136,20 +136,6 @@ Tier definitions:
   without noticing. Persist `REGION/NAME` as the deploy snapshots do.
   *Write-routing slice 7, 2026-10-22.*
 
-- [ ] **A test cannot reach AWS through a remote-region client.**
-  Under `cfg(test)` nothing stops `RegionClient::resolve` for a region
-  other than home: it builds a real `AwsClient` (`aws_config` reads
-  `~/.aws`) and the spawned call would go out with the developer's
-  credentials. Tests that open Detail, `:why` or the DLQ viewer on a
-  row in another region stay off the network only because
-  `#[tokio::test]` is current-thread and their bodies never await, so
-  the spawned task is never polled. One added `.await` changes that
-  silently. Fix: a `cfg(test)` refusal in `resolve` for the remote arms
-  (tests that need a remote client seed the cache, as the role-cache
-  tests do), plus a guard test that a remote resolve fails offline.
-  `cached_client_reuses_one_client_per_profile_and_region` builds real
-  clients on purpose and needs its own seam.
-
 - [ ] **Audit writers take a typed label, and the verb spelling guard
   goes.** `no_surface_spells_a_shared_verb_itself` (`src/verb.rs`) bans
   any production literal `"Deploy"` / `"Rebuild"` / `"Terminate"` /
