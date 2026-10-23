@@ -535,8 +535,27 @@ async fn deploy(
                     env,
                     &[("version", &snapshot_label), ("auto_rollback_of", &version)],
                 );
-                if let Err(e) = aws.deploy_version(env, &snapshot_label).await {
-                    let _ = writeln!(err, "err: rollback deploy_version: {e}");
+                let rolled_back = aws.deploy_version(env, &snapshot_label).await;
+                // The pair, like every other dispatch: a `dispatched`
+                // with no `completed` reads as a write that died mid-way.
+                let failure = rolled_back
+                    .as_ref()
+                    .err()
+                    .map(|e| format!("deploy_version: {e}"));
+                audit::append_action_completed(
+                    None,
+                    profile,
+                    region,
+                    label,
+                    env,
+                    match failure.as_deref() {
+                        None => Ok(()),
+                        Some(e) => Err(e),
+                    },
+                    &[("version", &snapshot_label), ("auto_rollback_of", &version)],
+                );
+                if let Some(e) = failure {
+                    let _ = writeln!(err, "err: rollback {e}");
                     return 1;
                 }
                 let _ = writeln!(
@@ -1283,6 +1302,15 @@ mod body {
     }
 
     fn fleet(version: &'static str, states: &'static [(&'static str, &'static str)]) -> Fleet {
+        fleet_named("api", version, states)
+    }
+
+    /// [`fleet`] with its one env named `name`.
+    fn fleet_named(
+        name: &'static str,
+        version: &'static str,
+        states: &'static [(&'static str, &'static str)],
+    ) -> Fleet {
         use aws_sdk_elasticbeanstalk::operation::describe_environments::DescribeEnvironmentsOutput;
         use aws_sdk_elasticbeanstalk::types::EnvironmentDescription;
         let calls = Arc::new(AtomicUsize::new(0));
@@ -1297,7 +1325,7 @@ mod body {
                     DescribeEnvironmentsOutput::builder()
                         .environments(
                             EnvironmentDescription::builder()
-                                .environment_name("api")
+                                .environment_name(name)
                                 .application_name("shop")
                                 .version_label(version)
                                 .status(status.into())
@@ -1309,7 +1337,7 @@ mod body {
         let update = |label: &'static str| {
             aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::update_environment)
                 .match_requests(move |r| {
-                    r.environment_name() == Some("api") && r.version_label() == Some(label)
+                    r.environment_name() == Some(name) && r.version_label() == Some(label)
                 })
                 .then_output(|| {
                     aws_sdk_elasticbeanstalk::operation::update_environment::UpdateEnvironmentOutput::builder().build()
@@ -1317,7 +1345,7 @@ mod body {
         };
         let (deployed, rolled_back) = (update("build-2"), update("build-1"));
         let restarted = aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::restart_app_server)
-            .match_requests(|r| r.environment_name() == Some("api"))
+            .match_requests(move |r| r.environment_name() == Some(name))
             .then_output(|| {
                 aws_sdk_elasticbeanstalk::operation::restart_app_server::RestartAppServerOutput::builder().build()
             });
@@ -1392,6 +1420,60 @@ mod body {
     }
 
     const STUCK: &[(&str, &str)] = &[("Updating", "Grey")];
+
+    /// Every dispatch is audited as a `dispatched` / `completed` pair,
+    /// the auto-rollback's included.
+    #[tokio::test(start_paused = true)]
+    async fn every_dispatch_is_audited_as_a_pair() {
+        use crate::cli::audit_delta::{lines_for, mark};
+        let before = mark();
+        let f = fleet_named("audited-restart", "build-1", STUCK);
+        let r = action(
+            &["restart", "--env", "audited-restart"],
+            None,
+            Some(f.client),
+        )
+        .await;
+        assert_eq!(r.code, 0, "{}", r.err);
+        let lines = lines_for(&before, "audited-restart");
+        assert_eq!(lines.len(), 2, "{lines:#?}");
+        assert!(
+            lines[0].contains("stage=dispatched") && lines[0].contains("action=RestartAppServer"),
+            "{lines:#?}"
+        );
+        assert!(
+            lines[1].contains("stage=completed") && lines[1].contains("outcome=ok"),
+            "{lines:#?}"
+        );
+
+        let before = mark();
+        let f = fleet_named("audited-rollback", "build-1", STUCK);
+        let args = [
+            "deploy",
+            "--env",
+            "audited-rollback",
+            "--version",
+            "build-2",
+            "--auto-rollback",
+            "2m",
+        ];
+        let r = action(&args, None, Some(f.client)).await;
+        assert_eq!(r.code, 5, "{}", r.err);
+        let lines = lines_for(&before, "audited-rollback");
+        let rollback: Vec<&String> = lines
+            .iter()
+            .filter(|l| l.contains("auto_rollback_of=build-2"))
+            .collect();
+        assert_eq!(rollback.len(), 2, "the rollback is a pair too: {lines:#?}");
+        assert!(
+            rollback[0].contains("stage=dispatched") && rollback[0].contains("version=build-1"),
+            "{lines:#?}"
+        );
+        assert!(
+            rollback[1].contains("stage=completed") && rollback[1].contains("outcome=ok"),
+            "{lines:#?}"
+        );
+    }
 
     #[tokio::test]
     async fn a_verb_is_dispatched_under_the_profile_its_pins_were_checked_for() {
@@ -1963,7 +2045,12 @@ mod rollout {
     /// A region's client: lists `api` (unless `NoEnv`), and answers
     /// `UpdateEnvironment` for `api` / `build-2`, counting into
     /// `dispatched` every one that succeeds.
-    fn region_client(region: &str, how: Region, dispatched: Arc<AtomicUsize>) -> aws::AwsClient {
+    fn region_client(
+        name: &'static str,
+        region: &str,
+        how: Region,
+        dispatched: Arc<AtomicUsize>,
+    ) -> aws::AwsClient {
         use aws_sdk_elasticbeanstalk::operation::describe_environments::DescribeEnvironmentsOutput;
         use aws_sdk_elasticbeanstalk::operation::update_environment::{
             UpdateEnvironmentError, UpdateEnvironmentOutput,
@@ -1983,7 +2070,7 @@ mod rollout {
                     if how != Region::NoEnv {
                         b = b.environments(
                             EnvironmentDescription::builder()
-                                .environment_name("api")
+                                .environment_name(name)
                                 .application_name("shop")
                                 .version_label("build-1")
                                 .status(status.into())
@@ -1995,7 +2082,7 @@ mod rollout {
                 });
         let deploy = aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::update_environment)
             .match_requests(|r| {
-                r.environment_name() == Some("api") && r.version_label() == Some("build-2")
+                r.environment_name() == Some(name) && r.version_label() == Some("build-2")
             });
         let deploy = if how == Region::DeployFails {
             deploy.then_error(|| {
@@ -2052,6 +2139,14 @@ mod rollout {
         refuse: Option<&str>,
         freeze_after: Option<usize>,
     ) -> Outcome {
+        // The fleet's env is the one `--env` names (leaked: a test's
+        // whole life), so a test can give it a name no other writes.
+        let name: &'static str = args
+            .iter()
+            .position(|a| *a == "--env")
+            .and_then(|i| args.get(i + 1))
+            .map(|n| &*Box::leak(n.to_string().into_boxed_str()))
+            .unwrap_or("api");
         let argv: Vec<String> = ["action", "rollout"]
             .iter()
             .chain(args)
@@ -2076,7 +2171,7 @@ mod rollout {
                 let how = fleet.iter().find(|(r, _)| *r == region).map(|(_, h)| *h);
                 let dispatched = dispatched.clone();
                 async move {
-                    how.map(|h| region_client(&region, h, dispatched))
+                    how.map(|h| region_client(name, &region, h, dispatched))
                         .ok_or_else(|| color_eyre::eyre::eyre!("no credentials for {region}"))
                 }
             },
@@ -2264,6 +2359,45 @@ mod rollout {
                 r.out
             );
         }
+    }
+
+    /// Each region's write is a pair under the run's one rollout id.
+    #[tokio::test]
+    async fn every_region_is_audited_under_one_rollout_id() {
+        use crate::cli::audit_delta::{lines_for, mark};
+        let before = mark();
+        let args = [
+            "--env",
+            "audited-rollout",
+            "--version",
+            "build-2",
+            "--regions",
+            "us-east-1,eu-west-2,ap-south-1",
+            "--yes",
+        ];
+        let r = rollout(&args, THREE, None, None).await;
+        assert_eq!(r.code, 0, "{}", r.err);
+        let lines = lines_for(&before, "audited-rollout");
+        assert_eq!(lines.len(), 6, "{lines:#?}");
+        let id = r
+            .out
+            .lines()
+            .next()
+            .unwrap()
+            .trim_start_matches("rollout_id=");
+        assert!(
+            lines
+                .iter()
+                .all(|l| l.contains(id) && l.contains("action=Rollout")),
+            "{id}: {lines:#?}"
+        );
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|l| l.contains("stage=completed") && l.contains("outcome=ok"))
+                .count(),
+            3
+        );
     }
 
     #[tokio::test]

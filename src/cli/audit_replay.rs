@@ -683,9 +683,14 @@ mod body {
     /// A client whose `RestartAppServer` for `api-prod` succeeds, or is
     /// refused when `fails`; the rule, to count what reached AWS.
     fn client(fails: bool) -> (aws::AwsClient, aws_smithy_mocks::Rule) {
+        client_named("api-prod", fails)
+    }
+
+    /// [`client`] for an env named `name`.
+    fn client_named(name: &'static str, fails: bool) -> (aws::AwsClient, aws_smithy_mocks::Rule) {
         let restart = if fails {
             aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::restart_app_server)
-                .match_requests(|r| r.environment_name() == Some("api-prod"))
+                .match_requests(move |r| r.environment_name() == Some(name))
                 .then_error(|| {
                     aws_sdk_elasticbeanstalk::operation::restart_app_server::RestartAppServerError::generic(
                         aws_smithy_types::error::ErrorMetadata::builder()
@@ -696,7 +701,7 @@ mod body {
                 })
         } else {
             aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::restart_app_server)
-                .match_requests(|r| r.environment_name() == Some("api-prod"))
+                .match_requests(move |r| r.environment_name() == Some(name))
                 .then_output(|| {
                     aws_sdk_elasticbeanstalk::operation::restart_app_server::RestartAppServerOutput::builder().build()
                 })
@@ -794,6 +799,29 @@ mod body {
         // are checked against the ambient profile that will mean.
         assert_eq!(r.built, Some((None, Some("eu-west-1".into()))));
         assert_eq!(r.asked_profile, Some(Some("ambient".into())));
+    }
+
+    /// A replay is audited as a pair that names the line it replays.
+    #[tokio::test]
+    async fn a_replay_is_audited_with_the_line_it_replays() {
+        use crate::cli::audit_delta::{lines_for, mark};
+        const LINE: &str = "2026-07-15T12:00:00+00:00\taccount=123\tprofile=-\tregion=eu-west-1\tstage=dispatched action=Restart target=audited-replay";
+        let before = mark();
+        let (aws, _) = client_named("audited-replay", false);
+        let r = replay(&["2026-07-15T12"], &[LINE], None, Some(aws)).await;
+        assert_eq!(r.code, 0, "{}", r.err);
+        let lines = lines_for(&before, "audited-replay");
+        assert_eq!(lines.len(), 2, "{lines:#?}");
+        assert!(
+            lines
+                .iter()
+                .all(|l| l.contains("replay_of=2026-07-15T12:00:00+00:00")),
+            "{lines:#?}"
+        );
+        assert!(
+            lines[0].contains("stage=dispatched") && lines[1].contains("outcome=ok"),
+            "{lines:#?}"
+        );
     }
 
     #[tokio::test]

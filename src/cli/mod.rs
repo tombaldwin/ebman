@@ -665,3 +665,32 @@ mod write_gate_input_guard {
         );
     }
 }
+
+/// What a CLI write body wrote to the (test-sandboxed) audit log.
+#[cfg(test)]
+pub(crate) mod audit_delta {
+    fn log() -> String {
+        std::fs::read_to_string(crate::util::cache_dir().join("audit.log")).unwrap_or_default()
+    }
+
+    /// The log as it stands, to compare against after a run.
+    pub(crate) fn mark() -> String {
+        log()
+    }
+
+    /// The lines written since `before` whose target is `target`: give
+    /// each test a target no other test writes, as tests run at once.
+    pub(crate) fn lines_for(before: &str, target: &str) -> Vec<String> {
+        let after = log();
+        // Strict: the log is append-only, so `before` must be a prefix.
+        let delta = after
+            .strip_prefix(before)
+            .expect("the audit log is append-only; a non-prefix means it was rotated mid-test");
+        let needle = format!("target={target}");
+        delta
+            .lines()
+            .filter(|l| l.split_whitespace().any(|w| w == needle))
+            .map(String::from)
+            .collect()
+    }
+}
