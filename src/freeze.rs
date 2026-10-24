@@ -1060,9 +1060,6 @@ mod tests {
         done(&s);
     }
 
-    /// A `freeze.json` an older TUI wrote (no mirror mark) is that
-    /// session's freeze: honoured while it lives, never overwritten by a
-    /// mirror, reaped when it dies.
     /// An older TUI that writes its own marker after the holders were
     /// read is not removed (nothing else holds) or overwritten (a newer
     /// holder does) by the mirror: that TUI has no `freeze.d/` file, so
@@ -1095,6 +1092,9 @@ mod tests {
         done(&s);
     }
 
+    /// A `freeze.json` an older TUI wrote (no mirror mark) is that
+    /// session's freeze: honoured while it lives, never overwritten by a
+    /// mirror, reaped when it dies.
     #[test]
     fn an_older_tuis_marker_is_a_holder_of_its_own() {
         let s = store("old", Liveness::ALL_ALIVE);

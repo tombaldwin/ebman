@@ -62,7 +62,7 @@ ebman audit replay LINE_ID [--yes]                                          # re
 ebman explain EBL### [--env NAME] [--json] [--dry-run] [--no-cache]        # LLM-backed explanation of a lint issue (opt-in)
 ebman versions --env NAME [--json]                                          # application versions for env's app, newest-first
 ebman completions <bash|zsh|fish>                                           # print a shell completion script to stdout (no AWS)
-ebman freeze [--incident] [REASON…]                                         # freeze every ebman write until `ebman thaw` (no AWS)
+ebman freeze [--incident] [--] [REASON…]                                    # freeze every ebman write until `ebman thaw` (no AWS); `--` before a reason starting with `-`
 ebman freeze --status                                                       # what freeze is in force, and any that ended with its session
 ebman thaw                                                                  # lift a freeze declared with `ebman freeze`
 ```

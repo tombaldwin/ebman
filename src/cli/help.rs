@@ -148,7 +148,8 @@ pub const SUBCOMMANDS_HELP: &str = r#"    envs [--json]                         
                                                   :freeze-deploys, it does not end with a TUI
                                                   session. --status says what is in force, and any
                                                   TUI freeze that ended with its session in the last
-                                                  day. Exit codes: 0 ok, 1 not written (NOT frozen),
+                                                  day. A reason starting with `-` goes after `--`.
+                                                  Exit codes: 0 ok, 1 not written (NOT frozen),
                                                   2 usage.
     thaw                                         Lift a freeze declared with `ebman freeze`. Refuses
                                                   (exit 3) a live TUI session's freeze, which that
