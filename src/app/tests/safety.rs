@@ -2355,6 +2355,10 @@ async fn the_header_names_a_freeze_from_elsewhere() {
 #[tokio::test]
 async fn thaw_deploys_lifts_an_ebman_freeze_but_not_another_sessions() {
     let mut app = app_with_prod();
+    // A region no other test audits from: the line has no target, and
+    // `thaw_deploys_says_when_another_session_still_holds` writes the
+    // same one concurrently.
+    app.context.region = "poly-thaw-1".into();
     app.freeze.write_test_marker(0, "release window", true);
     let before = crate::cli::audit_delta::mark();
     app.execute_command("thaw-deploys");
@@ -2363,7 +2367,10 @@ async fn thaw_deploys_lifts_an_ebman_freeze_but_not_another_sessions() {
     // Audited as the lift of a persistent freeze, as `ebman thaw` is.
     // The only TUI path that lifts one; the CLI's lines say `via=cli`.
     let lifted = crate::cli::audit_delta::lines_matching(&before, |l| {
-        l.contains("action=ThawDeploys") && l.contains("persistent=true") && !l.contains("via=cli")
+        l.contains("region=poly-thaw-1")
+            && l.contains("action=ThawDeploys")
+            && l.contains("persistent=true")
+            && !l.contains("via=cli")
     });
     assert_eq!(lifted.len(), 1, "{lifted:#?}");
 
