@@ -45,11 +45,11 @@ aws-config = { version = "1", features = ["behavior-version-latest"] }
 # entries below repeat `default-features = false`, or the test build
 # would turn the legacy client back on.
 aws-sdk-elasticbeanstalk = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
-aws-sdk-sts = { version = "1", default-features = false, features = ["sigv4a", "default-https-client", "rt-tokio"] }
+aws-sdk-sts = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
 aws-sdk-sqs = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
 aws-sdk-cloudwatch = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
 aws-sdk-cloudwatchlogs = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
-aws-sdk-s3 = { version = "1", default-features = false, features = ["sigv4a", "http-1x", "default-https-client", "rt-tokio"] }
+aws-sdk-s3 = { version = "1", default-features = false, features = ["http-1x", "default-https-client", "rt-tokio"] }
 aws-sdk-ec2 = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
 aws-sdk-acm = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
 chrono = "0.4"

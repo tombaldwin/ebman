@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Security
+
+- **`crypto-bigint` is no longer in the binary (RUSTSEC-2026-0387,**
+  timing variability in operations meant to be constant-time). It came
+  in through the AWS SDK's SigV4a signer, whose newest release still
+  requires the affected 0.5 line. ebman never signs with SigV4a — its
+  S3 writes go to the regional bucket EB's `CreateStorageLocation`
+  names, never a Multi-Region Access Point, and STS is plain SigV4 — so
+  the `sigv4a` features that came along with the SDK defaults are off,
+  taking `crypto-bigint`, `p256`, `ecdsa` and their dependencies out.
+
 ## [0.47.0] - 2026-10-24
 
 ### Added
