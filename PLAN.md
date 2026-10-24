@@ -139,8 +139,12 @@ it.*
    switching. Buys nothing for a setup running as admin. The maintainer
    asked for it designed first and rolled out in a release soon after.
    The note decides whether it replaces part of runtime-grants stage 5
-   or builds on it, so neither is designed twice. **Note in progress
-   2026-10-24:** `docs/design/assume-role-elevation.md`.
+   or builds on it, so neither is designed twice. **Drafted
+   2026-10-24, awaiting the maintainer's review:**
+   `docs/design/assume-role-elevation.md`. It builds on the shipped ask
+   (stage 5 was killed on 2026-09-25, so there is nothing to replace)
+   and splits into five slices. Its three contestable calls are listed
+   at its foot.
 
 3. *(mechanical)* **CLI body paths still untested** *(2026-10-23 CLI-body review)*
    Every subcommand is behind a testable body now; these paths through
