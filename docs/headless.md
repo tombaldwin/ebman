@@ -116,7 +116,7 @@ misread them:
   which regions still need deploying from the normal output, without
   parsing stderr.
 - A `lint --fix --yes` that **refused some envs**: a pin, or a freeze
-  declared while the run was under way (the freeze is re-read before
+  declared while the run was under way (the freeze is read again before
   each env's fix). Envs fixed before it stay fixed; each refused env is
   named on stderr as `ebman lint --fix: refusing ENV — …` and audited
   `stage=refused`, and the run carries on linting. A failed dispatch or

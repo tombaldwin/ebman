@@ -12,10 +12,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   after it.** The freeze was read once, before the run, so a long
   multi-region fix pass went on changing every env after an incident
   was declared, where an MCP write re-checks after its approval and a
-  rollout between regions. It is now re-read before each env's fix:
-  each env it stops is refused, named on stderr and audited
-  `stage=refused`, the envs before it stay fixed, and the run carries on
-  linting.
+  rollout between regions. It is now read before each env's fix, by the
+  shared write gate: each env it stops is refused, named on stderr and
+  audited `stage=refused` with that env as the target, the envs before it
+  stay fixed, and the run carries on linting. A run frozen from the start
+  still refuses up front, without AWS.
+- With an unreadable safety config and a freeze, `lint --fix` reports
+  the config, as every other write path does; the up-front check
+  hard-coded "frozen" and skipped the gate's order.
 - **Breaking:** `lint --fix --yes` exits `3` when it refused an env (a
   pin, or that freeze), as `docs/headless.md` and
   `docs/safety-and-privacy.md` already said and every other refused

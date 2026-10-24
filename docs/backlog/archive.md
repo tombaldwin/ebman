@@ -5284,3 +5284,15 @@ From `PLAN.md`, retired with it:
   and audits that env; the run goes on linting and exits 3. A refused
   env exited 1 until then, against the docs; now 3, and `--quiet` keeps
   the refusal line (`1a4cc94`, `b164e7b`).
+
+- [x] **`frozen_refusal` decides outside `write_gate::decide`**
+  (`cli/mod.rs`, used by `lint --fix`). It hard-codes
+  `Refusal::Frozen`, skipping `decide`'s precedence: with an unreadable
+  safety config AND an active freeze, `lint --fix` reports "frozen"
+  rather than "unreadable". S.
+  **Done 2026-10-24:** `frozen_refusal` is gone; the up-front check is
+  `cli::freeze_refuses_run`, which asks `decide` and refuses only when
+  the freeze is the verdict, leaving a higher rung to the per-env gate
+  (`an_unreadable_safety_config_outranks_a_freeze`). Deleting the
+  up-front check instead was tried and reverted: `tests/cli.rs` pins
+  that a frozen run refuses without AWS, and it then exited 1.

@@ -675,10 +675,10 @@ pub(crate) async fn run_cycle<F, Fut>(
     safety_cfg: &config::Config,
     fix_disabled: &[String],
     active_profile_for_safety: &Option<String>,
-    // The fleet freeze, re-read before each env's fix: one declared
-    // while a long multi-region run is under way stops the envs after
-    // it, as MCP re-checks after every approval and a rollout between
-    // regions.
+    // The fleet freeze, read before each env's fix and decided by the
+    // shared gate: one declared while a long multi-region run is under
+    // way stops the envs after it, as MCP re-checks after every approval
+    // and a rollout between regions.
     freeze: &dyn Fn() -> Option<crate::freeze::FreezeMarker>,
     client_for: F,
     now: chrono::DateTime<chrono::Utc>,
@@ -1056,26 +1056,18 @@ where
     let multi_region = regions.len() > 1;
     // Cross-process fleet freeze: a real fix dispatch (--fix --yes)
     // must refuse while a live TUI session holds :freeze-deploys /
-    // :incident (a --dry-run plans nothing, so it stays allowed).
-    // This path had the same blind spot action/replay had. Up front so
-    // a run frozen from the start builds no client and exits on one
-    // line; a freeze declared later is the cycle's, per env.
+    // :incident, or `ebman freeze` is in force (a --dry-run plans
+    // nothing, so it stays allowed). Up front so a run frozen from the
+    // start refuses without AWS; a freeze declared later is the cycle's,
+    // per env.
     if fix && yes {
-        if let Some(m) = freeze() {
-            // Audited: a fleet freeze stopping the run must leave the
-            // trace a per-env pin stopping it leaves.
-            crate::cli::audit_frozen(
-                active_profile_for_safety.as_deref(),
-                "-",
-                crate::verb::Verb::SetOption.audit_label(),
-                "-",
-                &[],
-            );
-            let _ = writeln!(
-                err,
-                "ebman lint --fix: refusing — {}",
-                crate::freeze::refusal_message(&m)
-            );
+        if let Some(reason) = crate::cli::freeze_refuses_run(
+            safety_cfg,
+            active_profile_for_safety,
+            freeze(),
+            crate::verb::Verb::SetOption.audit_label(),
+        ) {
+            let _ = writeln!(err, "ebman lint --fix: refusing — {reason}");
             return 3;
         }
     }
@@ -3979,7 +3971,7 @@ mod body {
         let before = crate::cli::audit_delta::mark();
         let r = lint(&["--fix", "--yes"], findings(), Some("incident #4321")).await;
         assert_eq!(r.code, 3, "{}", r.err);
-        assert_eq!(r.clients, 0, "refused before any client");
+        assert_eq!(r.clients, 0, "refused before any client: it needs no AWS");
         assert!(
             r.err
                 .contains("ebman lint --fix: refusing — fleet freeze active (incident #4321)"),
@@ -3988,7 +3980,10 @@ mod body {
         );
         // Audited under the label the fix dispatch logs.
         let refused = crate::cli::audit_delta::lines_matching(&before, |l| {
-            l.contains("stage=refused") && l.contains("action=SetOption") && l.contains("target=-")
+            l.contains("stage=refused")
+                && l.contains("action=SetOption")
+                && l.contains("target=-")
+                && l.contains("rule=frozen")
         });
         assert_eq!(refused.len(), 1, "{refused:?}");
 
@@ -3996,6 +3991,41 @@ mod body {
         assert_ne!(r.code, 3, "a dry run plans nothing: {}", r.err);
         let r = lint(&[], findings(), Some("deploys frozen")).await;
         assert!(r.clients > 0, "a read is not a write");
+    }
+
+    /// An unreadable safety config outranks a freeze, as the gate ranks
+    /// them: the operator is told the rules could not be read, not only
+    /// that the fleet is frozen. The up-front check used to hard-code
+    /// "frozen".
+    #[tokio::test]
+    async fn an_unreadable_safety_config_outranks_a_freeze() {
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let code = lint_body(
+            &["lint".to_string(), "--fix".to_string(), "--yes".to_string()],
+            || {
+                let mut safety_cfg = config::Config::default();
+                safety_cfg
+                    .safety_parse_errors
+                    .push("safety.envs.api: no read_only field".into());
+                LintSetup {
+                    safety_cfg,
+                    ..setup()
+                }
+            },
+            || Some(marker("incident #5")),
+            |_| async { Ok(mock_client_inner(vec!["api".into()], findings())) },
+            async {},
+            &mut out,
+            &mut err,
+        )
+        .await;
+        let err = String::from_utf8(err).unwrap();
+        assert_eq!(code, 3, "{err}");
+        assert!(
+            err.contains("refusing api — safety config unreadable: safety.envs.api"),
+            "{err}"
+        );
+        assert!(!err.contains("fleet freeze active"), "{err}");
     }
 
     /// A freeze declared while `--fix --yes` is part-way through stops

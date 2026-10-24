@@ -86,6 +86,47 @@ pub(crate) fn active_freeze() -> Option<crate::freeze::FreezeMarker> {
     crate::freeze::FreezeStore::real().active()
 }
 
+/// The refusal for a whole run that `freeze` stops before it reads the
+/// fleet, audited — or `None` when there is no freeze, or when the gate
+/// ranks another rung above it.
+///
+/// Decided by [`crate::write_gate::decide`], not assumed: the check this
+/// replaced hard-coded "frozen", so with an unreadable safety config
+/// AND a freeze, `lint --fix` reported the freeze where every other
+/// write path reports the config. A rung that outranks the freeze is
+/// left to the per-env gate, which words and audits it for each env.
+///
+/// Up front at all so a frozen run refuses (exit 3) without AWS: a
+/// freeze is declared in an incident, which is when AWS may not answer.
+pub(crate) fn freeze_refuses_run(
+    safety_cfg: &crate::config::Config,
+    profile: &Option<String>,
+    freeze: Option<crate::freeze::FreezeMarker>,
+    action_label: &str,
+) -> Option<String> {
+    let m = freeze?;
+    let pin_profile = profile
+        .clone()
+        .or_else(|| std::env::var("AWS_PROFILE").ok());
+    let verdict = crate::write_gate::decide(&crate::write_gate::WriteContext {
+        // No env: the rungs above the freeze are all run-wide, and it
+        // outranks every per-env pin, so the verdict is one of those or
+        // the freeze.
+        env: "",
+        profile: pin_profile.as_deref(),
+        safety_parse_errors: &safety_cfg.safety_parse_errors,
+        global_read_only: safety_cfg.safety_read_only,
+        frozen: true,
+        safety_envs: &safety_cfg.safety_envs,
+        safety_accounts: &safety_cfg.safety_accounts,
+    });
+    if verdict != Some(crate::write_gate::Refusal::Frozen) {
+        return None;
+    }
+    audit_frozen(pin_profile.as_deref(), "-", action_label, "-", &[]);
+    Some(crate::freeze::refusal_message(&m))
+}
+
 /// The `stage=refused` line for a write the fleet freeze stopped: the
 /// freeze's rule and remedy, as the gate would give them.
 pub(crate) fn audit_frozen(

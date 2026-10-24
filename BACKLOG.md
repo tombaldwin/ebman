@@ -250,12 +250,6 @@ Tier definitions:
   audit lines cross the 1 MiB rotation mid-test — the pattern the older
   audit tests use, now in four more. S each.
 
-- [ ] **`frozen_refusal` decides outside `write_gate::decide`**
-  (`cli/mod.rs`, used by `lint --fix`). It hard-codes
-  `Refusal::Frozen`, skipping `decide`'s precedence: with an unreadable
-  safety config AND an active freeze, `lint --fix` reports "frozen"
-  rather than "unreadable". S.
-
 - [ ] **Functions over the 300-line trigger** (2026-09-25 count):
   `draw_action` 673, `draw_why_red_overlay` 474, `execute_command` 418
   (a flat dispatch; judged fine), `draw_detail_health` 410, `draw_table`
