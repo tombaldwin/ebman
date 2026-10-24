@@ -222,6 +222,11 @@ now head the list.*
 
 ### Released
 
+**0.47.1 (2026-10-24)**: rebuild without the AWS SDK's SigV4a signer,
+which ebman never used and which carried `crypto-bigint` 0.5
+(RUSTSEC-2026-0387, no fixed 0.5 release). It landed upstream after
+0.47.0's CI and failed cargo-deny on the next push.
+
 **0.47.0 (2026-10-24)**: a fleet freeze no session owns (`ebman freeze`
 / `ebman thaw`, one file per holder under `freeze.d/`, `freeze.json`
 kept as a mirror for older readers); costs, Detail, forms, the DLQ
