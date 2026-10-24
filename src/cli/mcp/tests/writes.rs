@@ -34,6 +34,9 @@ fn write_gate_refuses_under_freeze_and_pin() {
     let msg =
         crate::cli::write_refusal(&cfg, "prod", &None, Some(m), None, "Test").expect("refused");
     assert!(msg.contains("freeze active") && msg.contains(":incident END"));
+    // And which env it refused, as a pin's refusal says: `lint --fix`
+    // prints one per env it skips.
+    assert!(msg.starts_with("refusing prod — "), "{msg}");
     // Pin -> refusal (no freeze).
     let mut pinned = crate::config::Config::default();
     pinned.safety_envs.insert("prod".into(), true);

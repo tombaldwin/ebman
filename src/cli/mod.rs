@@ -218,7 +218,10 @@ pub(crate) fn write_refusal_unaudited(
             format!("refusing {env} — safety config unreadable: {problem}")
         }
         crate::write_gate::Refusal::Frozen => match active_freeze.as_ref() {
-            Some(m) => crate::freeze::refusal_message(m),
+            // Named like every other arm: `lint --fix` refuses env by
+            // env, and a bare freeze sentence repeated per env said
+            // nothing about which ones were skipped.
+            Some(m) => format!("refusing {env} — {}", crate::freeze::refusal_message(m)),
             // Unreachable — `frozen` was set from this very `Option` —
             // but `?` here would propagate `None`, and `None` from this
             // function means ALLOW. A fail-open branch in a write gate
