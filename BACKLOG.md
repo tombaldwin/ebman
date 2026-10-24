@@ -272,14 +272,6 @@ Tier definitions:
 
 #### Correctness and safety, from the 2026-09-25 reviews
 
-- [ ] **`lint --fix --yes` checks the incident freeze once per run.**
-  `frozen_refusal` runs up front and `apply_fixes_for_env` passes
-  `active_freeze: None`, deliberately — a per-env check printed the same
-  refusal N times. But a freeze declared DURING a long multi-region run
-  does not stop later envs, while MCP re-checks after every approval and
-  rollout re-checks per region. **Design fork, hence skipped:** on a
-  mid-run freeze, skip the remaining envs or abort the run?
-
 - [ ] **The pre-deploy lint still fetches its own way.** Since 0.45 it
   shares everything after the fetch with `:lint` / `:explain` (the
   snapshot, `lint::inputs::assemble`, `LintSnapshot::finish`), and a

@@ -5269,3 +5269,18 @@ From `PLAN.md`, retired with it:
     `freeze`, `thaw`). `every_exit_code_is_documented` reads every
     code-returning function by signature. Four source-shape guards on
     `run_rollout` became behavioural tests.
+
+## `lint --fix` and a mid-run freeze, 2026-10-24
+
+- [x] **`lint --fix --yes` checks the incident freeze once per run.**
+  `frozen_refusal` runs up front and `apply_fixes_for_env` passes
+  `active_freeze: None`, deliberately — a per-env check printed the same
+  refusal N times. But a freeze declared DURING a long multi-region run
+  does not stop later envs, while MCP re-checks after every approval and
+  rollout re-checks per region. **Design fork, hence skipped:** on a
+  mid-run freeze, skip the remaining envs or abort the run?
+  **Ruled 2026-10-24: skip and finish.** The freeze is re-read before
+  each env's fix and handed to the shared gate, which refuses, names
+  and audits that env; the run goes on linting and exits 3. A refused
+  env exited 1 until then, against the docs; now 3, and `--quiet` keeps
+  the refusal line (`1a4cc94`, `b164e7b`).
