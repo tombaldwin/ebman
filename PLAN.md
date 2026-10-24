@@ -222,6 +222,16 @@ now head the list.*
 
 ### Released
 
+**0.47.0 (2026-10-24)**: a fleet freeze no session owns (`ebman freeze`
+/ `ebman thaw`, one file per holder under `freeze.d/`, `freeze.json`
+kept as a mirror for older readers); costs, Detail, forms, the DLQ
+viewer, the pending panel, the saved cursor and terraform matched per
+env rather than per name under `:region all`; every CLI subcommand
+behind a testable body, with `--help` and a pinned exit-code table; and
+the two release reviews' fixes. Breaking: MCP `fleet_cost` keys
+`NAME@REGION`, `--help` exits 0, usage before refusal in `action
+deploy` / `rollout`, `freeze::clear_marker_if_own` removed.
+
 **0.46.2 (2026-10-23)**: lockfile-only rebuild for RUSTSEC-2026-0385
 (`ctutils` 0.4.5, reached through the SDK's `digest`/`hmac`) and the
 yanked `clipboard-win` 5.4.1. Both landed upstream after 0.46.1's CI
