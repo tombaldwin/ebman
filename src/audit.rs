@@ -829,6 +829,45 @@ pub(crate) fn append_action_refused(
     rule: &str,
     remedy: &str,
 ) {
+    append_refused(
+        account,
+        profile,
+        region,
+        &Refused {
+            action_label,
+            target,
+            rule,
+            remedy,
+            extras: &[],
+        },
+    );
+}
+
+/// What a `stage=refused` line says, after its header.
+pub(crate) struct Refused<'a> {
+    pub action_label: &'a str,
+    pub target: &'a str,
+    pub rule: &'a str,
+    pub remedy: &'a str,
+    /// Fields after the remedy: a rollout's id, so its refusals
+    /// correlate with its dispatches.
+    pub extras: &'a [(&'a str, &'a str)],
+}
+
+/// [`append_action_refused`] with extra fields.
+pub(crate) fn append_refused(
+    account: Option<&str>,
+    profile: Option<&str>,
+    region: &str,
+    r: &Refused<'_>,
+) {
+    let Refused {
+        action_label,
+        target,
+        rule,
+        remedy,
+        extras,
+    } = *r;
     // `action` goes through `field_token` like `target`, not raw. It
     // carries operator-chosen text on some paths (a rename summary, a
     // batch verb), and `escape_value` does not quote spaces — so a bare
@@ -836,17 +875,16 @@ pub(crate) fn append_action_refused(
     // every consumer reads instead of the real one. Same forge path
     // `field_token`'s own comment exists to close for the header
     // fields.
-    let detail = detail_from(
-        "refused",
-        &[
-            ("action", Field::Text(action_label)),
-            ("target", Field::Text(target)),
-            // `rule` is a fixed vocabulary consumers filter on, so it
-            // stays an unquoted token rather than becoming quoted text.
-            ("rule", Field::Token(rule)),
-            ("remedy", Field::Quoted(remedy)),
-        ],
-    );
+    let mut fields: Vec<(&str, Field<'_>)> = vec![
+        ("action", Field::Text(action_label)),
+        ("target", Field::Text(target)),
+        // `rule` is a fixed vocabulary consumers filter on, so it
+        // stays an unquoted token rather than becoming quoted text.
+        ("rule", Field::Token(rule)),
+        ("remedy", Field::Quoted(remedy)),
+    ];
+    fields.extend(extras.iter().map(|(k, v)| (*k, Field::Text(v))));
+    let detail = detail_from("refused", &fields);
     write_audit_line(account, profile, region, &detail);
 }
 

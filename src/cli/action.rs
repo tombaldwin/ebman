@@ -26,10 +26,26 @@ use crate::cli::{cli_esc, decide_poll, PollDecision};
 struct ActionArgs {
     action: String,
     env: String,
-    /// `deploy`'s flags, validated: `Some` exactly when the action is
-    /// `deploy`.
-    deploy: Option<DeployFlags>,
+    /// Where the action goes, with what it needs: a deploy carries its
+    /// validated flags, so there is no deploy without them to handle.
+    route: Route,
     yes: bool,
+}
+
+/// A known action, resolved by the parser.
+#[derive(Debug, PartialEq, Eq)]
+enum Route {
+    Verb(CliVerb),
+    Deploy(DeployFlags),
+}
+
+impl Route {
+    fn audit_label(&self) -> &'static str {
+        match self {
+            Route::Verb(v) => CliAction::Verb(*v).audit_label(),
+            Route::Deploy(_) => CliAction::Deploy.audit_label(),
+        }
+    }
 }
 
 /// A usage/gate failure carrying the exact exit code the CLI charter
@@ -212,27 +228,34 @@ fn parse_action_args(args: &[String]) -> Result<ActionArgs, ActionArgError> {
     // A deploy's own usage errors are decided here, with the rest, so
     // they beat the gate: a malformed deploy on a frozen fleet is a
     // usage error (2), not a refusal (3) with an audit line.
-    let deploy = if action_name == "deploy" {
-        let usage = |msg: String| ActionArgError { msg, code: 2 };
-        let version = version
-            .ok_or_else(|| usage("ebman action deploy: --version LABEL is required".into()))?;
-        let secs = |flag: &str, value: Option<String>| match value {
-            Some(s) => aws::parse_window_ms(&s)
-                .map(|ms| Some((ms / 1000) as u64))
-                .ok_or_else(|| {
-                    usage(format!(
+    let route = match CliAction::parse(action_name) {
+        None => {
+            return Err(ActionArgError {
+                msg: format!("ebman action: unknown action '{action_name}'\n{ACTION_USAGE}"),
+                code: 2,
+            })
+        }
+        Some(CliAction::Verb(v)) => Route::Verb(v),
+        Some(CliAction::Deploy) => {
+            let usage = |msg: String| ActionArgError { msg, code: 2 };
+            let version = version
+                .ok_or_else(|| usage("ebman action deploy: --version LABEL is required".into()))?;
+            let secs = |flag: &str, value: Option<String>| match value {
+                Some(s) => aws::parse_window_ms(&s)
+                    .map(|ms| Some((ms / 1000) as u64))
+                    .ok_or_else(|| {
+                        usage(format!(
                         "ebman action deploy: {flag} expects a duration like `5m` / `30m` / `1h`"
                     ))
-                }),
-            None => Ok(None),
-        };
-        Some(DeployFlags {
-            version,
-            wait_for_green_secs: secs("--wait-for-green", wait_for_green)?,
-            auto_rollback_secs: secs("--auto-rollback", auto_rollback)?,
-        })
-    } else {
-        None
+                    }),
+                None => Ok(None),
+            };
+            Route::Deploy(DeployFlags {
+                version,
+                wait_for_green_secs: secs("--wait-for-green", wait_for_green)?,
+                auto_rollback_secs: secs("--auto-rollback", auto_rollback)?,
+            })
+        }
     };
     let destructive = matches!(action_name, "terminate");
     if destructive && !yes {
@@ -246,7 +269,7 @@ fn parse_action_args(args: &[String]) -> Result<ActionArgs, ActionArgError> {
     Ok(ActionArgs {
         action: action_name.to_string(),
         env,
-        deploy,
+        route,
         yes,
     })
 }
@@ -298,7 +321,7 @@ where
     let ActionArgs {
         action: action_name,
         env,
-        deploy: deploy_flags,
+        route,
         ..
     } = match parse_action_args(args) {
         Ok(parsed) => parsed,
@@ -308,11 +331,6 @@ where
         }
     };
     let action_name = action_name.as_str();
-    let Some(action) = CliAction::parse(action_name) else {
-        let _ = writeln!(err, "ebman action: unknown action '{action_name}'");
-        let _ = writeln!(err, "{ACTION_USAGE}");
-        return 2;
-    };
     // Freeze BEFORE pin, matching the MCP write gate (inside the
     // refusal). The audit vocabulary, not the CLI token: a refusal
     // logging `action=restart` while the dispatch logs
@@ -326,7 +344,7 @@ where
         env: &env,
         profile,
         region: None,
-        verb: action.audit_label(),
+        verb: route.audit_label(),
     }) {
         let _ = writeln!(err, "ebman action: {reason}");
         return 3;
@@ -339,14 +357,9 @@ where
         }
     };
 
-    let verb = match action {
-        CliAction::Deploy => {
-            let Some(flags) = deploy_flags else {
-                unreachable!("the parser fills `deploy` for a deploy");
-            };
-            return deploy(&aws, &env, flags, profile, out, err).await;
-        }
-        CliAction::Verb(v) => v,
+    let verb = match route {
+        Route::Deploy(flags) => return deploy(&aws, &env, flags, profile, out, err).await,
+        Route::Verb(v) => v,
     };
     let label = verb.audit_label();
     // Mirror the TUI's dispatched/completed audit pair — headless
@@ -1220,7 +1233,13 @@ where
     // heard. A region a failure halted is not refused — no gate spoke.
     if halted_by_freeze {
         for region in unattempted_regions(&regions, &outcomes) {
-            crate::cli::audit_frozen(pin_profile, region, "Rollout", &wave.env);
+            crate::cli::audit_frozen(
+                pin_profile,
+                region,
+                "Rollout",
+                &wave.env,
+                &[("rollout_id", &wave.rollout_id)],
+            );
         }
     }
 
@@ -1770,7 +1789,8 @@ mod tests {
         let p = parse_action_args(&argv(&["action", "rebuild", "--env", "prod"])).unwrap();
         assert_eq!(p.action, "rebuild");
         assert_eq!(p.env, "prod");
-        assert!(!p.yes && p.deploy.is_none());
+        assert!(!p.yes);
+        assert_eq!(p.route, Route::Verb(CliVerb::Rebuild));
     }
 
     #[test]
@@ -1790,8 +1810,8 @@ mod tests {
         .unwrap();
         assert_eq!(p.action, "deploy");
         assert_eq!(
-            p.deploy,
-            Some(DeployFlags {
+            p.route,
+            Route::Deploy(DeployFlags {
                 version: "build-900".into(),
                 wait_for_green_secs: Some(300),
                 auto_rollback_secs: Some(600),
@@ -2555,10 +2575,20 @@ mod rollout {
             .filter(|l| l.contains("stage=refused"))
             .collect();
         assert_eq!(refused.len(), 2, "{refused:#?}");
+        let id = r
+            .out
+            .lines()
+            .next()
+            .unwrap()
+            .trim_start_matches("rollout_id=");
         for (line, region) in refused.iter().zip(["eu-west-2", "ap-south-1"]) {
             assert!(
                 line.contains(&format!("region={region}")) && line.contains("action=Rollout"),
                 "{line}"
+            );
+            assert!(
+                line.contains(&format!("rollout_id={id}")),
+                "correlates with the run: {line}"
             );
         }
     }

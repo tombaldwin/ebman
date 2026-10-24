@@ -91,22 +91,32 @@ pub(crate) fn frozen_refusal(action_label: &str) -> Option<String> {
         "-",
         action_label,
         "-",
+        &[],
     );
     Some(crate::freeze::refusal_message(&m))
 }
 
 /// The `stage=refused` line for a write the fleet freeze stopped: the
 /// freeze's rule and remedy, as the gate would give them.
-pub(crate) fn audit_frozen(profile: Option<&str>, region: &str, action_label: &str, target: &str) {
+pub(crate) fn audit_frozen(
+    profile: Option<&str>,
+    region: &str,
+    action_label: &str,
+    target: &str,
+    extras: &[(&str, &str)],
+) {
     let refusal = crate::write_gate::Refusal::Frozen;
-    crate::audit::append_action_refused(
+    crate::audit::append_refused(
         None,
         profile,
         region,
-        action_label,
-        target,
-        refusal.rule(),
-        &refusal.remedy(),
+        &crate::audit::Refused {
+            action_label,
+            target,
+            rule: refusal.rule(),
+            remedy: &refusal.remedy(),
+            extras,
+        },
     );
 }
 
