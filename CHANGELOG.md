@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.47.0] - 2026-10-24
 
 ### Added
 
@@ -20,8 +20,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
-- **Every subcommand answers `--help` / `-h`** with its usage and exits
-  `0`. They all rejected it as an unknown flag (exit `2`), and
+- **Breaking: every subcommand answers `--help` / `-h`** with its
+  usage and exits `0`. They all rejected it as an unknown flag (exit `2`), and
   `ebman ctl --help` tried the control socket. `docs/headless.md` gains
   a per-subcommand exit-code table, which now includes `ebman action`'s
   `4` (wait-for-green timed out) and `5` (auto-rollback fired). Each
@@ -30,8 +30,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   fix plan and fix results are typed notes the run renders, with the
   same text, streams and `--quiet` / `--json` behaviour, so each is
   now asserted by a test.
-- **MCP `fleet_cost` keys `by_env` as `NAME@REGION`**, the form the
-  write tools take, instead of the bare name.
+- **Breaking: MCP `fleet_cost` keys `by_env` as `NAME@REGION`** instead
+  of the bare name, as one name can be an env in two regions. A client
+  reading `by_env["api-prod"]` must read `by_env["api-prod@eu-west-2"]`;
+  the write tools take the two parts as `env` and `region`.
+- **Breaking: `ebman action rollout` and `ebman action deploy` report a
+  usage error before the safety check.** A missing `--version`, a bad
+  `--wait-for-green` / `--auto-rollback` / `--staggered` duration or a
+  conflicting flag pair on a frozen or pinned fleet now exits `2`
+  (usage) where it exited `3` (refused) and wrote a refusal line; with
+  no credentials, a malformed deploy now reports the usage error (`2`)
+  rather than a credential failure (`1`).
+- **CLI failures name their subcommand.** An unreadable audit log, an
+  AWS client that cannot be built or an env listing that fails printed
+  `Error: …`; it now reads `ebman <subcommand>: …`, with the same exit
+  `1`.
+
+### Removed
+
+- **Breaking (library only): `ebman::freeze::clear_marker_if_own`.** A
+  freeze is now one file per holder under `freeze.d/`, owned by the
+  crate-internal `FreezeStore`, and a TUI session clears its own holder
+  on exit. Found by `cargo semver-checks` against 0.46.2; no dependency
+  in the public API changed major (tokio 1.53 → 1.54 is the only bump).
 
 ### Fixed
 
@@ -56,6 +77,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   and keeps retrying on `:cost on` until a walk succeeds. Spend Cost
   Explorer files under no region (`global`, `NoRegion`) goes to the env
   when one region holds that name, and is not guessed at between twins.
+  Spend filed under a Local Zone (`us-west-2-lax-1a`) counts toward its
+  parent region.
 - **Detail's tabs show the latest answer, not the last to arrive.**
   Events, instances, queues, tags and env vars were bare loading flags,
   so two `^R`s in a row could land the older answer over the newer and
@@ -93,6 +116,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   unattended one (an auto-rollback, a batch member) arriving while the
   operator was in a form or an overlay threw them out of it, leaving
   the form behind with no way to see it.
+- **A parallel rollout checks the freeze before its first wave.**
+  `ebman action rollout --parallel` re-read the freeze only after each
+  region finished, so a freeze declared during the pre-flight still
+  reached every region of the first wave — all of them without
+  `--max-concurrency`. The sequential path already checked before every
+  region.
+- **`ebman action rollout --json` is JSON when a freeze stops it before
+  any region.** Each skipped row was written with a leading comma, so a
+  run halted before its first region printed `"regions":[,{…}]`.
+- **A rollout a freeze halted audits the regions it stopped.** It
+  wrote the regions that ran and nothing for the rest; each one the
+  freeze stopped is now a `stage=refused` line under its own region, so
+  the log and the webhook see what never ran.
+- **A tag or env-var write refreshes the Detail of the env written.**
+  Under `:region all` it refreshed a same-named env's Detail in another
+  region instead.
+- **`ebman audit replay` refusals reach the notification webhook.** The
+  webhook was wired only once the safety check had passed, so a replay
+  refused by a pin or a freeze was audited locally and never notified.
+- **`--auto-rollback` audits the rollback's completion.** It wrote the
+  rollback's `dispatched` line and never its `completed`, which the log
+  reads as a write that died mid-way.
 - **A TUI honours another TUI's freeze.** The TUI's write gate read
   only its own session's freeze, so a second TUI could deploy through
   the first one's `:incident START`. It now reads the marker every
@@ -4426,7 +4471,7 @@ Initial public release. Headline surface:
 - Published to crates.io as `ebman`.
 - Homebrew tap at `tombaldwin/homebrew-tap`.
 
-[Unreleased]: https://github.com/tombaldwin/ebman/compare/v0.46.2...HEAD
+[Unreleased]: https://github.com/tombaldwin/ebman/compare/v0.47.0...HEAD
 [0.39.1]: https://github.com/tombaldwin/ebman/compare/v0.39.0...v0.39.1
 [0.39.0]: https://github.com/tombaldwin/ebman/compare/v0.38.0...v0.39.0
 [0.38.0]: https://github.com/tombaldwin/ebman/compare/v0.37.0...v0.38.0
