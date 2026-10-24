@@ -915,9 +915,8 @@ pub(crate) fn unattempted_regions<'a>(
 
 /// The fleet freeze, re-read for a rollout already in flight.
 ///
-/// `lint --fix` checks `cli::frozen_refusal` once and exits 3, which is
-/// right for a write that has not started. A rollout that is part-way through has regions
-/// already dispatched and a report to emit, so it needs the reason
+/// A write that has not started is refused and exits 3. A rollout that
+/// is part-way through has regions already dispatched and a report to emit, so it needs the reason
 /// rather than an exit — it halts through the same path a failed region
 /// takes, and the untouched regions come out as `skipped`.
 ///

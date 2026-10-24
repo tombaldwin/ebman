@@ -4,6 +4,27 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **A freeze declared during `ebman lint --fix --yes` stops the envs
+  after it.** The freeze was read once, before the run, so a long
+  multi-region fix pass went on changing every env after an incident
+  was declared, where an MCP write re-checks after its approval and a
+  rollout between regions. It is now re-read before each env's fix:
+  each env it stops is refused, named on stderr and audited
+  `stage=refused`, the envs before it stay fixed, and the run carries on
+  linting.
+- **Breaking:** `lint --fix --yes` exits `3` when it refused an env (a
+  pin, or that freeze), as `docs/headless.md` and
+  `docs/safety-and-privacy.md` already said and every other refused
+  write does. It exited `1`, the code for a failed dispatch. A failed
+  dispatch or an incomplete run still exits `1`, and outranks a refusal.
+- A freeze refusal names the env, as every other refusal from the CLI
+  gate does (`refusing ENV — fleet freeze active …`); MCP's refusal text
+  carries the name too.
+
 ## [0.47.1] - 2026-10-24
 
 ### Security

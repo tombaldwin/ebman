@@ -115,6 +115,14 @@ misread them:
   the halt *reason* goes to stderr. So a script can recover exactly
   which regions still need deploying from the normal output, without
   parsing stderr.
+- A `lint --fix --yes` that **refused some envs**: a pin, or a freeze
+  declared while the run was under way (the freeze is re-read before
+  each env's fix). Envs fixed before it stay fixed; each refused env is
+  named on stderr as `ebman lint --fix: refusing ENV — …` and audited
+  `stage=refused`, and the run carries on linting. A failed dispatch or
+  an incomplete run outranks a refusal and exits `1`. Through 0.47 a
+  refused env exited `1`, and a freeze declared mid-run did not stop
+  the envs after it.
 
 For a refused write, stderr names the cause, so a script that needs to
 tell a pin from a freeze should read it rather than infer from the

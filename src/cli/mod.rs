@@ -74,26 +74,16 @@ pub(crate) use crate::deploy_poll::{decide_poll, PollDecision};
 /// crate (lib + bin).
 pub(crate) use crate::util::{json_escape as cli_esc, json_string};
 
-/// Cross-process freeze gate for CLI write paths (0.28): the refusal
-/// when a live TUI session holds `:freeze-deploys` / `:incident START`,
-/// or an `ebman freeze` is in force — audited like every other refusal.
-/// These paths had the same blind spot the MCP write tools would have
-/// had: a fleet frozen mid-incident could still be written from a
-/// second terminal. The caller prints it and exits 3, draining first.
-pub(crate) fn frozen_refusal(action_label: &str) -> Option<String> {
-    let m = crate::freeze::FreezeStore::real().active()?;
-    // Audited. This was the one CLI refusal path the `stage=refused`
-    // work missed: it exits before reaching `write_refusal`, so a
-    // fleet-wide freeze stopping a `lint --fix` run left no trace while
-    // a per-env pin stopping the same run left one.
-    audit_frozen(
-        std::env::var("AWS_PROFILE").ok().as_deref(),
-        "-",
-        action_label,
-        "-",
-        &[],
-    );
-    Some(crate::freeze::refusal_message(&m))
+/// The cross-process fleet freeze (0.28), for CLI write paths that
+/// read it themselves: a live TUI session's `:freeze-deploys` /
+/// `:incident START`, or an `ebman freeze` in force. These paths had the
+/// same blind spot the MCP write tools would have had: a fleet frozen
+/// mid-incident could still be written from a second terminal.
+///
+/// A marker, not a refusal: `lint --fix` hands it to the shared gate
+/// per env, which audits and words the refusal as for any other write.
+pub(crate) fn active_freeze() -> Option<crate::freeze::FreezeMarker> {
+    crate::freeze::FreezeStore::real().active()
 }
 
 /// The `stage=refused` line for a write the fleet freeze stopped: the
@@ -629,7 +619,7 @@ mod write_gate_input_guard {
                 "run_replay",
                 "crate::cli::real_refusal,",
             ),
-            ("cli/lint.rs", "run", "crate::cli::frozen_refusal,"),
+            ("cli/lint.rs", "run", "crate::cli::active_freeze,"),
         ] {
             let src = crate::app::tests::scan::production_source(module);
             let body = crate::app::tests::scan::fn_bodies(&src)

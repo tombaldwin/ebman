@@ -363,6 +363,10 @@ pub(crate) struct CycleReport {
     /// A `--fix` dispatch failed. Distinct from degraded: the cycle
     /// saw the fleet correctly and could not change it.
     pub fix_dispatch_failed: bool,
+    /// The gate refused a `--fix --yes` for an env: a pin, read-only, an
+    /// unreadable safety config, or a fleet freeze declared while the run
+    /// was under way. Exit 3, which is what a refused write exits.
+    pub fix_refused: bool,
     /// The operator asked for something that cannot be done — today,
     /// `--env NAME` where NAME is not in the only context being
     /// linted. Returned rather than exited.
@@ -538,19 +542,25 @@ pub(crate) fn filter_issues(
 /// identical to a passing check.
 ///
 /// `--fix` reports on the dispatch rather than on cleanliness: fixing
-/// issues is the point, so finding them is not a failure.
+/// issues is the point, so finding them is not a failure. A refused env
+/// is exit 3, as every refused write is, unless something also failed:
+/// a broken run outranks a refusal, because 3 tells a script the
+/// remaining work is waiting on a person, not on a retry.
 ///
 /// Extracted from the tail of `run`, where each branch called
 /// `std::process::exit` inline and none was reachable from a test.
 pub(crate) fn lint_exit_code(
     fix: bool,
     fix_dispatch_failed: bool,
+    fix_refused: bool,
     degraded: bool,
     clean: bool,
 ) -> i32 {
     if fix {
         if fix_dispatch_failed || degraded {
             1
+        } else if fix_refused {
+            3
         } else {
             0
         }
@@ -666,6 +676,11 @@ pub(crate) async fn run_cycle<F, Fut>(
     safety_cfg: &config::Config,
     fix_disabled: &[String],
     active_profile_for_safety: &Option<String>,
+    // The fleet freeze, re-read before each env's fix: one declared
+    // while a long multi-region run is under way stops the envs after
+    // it, as MCP re-checks after every approval and a rollout between
+    // regions.
+    freeze: &dyn Fn() -> Option<crate::freeze::FreezeMarker>,
     client_for: F,
     now: chrono::DateTime<chrono::Utc>,
 ) -> CycleReport
@@ -803,23 +818,31 @@ where
                 }
             }
 
-            if fix
-                && !issues.is_empty()
-                && apply_fixes_for_env(
+            if fix && !issues.is_empty() {
+                // Only a real run asks: a `--dry-run` dispatches nothing
+                // for a freeze to stop, and still shows its plan.
+                let active_freeze = if yes { freeze() } else { None };
+                match apply_fixes_for_env(
                     &aws,
                     env,
                     &inputs,
                     &issues,
                     &rules,
-                    yes,
-                    fix_disabled,
-                    safety_cfg,
-                    active_profile_for_safety,
+                    FixPolicy {
+                        yes,
+                        fix_disabled,
+                        safety_cfg,
+                        profile: active_profile_for_safety,
+                        active_freeze,
+                    },
                     &mut report.notes,
                 )
                 .await
-            {
-                report.fix_dispatch_failed = true;
+                {
+                    FixOutcome::Done => {}
+                    FixOutcome::Failed => report.fix_dispatch_failed = true,
+                    FixOutcome::Refused => report.fix_refused = true,
+                }
             }
 
             report.issues.extend(issues);
@@ -946,7 +969,7 @@ pub async fn run(args: &[String]) -> Result<()> {
                 ambient_profile: std::env::var("AWS_PROFILE").ok(),
             }
         },
-        crate::cli::frozen_refusal,
+        crate::cli::active_freeze,
         |region| aws::AwsClient::with(None, region),
         // `ctrl_c` panics outside a Tokio runtime, but `run` is
         // `#[tokio::main]`-driven so we're always inside one here.
@@ -980,14 +1003,13 @@ pub(crate) struct LintSetup {
 
 /// `ebman lint`'s whole behaviour against its setup (loaded once the
 /// flags parse: a usage error reads no config and prints none of its
-/// warnings), a freeze check
-/// (`frozen_refusal` in production: the refusal, audited, if a freeze
-/// holds), a region → client factory, the `--watch` stop signal
-/// (Ctrl-C) and writers. Returns the exit code.
+/// warnings), the fleet freeze (`active_freeze` in production, read up
+/// front and again before each env's fix), a region → client factory,
+/// the `--watch` stop signal (Ctrl-C) and writers. Returns the exit code.
 pub(crate) async fn lint_body<F, Fut>(
     args: &[String],
     setup: impl FnOnce() -> LintSetup,
-    frozen: impl Fn(&str) -> Option<String>,
+    freeze: impl Fn() -> Option<crate::freeze::FreezeMarker>,
     client_for: F,
     stop: impl std::future::Future<Output = ()>,
     out: &mut dyn std::io::Write,
@@ -1036,10 +1058,25 @@ where
     // Cross-process fleet freeze: a real fix dispatch (--fix --yes)
     // must refuse while a live TUI session holds :freeze-deploys /
     // :incident (a --dry-run plans nothing, so it stays allowed).
-    // This path had the same blind spot action/replay had.
+    // This path had the same blind spot action/replay had. Up front so
+    // a run frozen from the start builds no client and exits on one
+    // line; a freeze declared later is the cycle's, per env.
     if fix && yes {
-        if let Some(reason) = frozen(crate::verb::Verb::SetOption.audit_label()) {
-            let _ = writeln!(err, "ebman lint --fix: refusing — {reason}");
+        if let Some(m) = freeze() {
+            // Audited: a fleet freeze stopping the run must leave the
+            // trace a per-env pin stopping it leaves.
+            crate::cli::audit_frozen(
+                active_profile_for_safety.as_deref(),
+                "-",
+                crate::verb::Verb::SetOption.audit_label(),
+                "-",
+                &[],
+            );
+            let _ = writeln!(
+                err,
+                "ebman lint --fix: refusing — {}",
+                crate::freeze::refusal_message(&m)
+            );
             return 3;
         }
     }
@@ -1072,6 +1109,8 @@ where
     // other way out of the nesting. The report carries it out, so the
     // static dissolves.
     let mut last_fix_failed = false;
+    // Sticky the same way, for the same reason.
+    let mut last_fix_refused = false;
     // `--webhook` change-guard: identity set of the last cycle POSTed.
     // `None` until the first cycle, so the first findings (or first
     // clean state) always fire once.
@@ -1099,6 +1138,7 @@ where
             safety_cfg,
             fix_disabled,
             active_profile_for_safety,
+            &freeze,
             &client_for,
             cycle_started,
         )
@@ -1289,6 +1329,7 @@ where
         // The static behaved this way by accident of being global;
         // here it is deliberate.
         last_fix_failed |= report.fix_dispatch_failed;
+        last_fix_refused |= report.fix_refused;
 
         if !watch {
             break;
@@ -1311,7 +1352,13 @@ where
         }
     }
 
-    lint_exit_code(fix, last_fix_failed, last_cycle_degraded, last_cycle_clean)
+    lint_exit_code(
+        fix,
+        last_fix_failed,
+        last_fix_refused,
+        last_cycle_degraded,
+        last_cycle_clean,
+    )
 }
 
 #[cfg(test)]
@@ -2381,11 +2428,20 @@ mod run_decision_tests {
     /// CI, so every cell is named.
     #[test]
     fn the_exit_code_matrix_holds() {
-        // fix, fix_failed, degraded, clean → code
-        for (fix, failed, degraded, clean, want, why) in [
-            (false, false, false, true, 0, "clean run passes"),
-            (false, false, false, false, 3, "issues found is exit 3"),
+        // fix, fix_failed, fix_refused, degraded, clean → code
+        let rows: [(bool, bool, bool, bool, bool, i32, &str); 10] = [
+            (false, false, false, false, true, 0, "clean run passes"),
             (
+                false,
+                false,
+                false,
+                false,
+                false,
+                3,
+                "issues found is exit 3",
+            ),
+            (
+                false,
                 false,
                 false,
                 true,
@@ -2395,6 +2451,7 @@ mod run_decision_tests {
                  expired credentials looks identical to a passing check",
             ),
             (
+                false,
                 false,
                 false,
                 true,
@@ -2407,6 +2464,7 @@ mod run_decision_tests {
                 false,
                 false,
                 false,
+                false,
                 0,
                 "--fix that dispatched cleanly passes",
             ),
@@ -2415,11 +2473,13 @@ mod run_decision_tests {
                 true,
                 false,
                 false,
+                false,
                 1,
                 "--fix with a failed dispatch is exit 1",
             ),
             (
                 true,
+                false,
                 false,
                 true,
                 false,
@@ -2430,15 +2490,36 @@ mod run_decision_tests {
                 true,
                 false,
                 false,
+                false,
                 true,
                 0,
                 "--fix reports on the dispatch, not on cleanliness",
             ),
-        ] {
+            (
+                true,
+                false,
+                true,
+                false,
+                false,
+                3,
+                "--fix that a gate refused for an env is a refused write: 3",
+            ),
+            (
+                true,
+                true,
+                true,
+                false,
+                false,
+                1,
+                "a failed dispatch outranks a refusal",
+            ),
+        ];
+        for (fix, failed, refused, degraded, clean, want, why) in rows {
             assert_eq!(
-                lint_exit_code(fix, failed, degraded, clean),
+                lint_exit_code(fix, failed, refused, degraded, clean),
                 want,
-                "fix={fix} failed={failed} degraded={degraded} clean={clean}: {why}"
+                "fix={fix} failed={failed} refused={refused} degraded={degraded} \
+                 clean={clean}: {why}"
             );
         }
     }
@@ -2598,8 +2679,8 @@ mod webhook_gate_tests {
 
 /// The seam exists to be driven. This drives it.
 /// Plan and dispatch `--fix` for one environment. Returns whether a
-/// dispatch failed (or a `--yes` run was refused), which is what
-/// decides `lint`'s exit code.
+/// dispatch failed or a `--yes` run was refused, which is what decides
+/// `lint`'s exit code.
 ///
 /// Extracted from `run_cycle` in 0.45. It was ~170 lines inline and
 /// the seam's tests could not reach any of it: `run_with` hardcoded
@@ -2607,28 +2688,27 @@ mod webhook_gate_tests {
 /// flag were exactly as untested after the extraction that was
 /// supposed to expose them as before it. `fix_dispatch_failed` was
 /// asserted once, as `false`.
-#[allow(clippy::too_many_arguments)]
 async fn apply_fixes_for_env(
     aws: &aws::AwsClient,
     env: &aws::Environment,
     inputs: &EnvLintInputs,
     issues: &[lint::Issue],
     rules: &[Box<dyn lint::Rule>],
-    yes: bool,
-    fix_disabled: &[String],
-    safety_cfg: &config::Config,
-    active_profile_for_safety: &Option<String>,
+    policy: FixPolicy<'_>,
     notes: &mut Vec<CycleNote>,
-) -> bool {
-    let mut dispatch_failed = false;
-    // Through the shared gate, not `pin_reason` alone.
-    // `active_freeze: None` because the freeze is
-    // handled once up front for the whole run — a
-    // per-env freeze check would print the same refusal
-    // N times, and this loop skips the env rather than
-    // exiting. Passing it explicitly rather than
-    // reaching for `pin_reason` keeps this path on the
-    // shared decision even so.
+) -> FixOutcome {
+    let FixPolicy {
+        yes,
+        fix_disabled,
+        safety_cfg,
+        profile: active_profile_for_safety,
+        active_freeze,
+    } = policy;
+    // Through the shared gate, freeze included. It was passed `None`
+    // here once, with the freeze checked only up front, so a freeze
+    // declared during a long run fixed every env after it. Each env the
+    // freeze stops is refused, audited and named, and the run goes on
+    // linting.
     // A `--dry-run` preview goes through the pure
     // half: it dispatched nothing, so filing
     // `stage=refused` would fill the log with refusals
@@ -2640,7 +2720,7 @@ async fn apply_fixes_for_env(
             safety_cfg,
             &env.name,
             active_profile_for_safety,
-            None,
+            active_freeze,
             Some(aws.context.region.as_str()),
             // The label the fix DISPATCH logs, so a
             // refusal correlates with it under `ebman
@@ -2653,13 +2733,16 @@ async fn apply_fixes_for_env(
     };
     if let Some(reason) = refusal {
         notes.push(CycleNote::FixRefused { reason });
-        // Only a real (--yes) run treats the refusal as a dispatch
-        // failure — a --dry-run preview dispatched nothing and must
-        // not exit 1. `return yes`, not `return true`: the extraction
-        // first wrote the latter, which would have made a refused
-        // preview exit 1. Caught by clippy noticing the assignment it
-        // made dead.
-        return yes;
+        // Only a real (--yes) run counts the refusal — a --dry-run
+        // preview dispatched nothing and must not exit 3. The extraction
+        // first returned the refusal unconditionally, which would have
+        // failed a refused preview. Caught by clippy noticing the
+        // assignment it made dead.
+        return if yes {
+            FixOutcome::Refused
+        } else {
+            FixOutcome::Done
+        };
     }
     // The client's resolved region, not the `--regions` label: without
     // `--regions` the label was `None`, so every single-region fix was
@@ -2773,11 +2856,34 @@ async fn apply_fixes_for_env(
                         );
                     }
                 }
-                dispatch_failed = true;
+                return FixOutcome::Failed;
             }
         }
     }
-    dispatch_failed
+    FixOutcome::Done
+}
+
+/// What decides an env's fix pass: whether it is real (`--yes`) or a
+/// preview, the rules it may not fix, and the gate's inputs — the safety
+/// config, the profile the pins resolve against, and the freeze as it
+/// stood just before this env.
+struct FixPolicy<'a> {
+    yes: bool,
+    fix_disabled: &'a [String],
+    safety_cfg: &'a config::Config,
+    profile: &'a Option<String>,
+    active_freeze: Option<crate::freeze::FreezeMarker>,
+}
+
+/// How one env's fix pass ended, for the exit code.
+#[derive(Debug, PartialEq, Eq)]
+enum FixOutcome {
+    /// Dispatched, previewed, or nothing to do.
+    Done,
+    /// The dispatch failed: exit 1.
+    Failed,
+    /// A real run the gate refused: exit 3.
+    Refused,
 }
 
 #[cfg(test)]
@@ -2792,6 +2898,9 @@ pub(crate) mod cycle_wiring {
         /// `UpdateEnvironment` is rejected — the shape a `--fix` run
         /// hits when the role can read the fleet and not change it.
         pub(crate) update_rejected: bool,
+        /// The settings EBL001 fixes, with an `UpdateEnvironment` that
+        /// succeeds: a `--fix --yes` run that applies.
+        pub(crate) fixable: bool,
         /// One custom platform exists and its `DescribePlatformVersion`
         /// is rejected: EBL015 coverage that PARTLY failed.
         pub(crate) platform_date_rejected: bool,
@@ -2840,6 +2949,7 @@ pub(crate) mod cycle_wiring {
 
     pub(crate) fn mock_client_inner(envs: Vec<String>, faults: MockFaults) -> aws::AwsClient {
         let failing_update = faults.update_rejected;
+        let fixable = failing_update || faults.fixable;
         use aws_sdk_elasticbeanstalk::operation::describe_environments::DescribeEnvironmentsOutput;
         use aws_sdk_elasticbeanstalk::types::EnvironmentDescription;
         let listing_rejected = faults.listing_rejected;
@@ -2891,7 +3001,7 @@ pub(crate) mod cycle_wiring {
                 aws_sdk_elasticbeanstalk::operation::list_available_solution_stacks::ListAvailableSolutionStacksOutput::builder().build()
             })
         };
-        // With `failing_update`, hand back the option settings EBL001
+        // With `fixable`, hand back the option settings EBL001
         // fires on — `AllAtOnce` on a multi-instance env — so the fix
         // pass has something to PLAN and therefore something to
         // dispatch. An empty settings response yields issues with no
@@ -2904,7 +3014,7 @@ pub(crate) mod cycle_wiring {
                 ConfigurationOptionSetting, ConfigurationSettingsDescription,
             };
             let mut out = aws_sdk_elasticbeanstalk::operation::describe_configuration_settings::DescribeConfigurationSettingsOutput::builder();
-            if failing_update {
+            if fixable {
                 let opt = |ns: &str, name: &str, value: &str| {
                     ConfigurationOptionSetting::builder()
                         .namespace(ns)
@@ -3005,6 +3115,12 @@ pub(crate) mod cycle_wiring {
                     .build(),
             )
         });
+        let update_ok = aws_smithy_mocks::mock!(
+            aws_sdk_elasticbeanstalk::Client::update_environment
+        )
+        .then_output(|| {
+            aws_sdk_elasticbeanstalk::operation::update_environment::UpdateEnvironmentOutput::builder().build()
+        });
         let update = aws_smithy_mocks::mock!(
             aws_sdk_elasticbeanstalk::Client::update_environment
         )
@@ -3037,6 +3153,8 @@ pub(crate) mod cycle_wiring {
         ];
         if failing_update {
             rules.push(&update);
+        } else if faults.fixable {
+            rules.push(&update_ok);
         }
         if faults.platform_date_rejected {
             rules.push(&platform_date);
@@ -3119,6 +3237,7 @@ pub(crate) mod cycle_wiring {
             &opts.safety_cfg,
             &opts.fix_disabled,
             &None,
+            &|| None,
             client_for,
             test_clock(),
         )
@@ -3404,8 +3523,9 @@ pub(crate) mod cycle_wiring {
         cfg
     }
 
-    /// A safety-pinned env REFUSES the fix, and the refusal counts as
-    /// a dispatch failure only on a real run.
+    /// A safety-pinned env REFUSES the fix, and the refusal counts
+    /// (exit 3) only on a real run — and as a refusal, not a failed
+    /// dispatch (exit 1).
     ///
     /// The pair matters, and one arm alone would not have caught the
     /// bug that prompted it: extracting the fix block turned
@@ -3429,11 +3549,12 @@ pub(crate) mod cycle_wiring {
             )
             .await;
             assert_eq!(
-                report.fix_dispatch_failed,
+                report.fix_refused,
                 expect_failed,
                 "a refusal with --yes={yes} must {} the cycle",
                 if expect_failed { "fail" } else { "not fail" }
             );
+            assert!(!report.fix_dispatch_failed, "nothing was dispatched");
             assert!(
                 report
                     .notes
@@ -3686,8 +3807,17 @@ mod body {
         out: String,
         err: String,
         clients: usize,
-        /// The verb label the gate was asked about, if it was.
-        verb: Option<String>,
+    }
+
+    /// An `ebman freeze` in force, for `reason`.
+    pub(super) fn marker(reason: &str) -> crate::freeze::FreezeMarker {
+        crate::freeze::FreezeMarker {
+            pid: 0,
+            reason: reason.to_string(),
+            incident: false,
+            at: "2026-10-24T09:00:00Z".to_string(),
+            persistent: true,
+        }
     }
 
     fn setup() -> LintSetup {
@@ -3708,15 +3838,11 @@ mod body {
             .map(String::from)
             .collect();
         let clients = AtomicUsize::new(0);
-        let verb_asked = std::sync::Mutex::new(None);
         let (mut out, mut err) = (Vec::new(), Vec::new());
         let code = lint_body(
             &argv,
             setup,
-            |verb: &str| {
-                *verb_asked.lock().unwrap() = Some(verb.to_string());
-                frozen.map(String::from)
-            },
+            || frozen.map(marker),
             |_region| {
                 clients.fetch_add(1, Ordering::SeqCst);
                 async move { Ok(mock_client_inner(vec!["api".into()], faults)) }
@@ -3731,7 +3857,6 @@ mod body {
             out: String::from_utf8(out).unwrap(),
             err: String::from_utf8(err).unwrap(),
             clients: clients.into_inner(),
-            verb: verb_asked.into_inner().unwrap(),
         }
     }
 
@@ -3785,7 +3910,7 @@ mod body {
         let code = lint_body(
             &["lint".to_string(), "--bogus".to_string()],
             || panic!("config read for a usage error"),
-            |_: &str| None,
+            || None,
             |_| async { Err(color_eyre::eyre::eyre!("no client")) },
             async {},
             &mut out,
@@ -3812,7 +3937,7 @@ mod body {
                     safety_cfg: cfg,
                     ambient_profile: profile,
                 },
-                |_: &str| None,
+                || None,
                 |_| async { Ok(mock_client_inner(vec!["api".into()], findings())) },
                 async {},
                 &mut out,
@@ -3824,7 +3949,7 @@ mod body {
         let mut cfg = config::Config::default();
         cfg.safety_envs.insert("api".into(), true);
         let (code, err) = fix(cfg, None).await;
-        assert_eq!(code, 1, "{err}");
+        assert_eq!(code, 3, "a refused write exits 3: {err}");
         assert!(
             err.contains("refusing api — pinned by safety.envs.api.read_only"),
             "{err}"
@@ -3833,7 +3958,7 @@ mod body {
         let mut cfg = config::Config::default();
         cfg.safety_accounts.insert("ops".into(), true);
         let (code, err) = fix(cfg, Some("ops")).await;
-        assert_eq!(code, 1, "{err}");
+        assert_eq!(code, 3, "{err}");
         assert!(
             err.contains("refusing api — pinned by safety.accounts.ops"),
             "{err}"
@@ -3849,25 +3974,85 @@ mod body {
 
     #[tokio::test]
     async fn a_freeze_stops_a_fix_but_not_a_read() {
-        let r = lint(
-            &["--fix", "--yes"],
-            findings(),
-            Some("deploys frozen: incident #4321"),
-        )
-        .await;
+        let before = crate::cli::audit_delta::mark();
+        let r = lint(&["--fix", "--yes"], findings(), Some("incident #4321")).await;
         assert_eq!(r.code, 3, "{}", r.err);
         assert_eq!(r.clients, 0, "refused before any client");
         assert!(
-            r.err.contains("refusing — deploys frozen: incident #4321"),
+            r.err
+                .contains("ebman lint --fix: refusing — fleet freeze active (incident #4321)"),
             "{}",
             r.err
         );
-        assert_eq!(r.verb.as_deref(), Some("SetOption"));
+        // Audited under the label the fix dispatch logs.
+        let refused = crate::cli::audit_delta::lines_matching(&before, |l| {
+            l.contains("stage=refused") && l.contains("action=SetOption") && l.contains("target=-")
+        });
+        assert_eq!(refused.len(), 1, "{refused:?}");
 
         let r = lint(&["--fix", "--dry-run"], findings(), Some("deploys frozen")).await;
         assert_ne!(r.code, 3, "a dry run plans nothing: {}", r.err);
         let r = lint(&[], findings(), Some("deploys frozen")).await;
         assert!(r.clients > 0, "a read is not a write");
+    }
+
+    /// A freeze declared while `--fix --yes` is part-way through stops
+    /// the envs after it: each is refused, named and audited, the envs
+    /// before it stay fixed, and the run exits 3 as a refused write.
+    ///
+    /// The freeze used to be read once, up front, so a long multi-region
+    /// run fixed every env after an incident was declared.
+    #[tokio::test]
+    async fn a_freeze_declared_mid_run_stops_the_envs_after_it() {
+        let (first, second) = ("poly-midrun-api", "poly-midrun-web");
+        let reads = AtomicUsize::new(0);
+        let before = crate::cli::audit_delta::mark();
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let code = lint_body(
+            &["lint".to_string(), "--fix".to_string(), "--yes".to_string()],
+            setup,
+            // Clear up front and for the first env, frozen after.
+            || (reads.fetch_add(1, Ordering::SeqCst) >= 2).then(|| marker("incident #77")),
+            |_| async move {
+                Ok(mock_client_inner(
+                    vec![first.into(), second.into()],
+                    MockFaults {
+                        fixable: true,
+                        ..MockFaults::default()
+                    },
+                ))
+            },
+            async {},
+            &mut out,
+            &mut err,
+        )
+        .await;
+        let (out, err) = (
+            String::from_utf8(out).unwrap(),
+            String::from_utf8(err).unwrap(),
+        );
+        assert_eq!(code, 3, "out: {out}\nerr: {err}");
+        assert!(out.contains(&format!("ok ({first}): applied")), "{out}");
+        assert!(!out.contains(&format!("ok ({second})")), "{out}");
+        assert!(
+            err.contains(&format!(
+                "ebman lint --fix: refusing {second} — fleet freeze active (incident #77)"
+            )),
+            "{err}"
+        );
+        let refused = crate::cli::audit_delta::lines_for(&before, second);
+        assert!(
+            refused
+                .iter()
+                .any(|l| l.contains("stage=refused") && l.contains("rule=frozen")),
+            "{refused:?}"
+        );
+        assert!(
+            crate::cli::audit_delta::lines_for(&before, first)
+                .iter()
+                .all(|l| !l.contains("stage=refused")),
+            "the env fixed before the freeze was not refused"
+        );
     }
 
     #[tokio::test]
