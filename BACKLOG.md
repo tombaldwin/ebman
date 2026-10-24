@@ -210,20 +210,6 @@ Tier definitions:
   `strip_line_comment` — so this is consolidation, not a fix, but it is
   the house rule. S.
 
-- [ ] **Finish the injection and ticket seams** *(0.47.0 release
-  architecture review)*. Behaviour-neutral, each covered by guards today:
-  (1) the CLI write bodies inject their dependencies three ways (action /
-  rollout / replay take a profile and a `WriteGate`, in different
-  argument orders; lint a `LintSetup` and a freeze closure; freeze/thaw
-  nothing, calling `FreezeStore::real()` inline) — one `WriteEnv` value
-  would shrink `write_shells_pass_the_real_gate_and_the_ambient_profile`
-  to one pattern. M. (2) `FreezeStore` is injected only in the App; the
-  CLI and MCP call `FreezeStore::real()` at use (`cli/mod.rs`,
-  `mcp/tools.rs`, `mcp/writes.rs`). M. (3) `ActionState`'s six
-  `Option` + `loading_*` pairs and `DlqState.loading` are the shape
-  `Fetch` replaced in Detail; results match by `EnvKey`, not ticket, so a
-  superseded pre-flight answer is still accepted. M.
-
 - [ ] **Shared test fixtures and module placement** *(0.47.0 release
   architecture review)*. A `#[cfg(test)] aws::test_support` with
   `client_with_eb(eb, region)`, `denied(code)` and an env listing would
@@ -237,18 +223,6 @@ Tier definitions:
   and `cli/action.rs` are two-thirds inline tests; `cli/<sub>/tests.rs`
   as `cli/mcp/tests/` does. M. `freeze.rs`'s `/proc` and pid probing is
   not about freezing: a `proc_liveness` module behind `Liveness`. S.
-
-- [ ] **CLI body paths still untested** *(2026-10-23 CLI-body review)*
-  Every subcommand is behind a testable body now; these paths through
-  them are reached by no test: explain's `required_tags` pass-through;
-  `lint --webhook` (the post, the change guard's wiring, the degraded
-  suppression; `should_post_webhook` itself is tested) — it needs a
-  webhook seam, since the body fires a real POST; a `lint --baseline`
-  write that fails; and which cycle's code a multi-cycle `--watch` exits
-  with (the mock fleet is the same every cycle). Also:
-  `cli::audit_delta::lines_for` panics "append-only" if one test run's
-  audit lines cross the 1 MiB rotation mid-test — the pattern the older
-  audit tests use, now in four more. S each.
 
 - [ ] **Functions over the 300-line trigger** (2026-09-25 count):
   `draw_action` 673, `draw_why_red_overlay` 474, `execute_command` 418
@@ -296,12 +270,6 @@ Tier definitions:
   audits `:readonly off`; it still needs no confirmation, so a session
   started `--read-only` is one keystroke from writable. Options: sticky
   for the session, or a typed confirm to lift it.
-
-- [ ] **An MCP tool to declare a freeze.** `ebman freeze` (2026-10-23)
-  gave the CLI one; an agent still cannot stop writes. Declaring only
-  restricts, so it is safe to grant without an ask, but it is a new
-  tool on the registry surface and lifting must stay with the operator.
-  Left out of the freeze work by design (`docs/design/persistent-freeze.md`).
 
 - [ ] **The docs read as a design log.** Operator pages carry history
   and rationale ("Measured, 2026-09-19 …", "Before 0.30 …"), and

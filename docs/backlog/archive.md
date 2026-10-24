@@ -5296,3 +5296,133 @@ From `PLAN.md`, retired with it:
   (`an_unreadable_safety_config_outranks_a_freeze`). Deleting the
   up-front check instead was tried and reverted: `tests/cli.rs` pins
   that a frozen run refuses without AWS, and it then exited 1.
+
+## PLAN.md window, retired 2026-10-24
+
+Moved verbatim when the window was refilled after 0.47.1. Item 1's live
+check and item 3's live check carry into the new window as one item.
+
+### (window as it stood)
+
+*Refreshed 2026-09-25, after 0.44.0. Everything the 0.43 window
+promised is shipped, ruled or verified live; the finished write-ups
+moved verbatim to `docs/backlog/archive.md` ("PLAN.md window, retired
+2026-09-25"). Items 1 and 2 were found buried inside entries marked
+done — the third and fourth such finds in a week — which is why they
+now head the list.*
+
+### Now
+
+1. **No `stage=asked` line has ever landed in the real audit log** *(measurement — needs Tom at the keyboard, ~5 min)*
+
+   Found on 2026-09-25 while setting up the live typed-confirm
+   verification (archived): `~/.cache/ebman/audit.log` holds zero, ever.
+   Explained, not broken, as far as it was checked: demo suppresses
+   every audit write (`writes.rs:2188`, and `Audited::record` at
+   `:1017`), the dev registration is `--demo`, and the only real MCP
+   write on record (a production `sqs-delete`, 2026-09-19 22:08,
+   `dispatched`+`completed`, no `asked`) ran a 0.42.0 build — the stage
+   first shipped in 0.43.0 (`b7e4ced`). But the "Not scheduled" latency
+   ruling rests on *"`stage=asked` records the latency"*, and that has
+   only ever been observed in tests. One non-demo confirm, even a
+   decline, settles it.
+
+   **First, a build that can write the line.** The `ebman` on PATH is
+   Homebrew 0.42.0 (checked 2026-09-25), which predates `stage=asked`
+   (0.43.0), so a test against it proves nothing. `brew upgrade ebman`,
+   or register the local release build without `--demo`.
+
+2. **`run_cycle`'s third side channel** — *done 2026-10-23.* The cycle
+   and its fix pass record typed `CycleNote`s on `CycleReport` and `run`
+   renders them (`render_notes`); `the_lint_cycle_prints_nothing_itself`
+   pins it. Full write-up in `docs/backlog/archive.md`.
+
+3. **An "App" view per environment: is it healthy, and who is using it?** *(architecture — design note first)*
+
+   Requested 2026-10-20 by an operator running a production fleet, and
+   prioritised by the maintainer right after the serde_yml advisory.
+   One screen per env, generic (no app-specific parsing):
+
+   - **App metrics** from a namespace and metric list in `config.toml`
+     (label, unit), with latest value, sparkline and a per-instance
+     breakdown. Custom env metrics exist today but live in
+     `state.toml`, which is not shareable config.
+   - **Linked resources, narrow by ruling (2026-10-20):** RDS and
+     ElastiCache only as resources NAMED in that env's config, shown
+     as metrics through the same panel. No tag discovery, no new SDK
+     clients. The "multi-service dashboard" out-of-scope line stands.
+   - **Instance metrics:** EB enhanced-health series (requests, p99,
+     4xx/5xx) where enhanced health is on.
+   - **Alarms:** ALARM first; optional name-prefix matching beside the
+     dimension match.
+   - **Top errors:** a Logs Insights query over the env's app log
+     group, counting ERROR lines by a configurable fingerprint regex.
+   - **MCP:** one read tool (`app_metrics`) over the same fetch, with
+     caveats (a metric is only as fresh as its publish interval).
+   - Later: config thresholds that colour values; a two-env compare.
+
+   Steps are in `docs/design/app-view.md`, re-scoped into vertical
+   slices after step 1. **Done 2026-10-20:** step 1 (`app.ENV.*`
+   parsing, docs, family docs guard), step 2 (the App tab with app
+   metrics, thresholds and the env's config errors on screen) and step
+   3 (linked RDS / ElastiCache rows) and step 4 (per-instance enhanced
+   health rows), step 5 (alarm prefix, ALARM first, alarm line) and
+   step 6 (top errors) and step 7 (`app_metrics` on MCP), then three
+   review rounds (13 findings, then 7, then 3, all fixed with tests).
+
+   **Then, by request (2026-10-20):** edits apply without a restart,
+   `e` on the tab opens an editor pre-filled by discovery from the env's
+   own evidence (maintainer ruling: discovery yes; RDS offered, never
+   assumed), and an alarm prefix gives way to a longer env name it
+   covers (found on the live fleet). Then (2026-10-21) the tab runs
+   discovery unprompted for an unconfigured env, previews what an env
+   variable names, and its key strip says `e set up`.
+
+   **Reviewed 2026-10-21** by two fresh agents (architecture, bugs); all
+   findings fixed in separate commits with mutation-checked tests: MCP
+   top errors flagged unredacted and its fleet listing moved inside the
+   alarms section; MCP re-reads the `app.` lines per call; discovery
+   keyed by (region, env); request tickets on `Fetch` so a config edit
+   or a range change drops a stale answer; one reading of an `app.`
+   line's key; inline-comment checks both ways; G/T value steps and a
+   fully ASCII ascii mode; a round trip over every parser field; the
+   reload and save paths driven rather than pinned by source; and the
+   layering (discovery's AWS code in `aws/`, `AlarmMatch` in `app_tab`,
+   `app_tab_source`, `refresh_app_tab` / `top_errors_due`, the state
+   grouped into `AppTabState` / `AppTabSession`).
+
+   **Left, both needing the maintainer:**
+   - **A live check against a real account.** Discovery has run on a
+     real fleet (the maintainer, 2026-10-21). The rest has not been
+     confirmed against AWS: the SEARCH expression and its dynamic
+     instance label, metric math over it, the Insights `parse`/`stats`
+     query, and `CacheClusterId` naming for Redis nodes. One configured
+     env, opened in the TUI and called through MCP, settles it.
+   - **Step 11, the two-env compare layout**, by ruling.
+
+   Known and accepted: `[` `]` now refetch both tabs that share the
+   range, so a configured env pays for the App tab's GetMetricData on
+   the Metrics tab too. Correctness over a cheap call.
+
+### Next
+
+4. **Assume-role elevation for MCP writes** (`runtime-grants.md`
+   layer four / step 6). `sts:AssumeRole` is the time-boxed grant done
+   properly: STS enforces the TTL, the role policy is the ceiling, and
+   CloudTrail audits it independently of ebman — so the record does not
+   depend on ebman being honest about itself.
+
+   `AwsClient::assume_role` already exists for cross-account switching,
+   so the plumbing is there. Buys nothing for a setup running as admin,
+   which is why it is not first; the maintainer asked for it to be
+   designed now and rolled out in a release soon after, not built into
+   the current cut.
+
+   Attribution is the sleeper benefit: writes land as the assumed role
+   rather than the operator's own identity, so "what did the agent do"
+   is answerable from CloudTrail alone.
+
+   *Moved from `BACKLOG.md` on 2026-09-25.* Sequenced after item 3
+   because it IS runtime-grants layer four: the re-scope decides whether
+   it replaces part of stage 5 or builds on it, so neither gets
+   designed twice.
