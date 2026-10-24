@@ -392,7 +392,8 @@ pub(crate) enum CycleNote {
     /// `--env NAME` is not in this region of a `--regions` run.
     EnvNotInRegion { env: String, region: String },
     /// `--fix` refused the env: a pin, read-only, an unreadable safety
-    /// config.
+    /// config, a fleet freeze. Shown whatever `--quiet` says: it exits
+    /// 3, and a non-zero exit needs its reason in the log.
     FixRefused { reason: String },
     /// The rule is in `lint.fix_disable`.
     FixDisabled { rule: String, env: String },
@@ -439,9 +440,7 @@ pub(crate) fn render_notes(
                 err,
                 "warning: env '{env}' not in region '{region}' — skipping"
             )?,
-            CycleNote::FixRefused { reason } if !quiet => {
-                writeln!(err, "ebman lint --fix: {reason}")?
-            }
+            CycleNote::FixRefused { reason } => writeln!(err, "ebman lint --fix: {reason}")?,
             CycleNote::FixDisabled { rule, env } if plan => {
                 writeln!(out, "skip {rule} ({env}): in lint.fix_disable")?
             }
@@ -2166,6 +2165,9 @@ mod note_rendering {
             err.lines().collect::<Vec<_>>(),
             vec![
                 "warning: EBL020 skipped: AccessDenied",
+                // A refusal exits 3: a quiet run without its reason
+                // would be a non-zero exit with an empty log.
+                "ebman lint --fix: api is pinned read-only",
                 "ebman lint --fix: dispatch failed for api in us-east-1: Throttled",
             ]
         );

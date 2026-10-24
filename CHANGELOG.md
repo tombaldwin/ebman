@@ -21,6 +21,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   `docs/safety-and-privacy.md` already said and every other refused
   write does. It exited `1`, the code for a failed dispatch. A failed
   dispatch or an incomplete run still exits `1`, and outranks a refusal.
+- `lint --fix --quiet` prints a refused env's reason, as it prints a
+  failed dispatch: the refusal exits non-zero, and `--quiet` dropped the
+  only line saying why.
 - A freeze refusal names the env, as every other refusal from the CLI
   gate does (`refusing ENV — fleet freeze active …`); MCP's refusal text
   carries the name too.

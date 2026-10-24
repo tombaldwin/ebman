@@ -185,6 +185,8 @@ A degraded run exits non-zero, and the reasons are printed to stderr
 **even under `--quiet`**. `--quiet` suppresses per-env chatter; it does
 not suppress the reason a run failed, because a CI step that exits
 non-zero with an empty log is the one outcome nobody can act on.
+The same holds for `--fix`: a failed dispatch and a refused env are
+printed under `--quiet` too.
 
 `--baseline` refuses to snapshot a degraded run outright: adopting one
 would grandfather whatever the outage hid.
