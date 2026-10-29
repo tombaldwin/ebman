@@ -493,6 +493,59 @@ mod body {
         assert_eq!(code, 3, "{}", String::from_utf8_lossy(&err));
     }
 
+    /// `required_tags` reaches both the input fetch and the rules, so
+    /// EBL010 is explained against the operator's list. The mock fleet's
+    /// envs carry no tags: with `owner` required it fires, and with none
+    /// required there is nothing to explain.
+    #[tokio::test]
+    async fn the_required_tags_decide_whether_ebl010_fires() {
+        async fn explain(required: &[String], faults: MockFaults) -> (i32, String) {
+            let client = mock_client_inner(vec!["api".into()], faults);
+            let (mut out, mut err) = (Vec::new(), Vec::new());
+            let code = explain_body(
+                &opts("EBL010", None, false, false),
+                &client,
+                &[],
+                required,
+                |_, _| async { Ok::<String, String>("Tag it.".into()) },
+                &mut out,
+                &mut err,
+            )
+            .await;
+            (code, String::from_utf8(err).unwrap())
+        }
+        let owner = ["owner".to_string()];
+        let (code, err) = explain(&owner, MockFaults::default()).await;
+        assert_eq!(code, 0, "an untagged env lacks the required tag: {err}");
+        let (code, err) = explain(&[], MockFaults::default()).await;
+        assert_eq!(code, 3, "nothing is required, so nothing is missing: {err}");
+        // The fetch's copy decides whether a lost tag fetch matters: with
+        // a tag required, EBL010 could not be checked, which is not clean.
+        let rejected = MockFaults {
+            tags_rejected: true,
+            ..Default::default()
+        };
+        let (code, err) = explain(&owner, rejected).await;
+        assert_eq!(code, 1, "the tag check did not run: {err}");
+    }
+
+    /// `run` passes the configured `required_tags`, which no test can
+    /// reach through `run` itself: it builds a real AWS client.
+    #[test]
+    fn run_passes_the_configured_required_tags() {
+        let src = crate::app::tests::scan::production_source("cli/explain.rs");
+        let body = crate::app::tests::scan::fn_bodies(&src)
+            .into_iter()
+            .find(|(name, _)| name == "run")
+            .expect("`run` is defined")
+            .1;
+        let call = &body[body.find("explain_body(").expect("`run` calls the body")..];
+        assert!(
+            call.contains("&cfg.required_tags,"),
+            "`run` must pass the configured required tags: {call}"
+        );
+    }
+
     #[tokio::test]
     async fn a_dry_run_prints_the_prompt_and_asks_nothing() {
         let (code, out, _, asked) = run(
