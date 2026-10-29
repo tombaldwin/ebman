@@ -1,6 +1,7 @@
 # Assume-role for MCP writes
 
-**Status: design, for review. Nothing here is built.** Layer four of
+**Status: accepted 2026-10-29, all three contested decisions as
+written (see the foot). Built slice by slice.** Layer four of
 [runtime-grants.md](runtime-grants.md), step 6 of its implementation
 order. That note sketched the idea and left the shape open. This one
 settles it so it can be built in slices without being redesigned.
@@ -256,8 +257,8 @@ CloudTrail by session name.
 
 ## Decisions for the maintainer
 
-The note takes a position on each. These are the ones worth a second
-look, because the opposite answer is also defensible:
+Ruled 2026-10-29: all three as written. They were the ones worth a
+second look, because the opposite answer is also defensible:
 
 - **D4's undo exception.** The alternative is an AssumeRole of the
   undo's own, under the verb's mapped role. It is cleaner in the

@@ -143,8 +143,9 @@ it.*
    asked for it designed first and rolled out in a release soon after.
    The note decides whether it replaces part of runtime-grants stage 5
    or builds on it, so neither is designed twice. **Drafted
-   2026-10-24, awaiting the maintainer's review:**
-   `docs/design/assume-role-elevation.md`. It builds on the shipped ask
+   2026-10-24, accepted 2026-10-29 with all three contested calls as
+   written:** `docs/design/assume-role-elevation.md`. Next: its five
+   slices, in order. It builds on the shipped ask
    (stage 5 was killed on 2026-09-25, so there is nothing to replace)
    and splits into five slices. Its three contestable calls are listed
    at its foot.
