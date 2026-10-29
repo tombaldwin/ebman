@@ -120,7 +120,7 @@ it.*
      the "Not scheduled" latency ruling rests on it. `--demo` writes no
      audit lines, and the dev registration is `--demo`, so it needs a
      non-demo MCP connection on a build of 0.43.0 or later (Homebrew is
-     0.47.1). One confirm, even a decline, settles it.
+     0.48.0). One confirm, even a decline, settles it.
    - **The App tab against AWS.** Discovery has run on a real fleet;
      the SEARCH expression and its dynamic instance label, metric math
      over it, the Logs Insights `parse`/`stats` query and
@@ -175,6 +175,14 @@ it.*
    agree on (`FreezeStore::real()` / `isolated()`).
 
 ### Released
+
+**0.48.0 (2026-10-29)**: `freeze_fleet`, an MCP tool that declares a
+persistent fleet freeze with no confirmation (on every server,
+`--read-only` included); a confirm modal's pre-flight answers matched
+to the modal that asked; the DLQ viewer no longer resurrects a message
+a refresh read before it was removed; `lint --fix` re-reads the freeze
+before each env. Breaking: `lint --fix --yes` exits `3` on a refusal.
+Cleared by a three-agent release panel (all GO).
 
 **0.47.1 (2026-10-24)**: rebuild without the AWS SDK's SigV4a signer,
 which ebman never used and which carried `crypto-bigint` 0.5
