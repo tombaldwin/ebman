@@ -815,12 +815,13 @@ async fn handle_unavailability_estimate_silent_on_fetch_failure() {
     app.handle_msg(AppMsg::UnavailabilityEstimate {
         gen: app.generation,
         key: EnvKey::new("us-east-1", "prod"),
+        ticket: preflight_ticket(&app, |p| p.unavailability.ticket_in_flight()),
         line: None,
     });
     match &app.action_flow {
         Some(ActionFlow::Confirm(modal)) => {
-            assert!(!modal.loading_unavailability);
-            assert!(modal.unavailability_line.is_none());
+            assert!(!modal.preflight.unavailability.in_flight());
+            assert!(modal.preflight.unavailability.ready().is_none());
         }
         _ => panic!("expected confirm modal"),
     }
@@ -838,15 +839,13 @@ async fn handle_health_check_probe_renders_warning_on_failure() {
     app.handle_msg(AppMsg::HealthCheckProbe {
         gen: app.generation,
         key: EnvKey::new("us-east-1", "prod"),
+        ticket: preflight_ticket(&app, |p| p.health_check.ticket_in_flight()),
         result: Err("HTTP 404".into()),
     });
     match &app.action_flow {
         Some(ActionFlow::Confirm(modal)) => {
-            assert!(!modal.loading_health_check);
-            assert_eq!(
-                modal.health_check_probe.as_ref().map(|r| r.is_err()),
-                Some(true)
-            );
+            assert!(!modal.preflight.health_check.in_flight());
+            assert_eq!(modal.preflight.health_check.error(), Some("HTTP 404"));
         }
         _ => panic!("expected confirm modal open"),
     }
@@ -865,15 +864,13 @@ async fn handle_health_check_probe_silent_on_ok() {
     app.handle_msg(AppMsg::HealthCheckProbe {
         gen: app.generation,
         key: EnvKey::new("us-east-1", "prod"),
+        ticket: preflight_ticket(&app, |p| p.health_check.ticket_in_flight()),
         result: Ok(()),
     });
     match &app.action_flow {
         Some(ActionFlow::Confirm(modal)) => {
-            assert!(!modal.loading_health_check);
-            assert_eq!(
-                modal.health_check_probe.as_ref().map(|r| r.is_ok()),
-                Some(true)
-            );
+            assert!(!modal.preflight.health_check.in_flight());
+            assert!(modal.preflight.health_check.ready().is_some());
         }
         _ => panic!("expected confirm modal open"),
     }

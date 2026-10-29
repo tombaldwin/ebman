@@ -167,7 +167,12 @@ impl App {
             } => self.handle_app_versions(application, deployed_label, result),
             AppMsg::UpdateCheck(latest) => self.handle_update_check(latest),
             AppMsg::AutoRollbackCheck { env, .. } => self.handle_auto_rollback_check(env),
-            AppMsg::DryRunResult { key, result, .. } => self.handle_dry_run_result(key, result),
+            AppMsg::DryRunResult {
+                key,
+                ticket,
+                result,
+                ..
+            } => self.handle_dry_run_result(key, ticket, result),
             AppMsg::Alarms { env, result, .. } => self.handle_alarms(env, result),
             AppMsg::WhyRedEvents {
                 session_id, result, ..
@@ -187,22 +192,58 @@ impl App {
             AppMsg::WhyRedDlqMessages {
                 session_id, result, ..
             } => self.handle_why_red_dlq_messages(session_id, result),
-            AppMsg::PreflightEvents { key, result, .. } => {
-                self.handle_preflight_events(key, result)
+            AppMsg::PreflightEvents {
+                key,
+                ticket,
+                result,
+                ..
+            } => {
+                if let Some(p) = self.preflight_for(&key) {
+                    p.events.settle_ticket(ticket, result);
+                }
             }
-            AppMsg::VersionPreview { key, result, .. } => self.handle_version_preview(key, result),
-            AppMsg::HealthCheckProbe { key, result, .. } => {
-                self.handle_health_check_probe(key, result)
+            AppMsg::VersionPreview {
+                key,
+                ticket,
+                result,
+                ..
+            } => {
+                if let Some(p) = self.preflight_for(&key) {
+                    p.version_preview.settle_ticket(ticket, result);
+                }
             }
-            AppMsg::UnavailabilityEstimate { key, line, .. } => {
-                self.handle_unavailability_estimate(key, line)
+            AppMsg::HealthCheckProbe {
+                key,
+                ticket,
+                result,
+                ..
+            } => {
+                if let Some(p) = self.preflight_for(&key) {
+                    p.health_check.settle_ticket(ticket, result);
+                }
+            }
+            AppMsg::UnavailabilityEstimate {
+                key, ticket, line, ..
+            } => {
+                // `None` is a failed settings fetch, which renders as
+                // nothing: the estimate is observability, not safety.
+                if let Some(p) = self.preflight_for(&key) {
+                    let line = line.ok_or_else(|| "no deployment settings".to_string());
+                    p.unavailability.settle_ticket(ticket, line);
+                }
             }
             AppMsg::ConfirmModalLint {
                 key,
+                ticket,
                 issues,
                 not_run,
                 ..
-            } => self.handle_confirm_modal_lint(key, issues, not_run),
+            } => {
+                if let Some(p) = self.preflight_for(&key) {
+                    let lint = ConfirmLint { issues, not_run };
+                    p.lint.settle_ticket(ticket, Ok(lint));
+                }
+            }
             AppMsg::LintInputsCached {
                 key, tags, healthy, ..
             } => self.handle_lint_inputs_cached(key, tags, healthy),
@@ -740,25 +781,37 @@ impl App {
         self.spawn_refresh();
     }
 
-    fn handle_dry_run_result(&mut self, key: EnvKey, result: Result<Vec<Instance>, String>) {
-        let Some(ActionFlow::Confirm(modal)) = self.action_flow.as_mut() else {
+    /// The open confirm modal's pre-flight, if the modal is for `key`.
+    /// Which request an answer belongs to is the ticket's to say, as
+    /// each `settle_ticket` does; this only finds the modal.
+    fn preflight_for(&mut self, key: &EnvKey) -> Option<&mut Preflight> {
+        match self.action_flow.as_mut() {
+            Some(ActionFlow::Confirm(modal)) if &modal.key() == key => Some(&mut modal.preflight),
+            _ => None,
+        }
+    }
+
+    fn handle_dry_run_result(
+        &mut self,
+        key: EnvKey,
+        ticket: Ticket,
+        result: Result<Vec<Instance>, String>,
+    ) {
+        let Some(preflight) = self.preflight_for(&key) else {
             return;
         };
-        if modal.key() != key {
-            return;
-        }
-        modal.loading_dryrun = false;
-        if let Ok(instances) = result {
+        let info = result.map(|instances| {
             let azs: std::collections::HashSet<&str> = instances
                 .iter()
                 .map(|i| i.availability_zone.as_str())
                 .filter(|az| !az.is_empty())
                 .collect();
-            modal.dryrun = Some(DryRunInfo {
+            DryRunInfo {
                 instance_count: instances.len(),
                 az_count: azs.len(),
-            });
-        }
+            }
+        });
+        preflight.dryrun.settle_ticket(ticket, info);
     }
 
     fn handle_alarms(&mut self, env: EnvKey, result: Result<Vec<CwAlarm>, String>) {
@@ -879,89 +932,6 @@ impl App {
                 *dlq_messages = Some(result);
             }
         }
-    }
-
-    fn handle_preflight_events(&mut self, key: EnvKey, result: Result<Vec<EbEvent>, String>) {
-        let Some(ActionFlow::Confirm(modal)) = self.action_flow.as_mut() else {
-            return;
-        };
-        if modal.key() != key {
-            return;
-        }
-        modal.loading_events = false;
-        if let Ok(events) = result {
-            modal.recent_events = Some(events);
-        }
-    }
-
-    /// Stuff the rendered preview body into the modal slot — or
-    /// drop it on the floor if the modal closed / switched envs
-    /// while the fetch was in flight. A failed fetch is rendered
-    /// as an inline error message rather than left blank so the
-    /// operator knows the preview tried and failed.
-    fn handle_version_preview(&mut self, key: EnvKey, result: Result<String, String>) {
-        let Some(ActionFlow::Confirm(modal)) = self.action_flow.as_mut() else {
-            return;
-        };
-        if modal.key() != key {
-            return;
-        }
-        modal.loading_version_preview = false;
-        modal.version_preview = Some(match result {
-            Ok(body) => body,
-            Err(e) => format!("version preview unavailable: {e}"),
-        });
-    }
-
-    /// Stuff the pre-deploy health-check probe outcome into the
-    /// modal — clears the loading flag either way. Same drop-on-
-    /// floor contract as `handle_version_preview` for cases where
-    /// the modal closed mid-flight.
-    fn handle_health_check_probe(&mut self, key: EnvKey, result: Result<(), String>) {
-        let Some(ActionFlow::Confirm(modal)) = self.action_flow.as_mut() else {
-            return;
-        };
-        if modal.key() != key {
-            return;
-        }
-        modal.loading_health_check = false;
-        modal.health_check_probe = Some(result);
-    }
-
-    /// Stuff the pre-deploy unavailability estimate into the modal.
-    /// `None` (fetch failed) clears the loading flag and leaves the
-    /// line slot empty — UI silently omits the row.
-    fn handle_unavailability_estimate(&mut self, key: EnvKey, line: Option<(String, bool)>) {
-        let Some(ActionFlow::Confirm(modal)) = self.action_flow.as_mut() else {
-            return;
-        };
-        if modal.key() != key {
-            return;
-        }
-        modal.loading_unavailability = false;
-        modal.unavailability_line = line;
-    }
-
-    /// Stuff confirm-modal lint findings into the modal. Empty
-    /// vec is fine — the UI renders nothing for that case
-    /// (operator sees positive feedback by absence). Generation
-    /// guard upstream means stale results from a previous
-    /// modal-open won't land here.
-    fn handle_confirm_modal_lint(
-        &mut self,
-        key: EnvKey,
-        issues: Vec<crate::lint::Issue>,
-        not_run: Vec<String>,
-    ) {
-        let Some(ActionFlow::Confirm(modal)) = self.action_flow.as_mut() else {
-            return;
-        };
-        if modal.key() != key {
-            return;
-        }
-        modal.loading_lint = false;
-        modal.lint_issues = Some(issues);
-        modal.lint_not_run = not_run;
     }
 
     /// 0.21: write freshly-fetched lint inputs into the App caches

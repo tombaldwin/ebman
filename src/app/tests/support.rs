@@ -216,8 +216,8 @@ pub(super) fn mk_env(name: &str, app: &str, tier: &str, health: &str) -> crate::
 
 /// Helper for the cancel-window tests — build a ConfirmModal for
 /// the given Action / env. Mirrors the shape `advance_action_flow`
-/// produces; pre-flight fields stay None (the cancel-window code
-/// path doesn't read them).
+/// produces; the pre-flight stays blank (the cancel-window code path
+/// doesn't read it).
 pub(super) fn mk_modal(action: Action, env: &str) -> ConfirmModal {
     ConfirmModal {
         action,
@@ -226,21 +226,23 @@ pub(super) fn mk_modal(action: Action, env: &str) -> ConfirmModal {
         params: ParameterisedAction::default(),
         typed: TextInput::new(),
         kind: ConfirmKind::YesNo,
-        dryrun: None,
-        loading_dryrun: false,
-        recent_events: None,
-        loading_events: false,
         traffic_warning: None,
-        version_preview: None,
-        loading_version_preview: false,
-        health_check_probe: None,
-        loading_health_check: false,
-        unavailability_line: None,
-        loading_unavailability: false,
-        lint_issues: None,
-        lint_not_run: Vec::new(),
-        loading_lint: false,
+        preflight: Default::default(),
     }
+}
+
+/// The open confirm modal's pre-flight, for a test reading what landed.
+pub(super) fn preflight(app: &App) -> &Preflight {
+    match app.action_flow.as_ref() {
+        Some(ActionFlow::Confirm(m)) => &m.preflight,
+        _ => panic!("no confirm modal open: {:?}", app.error_message),
+    }
+}
+
+/// The ticket of one of the open modal's pre-flight checks in flight,
+/// for a test standing in for its answer. Panics if it was never begun.
+pub(super) fn preflight_ticket(app: &App, pick: impl Fn(&Preflight) -> Option<Ticket>) -> Ticket {
+    pick(preflight(app)).expect("that pre-flight check is not in flight")
 }
 
 // ── :event-tail ─────────────────────────────────────────────────

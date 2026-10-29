@@ -217,20 +217,8 @@ impl App {
                         target_env: source,
                         typed: TextInput::new(),
                         kind: ConfirmKind::YesNo,
-                        dryrun: None,
-                        loading_dryrun: false,
-                        recent_events: None,
-                        loading_events: false,
                         traffic_warning: warning,
-                        version_preview: None,
-                        loading_version_preview: false,
-                        health_check_probe: None,
-                        loading_health_check: false,
-                        unavailability_line: None,
-                        loading_unavailability: false,
-                        lint_issues: None,
-                        lint_not_run: Vec::new(),
-                        loading_lint: false,
+                        preflight: Preflight::default(),
                     }));
                 }
                 // TextInput consumes editing keys (incl. Backspace);
@@ -399,24 +387,12 @@ impl App {
                     target_region: self.region_for(&env),
                     typed: TextInput::new(),
                     kind: ConfirmKind::TypeName,
-                    dryrun: None,
-                    loading_dryrun: wants_preflight,
-                    recent_events: None,
-                    loading_events: wants_preflight,
                     traffic_warning: compute_traffic_warning(&env),
-                    version_preview: None,
-                    loading_version_preview: false,
-                    health_check_probe: None,
-                    loading_health_check: false,
-                    unavailability_line: None,
-                    loading_unavailability: false,
-                    lint_issues: None,
-                    lint_not_run: Vec::new(),
-                    loading_lint: false,
+                    preflight: Preflight::default(),
                 }));
                 if wants_preflight {
-                    self.spawn_dry_run(&env);
-                    self.spawn_preflight_events(&env);
+                    self.begin_preflight(&env, |p| &mut p.dryrun, Self::spawn_dry_run);
+                    self.begin_preflight(&env, |p| &mut p.events, Self::spawn_preflight_events);
                 }
             }
             Action::Rebuild => {
@@ -471,20 +447,8 @@ impl App {
                     target_region: self.region_for(&env),
                     typed: TextInput::new(),
                     kind: ConfirmKind::YesNo,
-                    dryrun: None,
-                    loading_dryrun: false,
-                    recent_events: None,
-                    loading_events: false,
                     traffic_warning: compute_traffic_warning(&env),
-                    version_preview: None,
-                    loading_version_preview: false,
-                    health_check_probe: None,
-                    loading_health_check: false,
-                    unavailability_line: None,
-                    loading_unavailability: false,
-                    lint_issues: None,
-                    lint_not_run: Vec::new(),
-                    loading_lint: false,
+                    preflight: Preflight::default(),
                 }));
             }
         }
@@ -619,10 +583,6 @@ impl App {
             target_region: self.region_for(&env),
             typed: TextInput::new(),
             kind: ConfirmKind::YesNo,
-            dryrun: None,
-            loading_dryrun: wants_preflight,
-            recent_events: None,
-            loading_events: wants_preflight,
             // Skip traffic_warning for SsmRun — operators frequently
             // run diagnostic shells on Red envs (it's how they diagnose
             // Red), so showing "env is currently Red" in the modal
@@ -635,59 +595,77 @@ impl App {
             } else {
                 compute_traffic_warning(&env)
             },
-            version_preview: None,
-            loading_version_preview: wants_version_preview,
-            health_check_probe: None,
-            // Pre-deploy health-check probe only runs for Deploy
-            // confirms — we want to warn the operator if the env's
-            // current health-check-url is dead BEFORE they ship a
-            // new build over it. For non-Deploy actions, the probe
-            // is meaningless. Skipped in `--demo` mode because the
-            // synthetic CNAMEs would always fail DNS and pollute
-            // screencasts with a fake-warning red herring.
-            loading_health_check: wants_version_preview && !env.cname.is_empty() && !self.demo_mode,
-            unavailability_line: None,
-            // Same gate as the health-check probe — only useful for
-            // Deploy confirms; --demo mode skips the AWS call.
-            loading_unavailability: wants_version_preview && !self.demo_mode,
-            lint_issues: None,
-            // Lint at confirm time runs against every confirm modal,
-            // not just Deploy. The health-check probe + unavailability
-            // pill specialise on deploys; lint is universal — operator
-            // sees AllAtOnce / health-check-empty / cooldown-low etc.
-            // before confirming any destructive action. Skipped in
-            // demo mode (same gate as the other probes — no AWS
-            // round-trip in demo).
-            //
-            // SsmRun also skips lint — running an ad-hoc shell command
-            // isn't gated by EB-config-health rules; firing them here
-            // would be noise.
-            lint_not_run: Vec::new(),
-            loading_lint: !self.demo_mode && action != Action::SsmRun,
+            preflight: Preflight::default(),
         };
-        let needs_health_check_probe = modal.loading_health_check;
-        let needs_unavailability = modal.loading_unavailability;
-        let needs_lint = modal.loading_lint;
         self.action_flow = Some(ActionFlow::Confirm(modal));
         self.mode = Mode::Action;
         if wants_preflight {
-            self.spawn_dry_run(&env);
-            self.spawn_preflight_events(&env);
+            self.begin_preflight(&env, |p| &mut p.dryrun, Self::spawn_dry_run);
+            self.begin_preflight(&env, |p| &mut p.events, Self::spawn_preflight_events);
         }
-        if wants_version_preview {
-            if let Some(label) = preview_label {
-                self.spawn_version_preview(&env, label);
-            }
+        if let Some(label) = preview_label.filter(|_| wants_version_preview) {
+            self.begin_preflight(
+                &env,
+                |p| &mut p.version_preview,
+                |app, env, ticket| app.spawn_version_preview(env, label, ticket),
+            );
         }
-        if needs_health_check_probe {
-            self.spawn_health_check_probe(&env);
+        // Pre-deploy health-check probe only runs for Deploy confirms —
+        // we want to warn the operator if the env's current
+        // health-check-url is dead BEFORE they ship a new build over it.
+        // For non-Deploy actions, the probe is meaningless. Skipped in
+        // `--demo` mode because the synthetic CNAMEs would always fail
+        // DNS and pollute screencasts with a fake-warning red herring.
+        if wants_version_preview && !env.cname.is_empty() && !self.demo_mode {
+            self.begin_preflight(
+                &env,
+                |p| &mut p.health_check,
+                Self::spawn_health_check_probe,
+            );
         }
-        if needs_unavailability {
-            self.spawn_unavailability_estimate(&env);
+        // Same gate as the health-check probe — only useful for Deploy
+        // confirms; --demo mode skips the AWS call.
+        if wants_version_preview && !self.demo_mode {
+            self.begin_preflight(
+                &env,
+                |p| &mut p.unavailability,
+                Self::spawn_unavailability_estimate,
+            );
         }
-        if needs_lint {
-            self.spawn_confirm_lint(env.clone());
+        // Lint at confirm time runs against every confirm modal, not
+        // just Deploy. The health-check probe + unavailability pill
+        // specialise on deploys; lint is universal — operator sees
+        // AllAtOnce / health-check-empty / cooldown-low etc. before
+        // confirming any destructive action. Skipped in demo mode (same
+        // gate as the other probes — no AWS round-trip in demo).
+        //
+        // SsmRun also skips lint — running an ad-hoc shell command isn't
+        // gated by EB-config-health rules; firing them here would be
+        // noise.
+        if !self.demo_mode && action != Action::SsmRun {
+            self.begin_preflight(
+                &env,
+                |p| &mut p.lint,
+                |app, env, ticket| app.spawn_confirm_lint(env.clone(), ticket),
+            );
         }
+    }
+
+    /// Start one of the open confirm modal's pre-flight checks: mark it
+    /// in flight and hand its ticket to the spawn, so only this
+    /// request's answer settles it. Nothing is spawned if the modal is
+    /// gone, since nothing could show the answer.
+    fn begin_preflight<T>(
+        &mut self,
+        env: &crate::aws::Environment,
+        fetch: impl FnOnce(&mut Preflight) -> &mut Fetch<T>,
+        spawn: impl FnOnce(&mut Self, &crate::aws::Environment, Ticket),
+    ) {
+        let Some(ActionFlow::Confirm(modal)) = self.action_flow.as_mut() else {
+            return;
+        };
+        let ticket = fetch(&mut modal.preflight).begin();
+        spawn(self, env, ticket);
     }
 
     /// Fetch `list_compatible_platforms` for `env` and surface them in an

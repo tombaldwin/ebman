@@ -75,7 +75,8 @@ use crate::{
 // the sub-modules below) keep their `crate::app::Action` etc. paths
 // working after the move into `crate::mode_action`.
 pub(crate) use crate::mode_action::{
-    Action, ActionFlow, ConfirmKind, ConfirmModal, DryRunInfo, ParameterisedAction, ACTIONS,
+    Action, ActionFlow, ConfirmKind, ConfirmLint, ConfirmModal, DryRunInfo, ParameterisedAction,
+    Preflight, ACTIONS,
 };
 pub(crate) use crate::mode_detail::{
     config_editable_items, health_items, ConfigEdit, ConfigEditMode, ConfigItem, ConfigItemKind,
@@ -854,6 +855,9 @@ pub(crate) enum AppMsg {
         gen: u64,
         /// The modal's env: an answer for a same-named env is dropped.
         key: EnvKey,
+        /// The request it answers: an answer to a modal since closed is
+        /// dropped, though it names the same env.
+        ticket: Ticket,
         result: Result<Vec<Instance>, String>,
     },
     /// `fetch_env_vars` result for `:env-edit`. The handler stashes
@@ -873,6 +877,9 @@ pub(crate) enum AppMsg {
         gen: u64,
         /// The modal's env: an answer for a same-named env is dropped.
         key: EnvKey,
+        /// The request it answers: an answer to a modal since closed is
+        /// dropped, though it names the same env.
+        ticket: Ticket,
         result: Result<Vec<EbEvent>, String>,
     },
     /// Pre-deploy version preview for the confirm modal. Carries
@@ -882,6 +889,9 @@ pub(crate) enum AppMsg {
         gen: u64,
         /// The modal's env: an answer for a same-named env is dropped.
         key: EnvKey,
+        /// The request it answers: an answer to a modal since closed is
+        /// dropped, though it names the same env.
+        ticket: Ticket,
         result: Result<String, String>,
     },
     /// Pre-deploy health-check probe outcome. `Ok(())` means the
@@ -893,6 +903,9 @@ pub(crate) enum AppMsg {
         gen: u64,
         /// The modal's env: an answer for a same-named env is dropped.
         key: EnvKey,
+        /// The request it answers: an answer to a modal since closed is
+        /// dropped, though it names the same env.
+        ticket: Ticket,
         result: Result<(), String>,
     },
     /// Pre-deploy unavailability estimate. `line` is the rendered
@@ -904,6 +917,9 @@ pub(crate) enum AppMsg {
         gen: u64,
         /// The modal's env: an answer for a same-named env is dropped.
         key: EnvKey,
+        /// The request it answers: an answer to a modal since closed is
+        /// dropped, though it names the same env.
+        ticket: Ticket,
         line: Option<(String, bool)>,
     },
     /// Lint findings against the confirm-modal's target env,
@@ -914,6 +930,9 @@ pub(crate) enum AppMsg {
         gen: u64,
         /// The modal's env: an answer for a same-named env is dropped.
         key: EnvKey,
+        /// The request it answers: an answer to a modal since closed is
+        /// dropped, though it names the same env.
+        ticket: Ticket,
         issues: Vec<crate::lint::Issue>,
         /// The checks that could not run, each with why: the whole lint
         /// (client or option fetch failed) or one rule's input. Listed

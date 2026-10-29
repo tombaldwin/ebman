@@ -268,6 +268,7 @@ async fn handle_unavailability_estimate_stuffs_line_into_modal() {
     app.handle_msg(AppMsg::UnavailabilityEstimate {
         gen: app.generation,
         key: EnvKey::new("us-east-1", "prod"),
+        ticket: preflight_ticket(&app, |p| p.unavailability.ticket_in_flight()),
         line: Some((
             "deploy plan: Rolling → max 1/4 instance unavailable".into(),
             true,
@@ -275,8 +276,8 @@ async fn handle_unavailability_estimate_stuffs_line_into_modal() {
     });
     match &app.action_flow {
         Some(ActionFlow::Confirm(modal)) => {
-            assert!(!modal.loading_unavailability);
-            let (text, caution) = modal.unavailability_line.as_ref().unwrap();
+            assert!(!modal.preflight.unavailability.in_flight());
+            let (text, caution) = modal.preflight.unavailability.ready().unwrap();
             assert!(text.contains("max 1/4"));
             assert!(*caution);
         }
@@ -298,10 +299,10 @@ async fn deploy_modal_opens_with_version_preview_loading_flag_set() {
     match &app.action_flow {
         Some(ActionFlow::Confirm(modal)) => {
             assert!(
-                modal.loading_version_preview,
+                modal.preflight.version_preview.in_flight(),
                 "Deploy modal must reserve space for the inline preview"
             );
-            assert!(modal.version_preview.is_none());
+            assert!(modal.preflight.version_preview.ready().is_none());
         }
         _ => panic!("expected confirm modal open"),
     }
@@ -320,12 +321,16 @@ async fn deploy_modal_handle_version_preview_stuffs_body_in_slot() {
     app.handle_msg(AppMsg::VersionPreview {
         gen: app.generation,
         key: EnvKey::new("us-east-1", "prod"),
+        ticket: preflight_ticket(&app, |p| p.version_preview.ticket_in_flight()),
         result: Ok(body.clone()),
     });
     match &app.action_flow {
         Some(ActionFlow::Confirm(modal)) => {
-            assert!(!modal.loading_version_preview);
-            assert_eq!(modal.version_preview.as_deref(), Some(body.as_str()));
+            assert!(!modal.preflight.version_preview.in_flight());
+            assert_eq!(
+                modal.preflight.version_preview.ready().map(String::as_str),
+                Some(body.as_str())
+            );
         }
         _ => panic!("expected confirm modal still open"),
     }
@@ -343,19 +348,16 @@ async fn deploy_modal_handle_version_preview_error_renders_inline() {
     app.handle_msg(AppMsg::VersionPreview {
         gen: app.generation,
         key: EnvKey::new("us-east-1", "prod"),
+        ticket: preflight_ticket(&app, |p| p.version_preview.ticket_in_flight()),
         result: Err("ListApplicationVersions throttled".into()),
     });
-    match &app.action_flow {
-        Some(ActionFlow::Confirm(modal)) => {
-            assert!(!modal.loading_version_preview);
-            let preview = modal.version_preview.as_deref().unwrap_or("");
-            assert!(
-                preview.contains("version preview unavailable") && preview.contains("throttled"),
-                "expected inline error, got: {preview}"
-            );
-        }
-        _ => panic!("expected confirm modal still open"),
-    }
+    assert!(!preflight(&app).version_preview.in_flight());
+    app.mode = Mode::Action;
+    let frame = render(&mut app, 160, 40);
+    assert!(
+        frame.contains("version preview unavailable") && frame.contains("throttled"),
+        "expected inline error, got:\n{frame}"
+    );
 }
 
 #[tokio::test]

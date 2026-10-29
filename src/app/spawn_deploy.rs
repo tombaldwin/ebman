@@ -669,7 +669,7 @@ impl App {
         });
     }
 
-    pub(crate) fn spawn_preflight_events(&mut self, env: &crate::aws::Environment) {
+    pub(crate) fn spawn_preflight_events(&mut self, env: &crate::aws::Environment, ticket: Ticket) {
         let region = self.region_for(env);
         let env_name = env.name.clone();
         let env_for_msg = env_name.clone();
@@ -680,12 +680,13 @@ impl App {
             move |gen, result| AppMsg::PreflightEvents {
                 gen,
                 key: EnvKey::new(region.clone(), env_for_msg),
+                ticket,
                 result,
             },
         );
     }
 
-    pub(crate) fn spawn_dry_run(&mut self, env: &crate::aws::Environment) {
+    pub(crate) fn spawn_dry_run(&mut self, env: &crate::aws::Environment, ticket: Ticket) {
         let region = self.region_for(env);
         let env_name = env.name.clone();
         let env_for_msg = env_name.clone();
@@ -696,6 +697,7 @@ impl App {
             move |gen, result| AppMsg::DryRunResult {
                 gen,
                 key: EnvKey::new(region.clone(), env_for_msg),
+                ticket,
                 result,
             },
         );
@@ -711,6 +713,7 @@ impl App {
         &mut self,
         env: &crate::aws::Environment,
         candidate_label: String,
+        ticket: Ticket,
     ) {
         let region = self.region_for(env);
         let app_name = env.application.clone();
@@ -735,6 +738,7 @@ impl App {
                 AppMsg::VersionPreview {
                     gen,
                     key: EnvKey::new(region.clone(), env_for_msg),
+                    ticket,
                     result: body,
                 }
             },
@@ -753,7 +757,11 @@ impl App {
     /// free. Output is parsed to an HTTP status code (or classified
     /// as a transport error) so the warning text can surface what
     /// specifically failed.
-    pub(crate) fn spawn_health_check_probe(&mut self, env: &crate::aws::Environment) {
+    pub(crate) fn spawn_health_check_probe(
+        &mut self,
+        env: &crate::aws::Environment,
+        ticket: Ticket,
+    ) {
         let region = self.region_for(env);
         let app_name = env.application.clone();
         let env_name = env.name.clone();
@@ -789,6 +797,7 @@ impl App {
             let _ = tx.send(AppMsg::HealthCheckProbe {
                 gen,
                 key: EnvKey::new(region.clone(), env_for_msg),
+                ticket,
                 result,
             });
         });
@@ -802,7 +811,11 @@ impl App {
     /// DescribeConfigurationSettings calls is fine for a one-shot
     /// modal open, and keeps the two features isolated so failure
     /// of one doesn't taint the other.
-    pub(crate) fn spawn_unavailability_estimate(&mut self, env: &crate::aws::Environment) {
+    pub(crate) fn spawn_unavailability_estimate(
+        &mut self,
+        env: &crate::aws::Environment,
+        ticket: Ticket,
+    ) {
         let region = self.region_for(env);
         let app_name = env.application.clone();
         let env_name = env.name.clone();
@@ -820,6 +833,7 @@ impl App {
                 AppMsg::UnavailabilityEstimate {
                     gen,
                     key: EnvKey::new(region.clone(), env_for_msg),
+                    ticket,
                     line,
                 }
             },
@@ -839,7 +853,7 @@ impl App {
     /// blocking — modal renders without lint when the fetch
     /// fails (the operator can still see the rule-output via
     /// `:lint` once the modal closes).
-    pub(crate) fn spawn_confirm_lint(&mut self, env: crate::aws::Environment) {
+    pub(crate) fn spawn_confirm_lint(&mut self, env: crate::aws::Environment, ticket: Ticket) {
         let region = self.region_for(&env);
         let client = self.client_for(&env);
         let tx = self.msg_tx.clone();
@@ -887,6 +901,7 @@ impl App {
                     let _ = tx.send(AppMsg::ConfirmModalLint {
                         gen,
                         key: EnvKey::new(region.clone(), env_for_msg),
+                        ticket,
                         issues: Vec::new(),
                         not_run: vec![format!("lint could not run: {e}")],
                     });
@@ -968,6 +983,7 @@ impl App {
             let _ = tx.send(AppMsg::ConfirmModalLint {
                 gen,
                 key: EnvKey::new(region.clone(), env_for_msg),
+                ticket,
                 issues,
                 not_run,
             });

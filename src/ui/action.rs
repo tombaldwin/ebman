@@ -307,13 +307,14 @@ pub(crate) fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
                 )));
             }
             // Dry-run preview: instance count + AZ spread, when available.
-            if modal.loading_dryrun {
+            let pre = &modal.preflight;
+            if pre.dryrun.is_first_load() {
                 lines.push(Line::from(""));
                 lines.push(Line::from(Span::styled(
                     "  fetching impact…",
                     Style::default().fg(theme.muted),
                 )));
-            } else if let Some(dr) = &modal.dryrun {
+            } else if let Some(dr) = pre.dryrun.ready() {
                 lines.push(Line::from(""));
                 let inst_word = if dr.instance_count == 1 {
                     "instance"
@@ -337,7 +338,7 @@ pub(crate) fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
             // Loading state stays silent rather than showing a
             // placeholder — keeps the modal compact when the fetch
             // hasn't landed yet.
-            if let Some((body, caution)) = &modal.unavailability_line {
+            if let Some((body, caution)) = pre.unavailability.ready() {
                 let style = if *caution {
                     Style::default()
                         .fg(theme.health_yellow)
@@ -355,7 +356,8 @@ pub(crate) fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
             // indented `→ <suggestion>` when one's available.
             // Skips the loading state silently — modal stays
             // compact while the spawn runs.
-            if let Some(issues) = &modal.lint_issues {
+            let lint = pre.lint.ready();
+            if let Some(issues) = lint.map(|l| &l.issues) {
                 use crate::lint::Severity;
                 let mut to_show: Vec<&crate::lint::Issue> = issues
                     .iter()
@@ -404,13 +406,14 @@ pub(crate) fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
             // env renders — so without this line a failed check was
             // indistinguishable from a passed one, right before a
             // deploy.
-            if !modal.lint_not_run.is_empty() {
+            let not_run = lint.map_or(&[][..], |l| &l.not_run[..]);
+            if !not_run.is_empty() {
                 lines.push(Line::from(""));
                 lines.push(Line::from(Span::styled(
                     "  lint checks that could NOT run — not a clean result:",
                     Style::default().fg(theme.health_yellow),
                 )));
-                for why in &modal.lint_not_run {
+                for why in not_run {
                     lines.push(Line::from(Span::styled(
                         format!("    ? {why}"),
                         Style::default().fg(theme.health_yellow),
@@ -418,7 +421,7 @@ pub(crate) fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
                 }
             }
             // Pre-flight events: last 3 events on this env.
-            if let Some(events) = &modal.recent_events {
+            if let Some(events) = pre.events.ready() {
                 if !events.is_empty() {
                     lines.push(Line::from(""));
                     lines.push(Line::from(Span::styled(
@@ -446,7 +449,7 @@ pub(crate) fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
                         ]));
                     }
                 }
-            } else if modal.loading_events {
+            } else if pre.events.is_first_load() {
                 lines.push(Line::from(""));
                 lines.push(Line::from(Span::styled(
                     "  fetching recent events…",
@@ -457,13 +460,20 @@ pub(crate) fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
             // a separate `:deploy LABEL --preview` round-trip. Only
             // populated for Action::Deploy; renders below the recent-
             // events block. Indented to match the other modal blocks.
-            if modal.loading_version_preview {
+            // A failed fetch renders inline, so the operator knows the
+            // preview tried and failed rather than was never asked for.
+            let preview = pre.version_preview.ready().cloned().or_else(|| {
+                pre.version_preview
+                    .error()
+                    .map(|e| format!("version preview unavailable: {e}"))
+            });
+            if pre.version_preview.is_first_load() {
                 lines.push(Line::from(""));
                 lines.push(Line::from(Span::styled(
                     "  fetching version metadata…",
                     Style::default().fg(theme.muted),
                 )));
-            } else if let Some(preview) = &modal.version_preview {
+            } else if let Some(preview) = preview {
                 lines.push(Line::from(""));
                 lines.push(Line::from(Span::styled(
                     "  pre-deploy preview:",
@@ -487,13 +497,13 @@ pub(crate) fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
             // golden — only render when the probe found a problem.
             // Failed probe doesn't block the deploy; auto-rollback
             // is the catch-net, the warning is the heads-up.
-            if modal.loading_health_check {
+            if pre.health_check.is_first_load() {
                 lines.push(Line::from(""));
                 lines.push(Line::from(Span::styled(
                     "  probing health-check URL…",
                     Style::default().fg(theme.muted),
                 )));
-            } else if let Some(Err(reason)) = &modal.health_check_probe {
+            } else if let Some(reason) = pre.health_check.error() {
                 lines.push(Line::from(""));
                 lines.push(Line::from(Span::styled(
                     format!("  ⚠ health-check probe: {reason}"),

@@ -2100,17 +2100,18 @@ async fn the_confirm_modal_ignores_an_answer_for_its_name_in_another_region() {
         .unwrap();
     app.table_state.select(Some(eu_row));
     app.execute_command("deploy build-1");
+    // Both answers carry the modal's own ticket, so only the region can
+    // tell them apart.
+    let ticket = preflight_ticket(&app, |p| p.version_preview.ticket_in_flight());
     for (region, body) in [("eu-west-2", "EU-OWN"), ("us-east-1", "HOME-TWIN")] {
         app.handle_msg(AppMsg::VersionPreview {
             gen: app.generation,
             key: EnvKey::new(region, "api-prod"),
+            ticket,
             result: Ok(body.into()),
         });
-        let Some(crate::app::ActionFlow::Confirm(modal)) = app.action_flow.as_ref() else {
-            panic!("no modal: {:?}", app.error_message);
-        };
         assert_eq!(
-            modal.version_preview.as_deref(),
+            preflight(&app).version_preview.ready().map(String::as_str),
             Some("EU-OWN"),
             "after the {region} answer"
         );
@@ -2686,75 +2687,96 @@ async fn form_answers_carry_the_twin_they_were_fetched_for() {
     }
 }
 
+/// One modal pre-flight check, for the tests that answer each in turn:
+/// its answer message, the ticket it is waiting on, and whether an
+/// answer has landed.
+type PreflightCase = (
+    &'static str,
+    fn(EnvKey, u64, Ticket) -> AppMsg,
+    fn(&crate::mode_action::Preflight) -> Option<Ticket>,
+    fn(&crate::mode_action::Preflight) -> bool,
+);
+
+/// Every pre-flight check a deploy modal begins. One case per message,
+/// since each handler makes its own check.
+fn preflight_cases() -> Vec<PreflightCase> {
+    vec![
+        (
+            "dry run",
+            |key, gen, ticket| AppMsg::DryRunResult {
+                gen,
+                key,
+                ticket,
+                result: Ok(vec![]),
+            },
+            |p| p.dryrun.ticket_in_flight(),
+            |p| p.dryrun.ready().is_some(),
+        ),
+        (
+            "events",
+            |key, gen, ticket| AppMsg::PreflightEvents {
+                gen,
+                key,
+                ticket,
+                result: Ok(vec![]),
+            },
+            |p| p.events.ticket_in_flight(),
+            |p| p.events.ready().is_some(),
+        ),
+        (
+            "version preview",
+            |key, gen, ticket| AppMsg::VersionPreview {
+                gen,
+                key,
+                ticket,
+                result: Ok("x".into()),
+            },
+            |p| p.version_preview.ticket_in_flight(),
+            |p| p.version_preview.ready().is_some(),
+        ),
+        (
+            "health check",
+            |key, gen, ticket| AppMsg::HealthCheckProbe {
+                gen,
+                key,
+                ticket,
+                result: Ok(()),
+            },
+            |p| p.health_check.ticket_in_flight(),
+            |p| p.health_check.ready().is_some(),
+        ),
+        (
+            "unavailability",
+            |key, gen, ticket| AppMsg::UnavailabilityEstimate {
+                gen,
+                key,
+                ticket,
+                line: Some(("x".into(), false)),
+            },
+            |p| p.unavailability.ticket_in_flight(),
+            |p| p.unavailability.ready().is_some(),
+        ),
+        (
+            "lint",
+            |key, gen, ticket| AppMsg::ConfirmModalLint {
+                gen,
+                key,
+                ticket,
+                issues: vec![],
+                not_run: vec![],
+            },
+            |p| p.lint.ticket_in_flight(),
+            |p| p.lint.ready().is_some(),
+        ),
+    ]
+}
+
 /// Each of the confirm modal's preflight answers: a same-named env's is
 /// dropped, the modal's own lands. One case per message, since each
 /// handler makes its own check.
 #[tokio::test]
 async fn every_modal_preflight_answer_is_matched_by_region() {
-    use crate::mode_action::ConfirmModal;
-    type Case = (
-        &'static str,
-        fn(EnvKey, u64) -> AppMsg,
-        fn(&ConfirmModal) -> bool,
-    );
-    let cases: &[Case] = &[
-        (
-            "dry run",
-            |key, gen| AppMsg::DryRunResult {
-                gen,
-                key,
-                result: Ok(vec![]),
-            },
-            |m| m.dryrun.is_some(),
-        ),
-        (
-            "events",
-            |key, gen| AppMsg::PreflightEvents {
-                gen,
-                key,
-                result: Ok(vec![]),
-            },
-            |m| m.recent_events.is_some(),
-        ),
-        (
-            "version preview",
-            |key, gen| AppMsg::VersionPreview {
-                gen,
-                key,
-                result: Ok("x".into()),
-            },
-            |m| m.version_preview.is_some(),
-        ),
-        (
-            "health check",
-            |key, gen| AppMsg::HealthCheckProbe {
-                gen,
-                key,
-                result: Ok(()),
-            },
-            |m| m.health_check_probe.is_some(),
-        ),
-        (
-            "unavailability",
-            |key, gen| AppMsg::UnavailabilityEstimate {
-                gen,
-                key,
-                line: Some(("x".into(), false)),
-            },
-            |m| m.unavailability_line.is_some(),
-        ),
-        (
-            "lint",
-            |key, gen| AppMsg::ConfirmModalLint {
-                gen,
-                key,
-                issues: vec![],
-                not_run: vec![],
-            },
-            |m| m.lint_issues.is_some(),
-        ),
-    ];
-    for (label, msg, landed) in cases {
+    for (label, msg, ticket_of, landed) in preflight_cases() {
         let mut app = same_named_in_two_regions();
         let eu_row = app
             .view
@@ -2764,26 +2786,70 @@ async fn every_modal_preflight_answer_is_matched_by_region() {
             .unwrap();
         app.table_state.select(Some(eu_row));
         app.execute_command("deploy build-1");
-        let modal = |app: &App| match app.action_flow.as_ref() {
-            Some(crate::app::ActionFlow::Confirm(m)) => m.clone(),
-            _ => panic!("{label}: no modal: {:?}", app.error_message),
-        };
-        // Clear whatever the open itself filled, so only these land.
-        if let Some(crate::app::ActionFlow::Confirm(m)) = app.action_flow.as_mut() {
-            m.dryrun = None;
-            m.recent_events = None;
-            m.version_preview = None;
-            m.health_check_probe = None;
-            m.unavailability_line = None;
-            m.lint_issues = None;
-        }
-        app.handle_msg(msg(EnvKey::new("us-east-1", "api-prod"), app.generation));
+        // The modal's own ticket on both, so only the region decides.
+        let ticket = preflight_ticket(&app, ticket_of);
+        app.handle_msg(msg(
+            EnvKey::new("us-east-1", "api-prod"),
+            app.generation,
+            ticket,
+        ));
         assert!(
-            !landed(&modal(&app)),
+            !landed(preflight(&app)),
             "{label}: the home twin's answer landed"
         );
-        app.handle_msg(msg(EnvKey::new("eu-west-2", "api-prod"), app.generation));
-        assert!(landed(&modal(&app)), "{label}: its own answer was dropped");
+        app.handle_msg(msg(
+            EnvKey::new("eu-west-2", "api-prod"),
+            app.generation,
+            ticket,
+        ));
+        assert!(
+            landed(preflight(&app)),
+            "{label}: its own answer was dropped"
+        );
+    }
+}
+
+/// An answer to a modal the operator has closed does not land in the
+/// next modal on the same env.
+///
+/// Matched by env alone, it did: reopen `:deploy` with another label
+/// and the first label's preview was the one on screen, the loading
+/// line gone, until the second answer arrived — and a failed second
+/// fetch left it there. The answer carries the env of the new modal,
+/// so only the ticket can tell them apart.
+#[tokio::test]
+async fn a_closed_modals_preflight_answer_does_not_land_in_the_next() {
+    for (label, msg, ticket_of, landed) in preflight_cases() {
+        let mut app = same_named_in_two_regions();
+        let eu_row = app
+            .view
+            .filtered()
+            .iter()
+            .position(|&i| app.environments[i].region.is_some())
+            .unwrap();
+        app.table_state.select(Some(eu_row));
+        let key = EnvKey::new("eu-west-2", "api-prod");
+        app.execute_command("deploy build-1");
+        let stale = preflight_ticket(&app, ticket_of);
+        app.close_action_flow();
+        app.table_state.select(Some(eu_row));
+        app.execute_command("deploy build-2");
+        let fresh = preflight_ticket(&app, ticket_of);
+        app.handle_msg(msg(key.clone(), app.generation, stale));
+        assert!(
+            !landed(preflight(&app)),
+            "{label}: the closed modal's answer landed in the new one"
+        );
+        assert_eq!(
+            ticket_of(preflight(&app)),
+            Some(fresh),
+            "{label}: the stale answer ended the new modal's fetch"
+        );
+        app.handle_msg(msg(key, app.generation, fresh));
+        assert!(
+            landed(preflight(&app)),
+            "{label}: its own answer was dropped"
+        );
     }
 }
 

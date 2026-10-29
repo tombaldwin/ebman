@@ -396,65 +396,65 @@ pub(crate) struct ConfirmModal {
     /// Consolidating onto the struct that already held them fixes the
     /// duplication at a fraction of the blast radius.
     pub params: ParameterisedAction,
-    pub dryrun: Option<DryRunInfo>,
-    pub loading_dryrun: bool,
-    pub recent_events: Option<Vec<EbEvent>>,
-    pub loading_events: bool,
     /// One-line pre-flight warning derived from the env's current state when
     /// the modal opened — e.g. "ACTIVE DEPLOY: status=Updating" or "RECENT
     /// CHANGE: updated 4m ago". Surfaced above the Y/N row so the operator
     /// sees mid-flight changes before authorising another action.
     pub traffic_warning: Option<String>,
-    /// Pre-deploy preview body — formatted output of
-    /// `format_deploy_preview` (label / age / description /
-    /// rollback-warning when candidate is older than current).
-    /// Populated by `spawn_version_preview` after the modal opens
-    /// for `Action::Deploy`, so the operator sees what they're
-    /// about to ship inline rather than having to dispatch
-    /// `:deploy LABEL --preview` separately first. `None` for
-    /// every other action.
-    pub version_preview: Option<String>,
-    /// True while `spawn_version_preview` is in flight — the UI
-    /// shows a `fetching version metadata…` placeholder until the
-    /// fetch lands.
-    pub loading_version_preview: bool,
-    /// Result of the pre-deploy health-check probe. Same shape as
-    /// the other pre-flight fields — None while in flight or
-    /// never run, Some(Ok(())) when the probe was 2xx (silence is
-    /// golden; nothing rendered), Some(Err(reason)) when the
-    /// probe failed (non-2xx, timeout, connection error) and the
-    /// modal should render a yellow warning. The probe doesn't
-    /// block the deploy either way; it's a heads-up that the
-    /// footgun auto-rollback was built to rescue from is live.
-    pub health_check_probe: Option<Result<(), String>>,
-    /// True while `spawn_health_check_probe` is in flight.
-    pub loading_health_check: bool,
-    /// Pre-rendered "deploy plan: POLICY → max X/Y instances
-    /// unavailable" line, plus a caution flag for colouring (true
-    /// = render in yellow; false = green/muted — no capacity
-    /// impact). Populated by `spawn_unavailability_estimate` from
-    /// the env's deployment-policy + batch + ASG max-size option-
-    /// settings. None while loading or for non-Deploy actions.
-    pub unavailability_line: Option<(String, bool)>,
-    /// True while `spawn_unavailability_estimate` is in flight.
-    pub loading_unavailability: bool,
-    /// Lint findings against the env's pre-write state, surfaced
-    /// inline in the modal as additional warning lines.
-    /// Generalises the health-check probe + unavailability pill
-    /// pattern — anything the lint engine flags at `>= Warn` is
-    /// rendered as a yellow caution line so the operator sees
-    /// risk before confirming, not after the deploy goes bad.
-    /// `None` while loading; populated by `spawn_confirm_lint` at
-    /// modal-open time.
-    pub lint_issues: Option<Vec<crate::lint::Issue>>,
-    /// The lint checks that could not run for this modal, each with
-    /// why — the whole lint, or one rule's input. Kept apart from
-    /// `lint_issues` because an empty issue list is what a CLEAN env
-    /// renders as — nothing — and "could not check" must not look like
-    /// that immediately before a deploy.
-    pub lint_not_run: Vec<String>,
-    /// True while `spawn_confirm_lint` is in flight.
-    pub loading_lint: bool,
+    /// What the modal fetched to show before the operator confirms:
+    /// the impact count, recent events, the deploy preview and probes,
+    /// and lint. See [`Preflight`].
+    pub preflight: Preflight,
+}
+
+/// The confirm modal's pre-flight checks, one [`Fetch`] each.
+///
+/// They were six `Option` + `loading_*` pairs, matched to their answer
+/// by env alone. So an answer to a modal the operator had closed landed
+/// in the next modal on the same env: reopen `:deploy` with another
+/// label and the first label's preview could be the one on screen
+/// when they pressed `y`. Each check now settles only with the ticket
+/// its request was given (`settle_ticket`), and is in flight only if
+/// it was begun, so a flag can no longer claim a fetch that never
+/// started. Pinned by `a_closed_modals_preflight_answer_does_not_land_in_the_next`.
+///
+/// [`Fetch`]: crate::app::Fetch
+#[derive(Clone, Default)]
+pub(crate) struct Preflight {
+    /// Instance count and AZ spread: the blast radius.
+    pub dryrun: crate::app::Fetch<DryRunInfo>,
+    /// The env's last three events.
+    pub events: crate::app::Fetch<Vec<EbEvent>>,
+    /// Deploy only: the `format_deploy_preview` body (label / age /
+    /// description / rollback warning when the candidate is older than
+    /// current), so the operator sees what they are about to ship
+    /// without a separate `:deploy LABEL --preview`.
+    pub version_preview: crate::app::Fetch<String>,
+    /// Deploy only: the health-check URL probe. Silence is golden: only
+    /// a failure renders, as a warning. It never blocks the deploy; it
+    /// is a heads-up that the footgun auto-rollback rescues from is live.
+    pub health_check: crate::app::Fetch<()>,
+    /// Deploy only: "deploy plan: POLICY → max X/Y instances
+    /// unavailable", plus a caution flag for colouring (true = yellow;
+    /// false = no capacity impact), from the deployment policy, batch
+    /// and ASG max-size settings.
+    pub unavailability: crate::app::Fetch<(String, bool)>,
+    /// Lint against the env's pre-write state. Never an `Err`: a lint
+    /// that could not run lands as `not_run`, which renders, rather than
+    /// as nothing, which is what a clean env renders.
+    pub lint: crate::app::Fetch<ConfirmLint>,
+}
+
+/// The confirm modal's lint answer.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ConfirmLint {
+    /// Findings; the modal renders those at `>= Warn`.
+    pub issues: Vec<crate::lint::Issue>,
+    /// The checks that could not run, each with why — the whole lint,
+    /// or one rule's input. Kept apart from `issues` because an empty
+    /// issue list is what a CLEAN env renders as — nothing — and "could
+    /// not check" must not look like that immediately before a deploy.
+    pub not_run: Vec<String>,
 }
 
 /// Helper carrying the optional parameters needed by the new parameterised

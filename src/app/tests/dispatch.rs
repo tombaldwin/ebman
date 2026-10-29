@@ -2461,7 +2461,7 @@ mod mutants_found_these {
         assert_eq!(modal.target_env, "api-prod");
     }
 
-    /// `loading_lint: !self.demo_mode && action != Action::SsmRun`.
+    /// Lint begins only `if !self.demo_mode && action != Action::SsmRun`.
     /// Flipping the `&&` to `||` survived, so neither exclusion was
     /// pinned — and both are deliberate. Running an ad-hoc shell command
     /// is not gated by EB-config-health rules, and demo mode makes no
@@ -2485,7 +2485,7 @@ mod mutants_found_these {
             panic!("ssm-run should open a confirm modal");
         };
         assert!(
-            !modal.loading_lint,
+            !modal.preflight.lint.in_flight(),
             "an ad-hoc shell command is not gated by EB-config-health rules"
         );
 
@@ -2517,7 +2517,7 @@ mod mutants_found_these {
             panic!("rebuild should open a confirm modal");
         };
         assert!(
-            modal.loading_lint,
+            modal.preflight.lint.in_flight(),
             "a real rebuild SHOULD arm the lint probe — without this the \
              exclusions above prove nothing"
         );

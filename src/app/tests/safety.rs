@@ -275,13 +275,20 @@ async fn handle_confirm_modal_lint_stuffs_issues_into_modal() {
     app.handle_msg(AppMsg::ConfirmModalLint {
         gen: app.generation,
         key: EnvKey::new("us-east-1", "prod"),
+        ticket: preflight_ticket(&app, |p| p.lint.ticket_in_flight()),
         issues: vec![],
         not_run: vec![],
     });
     match &app.action_flow {
         Some(ActionFlow::Confirm(modal)) => {
-            assert!(!modal.loading_lint, "loading flag should clear");
-            assert_eq!(modal.lint_issues.as_ref().map(|v| v.len()), Some(0));
+            assert!(
+                !modal.preflight.lint.in_flight(),
+                "loading flag should clear"
+            );
+            assert_eq!(
+                modal.preflight.lint.ready().map(|l| l.issues.len()),
+                Some(0)
+            );
         }
         _ => panic!("expected confirm modal open"),
     }
@@ -304,6 +311,7 @@ async fn a_lint_that_could_not_run_reaches_the_modal_as_a_reason() {
     app.handle_msg(AppMsg::ConfirmModalLint {
         gen: app.generation,
         key: EnvKey::new("us-east-1", "prod"),
+        ticket: preflight_ticket(&app, |p| p.lint.ticket_in_flight()),
         issues: vec![],
         not_run: vec![
             "lint could not run: DescribeConfigurationSettings failed: AccessDenied".into(),
@@ -311,9 +319,9 @@ async fn a_lint_that_could_not_run_reaches_the_modal_as_a_reason() {
     });
     match &app.action_flow {
         Some(ActionFlow::Confirm(modal)) => {
-            assert!(!modal.loading_lint);
+            assert!(!modal.preflight.lint.in_flight());
             assert_eq!(
-                modal.lint_not_run,
+                modal.preflight.lint.ready().unwrap().not_run,
                 vec![
                     "lint could not run: DescribeConfigurationSettings failed: AccessDenied"
                         .to_string()
@@ -339,10 +347,13 @@ async fn handle_confirm_modal_lint_drops_stale_target_results() {
     // Open modal on staging.
     app.table_state.select(Some(1));
     app.execute_command("deploy build-900");
-    // Late-arriving lint result for prod — should be dropped.
+    // Late-arriving lint result for prod — should be dropped. It
+    // carries the open modal's own ticket, so only the env check can
+    // drop it.
     app.handle_msg(AppMsg::ConfirmModalLint {
         gen: app.generation,
         key: EnvKey::new("us-east-1", "prod"),
+        ticket: preflight_ticket(&app, |p| p.lint.ticket_in_flight()),
         issues: vec![crate::lint::Issue {
             rule_id: "EBL001".into(),
             severity: crate::lint::Severity::Warn,
@@ -356,14 +367,14 @@ async fn handle_confirm_modal_lint_drops_stale_target_results() {
     });
     match &app.action_flow {
         Some(ActionFlow::Confirm(modal)) => {
-            // loading_lint should still be true (we never
+            // The lint should still be in flight (we never
             // applied the stale result).
             assert!(
-                modal.loading_lint,
+                modal.preflight.lint.in_flight(),
                 "loading flag must stay true on stale result"
             );
             assert!(
-                modal.lint_issues.is_none(),
+                modal.preflight.lint.ready().is_none(),
                 "stale result must not populate"
             );
         }
