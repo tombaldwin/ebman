@@ -577,13 +577,37 @@ async fn a_late_peek_does_not_bring_back_a_deleted_message() {
     app.dlq.as_mut().unwrap().messages = vec![msg("m-5")];
     app.spawn_dlq_fetch();
     let refresh = in_flight(&app).unwrap();
-    landed(&mut app, DlqOp::Purged);
+    landed(
+        &mut app,
+        DlqOp::Purged {
+            queue_url: "https://sqs/q-dlq".into(),
+        },
+    );
     assert_eq!(in_flight(&app), None, "a purge does not peek again");
     answer(&mut app, refresh, &["m-5"]);
     assert!(
         ids(&app).is_empty(),
         "the purged page came back: {:?}",
         ids(&app)
+    );
+
+    // A purge landing after an `m`-toggle: the main queue on screen, and
+    // its peek, were not what was purged.
+    app.dlq.as_mut().unwrap().viewing = crate::app::QueueView::Main;
+    app.dlq.as_mut().unwrap().messages = vec![msg("main-1")];
+    app.spawn_dlq_fetch();
+    let main_peek = in_flight(&app).unwrap();
+    landed(
+        &mut app,
+        DlqOp::Purged {
+            queue_url: "https://sqs/q-dlq".into(),
+        },
+    );
+    assert_eq!(ids(&app), ["main-1"], "the main queue's list was cleared");
+    assert_eq!(
+        in_flight(&app),
+        Some(main_peek),
+        "the main queue's peek was dropped"
     );
 }
 
@@ -691,7 +715,9 @@ async fn a_dlq_op_removes_only_the_message_it_names() {
     app.handle_msg(AppMsg::DlqActionResult {
         gen: app.generation,
         key: home_key("worker-prod"),
-        result: Ok(DlqOp::Purged),
+        result: Ok(DlqOp::Purged {
+            queue_url: "https://sqs/q-dlq".into(),
+        }),
     });
     assert_eq!(
         ids(&app),
@@ -704,7 +730,9 @@ async fn a_dlq_op_removes_only_the_message_it_names() {
     app.handle_msg(AppMsg::DlqActionResult {
         gen: app.generation,
         key: EnvKey::new("eu-west-2", "api-prod"),
-        result: Ok(DlqOp::Purged),
+        result: Ok(DlqOp::Purged {
+            queue_url: "https://sqs/q-dlq".into(),
+        }),
     });
     assert_eq!(
         ids(&app),
@@ -717,7 +745,9 @@ async fn a_dlq_op_removes_only_the_message_it_names() {
     app.handle_msg(AppMsg::DlqActionResult {
         gen: app.generation,
         key: home_key("api-prod"),
-        result: Ok(DlqOp::Purged),
+        result: Ok(DlqOp::Purged {
+            queue_url: "https://sqs/q-dlq".into(),
+        }),
     });
     assert!(ids(&app).is_empty());
 }

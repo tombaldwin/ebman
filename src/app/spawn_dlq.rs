@@ -239,7 +239,9 @@ impl App {
             let result = aws
                 .purge_queue(&dlq_url)
                 .await
-                .map(|_| DlqOp::Purged)
+                .map(|_| DlqOp::Purged {
+                    queue_url: dlq_url.clone(),
+                })
                 .map_err(|e| flatten_err("purge_queue", e));
             let _ = tx.send(AppMsg::DlqActionResult { gen, key, result });
         });

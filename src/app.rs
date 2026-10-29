@@ -1131,7 +1131,12 @@ pub(crate) enum DlqOp {
     Deleted {
         message_id: String,
     },
-    Purged,
+    /// The dead-letter queue was purged. Carries its URL: an `m`-toggle
+    /// while the purge was in flight puts the main queue on screen, and
+    /// that list (and its peek) is not what was purged.
+    Purged {
+        queue_url: String,
+    },
     /// Outcome of a batch replay: `count` messages moved to the main queue
     /// (sent + deleted from the DLQ), `failures` that errored mid-way.
     Replayed {

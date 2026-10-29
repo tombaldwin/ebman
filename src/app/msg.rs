@@ -1877,10 +1877,18 @@ impl App {
                     dlq.removed_since_peek.insert(message_id.clone());
                     self.status_message = Some(format!("message {message_id} deleted"));
                 }
-                Ok(DlqOp::Purged) => {
-                    dlq.messages.clear();
-                    // Every message the peek in flight read is gone.
-                    dlq.fetch.reset();
+                Ok(DlqOp::Purged { queue_url }) => {
+                    // Only while the purged queue is the one on screen:
+                    // the main queue's list and peek were not purged.
+                    let viewed = match dlq.viewing {
+                        QueueView::Dlq => &dlq.dlq_url,
+                        QueueView::Main => &dlq.main_queue_url,
+                    };
+                    if *viewed == queue_url {
+                        dlq.messages.clear();
+                        // Every message the peek in flight read is gone.
+                        dlq.fetch.reset();
+                    }
                     self.status_message = Some("DLQ purged".into());
                 }
                 Ok(DlqOp::Replayed { count, failures }) => {
