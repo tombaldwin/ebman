@@ -1832,8 +1832,10 @@ impl App {
         if !dlq.fetch.finish(ticket) {
             return;
         }
+        let removed = std::mem::take(&mut dlq.removed_since_peek);
         match result {
-            Ok(messages) => {
+            Ok(mut messages) => {
+                messages.retain(|m| !removed.contains(&m.id));
                 dlq.messages = messages;
                 if dlq.messages.is_empty() {
                     dlq.list_state.select(None);
@@ -1862,25 +1864,24 @@ impl App {
                 return;
             }
             // A peek in flight read the queue before this op landed, so
-            // its page would put a deleted message back, with a receipt
-            // handle AWS rejects. Ask again: the new peek supersedes it.
-            // Not on every op: a peek raises each message's receive count.
-            let superseded = dlq.fetch.in_flight();
+            // its page would put a removed message back, with a receipt
+            // handle AWS rejects: see `DlqState::removed_since_peek`.
             match result {
                 Ok(DlqOp::Resent { message_id }) => {
                     dlq.messages.retain(|m| m.id != message_id);
+                    dlq.removed_since_peek.insert(message_id.clone());
                     self.status_message = Some(format!("message {message_id} resent"));
-                    refetch = superseded;
                 }
                 Ok(DlqOp::Deleted { message_id }) => {
                     dlq.messages.retain(|m| m.id != message_id);
+                    dlq.removed_since_peek.insert(message_id.clone());
                     self.status_message = Some(format!("message {message_id} deleted"));
-                    refetch = superseded;
                 }
                 Ok(DlqOp::Purged) => {
                     dlq.messages.clear();
+                    // Every message the peek in flight read is gone.
+                    dlq.fetch.reset();
                     self.status_message = Some("DLQ purged".into());
-                    refetch = superseded;
                 }
                 Ok(DlqOp::Replayed { count, failures }) => {
                     if failures == 0 {

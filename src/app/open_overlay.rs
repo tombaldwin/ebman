@@ -266,6 +266,7 @@ impl App {
             messages: Vec::new(),
             list_state: ListState::default(),
             fetch: Default::default(),
+            removed_since_peek: Default::default(),
             error: None,
             confirm_purge: false,
             purge_typed: TextInput::new(),

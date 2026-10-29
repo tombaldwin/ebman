@@ -365,6 +365,7 @@ pub(super) fn open_dlq_state(env: &str) -> crate::app::DlqState {
         }],
         list_state,
         fetch: Default::default(),
+        removed_since_peek: Default::default(),
         error: None,
         confirm_purge: false,
         purge_typed: Default::default(),

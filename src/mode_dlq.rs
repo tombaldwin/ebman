@@ -31,13 +31,18 @@ pub(crate) struct DlqState {
     pub dlq_url: String,
     pub messages: Vec<QueueMessage>,
     pub list_state: ListState,
-    /// The peek in flight, if any. Only the latest peek's answer lands.
-    /// A refresh, an `m`-toggle and a replay each issue one, and so does
-    /// a delete, resend or purge that lands while one is in flight: that
-    /// peek read the queue before the op, and its page put back a
-    /// message the operator had just deleted, with a receipt handle AWS
-    /// would reject.
+    /// The peek in flight, if any. Only the latest peek's answer lands:
+    /// a refresh, an `m`-toggle and a replay each issue one.
     pub fetch: crate::app::Request,
+    /// Messages deleted or resent since the latest peek began. A page
+    /// that peek returns predates them, and put them back with a receipt
+    /// handle AWS rejects, so they are dropped from it when it lands.
+    /// Not answered by peeking again: a second receive racing the first
+    /// is hidden from what the first holds invisible, and lands a thin
+    /// or empty page. Cleared when a peek begins, since its page is then
+    /// the queue as it stands: a resent message that fails again is
+    /// redriven back under the same id, and must show.
+    pub removed_since_peek: std::collections::HashSet<String>,
     pub error: Option<String>,
     pub confirm_purge: bool,
     pub purge_typed: TextInput,

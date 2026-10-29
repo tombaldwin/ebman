@@ -20,6 +20,8 @@ impl App {
     pub(super) fn spawn_dlq_fetch(&mut self) {
         let Some(dlq) = self.dlq.as_mut() else { return };
         let ticket = dlq.fetch.begin();
+        // This peek reads the queue after anything already removed.
+        dlq.removed_since_peek.clear();
         dlq.error = None;
         let env_name = dlq.env_name.clone();
         let queue_url = match dlq.viewing {

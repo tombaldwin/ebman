@@ -30,8 +30,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **The DLQ viewer no longer brings back a message you just deleted.**
   A refresh still in flight when a delete, resend or purge landed
   answered with the page it read before, and the message reappeared with
-  a receipt handle AWS rejects. The op now asks again, and only the
-  newest page lands.
+  a receipt handle AWS rejects. The viewer now drops what it removed
+  from that page, and a purge drops the page.
 
 - **A freeze declared during `ebman lint --fix --yes` stops the envs
   after it.** The freeze was read once, before the run, so a long

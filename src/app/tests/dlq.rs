@@ -339,6 +339,7 @@ async fn the_dlq_viewer_renders_its_messages() {
         }],
         list_state: Default::default(),
         fetch: Default::default(),
+        removed_since_peek: Default::default(),
         error: None,
         confirm_purge: false,
         purge_typed: tui_common::TextInput::new(),
@@ -489,9 +490,10 @@ async fn dlq_messages_from_another_env_or_queue_are_dropped() {
 /// A refresh (`^R`) still in flight when the operator deletes a message
 /// answers with a page taken before the delete. It was the latest peek,
 /// so it landed, and the message came back with a receipt handle AWS
-/// would reject. The delete now re-issues a peek in flight, whose ticket
-/// supersedes the stale one. With no peek in flight it asks nothing: a
-/// peek raises every message's receive count.
+/// would reject. The viewer now drops what it removed meanwhile from
+/// that page, and a purge drops the page. It does not peek again: a
+/// second receive racing the first sees only what the first did not
+/// hold invisible, and lands a thin or empty page.
 #[tokio::test]
 async fn a_late_peek_does_not_bring_back_a_deleted_message() {
     use crate::app::{AppMsg, DlqOp};
@@ -530,30 +532,59 @@ async fn a_late_peek_does_not_bring_back_a_deleted_message() {
     assert!(ids(&app).is_empty());
     assert_eq!(in_flight(&app), None, "a delete alone must not peek");
 
-    // A refresh in flight, then each op that removes messages.
+    // A refresh in flight, then each op that removes one message: the
+    // refresh's page lands without it, and nothing peeks again.
     for op in [
         deleted("m-2"),
         DlqOp::Resent {
             message_id: "m-2".into(),
         },
-        DlqOp::Purged,
     ] {
         let label = format!("{op:?}");
-        app.dlq.as_mut().unwrap().messages = vec![msg("m-2")];
+        app.dlq.as_mut().unwrap().messages = vec![msg("m-2"), msg("m-4")];
         app.spawn_dlq_fetch();
         let refresh = in_flight(&app).expect("the refresh is in flight");
         landed(&mut app, op);
-        let after = in_flight(&app).unwrap_or_else(|| panic!("{label}: not re-asked"));
-        assert_ne!(after, refresh, "{label}");
-        answer(&mut app, refresh, &["m-2"]);
-        assert!(
-            ids(&app).is_empty(),
-            "{label}: the refresh's page brought the message back: {:?}",
-            ids(&app)
+        assert_eq!(in_flight(&app), Some(refresh), "{label}: peeked again");
+        answer(&mut app, refresh, &["m-2", "m-4"]);
+        assert_eq!(
+            ids(&app),
+            ["m-4"],
+            "{label}: the refresh's page brought the message back"
         );
-        answer(&mut app, after, &["m-3"]);
-        assert_eq!(ids(&app), ["m-3"], "{label}: the peek after it lands");
+        // And only that page: the next peek reads after the op.
+        app.spawn_dlq_fetch();
+        let next = in_flight(&app).unwrap();
+        answer(&mut app, next, &["m-2"]);
+        assert_eq!(ids(&app), ["m-2"], "{label}: a later page is not filtered");
     }
+
+    // A message resent with no peek in flight, failing again and
+    // redriven back under the same id: the next peek shows it.
+    app.dlq.as_mut().unwrap().messages = vec![msg("m-6")];
+    landed(
+        &mut app,
+        DlqOp::Resent {
+            message_id: "m-6".into(),
+        },
+    );
+    app.spawn_dlq_fetch();
+    let next = in_flight(&app).unwrap();
+    answer(&mut app, next, &["m-6"]);
+    assert_eq!(ids(&app), ["m-6"], "a redriven message is hidden");
+
+    // A purge during a refresh: the refresh's page is all gone.
+    app.dlq.as_mut().unwrap().messages = vec![msg("m-5")];
+    app.spawn_dlq_fetch();
+    let refresh = in_flight(&app).unwrap();
+    landed(&mut app, DlqOp::Purged);
+    assert_eq!(in_flight(&app), None, "a purge does not peek again");
+    answer(&mut app, refresh, &["m-5"]);
+    assert!(
+        ids(&app).is_empty(),
+        "the purged page came back: {:?}",
+        ids(&app)
+    );
 }
 
 /// The cursor after a refetch. `x` deletes whatever the cursor points
