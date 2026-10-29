@@ -132,11 +132,6 @@ Tier definitions:
   Since it moved to the shared assembly it does not send
   `LintInputsCached`, so a later pre-deploy confirm refetches tags and
   health. Latency only. *0.45 release review.*
-- [ ] **The `dlq_undo` refusal audit line records `region="-"`** when the
-  delete used the default region, while the dispatched / completed lines
-  record the resolved one. Same pattern as the other MCP gate refusals —
-  fix the class. *0.45 release review.*
-
 - [ ] **Merged doc comments on `pub(crate)` items are still
   unguarded.** 0.42.0 closed this for the PUBLIC surface —
   `#![warn(missing_docs)]` in `lib.rs`, plus docs for the 18 public
@@ -189,20 +184,6 @@ Tier definitions:
   on 2026-09-25, so that trigger will never fire. Do it on its own
   merits or drop it. *Re-opened 2026-09-25: archived as absorbed by the
   verb vocabulary, which did not in fact do it.*
-
-- [ ] **`App::new` and `App::for_tests` each build the ~115-field struct
-  by hand** (`src/app.rs`, two literals of ~260 and ~175 lines).
-  `for_tests` is production code too — `new_demo` builds on it — and
-  nothing checks that the two agree on defaults, so every new field is
-  two edits. Shape: a shared `App::assemble(aws, config, seed)`. S–M.
-  From the 2026-09-25 implementation review.
-
-- [ ] **Demo audit suppression in one place.** Done per call site: MCP
-  checks `Backend::Demo` at seven sites, the TUI `!self.demo_mode` at
-  several more, and it has already leaked once. Evidence it is still
-  inconsistent: `:thaw-deploys` writes an audit line in demo mode, and
-  0112e6d's `:readonly` does not. Shape: a process-wide audit sink mode
-  set once at startup, as `set_notify_webhook` does. S.
 
 - [ ] **Eleven hand-rolled `read_dir` walks in guards bypass
   `scan::source_files`** (`app/tests/dispatch.rs` ×7, `refresh.rs`,

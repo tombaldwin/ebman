@@ -5426,3 +5426,55 @@ now head the list.*
    because it IS runtime-grants layer four: the re-scope decides whether
    it replaces part of stage 5 or builds on it, so neither gets
    designed twice.
+
+
+## PLAN.md items done 2026-10-29
+
+Outcomes: the CLI body paths are tested (webhook seam, multi-cycle
+watch exit, failed baseline write, explain's required tags,
+`audit_delta` across a rotation); the injection seams are done
+(`WriteEnv`, a freeze store per `Server` and per test, `MARKER_LOCK`
+replaced by a guard; `docs/design/write-env.md`); the ticket seam is
+done (the confirm modal's `Preflight`, the DLQ viewer's peek, which a
+review found also needed an op to re-ask a peek in flight); and the MCP
+freeze tool shipped as `freeze_fleet`, with any write grant and not on
+a `--read-only` server.
+
+### (as they stood)
+
+3. *(mechanical)* **CLI body paths still untested** *(2026-10-23 CLI-body review)*
+   Every subcommand is behind a testable body now; these paths through
+   them are reached by no test: explain's `required_tags` pass-through;
+   `lint --webhook` (the post, the change guard's wiring, the degraded
+   suppression; `should_post_webhook` itself is tested) — it needs a
+   webhook seam, since the body fires a real POST; a `lint --baseline`
+   write that fails; and which cycle's code a multi-cycle `--watch` exits
+   with (the mock fleet is the same every cycle). Also:
+   `cli::audit_delta::lines_for` panics "append-only" if one test run's
+   audit lines cross the 1 MiB rotation mid-test — the pattern the older
+   audit tests use, now in four more. S each.
+
+### Next
+
+4. *(architecture)* **Finish the injection and ticket seams** *(0.47.0 release
+   architecture review)*. Behaviour-neutral, each covered by guards today:
+   (1) the CLI write bodies inject their dependencies three ways (action /
+   rollout / replay take a profile and a `WriteGate`, in different
+   argument orders; lint a `LintSetup` and a freeze closure; freeze/thaw
+   nothing, calling `FreezeStore::real()` inline) — one `WriteEnv` value
+   would shrink `write_shells_pass_the_real_gate_and_the_ambient_profile`
+   to one pattern. M. (2) `FreezeStore` is injected only in the App; the
+   CLI and MCP call `FreezeStore::real()` at use (`cli/mod.rs`,
+   `mcp/tools.rs`, `mcp/writes.rs`). M. (3) `ActionState`'s six
+   `Option` + `loading_*` pairs and `DlqState.loading` are the shape
+   `Fetch` replaced in Detail; results match by `EnvKey`, not ticket, so a
+   superseded pre-flight answer is still accepted. M.
+   Item (3) is a correctness fix, not only a tidy-up: a stale answer
+   for the same env is accepted.
+
+5. *(behaviour)* **An MCP tool to declare a freeze.** `ebman freeze` (2026-10-23)
+   gave the CLI one; an agent still cannot stop writes. Declaring only
+   restricts, so it is safe to grant without an ask, but it is a new
+   tool on the registry surface and lifting must stay with the operator.
+   Left out of the freeze work by design (`docs/design/persistent-freeze.md`).
+

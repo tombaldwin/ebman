@@ -97,7 +97,10 @@ holds:
 
 ## Current window
 
-*Refreshed 2026-10-24, after 0.47.1. The 2026-09-25 window moved
+*Refilled 2026-10-29: the CLI body paths, the injection and ticket
+seams and the MCP freeze tool are done (archived verbatim, "PLAN.md
+items done 2026-10-29"); three BACKLOG items moved in. Refreshed
+2026-10-24, after 0.47.1. The 2026-09-25 window moved
 verbatim to `docs/backlog/archive.md` ("PLAN.md window, retired
 2026-10-24"): `run_cycle`'s side channel and the App tab are done, and
 both items still open there needed the maintainer at a real account,
@@ -146,41 +149,29 @@ it.*
    and splits into five slices. Its three contestable calls are listed
    at its foot.
 
-3. *(mechanical)* **CLI body paths still untested** *(2026-10-23 CLI-body review)*
-   Every subcommand is behind a testable body now; these paths through
-   them are reached by no test: explain's `required_tags` pass-through;
-   `lint --webhook` (the post, the change guard's wiring, the degraded
-   suppression; `should_post_webhook` itself is tested) — it needs a
-   webhook seam, since the body fires a real POST; a `lint --baseline`
-   write that fails; and which cycle's code a multi-cycle `--watch` exits
-   with (the mock fleet is the same every cycle). Also:
-   `cli::audit_delta::lines_for` panics "append-only" if one test run's
-   audit lines cross the 1 MiB rotation mid-test — the pattern the older
-   audit tests use, now in four more. S each.
+3. *(mechanical)* **The `dlq_undo` refusal audit line records `region="-"`** when the
+   delete used the default region, while the dispatched / completed lines
+   record the resolved one. Same pattern as the other MCP gate refusals —
+   fix the class. *0.45 release review.*
 
 ### Next
 
-4. *(architecture)* **Finish the injection and ticket seams** *(0.47.0 release
-   architecture review)*. Behaviour-neutral, each covered by guards today:
-   (1) the CLI write bodies inject their dependencies three ways (action /
-   rollout / replay take a profile and a `WriteGate`, in different
-   argument orders; lint a `LintSetup` and a freeze closure; freeze/thaw
-   nothing, calling `FreezeStore::real()` inline) — one `WriteEnv` value
-   would shrink `write_shells_pass_the_real_gate_and_the_ambient_profile`
-   to one pattern. M. (2) `FreezeStore` is injected only in the App; the
-   CLI and MCP call `FreezeStore::real()` at use (`cli/mod.rs`,
-   `mcp/tools.rs`, `mcp/writes.rs`). M. (3) `ActionState`'s six
-   `Option` + `loading_*` pairs and `DlqState.loading` are the shape
-   `Fetch` replaced in Detail; results match by `EnvKey`, not ticket, so a
-   superseded pre-flight answer is still accepted. M.
-   Item (3) is a correctness fix, not only a tidy-up: a stale answer
-   for the same env is accepted.
+4. *(behaviour)* **Demo audit suppression in one place.** Done per call site: MCP
+   checks `Backend::Demo` at seven sites, the TUI `!self.demo_mode` at
+   several more, and it has already leaked once. Evidence it is still
+   inconsistent: `:thaw-deploys` writes an audit line in demo mode, and
+   0112e6d's `:readonly` does not. Shape: a process-wide audit sink mode
+   set once at startup, as `set_notify_webhook` does. S.
+   `freeze_fleet` (2026-10-29) is an eighth MCP `Backend::Demo` check.
 
-5. *(behaviour)* **An MCP tool to declare a freeze.** `ebman freeze` (2026-10-23)
-   gave the CLI one; an agent still cannot stop writes. Declaring only
-   restricts, so it is safe to grant without an ask, but it is a new
-   tool on the registry surface and lifting must stay with the operator.
-   Left out of the freeze work by design (`docs/design/persistent-freeze.md`).
+5. *(architecture)* **`App::new` and `App::for_tests` each build the ~115-field struct
+   by hand** (`src/app.rs`, two literals of ~260 and ~175 lines).
+   `for_tests` is production code too — `new_demo` builds on it — and
+   nothing checks that the two agree on defaults, so every new field is
+   two edits. Shape: a shared `App::assemble(aws, config, seed)`. S–M.
+   From the 2026-09-25 implementation review.
+   Since 2026-10-29 the freeze store is one more default the two must
+   agree on (`FreezeStore::real()` / `isolated()`).
 
 ### Released
 
