@@ -18,7 +18,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   `ebman freeze` as you declared it, is on every server, `--read-only`
   included (it only takes writes away), does nothing on
   a demo server, and is audited `FreezeDeploys` (or `IncidentStart`)
-  with `via=mcp` and the client's name.
+  with `via=mcp` and the client's name, POSTed to `notify_webhook` from a
+  read-only server too.
 
 ### Fixed
 
@@ -51,6 +52,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   `docs/safety-and-privacy.md` already said and every other refused
   write does. It exited `1`, the code for a failed dispatch. A failed
   dispatch or an incomplete run still exits `1`, and outranks a refusal.
+  Only an env with a fix to set is refused: a pinned env whose findings
+  are all manual is not refused, audited or counted, so a daily
+  `--fix --yes` over a permanently pinned env does not exit `3` for a
+  write that was never going to happen.
 - `lint --fix --quiet` prints a refused env's reason, as it prints a
   failed dispatch: the refusal exits non-zero, and `--quiet` dropped the
   only line saying why.

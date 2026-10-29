@@ -75,7 +75,7 @@ Each subcommand's codes in full (pinned to the source by a test):
 |---|---|
 | `ebman envs` | 0 ok · 1 AWS error · 2 usage |
 | `ebman action` | 0 dispatched · 1 AWS error · 2 usage · 3 refused or halted · 4 `--wait-for-green` timed out · 5 `--auto-rollback` fired |
-| `ebman lint` | 0 clean · 1 AWS error or a check could not run · 2 usage · 3 issues found |
+| `ebman lint` | 0 clean, or with `--fix` every fix applied · 1 AWS error, a check could not run, or a `--fix` dispatch failed · 2 usage · 3 issues found, or with `--fix --yes` a fix refused (a pin, or a freeze up front or mid-run; an env with nothing to set is not refused) |
 | `ebman drift` | 0 no drift · 1 AWS error · 2 usage · 3 drift found |
 | `ebman audit` | 0 ok · 1 error · 2 usage |
 | `ebman audit replay` | 0 dispatched · 1 AWS error · 2 usage · 3 refused |

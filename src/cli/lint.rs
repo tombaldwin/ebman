@@ -2720,7 +2720,53 @@ async fn apply_fixes_for_env(
         profile: active_profile_for_safety,
         active_freeze,
     } = policy;
-    // Through the shared gate, freeze included. It was passed `None`
+    // The client's resolved region, not the `--regions` label: without
+    // `--regions` the label was `None`, so every single-region fix was
+    // audited as `region=default` — a region that does not exist.
+    let region_label = aws.context.region.clone();
+    // Rebuild the (cheap, borrowing) context for the
+    // fix pass — `run_rules_for_env` consumed its own.
+    let ctx = build_lint_context(env, inputs, &safety_cfg.required_tags);
+    let mut to_set: Vec<(String, String, String)> = Vec::new();
+    let mut planned: Vec<(String, lint::FixAction)> = Vec::new();
+    let mut planned_set_indices: Vec<usize> = Vec::new();
+    // Held until the gate has had its say: a refused env reports the
+    // refusal alone, as it did when the gate ran first.
+    let mut plan_notes: Vec<CycleNote> = Vec::new();
+    for issue in issues {
+        if fix_disabled.contains(&issue.rule_id) {
+            plan_notes.push(CycleNote::FixDisabled {
+                rule: issue.rule_id.clone(),
+                env: env.name.clone(),
+            });
+            continue;
+        }
+        let Some(rule) = rules.iter().find(|r| r.id() == issue.rule_id) else {
+            continue;
+        };
+        let Some(action) = rule.fix(&ctx) else {
+            plan_notes.push(CycleNote::NoFix {
+                rule: issue.rule_id.clone(),
+                env: env.name.clone(),
+            });
+            continue;
+        };
+        if let lint::FixAction::SetOption {
+            namespace,
+            name,
+            value,
+            ..
+        } = &action
+        {
+            planned_set_indices.push(planned.len());
+            to_set.push((namespace.clone(), name.clone(), value.clone()));
+        }
+        planned.push((issue.rule_id.clone(), action));
+    }
+    // Asked only when something would be set: a pinned or frozen env
+    // whose findings are all manual, fix-disabled or fixless was refused
+    // and audited, and exited 3, every run, for a write that was never
+    // going to happen. Through the shared gate, freeze included. It was passed `None`
     // here once, with the freeze checked only up front, so a freeze
     // declared during a long run fixed every env after it. Each env the
     // freeze stops is refused, audited and named, and the run goes on
@@ -2731,7 +2777,9 @@ async fn apply_fixes_for_env(
     // of writes that were never going to happen. Same
     // reasoning the exit-code branch below already
     // applies.
-    let refusal = if yes {
+    let refusal = if to_set.is_empty() {
+        None
+    } else if yes {
         crate::cli::write_refusal(
             safety_cfg,
             &env.name,
@@ -2760,46 +2808,7 @@ async fn apply_fixes_for_env(
             FixOutcome::Done
         };
     }
-    // The client's resolved region, not the `--regions` label: without
-    // `--regions` the label was `None`, so every single-region fix was
-    // audited as `region=default` — a region that does not exist.
-    let region_label = aws.context.region.clone();
-    // Rebuild the (cheap, borrowing) context for the
-    // fix pass — `run_rules_for_env` consumed its own.
-    let ctx = build_lint_context(env, inputs, &safety_cfg.required_tags);
-    let mut to_set: Vec<(String, String, String)> = Vec::new();
-    let mut planned: Vec<(String, lint::FixAction)> = Vec::new();
-    let mut planned_set_indices: Vec<usize> = Vec::new();
-    for issue in issues {
-        if fix_disabled.contains(&issue.rule_id) {
-            notes.push(CycleNote::FixDisabled {
-                rule: issue.rule_id.clone(),
-                env: env.name.clone(),
-            });
-            continue;
-        }
-        let Some(rule) = rules.iter().find(|r| r.id() == issue.rule_id) else {
-            continue;
-        };
-        let Some(action) = rule.fix(&ctx) else {
-            notes.push(CycleNote::NoFix {
-                rule: issue.rule_id.clone(),
-                env: env.name.clone(),
-            });
-            continue;
-        };
-        if let lint::FixAction::SetOption {
-            namespace,
-            name,
-            value,
-            ..
-        } = &action
-        {
-            planned_set_indices.push(planned.len());
-            to_set.push((namespace.clone(), name.clone(), value.clone()));
-        }
-        planned.push((issue.rule_id.clone(), action));
-    }
+    notes.extend(plan_notes);
     for (rule_id, action) in &planned {
         notes.push(match action {
             lint::FixAction::SetOption { description, .. } => CycleNote::FixPlanned {
@@ -3987,6 +3996,58 @@ mod body {
             err.contains("refusing api — pinned by safety.accounts.ops"),
             "{err}"
         );
+    }
+
+    /// A pinned env with nothing to set is not refused: the gate is asked
+    /// only when a fix would dispatch. The default mock fleet's findings
+    /// have manual fixes only, and `--fix --yes` over a permanently pinned
+    /// env exited 3 and wrote a refusal every run, for a write that was
+    /// never going to happen. With an auto-fixable finding it still is.
+    #[tokio::test]
+    async fn a_pin_refuses_only_what_would_be_set() {
+        async fn fix(env: &'static str, faults: MockFaults) -> (i32, String) {
+            let (mut out, mut err) = (Vec::new(), Vec::new());
+            let code = lint_body(
+                &["lint".to_string(), "--fix".to_string(), "--yes".to_string()],
+                || {
+                    let mut safety_cfg = config::Config::default();
+                    safety_cfg.safety_envs.insert(env.into(), true);
+                    LintSetup {
+                        safety_cfg,
+                        ..setup()
+                    }
+                },
+                write_env(None),
+                |_| async move { Ok(mock_client_inner(vec![env.into()], faults)) },
+                async {},
+                &mut out,
+                &mut err,
+            )
+            .await;
+            (code, String::from_utf8(err).unwrap())
+        }
+        let before = crate::cli::audit_delta::mark();
+        let (code, err) = fix("poly-manual-only", MockFaults::default()).await;
+        assert_ne!(
+            code, 3,
+            "nothing would be set, so nothing was refused: {err}"
+        );
+        assert!(!err.contains("refusing"), "{err}");
+        assert!(
+            crate::cli::audit_delta::lines_for(&before, "poly-manual-only").is_empty(),
+            "no refusal of a write that would not happen"
+        );
+
+        let (code, err) = fix(
+            "poly-fixable",
+            MockFaults {
+                fixable: true,
+                ..MockFaults::default()
+            },
+        )
+        .await;
+        assert_eq!(code, 3, "{err}");
+        assert!(err.contains("refusing poly-fixable — pinned"), "{err}");
     }
 
     #[tokio::test]
