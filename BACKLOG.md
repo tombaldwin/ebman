@@ -132,6 +132,13 @@ Tier definitions:
   Since it moved to the shared assembly it does not send
   `LintInputsCached`, so a later pre-deploy confirm refetches tags and
   health. Latency only. *0.45 release review.*
+- [ ] **`freeze_fleet`'s standing-freeze check and its declare are two
+  steps.** An `ebman freeze` landing between them is rewritten with the
+  agent's reason, which is what the check exists to stop. Shape: a
+  create-if-absent `FreezeStore::declare_persistent_unless_held`
+  (`O_EXCL` on `persistent.json`). Window of microseconds. *2026-10-29
+  review.*
+
 - [ ] **Merged doc comments on `pub(crate)` items are still
   unguarded.** 0.42.0 closed this for the PUBLIC surface —
   `#![warn(missing_docs)]` in `lib.rs`, plus docs for the 18 public
