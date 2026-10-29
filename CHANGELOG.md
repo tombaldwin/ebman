@@ -30,8 +30,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   `ebman thaw`, and nothing on the MCP surface lifts it. It needs a
   one-line reason of at most 200 characters, leaves a standing
   `ebman freeze` as you declared it, is on every server, `--read-only`
-  included (it only takes writes away), does nothing on
-  a demo server, and is audited `FreezeDeploys` (or `IncidentStart`)
+  included, does nothing on a demo server, and is audited `FreezeDeploys` (or `IncidentStart`)
   with `via=mcp` and the client's name, POSTed to `notify_webhook` from a
   read-only server too.
 
@@ -47,8 +46,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   A refresh still in flight when a delete, resend or purge landed
   answered with the page it read before, and the message reappeared with
   a receipt handle AWS rejects. The viewer now drops what it removed
-  from that page, and a purge drops the page.
-
+  from that page, and a purge drops the page. An older refresh of the
+  same queue landing after a newer one is dropped too.
 - **A freeze declared during `ebman lint --fix --yes` stops the envs
   after it.** The freeze was read once, before the run, so a long
   multi-region fix pass went on changing every env after an incident

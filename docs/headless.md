@@ -438,7 +438,9 @@ claude mcp add ebman -- ebman mcp serve --read-only
 ```
 
 The write tools are absent, exactly as they are on a client that
-cannot be asked and has no flag. This is a **server** control, so it
+cannot be asked and has no flag. One tool that changes something stays:
+`freeze_fleet`, because the only thing it can do is take writes away;
+lifting a freeze stays with you (`ebman thaw`). This is a **server** control, so it
 does not touch your TUI — `safety.read_only` in `config.toml` is the
 one that refuses writes everywhere, including your own hands.
 

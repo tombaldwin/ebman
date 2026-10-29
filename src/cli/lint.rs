@@ -5,10 +5,13 @@
 //!
 //! Exit codes (per the 0.13 CLI charter):
 //! - 0 clean / fix applied successfully
-//! - 1 AWS-layer error (or `--fix` dispatch failure)
+//! - 1 AWS-layer error, a check that could not run, or a `--fix`
+//!   dispatch failure (these outrank a refusal)
 //! - 2 usage error
-//! - 3 issues found (NOT used in `--fix` mode — operator's intent
-//!   is "see issues then fix them"; a clean apply stays exit 0)
+//! - 3 issues found; under `--fix --yes`, a fix refused (a pin, or a
+//!   freeze up front or mid-run). Not for findings under `--fix`: the
+//!   operator's intent is "see issues then fix them", so a clean apply
+//!   stays exit 0. See [`lint_exit_code`].
 //!
 //! `--fix` dispatches each rule's auto-remediation through the same
 //! `update_env_option_settings` path the TUI uses. Respects

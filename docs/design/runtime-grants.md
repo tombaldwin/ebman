@@ -602,7 +602,7 @@ something the client does not.
    also preserves the single-message behaviour exactly.
 6. **Assume-role** (layer 4), targeted at a release soon after.
    Shaped in [assume-role-elevation.md](assume-role-elevation.md)
-   (2026-10-24, for review), which keeps the ask as the authority and
+   (drafted 2026-10-24, accepted 2026-10-29), which keeps the ask as the authority and
    drops the gap detection sketched above.
 
 Deleted from an earlier version of this list, and worth recording so it

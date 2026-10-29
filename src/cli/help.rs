@@ -17,7 +17,8 @@ pub const SUBCOMMANDS_HELP: &str = r#"    envs [--json]                         
                                                   (or every env in the context) and emit findings
                                                   as text or JSON. Non-zero exit when issues found.
                                                   Useful for git hooks, CI gates, monitoring loops.
-                                                  Exit codes: 0 clean, 1 aws err, 2 usage, 3 issues.
+                                                  Exit codes: 0 clean, 1 aws err, 2 usage, 3 issues
+                                                  (or, with --fix --yes, a fix refused).
                                                   Operator disables via `lint.disable` in
                                                   config.toml and project-local .ebman/ebman.toml.
                                                   --regions fans out across regions; rows are
