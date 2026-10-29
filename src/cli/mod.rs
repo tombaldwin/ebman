@@ -93,9 +93,8 @@ pub(crate) fn freeze_refuses_run(
     action_label: &str,
 ) -> Option<String> {
     let m = freeze?;
-    let pin_profile = profile
-        .clone()
-        .or_else(|| std::env::var("AWS_PROFILE").ok());
+    // Resolved by the caller, from its `WriteEnv`.
+    let pin_profile = profile.clone();
     let verdict = crate::write_gate::decide(&crate::write_gate::WriteContext {
         // No env: the rungs above the freeze are all run-wide, and it
         // outranks every per-env pin, so the verdict is one of those or
@@ -207,13 +206,12 @@ pub(crate) fn write_refusal_unaudited(
     profile: &Option<String>,
     active_freeze: Option<crate::freeze::FreezeMarker>,
 ) -> Option<(crate::write_gate::Refusal, String, Option<String>)> {
-    // The profile fallback is resolved HERE rather than inside the
-    // decision, which used to read `AWS_PROFILE` itself — an ambient
-    // read that made it impossible to test without touching the process
-    // environment. `write_gate::decide` now takes values only.
-    let pin_profile = profile
-        .clone()
-        .or_else(|| std::env::var("AWS_PROFILE").ok());
+    // The profile is resolved by the caller: the CLI from its
+    // `WriteEnv`, MCP from the profile its `Server` read at startup.
+    // This read `AWS_PROFILE` itself as a fallback, an ambient read that
+    // a test's `WriteEnv` could not stand in, so a body test's account
+    // pins depended on the developer's shell.
+    let pin_profile = profile.clone();
 
     let refusal = crate::write_gate::decide(&crate::write_gate::WriteContext {
         env,
@@ -740,6 +738,58 @@ mod write_gate_input_guard {
                 "{module}: `{f}` must pass the real write env to its body: {args}"
             );
         }
+    }
+
+    /// Production reads `AWS_PROFILE` in these places only. A write's
+    /// account pins are checked against the profile its `WriteEnv` (CLI)
+    /// or `Server` (MCP) carries; a gate that read the process for itself
+    /// was invisible to every test's stand-in, so pin results depended on
+    /// the developer's shell. Two such fallbacks survived the `WriteEnv`
+    /// change and were found by its release review.
+    #[test]
+    fn ambient_profile_reads_stay_where_they_are_injected() {
+        // Each entry names why it may read the process.
+        const ALLOWED: &[(&str, &str)] = &[
+            ("src/cli/mod.rs", "WriteEnv::real, the CLI's one read"),
+            ("src/cli/mcp/mod.rs", "own_ambient_profile, MCP's one read"),
+            ("src/aws.rs", "which profile the SDK client is built from"),
+            (
+                "src/cli/mcp/tools.rs",
+                "credential_fix, naming the profile in a hint",
+            ),
+        ];
+        let needle = concat!("std::env::var(\"AWS_", "PROFILE\")");
+        let mut found: Vec<(String, usize)> = Vec::new();
+        for (path, src) in crate::app::tests::scan::source_files() {
+            if crate::app::tests::scan::is_test_path(&path) {
+                continue;
+            }
+            let production = crate::app::tests::scan::production_half(&src);
+            let n = production
+                .lines()
+                .map(|l| {
+                    crate::app::tests::scan::strip_line_comment(l)
+                        .matches(needle)
+                        .count()
+                })
+                .sum();
+            if n > 0 {
+                found.push((path, n));
+            }
+        }
+        let unexpected: Vec<_> = found
+            .iter()
+            .filter(|(p, n)| *n != 1 || !ALLOWED.iter().any(|(a, _)| a == p))
+            .collect();
+        assert!(
+            unexpected.is_empty(),
+            "a production read of AWS_PROFILE outside the injected places; take it \
+             from the WriteEnv or the Server: {unexpected:?}"
+        );
+        assert!(
+            found.iter().any(|(p, _)| p == "src/cli/mod.rs"),
+            "canary: the scan finds WriteEnv::real's read: {found:?}"
+        );
     }
 
     /// And the real env is the operator's: their `AWS_PROFILE`, the store

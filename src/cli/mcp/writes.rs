@@ -278,8 +278,9 @@ impl Server {
         // there instead, and a `Refused` would then exist that this
         // module had not recorded — which is the whole property the
         // type carries.
+        let profile = profile.clone().or_else(|| self.ambient_profile.clone());
         let (refusal, message, pin_profile) =
-            crate::cli::write_refusal_unaudited(&self.safety_cfg, env, profile, freeze)?;
+            crate::cli::write_refusal_unaudited(&self.safety_cfg, env, &profile, freeze)?;
         Some(Audited::record(
             matches!(self.backend, Backend::Demo),
             pin_profile.as_deref(),
@@ -2597,10 +2598,7 @@ impl Server {
             .lock()
             .map(|s| s.clone())
             .unwrap_or_else(|_| "unknown".into());
-        let audit_profile = p
-            .profile
-            .clone()
-            .or_else(|| std::env::var("AWS_PROFILE").ok());
+        let audit_profile = p.profile.clone().or_else(|| self.ambient_profile.clone());
         // Resend and delete take the batch path, which audits per
         // MESSAGE. The generic path below writes one dispatched line
         // and one completed line for the whole action, and for a batch
@@ -2816,10 +2814,7 @@ impl Server {
             };
             let extras = dlq_audit_line(&client_name, can_ask, &target);
             let refs: Vec<(&str, &str)> = extras.iter().map(|(k, v)| (*k, v.as_str())).collect();
-            let audit_profile = d
-                .profile
-                .clone()
-                .or_else(|| std::env::var("AWS_PROFILE").ok());
+            let audit_profile = d.profile.clone().or_else(|| self.ambient_profile.clone());
             let region = client.context.region.clone();
             crate::audit::append_action_dispatched(
                 None,
@@ -2920,7 +2915,10 @@ impl Server {
         // line show something other than what was declared.
         let breaks_the_line = |c: char| {
             c.is_control()
-                || matches!(c, '\u{2028}' | '\u{2029}' | '\u{200E}' | '\u{200F}')
+                || matches!(
+                    c,
+                    '\u{2028}' | '\u{2029}' | '\u{200E}' | '\u{200F}' | '\u{061C}'
+                )
                 || ('\u{202A}'..='\u{202E}').contains(&c)
                 || ('\u{2066}'..='\u{2069}').contains(&c)
         };
@@ -2982,13 +2980,17 @@ impl Server {
             .lock()
             .map(|c| c.clone())
             .unwrap_or_default();
+        // A read-only server has not wired the webhook: this is the one
+        // line it writes, and a freeze is what a team's channel most
+        // needs to hear about.
+        self.ensure_audit_wired();
         let mut extras = self.write_extras(&client, None, 0, None, None);
         extras.push(("reason", reason.to_string()));
         extras.push(("persistent", "true".to_string()));
         let extras: Vec<(&str, &str)> = extras.iter().map(|(k, v)| (*k, v.as_str())).collect();
         crate::audit::append_action_dispatched(
             None,
-            std::env::var("AWS_PROFILE").ok().as_deref(),
+            self.ambient_profile.as_deref(),
             "-",
             if incident {
                 "IncidentStart"

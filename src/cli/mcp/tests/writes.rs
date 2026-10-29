@@ -280,6 +280,36 @@ async fn a_freeze_in_the_servers_store_refuses_its_writes() {
     assert!(!err.contains("freeze"), "{err}");
 }
 
+/// A write naming no `profile` is pinned against the profile the server
+/// started under, not one the gate reads from the process for itself.
+/// The gate used to fall back to `AWS_PROFILE` on its own, so a test's
+/// account pins depended on the developer's shell.
+#[tokio::test]
+async fn an_mcp_write_is_pinned_against_the_servers_profile() {
+    let mut cfg = crate::config::Config::default();
+    cfg.safety_accounts.insert("poly-ops".into(), true);
+    let server = Server::with_config(false, false, WriteScope::All, cfg.clone())
+        .with_ambient_profile("poly-ops");
+    let err = server
+        .tool_write_plan(WriteVerb::Restart, &json!({"env": "api"}))
+        .await
+        .expect_err("the server's account is pinned");
+    assert!(
+        err.to_string().contains("safety.accounts.poly-ops"),
+        "{err}"
+    );
+
+    // With none, nothing to pin against: no account refusal.
+    let server = Server::with_config(false, false, WriteScope::All, cfg);
+    let err = server
+        .tool_write_plan(WriteVerb::Restart, &json!({"env": "api"}))
+        .await
+        .err()
+        .map(|e| e.to_string())
+        .unwrap_or_default();
+    assert!(!err.contains("safety.accounts"), "{err}");
+}
+
 /// A demo MCP server must refuse the same way and write nothing.
 ///
 /// Demo gets `Config::default()` (no pins), but a production demo

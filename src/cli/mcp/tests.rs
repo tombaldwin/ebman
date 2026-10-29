@@ -5219,7 +5219,7 @@ async fn the_whole_instructions_text_fits_a_2048_char_cut() {
             } else if matches!(&scope, WriteScope::Only(v) if v.is_empty()) {
                 "- Writes: none granted.\n"
             } else if !writes {
-                "refuse that edit as self-modification.\n"
+                "`freeze_fleet` still works: it only takes writes away.\n"
             } else if matches!(scope, WriteScope::Only(_)) {
                 "ask them to restart the client.\n"
             } else {
@@ -5491,6 +5491,7 @@ async fn freeze_fleet_needs_a_short_reason() {
         json!({"reason": "line\u{2028}separator"}),
         json!({"reason": "\u{202E}reversed"}),
         json!({"reason": "\u{2067}isolated"}),
+        json!({"reason": "arabic\u{061C}mark"}),
     ] {
         let server = granted_server();
         let (is_error, body) = call(&server, "freeze_fleet", args.clone()).await;
@@ -5576,6 +5577,43 @@ async fn freeze_fleet_passes_on_a_freeze_that_ended_with_its_session() {
     )
     .await;
     assert!(body["ended_before"].is_null(), "{body}");
+}
+
+/// A freeze from a server with no write grant reaches the webhook: it
+/// wires `notify_webhook` when it declares, the one line it writes, and
+/// not before, so a read-only server that never freezes never reads the
+/// config disk. A demo server wires nothing.
+#[tokio::test]
+async fn a_freeze_from_a_read_only_server_is_posted() {
+    let server = Server::with_config(
+        false,
+        false,
+        WriteScope::None,
+        crate::config::Config::default(),
+    );
+    assert!(!server.audit_is_wired(), "nothing to post yet");
+    let (_, list) = call(&server, "doctor", json!({})).await;
+    assert!(!server.audit_is_wired(), "a read wires nothing: {list}");
+    assert!(
+        list.to_string()
+            .contains("`freeze_fleet` still declares a freeze"),
+        "doctor tells a read-only agent it can still freeze: {list}"
+    );
+    let (is_error, body) = call(
+        &server,
+        "freeze_fleet",
+        json!({"reason": "read-only triage"}),
+    )
+    .await;
+    assert!(!is_error, "{body}");
+    assert!(
+        server.audit_is_wired(),
+        "the freeze's line must reach the webhook"
+    );
+
+    let demo = demo_server();
+    let _ = call(&demo, "freeze_fleet", json!({"reason": "demo"})).await;
+    assert!(!demo.audit_is_wired());
 }
 
 /// A demo server freezes nothing, as its other writes do nothing.

@@ -1223,7 +1223,11 @@ impl Server {
             .unwrap_or_else(|_| "unknown".into());
 
         let writes = match &self.effective_scope() {
-            super::WriteScope::None => "none - this server is read-only".to_string(),
+            super::WriteScope::None => {
+                "none - this server is read-only (`freeze_fleet` still declares a freeze: \
+                 it only takes writes away)"
+                    .to_string()
+            }
             super::WriteScope::All => "every verb".to_string(),
             super::WriteScope::Only(v) => format!("{} only", v.join(", ")),
         };

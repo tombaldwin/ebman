@@ -583,7 +583,7 @@ impl WriteScope {
                  or --allow-writes=verb,verb for just what you need (and without --read-only, \
                  if they set it); ebman's write verbs are {}. Do not edit the MCP config \
                  yourself: the grant is theirs, and a client may refuse that edit as \
-                 self-modification.\n",
+                 self-modification. `freeze_fleet` still works: it only takes writes away.\n",
                 writes::write_verb_names().join(", ")
             )),
             (None, WriteScope::All) => d.push_str(
@@ -906,6 +906,16 @@ pub(crate) struct Server {
     /// own, so no test reads a marker another test wrote. As `App`
     /// holds one.
     freeze: crate::freeze::FreezeStore,
+    /// `AWS_PROFILE` as the server started with it: the account a write
+    /// naming no `profile` is pinned and audited against, as a CLI
+    /// write's `WriteEnv` carries it. Under test, none.
+    ambient_profile: Option<String>,
+    /// Whether this server has wired `notify_webhook` from config, so
+    /// its audit lines are POSTed. A server that may write wires it at
+    /// initialize; a read-only one only when it declares a freeze, the
+    /// one line it can write, so until then it never reads the config
+    /// disk.
+    audit_wired: std::sync::atomic::AtomicBool,
     /// Two-phase write state: the single pending-plan slot (spec:
     /// writes are serialized server-wide).
     writes: tokio::sync::Mutex<writes::WriteState>,
@@ -993,6 +1003,19 @@ fn own_freeze_store() -> crate::freeze::FreezeStore {
     }
 }
 
+/// The profile a new server pins writes against: `AWS_PROFILE` in
+/// production, none under test, so no test depends on the shell.
+fn own_ambient_profile() -> Option<String> {
+    #[cfg(not(test))]
+    {
+        std::env::var("AWS_PROFILE").ok()
+    }
+    #[cfg(test)]
+    {
+        None
+    }
+}
+
 impl Server {
     /// The one constructor. It takes a scope rather than a bool
     /// because a bool could only ever mean "all or nothing", and
@@ -1044,6 +1067,8 @@ impl Server {
             safety_cfg,
             config_file: None,
             freeze: own_freeze_store(),
+            ambient_profile: own_ambient_profile(),
+            audit_wired: std::sync::atomic::AtomicBool::new(false),
             writes: tokio::sync::Mutex::new(writes::WriteState::default()),
             outbound: std::sync::Mutex::new(None),
             pending_asks: std::sync::Mutex::new(std::collections::HashMap::new()),
@@ -1072,6 +1097,35 @@ impl Server {
     #[cfg(test)]
     pub(crate) fn watching_exe(mut self, path: &std::path::Path) -> Self {
         self.exe = Some(ExeIdentity::for_tests(path));
+        self
+    }
+
+    /// Wire `notify_webhook` from config, once, so an audit line this
+    /// server writes is POSTed. Never on a demo server, which writes
+    /// none.
+    pub(crate) fn ensure_audit_wired(&self) {
+        if matches!(self.backend, Backend::Demo) {
+            return;
+        }
+        if !self
+            .audit_wired
+            .swap(true, std::sync::atomic::Ordering::Relaxed)
+        {
+            crate::audit::init_from_config_disk();
+        }
+    }
+
+    /// Whether this server has wired its audit webhook.
+    #[cfg(test)]
+    pub(crate) fn audit_is_wired(&self) -> bool {
+        self.audit_wired.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Pin writes against `profile`, as a server started under
+    /// `AWS_PROFILE=profile` does.
+    #[cfg(test)]
+    pub(crate) fn with_ambient_profile(mut self, profile: &str) -> Self {
+        self.ambient_profile = Some(profile.to_string());
         self
     }
 
@@ -1384,8 +1438,8 @@ impl Server {
                 // server can never write, so it must not read the
                 // config disk either — which the comment above
                 // promises and `elicits` alone did not honour.
-                if self.effective_scope().any() && !matches!(self.backend, Backend::Demo) {
-                    crate::audit::init_from_config_disk();
+                if self.effective_scope().any() {
+                    self.ensure_audit_wired();
                 }
                 tracing::info!(
                     target: "ebman::mcp",
