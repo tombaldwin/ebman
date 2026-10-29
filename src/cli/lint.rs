@@ -966,6 +966,9 @@ pub async fn run(args: &[String]) -> Result<()> {
                 fix_disabled,
                 safety_cfg: config::load(),
                 ambient_profile: std::env::var("AWS_PROFILE").ok(),
+                post_webhook: Box::new(|p| {
+                    audit::fire_webhook(p.url, None, p.profile, p.region, p.detail, p.when)
+                }),
             }
         },
         crate::cli::active_freeze,
@@ -992,12 +995,28 @@ pub async fn run(args: &[String]) -> Result<()> {
 
 /// What `ebman lint` reads from the operator's machine before it starts:
 /// the disabled rules and fixes (config and project), the safety config,
-/// and `AWS_PROFILE`.
+/// and `AWS_PROFILE`; and where a `--watch --webhook` cycle's post goes.
 pub(crate) struct LintSetup {
     pub disabled: Vec<String>,
     pub fix_disabled: Vec<String>,
     pub safety_cfg: config::Config,
     pub ambient_profile: Option<String>,
+    /// `audit::fire_webhook` in production, which POSTs. A seam because
+    /// what decides a post (the change guard, the degraded suppression)
+    /// lives in the body, and a test cannot reach it through a real POST.
+    pub post_webhook: Box<dyn Fn(&WebhookPost<'_>) + Send + Sync>,
+}
+
+/// One `--watch --webhook` post: a cycle whose findings changed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct WebhookPost<'a> {
+    pub url: &'a str,
+    pub profile: Option<&'a str>,
+    /// The cycle's region, `multi` across several, or `default`.
+    pub region: &'a str,
+    /// [`webhook_summary`] of the cycle's findings.
+    pub detail: &'a str,
+    pub when: &'a str,
 }
 
 /// `ebman lint`'s whole behaviour against its setup (loaded once the
@@ -1050,6 +1069,7 @@ where
         fix_disabled,
         safety_cfg,
         ambient_profile: active_profile_for_safety,
+        post_webhook,
     } = &setup;
     // `run_cycle` computes its own; this one is for the printing
     // and baseline branches below.
@@ -1170,19 +1190,17 @@ where
                 // did. Only a change from a KNOWN previous state (or
                 // first findings) is worth a page.
                 if should_post_webhook(last_webhook_identities.as_ref(), &identities) {
-                    let detail = webhook_summary(&report.issues);
-                    audit::fire_webhook(
+                    post_webhook(&WebhookPost {
                         url,
-                        None,
-                        active_profile_for_safety.as_deref(),
-                        if multi_region {
+                        profile: active_profile_for_safety.as_deref(),
+                        region: if multi_region {
                             "multi"
                         } else {
                             regions[0].as_deref().unwrap_or("default")
                         },
-                        &detail,
-                        &cycle_started.to_rfc3339(),
-                    );
+                        detail: &webhook_summary(&report.issues),
+                        when: &cycle_started.to_rfc3339(),
+                    });
                 }
                 last_webhook_identities = Some(identities);
             }
@@ -3820,6 +3838,7 @@ mod body {
             fix_disabled: vec![],
             safety_cfg: config::Config::default(),
             ambient_profile: None,
+            post_webhook: Box::new(|_| {}),
         }
     }
 
@@ -3930,6 +3949,7 @@ mod body {
                     fix_disabled: vec![],
                     safety_cfg: cfg,
                     ambient_profile: profile,
+                    ..setup()
                 },
                 || None,
                 |_| async { Ok(mock_client_inner(vec!["api".into()], findings())) },
@@ -4138,6 +4158,47 @@ mod body {
         }
     }
 
+    /// A snapshot that cannot be written exits 1 and says where, rather
+    /// than reporting the baseline adopted. The degraded refusal above
+    /// exits 1 too, so this one is told apart by its message.
+    #[tokio::test]
+    async fn a_baseline_that_cannot_be_written_exits_1() {
+        let scratch = temp("unwritable");
+        let path = scratch.with_file_name("no-such-dir").join("baseline.json");
+        let r = lint(&["--baseline", path.to_str().unwrap()], findings(), None).await;
+        assert_eq!(r.code, 1, "{}", r.err);
+        assert!(
+            r.err.contains("ebman lint --baseline: write ") && r.err.contains("no-such-dir"),
+            "{}",
+            r.err
+        );
+        assert!(!r.err.contains("wrote"), "{}", r.err);
+        let _ = std::fs::remove_dir_all(scratch.parent().unwrap());
+    }
+
+    /// `run` hands the body the real POST. Every webhook test above
+    /// records through the seam, so a `run` passing a no-op would leave
+    /// them all green while no channel ever heard from a watch.
+    #[test]
+    fn run_posts_the_webhook_through_fire_webhook() {
+        let src = crate::app::tests::scan::production_source("cli/lint.rs");
+        let body = crate::app::tests::scan::fn_bodies(&src)
+            .into_iter()
+            .find(|(name, _)| name == "run")
+            .expect("`run` is defined")
+            .1;
+        let seam = &body[body
+            .find("post_webhook:")
+            .expect("`run` sets the webhook seam")..];
+        let seam = &seam[..seam.find("}),").expect("the seam closure ends")];
+        let call = &seam[seam
+            .find("audit::fire_webhook(")
+            .unwrap_or_else(|| panic!("`run` must post through `audit::fire_webhook`: {seam}"))..];
+        for field in ["p.url", "p.profile", "p.region", "p.detail", "p.when"] {
+            assert!(call.contains(field), "`run` drops `{field}`: {call}");
+        }
+    }
+
     /// The stop signal ends a watch after the cycle in flight, and the
     /// exit is that cycle's. Bounded: a watch that ignores its stop
     /// otherwise never returns, and a hung test reports nothing.
@@ -4152,5 +4213,117 @@ mod body {
         assert_eq!(r.code, 3, "{}", r.err);
         assert_eq!(r.clients, 1, "one cycle");
         assert!(r.err.contains("(watch interrupted)"), "{}", r.err);
+    }
+
+    /// A `--watch` run over a scripted fleet: cycle `i` reads the fleet
+    /// with `script[i]`, and the stop is pressed once every cycle has
+    /// run. Returns the outcome and every webhook post, by detail.
+    async fn watch(args: &[&str], script: &[MockFaults]) -> (Outcome, Vec<String>) {
+        let argv: Vec<String> = ["lint", "--watch", "--interval", "1"]
+            .into_iter()
+            .chain(args.iter().copied())
+            .map(String::from)
+            .collect();
+        let posts = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorded = posts.clone();
+        let cycles = AtomicUsize::new(0);
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let code = lint_body(
+            &argv,
+            move || LintSetup {
+                post_webhook: Box::new(move |p| {
+                    assert_eq!(p.url, "https://hooks.example/lint");
+                    assert_eq!(p.region, "default", "one region, none named");
+                    recorded.lock().unwrap().push(p.detail.to_string());
+                }),
+                ..setup()
+            },
+            || None,
+            |_region| {
+                let faults = script[cycles.fetch_add(1, Ordering::SeqCst).min(script.len() - 1)];
+                async move { Ok(mock_client_inner(vec!["api".into()], faults)) }
+            },
+            async {
+                // The interval is a second and this polls every
+                // millisecond, so the stop wins the race only once the
+                // last cycle has run.
+                while cycles.load(Ordering::SeqCst) < script.len() {
+                    tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                }
+            },
+            &mut out,
+            &mut err,
+        )
+        .await;
+        let outcome = Outcome {
+            code,
+            out: String::from_utf8(out).unwrap(),
+            err: String::from_utf8(err).unwrap(),
+            clients: cycles.into_inner(),
+        };
+        let posts = posts.lock().unwrap().clone();
+        (outcome, posts)
+    }
+
+    /// `--webhook` posts when the cycle's findings change, and only
+    /// then: the first findings, not the same findings a minute later,
+    /// the all-clear, nothing for a degraded cycle (whose findings are
+    /// incomplete), and a change measured against the last full cycle.
+    #[tokio::test(start_paused = true)]
+    async fn the_webhook_posts_a_change_and_suppresses_a_degraded_cycle() {
+        let hook = [
+            "--rules",
+            "EBL001",
+            "--webhook",
+            "https://hooks.example/lint",
+        ];
+        let (r, posts) = watch(
+            &hook,
+            &[
+                findings(),
+                findings(),
+                MockFaults::default(),
+                degraded(),
+                findings(),
+            ],
+        )
+        .await;
+        assert_eq!(r.clients, 5, "five cycles: {}", r.err);
+        assert_eq!(posts.len(), 3, "{posts:#?}");
+        assert!(
+            posts[0].contains("EBL001 api"),
+            "first findings: {}",
+            posts[0]
+        );
+        assert_eq!(posts[1], "lint: ✓ clean (previous issues cleared)");
+        assert!(posts[2].contains("EBL001 api"), "found again: {}", posts[2]);
+        assert_eq!(
+            r.err.matches("webhook suppressed").count(),
+            1,
+            "the degraded cycle says why it did not post: {}",
+            r.err
+        );
+
+        // A fleet clean from the first cycle has cleared nothing.
+        let (_, posts) = watch(&hook, &[MockFaults::default(), MockFaults::default()]).await;
+        assert!(posts.is_empty(), "{posts:#?}");
+    }
+
+    /// A multi-cycle `--watch` exits with its last cycle's state, not
+    /// its first's or its worst's.
+    #[tokio::test(start_paused = true)]
+    async fn a_watch_exits_with_its_last_cycles_state() {
+        let rules = ["--rules", "EBL001"];
+        let (r, _) = watch(&rules, &[findings(), MockFaults::default()]).await;
+        assert_eq!(r.code, 0, "cleared by the last cycle: {}", r.err);
+        let (r, _) = watch(&rules, &[MockFaults::default(), findings()]).await;
+        assert_eq!(r.code, 3, "found in the last cycle: {}", r.err);
+        let (r, _) = watch(&rules, &[findings(), degraded()]).await;
+        assert_eq!(r.code, 1, "the last cycle was incomplete: {}", r.err);
+        assert_eq!(r.clients, 2);
+        // Findings outrank an incomplete run, so only a clean cycle can
+        // show the outage before it was forgotten.
+        let (r, _) = watch(&rules, &[degraded(), MockFaults::default()]).await;
+        assert_eq!(r.code, 0, "a full, clean cycle after an outage: {}", r.err);
     }
 }
