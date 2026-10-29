@@ -54,6 +54,15 @@ impl ToolAttrs {
             ..Self::read()
         }
     }
+    /// A change to something the server owns rather than to AWS: the
+    /// freeze marker. Closed domain, for the reason `local_read` is.
+    const fn local_write(destructive: bool, idempotent: bool) -> Self {
+        Self {
+            open_world: false,
+            ..Self::write(destructive, idempotent)
+        }
+    }
+
     const fn write(destructive: bool, idempotent: bool) -> Self {
         Self {
             read_only: false,
@@ -101,6 +110,11 @@ pub(super) const TOOL_ATTRS: &[(&str, ToolAttrs)] = &[
     // on the server — so it is the one tool guaranteed to answer even
     // when everything it describes is broken. That is the point of it.
     ("doctor", ToolAttrs::local_read()),
+    // Writes the local freeze marker, which every ebman process reads,
+    // so not read-only. Not destructive: it takes writes away and
+    // `ebman thaw` gives them back. Idempotent: declaring the same
+    // freeze twice leaves one freeze.
+    ("freeze_fleet", ToolAttrs::local_write(false, true)),
     // A write — it sends a message — but a restorative one. Not
     // destructive: it puts something back. Not idempotent: calling it
     // twice would enqueue two copies.

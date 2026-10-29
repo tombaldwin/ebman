@@ -6,7 +6,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- **`freeze_fleet`, an MCP tool that declares a fleet freeze.** An agent
+  that sees a reason nobody should change the fleet (a bad deploy rolling
+  out, an incident starting) can stop every ebman write, the TUI's and
+  the CLI's included, in one step with no confirmation: it only takes
+  writes away. It is the `ebman freeze` freeze, persistent until you run
+  `ebman thaw`, and nothing on the MCP surface lifts it. It needs a
+  reason of at most 200 characters, comes with any write grant as
+  `confirm_action` does (not on a `--read-only` server), does nothing on
+  a demo server, and is audited `FreezeDeploys` (or `IncidentStart`)
+  with `via=mcp` and the client's name.
+
 ### Fixed
+
+- **A confirm modal no longer shows a closed modal's pre-flight.** Its
+  impact count, recent events, deploy preview, health-check probe,
+  unavailability line and lint were matched to their answer by env
+  alone, so reopening `:deploy` on the same env with another label
+  could show the first label's preview, and a failed second fetch left
+  it there. Each answer now lands only in the modal that asked for it.
 
 - **A freeze declared during `ebman lint --fix --yes` stops the envs
   after it.** The freeze was read once, before the run, so a long

@@ -1448,7 +1448,7 @@ pub(super) fn write_verb_names() -> Vec<String> {
     write_tool_descriptors()
         .iter()
         .filter_map(|d| d.get("name").and_then(|n| n.as_str()))
-        .filter(|n| *n != CONFIRM_TOOL && *n != UNDO_TOOL)
+        .filter(|n| *n != CONFIRM_TOOL && *n != UNDO_TOOL && *n != FREEZE_TOOL)
         .map(str::to_string)
         .collect()
 }
@@ -1476,6 +1476,18 @@ pub(super) fn write_tool_descriptors() -> Vec<Value> {
     let batch_note = format!("ONE CALL COVERS SEVERAL: pass `message_ids` (an array, up to {DLQ_BATCH_CAP}) to handle a set in one plan and ONE confirmation. Prefer it over calling this repeatedly — each plan asks the operator separately, and a person answering the same dialog eight times stops reading it. Over {DLQ_BATCH_CAP} is refused rather than truncated: the cap is what keeps the list readable, and `dlq_purge` is the action for emptying a queue. Give `message_id` or `message_ids`, not both.");
     let confirm_note = format!("TWO-PHASE: this tool DISPATCHES NOTHING. It validates and returns {{pending:true, confirm_token, plan}}; you must surface the plan, then call confirm_action with the token ({CONFIRM_TTL_SECS}s TTL, single-use) to dispatch. Dispatch-only — poll the read tools for progress.");
     vec![
+        json!({
+            "name": "freeze_fleet",
+            "description": "Declare a fleet freeze: every ebman write refuses — the operator's TUI and CLI as well as this server — until the OPERATOR runs `ebman thaw`. Use it when you see a reason no one should change the fleet right now (a bad deploy rolling out, an incident starting) and say so to the operator. One step: no plan and no confirm, because it only takes writes away; it comes with any write grant, as `confirm_action` does. CAVEATS: you cannot lift it, and no tool here can; it does not stop AWS changes made outside ebman (the console, the AWS CLI, CI). Persistent: it outlives this connection. Audited as `FreezeDeploys` (or `IncidentStart`) with `via=mcp`.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "reason": {"type": "string", "description": "Why, in a line (required, at most 200 characters): shown wherever the freeze refuses a write"},
+                    "incident": {"type": "boolean", "description": "Declare it as an incident (audited `IncidentStart`)"}
+                },
+                "required": ["reason"]
+            }
+        }),
         json!({
             "name": "deploy",
             "description": format!("Deploy an existing application version to an environment. {confirm_note}"),
@@ -2863,6 +2875,99 @@ impl Server {
             util::json_string(&d.original_id),
             util::json_string(d.task.as_deref().unwrap_or(NOT_A_WORKER_TASK)),
         ))
+    }
+}
+
+/// The tool that declares a fleet freeze. Not a verb either: it only
+/// takes writes away, so it rides along with any grant and is not
+/// separately grantable.
+pub(super) const FREEZE_TOOL: &str = "freeze_fleet";
+
+/// Longest reason `freeze_fleet` accepts. The reason is shown wherever
+/// the freeze refuses a write, a TUI status line among them, and an
+/// operator lifting it needs to read it at a glance.
+pub(super) const FREEZE_REASON_MAX: usize = 200;
+
+impl Server {
+    /// `freeze_fleet`: declare an `ebman freeze`, which every ebman
+    /// process honours until the operator runs `ebman thaw`.
+    ///
+    /// One step, no plan and no ask: declaring a freeze only takes
+    /// writes away, so it is the one change an agent may make that the
+    /// operator need not approve. It comes with any write grant, as
+    /// `confirm_action` does, and not on a `--read-only` server, which
+    /// offers only tools that change nothing. Lifting is not offered
+    /// here at all. Persistent, not
+    /// tied to this server's process: a freeze that lifted when the
+    /// agent disconnected would fail open mid-incident.
+    pub(super) fn tool_freeze_fleet(&self, args: &Value) -> Result<String, String> {
+        let reason = args
+            .get("reason")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or("");
+        if reason.is_empty() {
+            return Err(format!(
+                "{FREEZE_TOOL}: `reason` is required — the operator who lifts the freeze \
+                 needs to know why it is there"
+            ));
+        }
+        if reason.chars().count() > FREEZE_REASON_MAX {
+            return Err(format!(
+                "{FREEZE_TOOL}: `reason` is over {FREEZE_REASON_MAX} characters — say why in a \
+                 line; the detail belongs in your reply to the operator"
+            ));
+        }
+        let incident = args
+            .get("incident")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        if matches!(self.backend, Backend::Demo) {
+            return Ok(json!({
+                "frozen": false,
+                "demo": true,
+                "message": "DEMO server: nothing was frozen and no other process is affected.",
+            })
+            .to_string());
+        }
+        if let Err(e) = self.freeze.declare_persistent(reason, incident) {
+            return Err(format!(
+                "{FREEZE_TOOL}: could not write the freeze marker ({e}) — the fleet is NOT frozen"
+            ));
+        }
+        let client = self
+            .client_name
+            .lock()
+            .map(|c| c.clone())
+            .unwrap_or_default();
+        let mut extras = self.write_extras(&client, None, 0, None, None);
+        extras.push(("reason", reason.to_string()));
+        extras.push(("persistent", "true".to_string()));
+        let extras: Vec<(&str, &str)> = extras.iter().map(|(k, v)| (*k, v.as_str())).collect();
+        crate::audit::append_action_dispatched(
+            None,
+            std::env::var("AWS_PROFILE").ok().as_deref(),
+            "-",
+            if incident {
+                "IncidentStart"
+            } else {
+                "FreezeDeploys"
+            },
+            "",
+            &extras,
+        );
+        Ok(json!({
+            "frozen": true,
+            "reason": reason,
+            "incident": incident,
+            "lift": "ebman thaw",
+            "message": format!(
+                "Fleet frozen ({reason}): every ebman write now refuses — the TUI's, the \
+                 CLI's and this server's — until the operator runs `ebman thaw`. You cannot \
+                 lift it. Tell the operator you declared it, and why."
+            ),
+        })
+        .to_string())
     }
 }
 

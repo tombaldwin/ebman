@@ -94,9 +94,9 @@ And one found while reading the code:
 
 ## Not doing
 
-- **An MCP tool to declare a freeze.** Declaring one only restricts, so
-  it would be safe to grant, but it adds a tool to the registry surface
-  and no one has asked for it. Recorded as a BACKLOG candidate.
+- ~~**An MCP tool to declare a freeze.**~~ Built 2026-10-29 as
+  `freeze_fleet`: the persistent freeze, one step, with any write grant
+  (not on a `--read-only` server), and no way to lift it from MCP.
 - **Making the TUI's own freeze persistent.** Its session scope is what
   stops a crashed TUI phantom-freezing the fleet; an operator who wants
   a freeze to outlive the session now has `ebman freeze` for that.

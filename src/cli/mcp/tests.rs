@@ -5406,6 +5406,159 @@ fn a_production_server_reads_the_shared_freeze() {
     );
 }
 
+/// A server with every write granted and no pins, reading no config.
+fn granted_server() -> Server {
+    Server::with_config(
+        false,
+        false,
+        WriteScope::All,
+        crate::config::Config::default(),
+    )
+}
+
+/// `freeze_fleet` declares a persistent freeze in the server's store,
+/// in one step, and the freeze then refuses this server's own writes.
+/// Audited as the CLI's and the TUI's are, with the agent named.
+#[tokio::test]
+async fn freeze_fleet_declares_a_freeze_that_refuses_writes() {
+    let server = granted_server();
+    let before = crate::cli::audit_delta::mark();
+    let (is_error, body) = call(
+        &server,
+        "freeze_fleet",
+        json!({"reason": "poly-freeze-probe: bad deploy rolling out"}),
+    )
+    .await;
+    assert!(!is_error, "{body}");
+    assert_eq!(body["frozen"], true, "{body}");
+    assert!(
+        body["message"].as_str().unwrap().contains("`ebman thaw`"),
+        "{body}"
+    );
+    let m = server.freeze_store().active().expect("frozen");
+    assert!(m.persistent, "outlives this connection");
+    assert_eq!(m.reason, "poly-freeze-probe: bad deploy rolling out");
+    assert!(!m.incident);
+
+    let lines =
+        crate::cli::audit_delta::lines_matching(&before, |l| l.contains("poly-freeze-probe"));
+    assert_eq!(lines.len(), 1, "{lines:#?}");
+    for part in [
+        "action=FreezeDeploys",
+        "via=mcp",
+        "persistent=true",
+        "client=",
+    ] {
+        assert!(lines[0].contains(part), "{part}: {}", lines[0]);
+    }
+
+    let err = server
+        .tool_write_plan(writes::WriteVerb::Restart, &json!({"env": "api"}))
+        .await
+        .expect_err("frozen");
+    assert!(err.to_string().contains("fleet freeze active"), "{err}");
+}
+
+#[tokio::test]
+async fn freeze_fleet_as_an_incident_is_audited_as_one() {
+    let server = granted_server();
+    let before = crate::cli::audit_delta::mark();
+    let (is_error, body) = call(
+        &server,
+        "freeze_fleet",
+        json!({"reason": "poly-incident-probe", "incident": true}),
+    )
+    .await;
+    assert!(!is_error, "{body}");
+    assert!(server.freeze_store().active().expect("frozen").incident);
+    let lines =
+        crate::cli::audit_delta::lines_matching(&before, |l| l.contains("poly-incident-probe"));
+    assert_eq!(lines.len(), 1, "{lines:#?}");
+    assert!(lines[0].contains("action=IncidentStart"), "{}", lines[0]);
+}
+
+/// The reason is required, and is a line: an operator lifting the
+/// freeze reads it in a status bar. A refused call declares nothing.
+#[tokio::test]
+async fn freeze_fleet_needs_a_short_reason() {
+    for args in [
+        json!({}),
+        json!({"reason": "   "}),
+        json!({"reason": "x".repeat(writes::FREEZE_REASON_MAX + 1)}),
+    ] {
+        let server = granted_server();
+        let (is_error, body) = call(&server, "freeze_fleet", args.clone()).await;
+        assert!(is_error, "{args}: {body}");
+        assert!(body.as_str().unwrap_or("").contains("`reason`"), "{body}");
+        assert!(server.freeze_store().active().is_none(), "{args}");
+    }
+    let server = granted_server();
+    let (is_error, _) = call(
+        &server,
+        "freeze_fleet",
+        json!({"reason": "x".repeat(writes::FREEZE_REASON_MAX)}),
+    )
+    .await;
+    assert!(!is_error, "exactly the limit is a line");
+}
+
+/// A demo server freezes nothing, as its other writes do nothing.
+#[tokio::test]
+async fn a_demo_freeze_freezes_nothing() {
+    let server = demo_writes_server();
+    let (is_error, body) = call(&server, "freeze_fleet", json!({"reason": "demo"})).await;
+    assert!(!is_error, "{body}");
+    assert_eq!(body["frozen"], false, "{body}");
+    assert!(server.freeze_store().active().is_none());
+}
+
+/// `freeze_fleet` comes with any grant, the narrowest included, and
+/// not on a server with none: a `--read-only` server offers only tools
+/// that change nothing. Nothing on any surface lifts a freeze.
+#[tokio::test]
+async fn freeze_fleet_rides_with_any_grant_and_nothing_lifts() {
+    let names = |scope: &WriteScope| -> Vec<String> {
+        tool_table(scope, true)
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap().to_string())
+            .collect()
+    };
+    let narrow = WriteScope::Only(vec!["dlq_delete".into()]);
+    assert!(names(&narrow).contains(&"freeze_fleet".to_string()));
+    assert!(names(&WriteScope::All).contains(&"freeze_fleet".to_string()));
+    assert!(!names(&WriteScope::None).contains(&"freeze_fleet".to_string()));
+    for name in names(&WriteScope::All) {
+        assert!(
+            !["thaw", "unfreeze", "lift"]
+                .iter()
+                .any(|w| name.contains(w)),
+            "lifting a freeze stays with the operator: `{name}`"
+        );
+    }
+
+    // And the dispatch gate agrees: an ungranted server does not run it.
+    let server = Server::with_config(
+        false,
+        false,
+        WriteScope::None,
+        crate::config::Config::default(),
+    );
+    let resp = rpc(
+        &server,
+        json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+               "params":{"name":"freeze_fleet","arguments":{"reason":"r"}}}),
+    )
+    .await
+    .expect("response");
+    assert!(
+        resp.get("error").is_some() || resp["result"]["isError"] == true,
+        "{resp}"
+    );
+    assert!(server.freeze_store().active().is_none());
+}
+
 /// `total_usd_month` is the sum of the `by_env` it is shown with: a key
 /// that names no env is in neither.
 #[test]

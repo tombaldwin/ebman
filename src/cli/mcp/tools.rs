@@ -137,8 +137,12 @@ pub(super) fn tool_table(scope: &super::WriteScope, peek_bodies: bool) -> Value 
                     // it is the second phase of every write rather
                     // than a verb of its own, so filtering it out
                     // would leave a narrow grant able to plan a write
-                    // and never dispatch it.
-                    n == writes::CONFIRM_TOOL || n == writes::UNDO_TOOL || scope.allows(n)
+                    // and never dispatch it. `freeze_fleet` too: it
+                    // only takes writes away, so any grant covers it.
+                    n == writes::CONFIRM_TOOL
+                        || n == writes::UNDO_TOOL
+                        || n == writes::FREEZE_TOOL
+                        || scope.allows(n)
                 })
             }));
         }
@@ -833,6 +837,7 @@ impl Server {
                 .await
                 .map_err(writes::WriteError::into_message),
             "doctor" => Ok(self.tool_doctor()),
+            "freeze_fleet" => self.tool_freeze_fleet(args),
             "audit_log" => self.tool_audit_log(args),
             "recent_events" => self.tool_recent_events(args).await,
             "list_versions" => self.tool_list_versions(args).await,
