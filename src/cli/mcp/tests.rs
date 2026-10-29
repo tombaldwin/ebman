@@ -5487,6 +5487,9 @@ async fn freeze_fleet_needs_a_short_reason() {
         json!({"reason": "x".repeat(writes::FREEZE_REASON_MAX + 1)}),
         json!({"reason": "two\nlines"}),
         json!({"reason": "bell\u{7}"}),
+        json!({"reason": "line\u{2028}separator"}),
+        json!({"reason": "\u{202E}reversed"}),
+        json!({"reason": "\u{2067}isolated"}),
     ] {
         let server = granted_server();
         let (is_error, body) = call(&server, "freeze_fleet", args.clone()).await;
@@ -5547,6 +5550,31 @@ async fn freeze_fleet_leaves_a_standing_freeze_as_declared() {
     assert!(holders
         .iter()
         .any(|m| !m.persistent && m.reason == "tui freeze"));
+}
+
+/// Declaring clears the note that an earlier freeze lifted with its
+/// session; the agent is handed it, so the operator still hears.
+#[tokio::test]
+async fn freeze_fleet_passes_on_a_freeze_that_ended_with_its_session() {
+    let server = granted_server();
+    server
+        .freeze_store()
+        .write_test_ended("incident: db failover");
+    let (is_error, body) = call(&server, "freeze_fleet", json!({"reason": "agent"})).await;
+    assert!(!is_error, "{body}");
+    assert!(
+        body["ended_before"]
+            .as_str()
+            .is_some_and(|n| n.contains("incident: db failover")),
+        "{body}"
+    );
+    let (_, body) = call(
+        &granted_server(),
+        "freeze_fleet",
+        json!({"reason": "agent"}),
+    )
+    .await;
+    assert!(body["ended_before"].is_null(), "{body}");
 }
 
 /// A demo server freezes nothing, as its other writes do nothing.

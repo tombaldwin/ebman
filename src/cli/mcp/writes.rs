@@ -2912,7 +2912,16 @@ impl Server {
                  needs to know why it is there"
             ));
         }
-        if reason.chars().any(char::is_control) {
+        // Control characters, and the line breaks and direction
+        // overrides Unicode spells outside them: each can make the one
+        // line show something other than what was declared.
+        let breaks_the_line = |c: char| {
+            c.is_control()
+                || matches!(c, '\u{2028}' | '\u{2029}' | '\u{200E}' | '\u{200F}')
+                || ('\u{202A}'..='\u{202E}').contains(&c)
+                || ('\u{2066}'..='\u{2069}').contains(&c)
+        };
+        if reason.chars().any(breaks_the_line) {
             return Err(format!(
                 "{FREEZE_TOOL}: `reason` must be one line, with no control characters — \
                  it is shown in a one-line status bar"
@@ -2956,6 +2965,10 @@ impl Server {
             })
             .to_string());
         }
+        // Declaring clears the note that an earlier freeze lifted with
+        // its session, which is the operator's to see: hand it to the
+        // agent, so it reaches them.
+        let ended = self.freeze.ended().map(|e| e.message());
         if let Err(e) = self.freeze.declare_persistent(reason, incident) {
             return Err(format!(
                 "{FREEZE_TOOL}: could not write the freeze marker ({e}) — the fleet is NOT frozen"
@@ -2987,6 +3000,7 @@ impl Server {
             "reason": reason,
             "incident": incident,
             "lift": "ebman thaw",
+            "ended_before": ended,
             "message": format!(
                 "Fleet frozen ({reason}): every ebman write now refuses — the TUI's, the \
                  CLI's and this server's — until the operator runs `ebman thaw`. You cannot \
