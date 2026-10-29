@@ -23,8 +23,8 @@
 //! ebman older than 0.47, which reads only that file, and every read
 //! puts it right. A mirror is marked so; one without the mark was
 //! written by an older TUI and is a holder in its own right. Everything
-//! goes through a [`FreezeStore`]: the CLI and MCP use the real one, a
-//! TUI the one its `App` holds. Deleting `freeze.d/` and `freeze.json` is
+//! goes through a [`FreezeStore`] the surface holds: a TUI's `App`, an
+//! MCP `Server`, a CLI write's `WriteEnv`. Deleting `freeze.d/` and `freeze.json` is
 //! the manual unfreeze of last resort. See
 //! `docs/design/persistent-freeze.md`.
 
@@ -151,9 +151,10 @@ struct Holder {
 
 /// Where the freeze lives: `freeze.d/` holder files, the legacy
 /// `freeze.json` mirror beside them, and the ended record. A value, so
-/// every surface reaches the freeze one way: the CLI and MCP through
-/// [`FreezeStore::real`], the TUI through the store its `App` holds (a
-/// test App has one of its own).
+/// every surface reaches the freeze one way, through the store it holds:
+/// a TUI's `App`, an MCP `Server`, a CLI write's `WriteEnv`. In production
+/// that is [`FreezeStore::real`]; under test each has
+/// [`FreezeStore::isolated`].
 #[derive(Clone)]
 pub(crate) struct FreezeStore {
     /// The legacy marker, `freeze.json`. The holders' directory and the
@@ -183,6 +184,16 @@ impl FreezeStore {
             marker,
             liveness: Liveness::REAL,
         }
+    }
+
+    /// A store nothing else shares: what a test `App`, MCP server or CLI
+    /// write body reads, so no test sees a freeze another declared, and
+    /// what a `--demo` App reads, so demo neither sees nor sets a real
+    /// freeze.
+    pub(crate) fn isolated() -> Self {
+        static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Self::at(crate::util::cache_dir().join(format!("freeze-isolated-{n}.json")))
     }
 
     /// [`at`](Self::at), judged by `liveness`.

@@ -965,13 +965,12 @@ pub async fn run(args: &[String]) -> Result<()> {
                 disabled,
                 fix_disabled,
                 safety_cfg: config::load(),
-                ambient_profile: std::env::var("AWS_PROFILE").ok(),
                 post_webhook: Box::new(|p| {
                     audit::fire_webhook(p.url, None, p.profile, p.region, p.detail, p.when)
                 }),
             }
         },
-        crate::cli::active_freeze,
+        crate::cli::WriteEnv::real(),
         |region| aws::AwsClient::with(None, region),
         // `ctrl_c` panics outside a Tokio runtime, but `run` is
         // `#[tokio::main]`-driven so we're always inside one here.
@@ -994,13 +993,14 @@ pub async fn run(args: &[String]) -> Result<()> {
 }
 
 /// What `ebman lint` reads from the operator's machine before it starts:
-/// the disabled rules and fixes (config and project), the safety config,
-/// and `AWS_PROFILE`; and where a `--watch --webhook` cycle's post goes.
+/// the disabled rules and fixes (config and project) and the safety
+/// config; and where a `--watch --webhook` cycle's post goes. The profile
+/// and the freeze come in its [`crate::cli::WriteEnv`], as every write
+/// body's do.
 pub(crate) struct LintSetup {
     pub disabled: Vec<String>,
     pub fix_disabled: Vec<String>,
     pub safety_cfg: config::Config,
-    pub ambient_profile: Option<String>,
     /// `audit::fire_webhook` in production, which POSTs. A seam because
     /// what decides a post (the change guard, the degraded suppression)
     /// lives in the body, and a test cannot reach it through a real POST.
@@ -1021,13 +1021,14 @@ pub(crate) struct WebhookPost<'a> {
 
 /// `ebman lint`'s whole behaviour against its setup (loaded once the
 /// flags parse: a usage error reads no config and prints none of its
-/// warnings), the fleet freeze (`active_freeze` in production, read up
-/// front and again before each env's fix), a region → client factory,
-/// the `--watch` stop signal (Ctrl-C) and writers. Returns the exit code.
-pub(crate) async fn lint_body<F, Fut>(
+/// warnings), its [`crate::cli::WriteEnv`] (the profile, and the freeze
+/// read up front and again before each env's fix; lint decides with its
+/// setup's config, not the env's gate), a region → client factory, the
+/// `--watch` stop signal (Ctrl-C) and writers. Returns the exit code.
+pub(crate) async fn lint_body<G, F, Fut>(
     args: &[String],
     setup: impl FnOnce() -> LintSetup,
-    freeze: impl Fn() -> Option<crate::freeze::FreezeMarker>,
+    write_env: crate::cli::WriteEnv<G>,
     client_for: F,
     stop: impl std::future::Future<Output = ()>,
     out: &mut dyn std::io::Write,
@@ -1068,9 +1069,12 @@ where
         disabled,
         fix_disabled,
         safety_cfg,
-        ambient_profile: active_profile_for_safety,
         post_webhook,
     } = &setup;
+    let active_profile_for_safety = &write_env.ambient_profile;
+    // Read up front, and again before each env's fix: a freeze declared
+    // part-way through stops the envs after it.
+    let freeze = || write_env.freeze.active();
     // `run_cycle` computes its own; this one is for the printing
     // and baseline branches below.
     let multi_region = regions.len() > 1;
@@ -2960,6 +2964,17 @@ pub(crate) mod cycle_wiring {
     }
 
     pub(crate) fn mock_client_inner(envs: Vec<String>, faults: MockFaults) -> aws::AwsClient {
+        mock_client_on_fix(envs, faults, std::sync::Arc::new(|| {}))
+    }
+
+    /// [`mock_client_inner`], calling `on_fix` as each `fixable`
+    /// `UpdateEnvironment` succeeds: what an operator does between two
+    /// envs' fixes, such as declaring a freeze.
+    pub(crate) fn mock_client_on_fix(
+        envs: Vec<String>,
+        faults: MockFaults,
+        on_fix: std::sync::Arc<dyn Fn() + Send + Sync>,
+    ) -> aws::AwsClient {
         let failing_update = faults.update_rejected;
         let fixable = failing_update || faults.fixable;
         use aws_sdk_elasticbeanstalk::operation::describe_environments::DescribeEnvironmentsOutput;
@@ -3130,7 +3145,8 @@ pub(crate) mod cycle_wiring {
         let update_ok = aws_smithy_mocks::mock!(
             aws_sdk_elasticbeanstalk::Client::update_environment
         )
-        .then_output(|| {
+        .then_output(move || {
+            on_fix();
             aws_sdk_elasticbeanstalk::operation::update_environment::UpdateEnvironmentOutput::builder().build()
         });
         let update = aws_smithy_mocks::mock!(
@@ -3805,7 +3821,7 @@ pub(crate) mod cycle_wiring {
 
 #[cfg(test)]
 mod body {
-    use super::cycle_wiring::{mock_client_inner, MockFaults};
+    use super::cycle_wiring::{mock_client_inner, mock_client_on_fix, MockFaults};
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -3816,15 +3832,16 @@ mod body {
         clients: usize,
     }
 
-    /// An `ebman freeze` in force, for `reason`.
-    pub(super) fn marker(reason: &str) -> crate::freeze::FreezeMarker {
-        crate::freeze::FreezeMarker {
-            pid: 0,
-            reason: reason.to_string(),
-            incident: false,
-            at: "2026-10-24T09:00:00Z".to_string(),
-            persistent: true,
+    /// A write environment with no profile and a store of its own,
+    /// holding an `ebman freeze` for `reason` if one is given.
+    fn write_env(frozen: Option<&str>) -> crate::cli::WriteEnv<()> {
+        let env = crate::cli::WriteEnv::for_tests(None, ());
+        if let Some(reason) = frozen {
+            env.freeze
+                .declare_persistent(reason, true)
+                .expect("declared");
         }
+        env
     }
 
     fn setup() -> LintSetup {
@@ -3832,7 +3849,6 @@ mod body {
             disabled: vec![],
             fix_disabled: vec![],
             safety_cfg: config::Config::default(),
-            ambient_profile: None,
             post_webhook: Box::new(|_| {}),
         }
     }
@@ -3850,7 +3866,7 @@ mod body {
         let code = lint_body(
             &argv,
             setup,
-            || frozen.map(marker),
+            write_env(frozen),
             |_region| {
                 clients.fetch_add(1, Ordering::SeqCst);
                 async move { Ok(mock_client_inner(vec!["api".into()], faults)) }
@@ -3918,7 +3934,7 @@ mod body {
         let code = lint_body(
             &["lint".to_string(), "--bogus".to_string()],
             || panic!("config read for a usage error"),
-            || None,
+            write_env(None),
             |_| async { Err(color_eyre::eyre::eyre!("no client")) },
             async {},
             &mut out,
@@ -3943,10 +3959,9 @@ mod body {
                     disabled: vec![],
                     fix_disabled: vec![],
                     safety_cfg: cfg,
-                    ambient_profile: profile,
                     ..setup()
                 },
-                || None,
+                crate::cli::WriteEnv::for_tests(profile.as_deref(), ()),
                 |_| async { Ok(mock_client_inner(vec!["api".into()], findings())) },
                 async {},
                 &mut out,
@@ -4027,7 +4042,7 @@ mod body {
                     ..setup()
                 }
             },
-            || Some(marker("incident #5")),
+            write_env(Some("incident #5")),
             |_| async { Ok(mock_client_inner(vec!["api".into()], findings())) },
             async {},
             &mut out,
@@ -4052,22 +4067,32 @@ mod body {
     #[tokio::test]
     async fn a_freeze_declared_mid_run_stops_the_envs_after_it() {
         let (first, second) = ("poly-midrun-api", "poly-midrun-web");
-        let reads = AtomicUsize::new(0);
+        let env = write_env(None);
+        // The operator declares it once the first env's fix has landed.
+        let store = env.freeze.clone();
+        let declare: std::sync::Arc<dyn Fn() + Send + Sync> = std::sync::Arc::new(move || {
+            store
+                .declare_persistent("incident #77", true)
+                .expect("declared");
+        });
         let before = crate::cli::audit_delta::mark();
         let (mut out, mut err) = (Vec::new(), Vec::new());
         let code = lint_body(
             &["lint".to_string(), "--fix".to_string(), "--yes".to_string()],
             setup,
-            // Clear up front and for the first env, frozen after.
-            || (reads.fetch_add(1, Ordering::SeqCst) >= 2).then(|| marker("incident #77")),
-            |_| async move {
-                Ok(mock_client_inner(
-                    vec![first.into(), second.into()],
-                    MockFaults {
-                        fixable: true,
-                        ..MockFaults::default()
-                    },
-                ))
+            env,
+            |_| {
+                let declare = declare.clone();
+                async move {
+                    Ok(mock_client_on_fix(
+                        vec![first.into(), second.into()],
+                        MockFaults {
+                            fixable: true,
+                            ..MockFaults::default()
+                        },
+                        declare,
+                    ))
+                }
             },
             async {},
             &mut out,
@@ -4233,7 +4258,7 @@ mod body {
                 }),
                 ..setup()
             },
-            || None,
+            write_env(None),
             |_region| {
                 let faults = script[cycles.fetch_add(1, Ordering::SeqCst).min(script.len() - 1)];
                 async move { Ok(mock_client_inner(vec!["api".into()], faults)) }

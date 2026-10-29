@@ -201,8 +201,7 @@ pub(crate) async fn run_replay(args: &[String]) -> Result<()> {
         &util::cache_dir().join("audit.log"),
         // Safety pins gate every dispatch site, CLI included (house
         // rule), through the audited funnel, freeze included.
-        crate::cli::real_refusal,
-        std::env::var("AWS_PROFILE").ok(),
+        crate::cli::WriteEnv::real(),
         aws::AwsClient::with,
         &mut std::io::stdout().lock(),
         &mut std::io::stderr().lock(),
@@ -224,8 +223,7 @@ pub(crate) async fn run_replay(args: &[String]) -> Result<()> {
 pub(crate) async fn audit_replay_body<F, Fut>(
     args: &[String],
     log: &std::path::Path,
-    refusal: impl crate::cli::WriteGate,
-    ambient_profile: Option<String>,
+    write_env: crate::cli::WriteEnv<impl crate::cli::WriteGate>,
     client_for: F,
     out: &mut dyn std::io::Write,
     err: &mut dyn std::io::Write,
@@ -320,8 +318,8 @@ where
     // creds (`profile=-`) — the ambient AWS_PROFILE, which is what
     // `AwsClient::with(None, …)` will resolve to. Same fallback
     // `lint --fix` uses.
-    let pin_profile = plan.profile.clone().or(ambient_profile);
-    if let Some(reason) = refusal(&crate::cli::GateQuery {
+    let pin_profile = plan.profile.clone().or(write_env.ambient_profile.clone());
+    if let Some(reason) = write_env.refusal(&crate::cli::GateQuery {
         env: &plan.env,
         profile: pin_profile.as_deref(),
         region: plan.region.as_deref(),
@@ -754,13 +752,15 @@ mod body {
         let code = audit_replay_body(
             &argv,
             &path,
-            |q: &crate::cli::GateQuery<'_>| {
-                let (env, profile, verb) = (q.env, q.profile, q.verb);
-                *asked.lock().unwrap() = Some(profile.map(String::from));
-                *verb_asked.lock().unwrap() = Some(verb.to_string());
-                refuse.map(|why| format!("refusing {env} — {why}"))
-            },
-            Some("ambient".into()),
+            crate::cli::WriteEnv::for_tests(
+                Some("ambient"),
+                |q: &crate::cli::GateQuery<'_>, _freeze| {
+                    let (env, profile, verb) = (q.env, q.profile, q.verb);
+                    *asked.lock().unwrap() = Some(profile.map(String::from));
+                    *verb_asked.lock().unwrap() = Some(verb.to_string());
+                    refuse.map(|why| format!("refusing {env} — {why}"))
+                },
+            ),
             |profile, region| {
                 *built.lock().unwrap() = Some((profile, region));
                 async move { aws.ok_or_else(|| color_eyre::eyre::eyre!("no credentials")) }

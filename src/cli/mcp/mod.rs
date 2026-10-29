@@ -989,11 +989,7 @@ fn own_freeze_store() -> crate::freeze::FreezeStore {
     }
     #[cfg(test)]
     {
-        static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        crate::freeze::FreezeStore::at(
-            crate::util::cache_dir().join(format!("freeze-mcp-{n}.json")),
-        )
+        crate::freeze::FreezeStore::isolated()
     }
 }
 

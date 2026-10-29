@@ -57,21 +57,25 @@ fn parse_freeze_args(args: &[String]) -> Result<FreezeCmd, String> {
     })
 }
 
-/// `ebman freeze`'s whole behaviour, writers injected. Returns the exit
-/// code.
-pub(crate) fn freeze_body(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> i32 {
+/// `ebman freeze`'s whole behaviour against `write_env`'s store and
+/// profile, writers injected. Returns the exit code.
+pub(crate) fn freeze_body<G>(
+    args: &[String],
+    write_env: crate::cli::WriteEnv<G>,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> i32 {
     match parse_freeze_args(args) {
         Err(msg) => {
             let _ = writeln!(err, "{msg}");
             2
         }
         Ok(FreezeCmd::Status) => {
-            let _ = writeln!(out, "{}", status_text());
+            let _ = writeln!(out, "{}", status_text(&write_env.freeze));
             0
         }
         Ok(FreezeCmd::Declare { reason, incident }) => {
-            if let Err(e) = crate::freeze::FreezeStore::real().declare_persistent(&reason, incident)
-            {
+            if let Err(e) = write_env.freeze.declare_persistent(&reason, incident) {
                 let _ = writeln!(
                     err,
                     "ebman freeze: could not write the freeze marker ({e}) — the fleet is NOT frozen"
@@ -85,7 +89,7 @@ pub(crate) fn freeze_body(args: &[String], out: &mut dyn Write, err: &mut dyn Wr
             };
             crate::audit::append_action_dispatched(
                 None,
-                std::env::var("AWS_PROFILE").ok().as_deref(),
+                write_env.ambient_profile.as_deref(),
                 "-",
                 if incident {
                     "IncidentStart"
@@ -114,8 +118,8 @@ pub(crate) fn freeze_body(args: &[String], out: &mut dyn Write, err: &mut dyn Wr
 }
 
 /// What is in force, and any freeze that ended with its session.
-fn status_text() -> String {
-    let holders = crate::freeze::FreezeStore::real().all();
+fn status_text(store: &crate::freeze::FreezeStore) -> String {
+    let holders = store.all();
     let mut lines: Vec<String> = if holders.is_empty() {
         vec!["not frozen".to_string()]
     } else {
@@ -133,21 +137,26 @@ fn status_text() -> String {
             .collect()
     };
     if holders.is_empty() {
-        if let Some(ended) = crate::freeze::FreezeStore::real().ended() {
+        if let Some(ended) = store.ended() {
             lines.push(format!("note: {}", ended.message()));
         }
     }
     lines.join("\n")
 }
 
-/// `ebman thaw`'s whole behaviour, writers injected. Returns the exit
-/// code.
-pub(crate) fn thaw_body(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> i32 {
+/// `ebman thaw`'s whole behaviour against `write_env`'s store and
+/// profile, writers injected. Returns the exit code.
+pub(crate) fn thaw_body<G>(
+    args: &[String],
+    write_env: crate::cli::WriteEnv<G>,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> i32 {
     if let Some(extra) = args.get(1) {
         let _ = writeln!(err, "ebman thaw: takes no arguments (got '{extra}')");
         return 2;
     }
-    match crate::freeze::FreezeStore::real().thaw() {
+    match write_env.freeze.thaw() {
         crate::freeze::Thaw::Lifted {
             marker: m,
             still_held,
@@ -159,7 +168,7 @@ pub(crate) fn thaw_body(args: &[String], out: &mut dyn Write, err: &mut dyn Writ
             };
             crate::audit::append_action_dispatched(
                 None,
-                std::env::var("AWS_PROFILE").ok().as_deref(),
+                write_env.ambient_profile.as_deref(),
                 "-",
                 label,
                 "",
@@ -207,7 +216,12 @@ pub(crate) fn thaw_body(args: &[String], out: &mut dyn Write, err: &mut dyn Writ
 
 /// `ebman freeze`: the process entry, exiting with [`freeze_body`]'s code.
 pub async fn run_freeze(args: &[String]) -> Result<()> {
-    let code = freeze_body(args, &mut std::io::stdout(), &mut std::io::stderr());
+    let code = freeze_body(
+        args,
+        crate::cli::WriteEnv::real(),
+        &mut std::io::stdout(),
+        &mut std::io::stderr(),
+    );
     // Draining: the declare / thaw writes an audit line whose webhook
     // POST a bare `process::exit` cancels.
     if code != 0 {
@@ -219,7 +233,12 @@ pub async fn run_freeze(args: &[String]) -> Result<()> {
 
 /// `ebman thaw`: the process entry, exiting with [`thaw_body`]'s code.
 pub async fn run_thaw(args: &[String]) -> Result<()> {
-    let code = thaw_body(args, &mut std::io::stdout(), &mut std::io::stderr());
+    let code = thaw_body(
+        args,
+        crate::cli::WriteEnv::real(),
+        &mut std::io::stdout(),
+        &mut std::io::stderr(),
+    );
     // Draining: the declare / thaw writes an audit line whose webhook
     // POST a bare `process::exit` cancels.
     if code != 0 {
@@ -237,9 +256,17 @@ mod tests {
         words.iter().map(|w| w.to_string()).collect()
     }
 
-    fn run(f: fn(&[String], &mut dyn Write, &mut dyn Write) -> i32, a: &[&str]) -> (i32, String) {
+    type Body = fn(&[String], crate::cli::WriteEnv<()>, &mut dyn Write, &mut dyn Write) -> i32;
+
+    /// `f` over `store`, as `ebman` with no `AWS_PROFILE` would run it.
+    fn run(f: Body, store: &crate::freeze::FreezeStore, a: &[&str]) -> (i32, String) {
         let (mut out, mut err) = (Vec::new(), Vec::new());
-        let code = f(&argv(a), &mut out, &mut err);
+        let env = crate::cli::WriteEnv {
+            ambient_profile: None,
+            freeze: store.clone(),
+            gate: (),
+        };
+        let code = f(&argv(a), env, &mut out, &mut err);
         let text = String::from_utf8(out).unwrap() + &String::from_utf8(err).unwrap();
         (code, text)
     }
@@ -279,54 +306,50 @@ mod tests {
         assert!(parse_freeze_args(&argv(&["freeze", "--frozen"])).is_err());
     }
 
-    /// Through the real marker path: declare, status, thaw, and the thaw
-    /// refusing a live session's freeze.
+    /// Declare, status, thaw, and the thaw refusing a live session's
+    /// freeze, through a store of the test's own.
     #[test]
     fn freeze_then_thaw_round_trip() {
-        let _guard = crate::freeze::MARKER_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        crate::freeze::FreezeStore::real().clear_session(std::process::id());
-        let _ = crate::freeze::FreezeStore::real().thaw();
+        let store = crate::freeze::FreezeStore::isolated();
 
-        let (code, text) = run(freeze_body, &["freeze", "release", "window"]);
+        let (code, text) = run(freeze_body, &store, &["freeze", "release", "window"]);
         assert_eq!(code, 0, "{text}");
-        let m = crate::freeze::FreezeStore::real().active().expect("frozen");
+        let m = store.active().expect("frozen");
         assert!(m.persistent && m.reason == "release window");
 
-        let (code, text) = run(freeze_body, &["freeze", "--status"]);
+        let (code, text) = run(freeze_body, &store, &["freeze", "--status"]);
         assert_eq!(code, 0);
         assert!(
             text.contains("release window") && text.contains("ebman thaw"),
             "{text}"
         );
 
-        let (code, text) = run(thaw_body, &["thaw"]);
+        let (code, text) = run(thaw_body, &store, &["thaw"]);
         assert_eq!(code, 0, "{text}");
-        assert!(crate::freeze::FreezeStore::real().active().is_none());
+        assert!(store.active().is_none());
 
         // A session's own freeze (this process is alive) is not ours.
-        crate::freeze::FreezeStore::real()
+        store
             .declare_session(std::process::id(), "tui freeze", false)
             .unwrap();
-        let (code, text) = run(thaw_body, &["thaw"]);
+        let (code, text) = run(thaw_body, &store, &["thaw"]);
         assert_eq!(code, 3, "{text}");
         assert!(text.contains(":thaw-deploys"), "{text}");
-        assert!(crate::freeze::FreezeStore::real().active().is_some());
+        assert!(store.active().is_some());
 
         // Both: the persistent one lifts, and the output says the session's
         // still holds rather than "lifted", which a script reads as clear.
-        let (code, _) = run(freeze_body, &["freeze", "change"]);
+        let (code, _) = run(freeze_body, &store, &["freeze", "change"]);
         assert_eq!(code, 0);
-        let (code, text) = run(thaw_body, &["thaw"]);
+        let (code, text) = run(thaw_body, &store, &["thaw"]);
         assert_eq!(code, 3, "still frozen is not all clear: {text}");
         assert!(
             text.contains("still frozen") && !text.contains("fleet freeze lifted"),
             "{text}"
         );
-        crate::freeze::FreezeStore::real().clear_session(std::process::id());
+        store.clear_session(std::process::id());
 
-        let (code, _) = run(thaw_body, &["thaw", "now"]);
+        let (code, _) = run(thaw_body, &store, &["thaw", "now"]);
         assert_eq!(code, 2);
     }
 }

@@ -1741,13 +1741,7 @@ impl App {
             notify_bell: config.notify_bell,
             config_seen: None,
             config_file: None,
-            freeze: {
-                static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-                let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                crate::freeze::FreezeStore::at(
-                    crate::util::cache_dir().join(format!("freeze-app-{n}.json")),
-                )
-            },
+            freeze: crate::freeze::FreezeStore::isolated(),
             foreign_freeze: None,
             foreign_freeze_checked: None,
             cfg: ResolvedConfig {

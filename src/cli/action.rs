@@ -286,8 +286,7 @@ pub async fn run(args: &[String]) -> Result<()> {
     }
     let code = action_body(
         args,
-        std::env::var("AWS_PROFILE").ok(),
-        crate::cli::real_refusal,
+        crate::cli::WriteEnv::real(),
         aws::AwsClient::with,
         &mut std::io::stdout().lock(),
         &mut std::io::stderr().lock(),
@@ -308,8 +307,7 @@ pub async fn run(args: &[String]) -> Result<()> {
 /// dispatch runs under and the pins are checked against.
 pub(crate) async fn action_body<F, Fut>(
     args: &[String],
-    ambient_profile: Option<String>,
-    refusal: impl crate::cli::WriteGate,
+    write_env: crate::cli::WriteEnv<impl crate::cli::WriteGate>,
     client_for: F,
     out: &mut dyn std::io::Write,
     err: &mut dyn std::io::Write,
@@ -339,8 +337,8 @@ where
     // ones that were stopped — which is the correlation this feature
     // exists for. No region: the gate runs before any AWS client is
     // built, and the rules it applies are region-independent.
-    let profile = ambient_profile.as_deref();
-    if let Some(reason) = refusal(&crate::cli::GateQuery {
+    let profile = write_env.ambient_profile.as_deref();
+    if let Some(reason) = write_env.refusal(&crate::cli::GateQuery {
         env: &env,
         profile,
         region: None,
@@ -913,24 +911,6 @@ pub(crate) fn unattempted_regions<'a>(
         .collect()
 }
 
-/// The fleet freeze, re-read for a rollout already in flight.
-///
-/// A write that has not started is refused and exits 3. A rollout that
-/// is part-way through has regions already dispatched and a report to emit, so it needs the reason
-/// rather than an exit — it halts through the same path a failed region
-/// takes, and the untouched regions come out as `skipped`.
-///
-/// Re-read per region on purpose. The gate at the top of `rollout_body`
-/// fires once, before pre-flight; with no cap on `--wait-for-green` and
-/// none on region count, a sequential rollout can dispatch its last
-/// region hours later. A freeze is not static config like a pin — it is
-/// a live incident signal, and it arrives mid-flight by definition.
-pub(crate) fn rollout_freeze_halt() -> Option<String> {
-    crate::freeze::FreezeStore::real()
-        .active()
-        .map(|m| crate::freeze::refusal_message(&m))
-}
-
 /// `ebman action rollout --version LABEL --regions r1,r2,r3 --env NAME
 /// --yes [...]` — cross-region deploy with pre-flight + per-region
 /// dispatch + audit-log correlation. Sequential by default (halt on
@@ -947,10 +927,8 @@ pub(crate) fn rollout_freeze_halt() -> Option<String> {
 async fn run_rollout(args: &[String]) -> Result<()> {
     let code = rollout_body(
         args,
-        std::env::var("AWS_PROFILE").ok(),
-        crate::cli::real_refusal,
+        crate::cli::WriteEnv::real(),
         aws::AwsClient::with,
-        rollout_freeze_halt,
         // Unlocked handles: a parallel rollout's tasks print progress
         // from other worker threads, which a lock held for the whole
         // run would block for good.
@@ -985,10 +963,8 @@ pub(crate) struct RolloutIo<'a> {
 /// both the dispatch and the pins.
 pub(crate) async fn rollout_body<F, Fut>(
     args: &[String],
-    ambient_profile: Option<String>,
-    refusal: impl crate::cli::WriteGate,
+    write_env: crate::cli::WriteEnv<impl crate::cli::WriteGate>,
     client_for: F,
-    freeze_halt: impl Fn() -> Option<String>,
     io: RolloutIo<'_>,
 ) -> i32
 where
@@ -1022,8 +998,8 @@ where
     // else ambient. Gating on the ambient one while dispatching under
     // another checks the pin on the wrong account. No region: the rules
     // it applies are region-independent.
-    let pin_profile = profile.as_deref().or(ambient_profile.as_deref());
-    if let Some(reason) = refusal(&crate::cli::GateQuery {
+    let pin_profile = profile.as_deref().or(write_env.ambient_profile.as_deref());
+    if let Some(reason) = write_env.refusal(&crate::cli::GateQuery {
         env: &env,
         profile: pin_profile,
         region: None,
@@ -1140,7 +1116,7 @@ where
         // as the sequential loop's check before its first region does.
         // Only the check after each join existed, so a freeze that
         // landed while regions were being listed reached all of them.
-        if let Some(reason) = freeze_halt() {
+        if let Some(reason) = write_env.freeze_halt() {
             let _ = writeln!(err, "ebman action rollout: halting — {reason}");
             queue.clear();
             halted_by_freeze = true;
@@ -1171,7 +1147,7 @@ where
             // the queue leaves the rest to `unattempted_regions`, which
             // reports them as skipped.
             if !queue.is_empty() {
-                if let Some(reason) = freeze_halt() {
+                if let Some(reason) = write_env.freeze_halt() {
                     let _ = writeln!(err, "ebman action rollout: halting — {reason}");
                     queue.clear();
                     halted_by_freeze = true;
@@ -1197,7 +1173,7 @@ where
             }
             first_region = false;
             // A freeze declared since the last region halts the rest.
-            if let Some(reason) = freeze_halt() {
+            if let Some(reason) = write_env.freeze_halt() {
                 let _ = writeln!(err, "ebman action rollout: halting — {reason}");
                 halted_by_freeze = true;
                 break;
@@ -1469,13 +1445,15 @@ mod body {
         let (mut out, mut err) = (Vec::new(), Vec::new());
         let code = action_body(
             &argv,
-            Some("ops".into()),
-            |q: &crate::cli::GateQuery<'_>| {
-                let (env, profile, verb) = (q.env, q.profile, q.verb);
-                *asked.lock().unwrap() = Some(profile.map(String::from));
-                *verb_asked.lock().unwrap() = Some(verb.to_string());
-                refuse.map(|why| format!("refusing {env} — {why}"))
-            },
+            crate::cli::WriteEnv::for_tests(
+                Some("ops"),
+                |q: &crate::cli::GateQuery<'_>, _freeze| {
+                    let (env, profile, verb) = (q.env, q.profile, q.verb);
+                    *asked.lock().unwrap() = Some(profile.map(String::from));
+                    *verb_asked.lock().unwrap() = Some(verb.to_string());
+                    refuse.map(|why| format!("refusing {env} — {why}"))
+                },
+            ),
             |_, _| {
                 *built.lock().unwrap() = true;
                 async move { client.ok_or_else(|| color_eyre::eyre::eyre!("no credentials")) }
@@ -2117,59 +2095,6 @@ mod rollout_flag_tests {
 }
 
 #[cfg(test)]
-mod rollout_freeze_tests {
-    use super::rollout_freeze_halt;
-
-    /// A freeze declared *during* a rollout has to stop the regions
-    /// that haven't dispatched yet.
-    ///
-    /// The gate at the top of `rollout_body` fires once, before
-    /// pre-flight. There is no cap on `--wait-for-green` and none on
-    /// region count, so a sequential rollout can dispatch its last
-    /// region hours after that check — and the backlog justified the
-    /// single check as "matches the pin start-gate semantics", which
-    /// doesn't hold: a pin is static config, a freeze is a live
-    /// incident signal that arrives mid-flight by definition.
-    ///
-    /// Both dispatch loops now consult this between regions. The
-    /// halt reuses the path a failed region already takes, so the
-    /// untouched regions come out through `unattempted_regions` as
-    /// `skipped (rollout halted)`.
-    #[test]
-    fn a_live_freeze_halts_a_rollout_in_flight() {
-        // Exclusive access to the shared marker path; see MARKER_LOCK.
-        let _guard = crate::freeze::MARKER_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        crate::freeze::FreezeStore::real().clear_session(std::process::id());
-
-        assert!(
-            rollout_freeze_halt().is_none(),
-            "no freeze declared — a rollout must be free to continue, or \
-             this check would halt every rollout it is asked about"
-        );
-
-        crate::freeze::FreezeStore::real()
-            .declare_session(std::process::id(), "incident #4321", true)
-            .expect("marker written");
-        let reason = rollout_freeze_halt().expect(
-            "a freeze declared mid-rollout must halt the remaining regions — \
-             this is the window the single start-gate left open",
-        );
-        assert!(
-            reason.contains("incident #4321"),
-            "the halt must name the freeze the operator declared: {reason}"
-        );
-
-        crate::freeze::FreezeStore::real().clear_session(std::process::id());
-        assert!(
-            rollout_freeze_halt().is_none(),
-            "lifting the freeze releases the halt"
-        );
-    }
-}
-
-#[cfg(test)]
 mod rollout {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -2187,14 +2112,43 @@ mod rollout {
         Slow,
     }
 
+    /// Every successful dispatch across a test fleet, and the freeze an
+    /// operator declares once `after` of them have gone.
+    #[derive(Clone)]
+    struct Dispatches {
+        count: Arc<AtomicUsize>,
+        freeze_after: Option<(usize, crate::freeze::FreezeStore)>,
+    }
+
+    impl Dispatches {
+        fn record(&self) {
+            let n = self.count.fetch_add(1, Ordering::SeqCst) + 1;
+            if self
+                .freeze_after
+                .as_ref()
+                .is_some_and(|(after, _)| n >= *after)
+            {
+                self.declare();
+            }
+        }
+
+        fn declare(&self) {
+            if let Some((_, store)) = &self.freeze_after {
+                store
+                    .declare_persistent("incident #4321", true)
+                    .expect("declared");
+            }
+        }
+    }
+
     /// A region's client: lists `api` (unless `NoEnv`), and answers
-    /// `UpdateEnvironment` for `api` / `build-2`, counting into
+    /// `UpdateEnvironment` for `api` / `build-2`, recording into
     /// `dispatched` every one that succeeds.
     fn region_client(
         name: &'static str,
         region: &str,
         how: Region,
-        dispatched: Arc<AtomicUsize>,
+        dispatched: Dispatches,
     ) -> aws::AwsClient {
         use aws_sdk_elasticbeanstalk::operation::describe_environments::DescribeEnvironmentsOutput;
         use aws_sdk_elasticbeanstalk::operation::update_environment::{
@@ -2240,7 +2194,7 @@ mod rollout {
             })
         } else {
             deploy.then_output(move || {
-                dispatched.fetch_add(1, Ordering::SeqCst);
+                dispatched.record();
                 UpdateEnvironmentOutput::builder().build()
             })
         };
@@ -2299,22 +2253,32 @@ mod rollout {
             .chain(args)
             .map(|s| s.to_string())
             .collect();
-        let dispatched = Arc::new(AtomicUsize::new(0));
         let built = Mutex::new(Vec::new());
         let asked = Mutex::new(None);
         let verb_asked = Mutex::new(None);
         let (mut out, mut err) = (Vec::new(), Vec::new());
         let progress: Progress = Arc::new(|_: &str| {});
-        let seen = dispatched.clone();
-        let code = rollout_body(
-            &argv,
-            Some("ops".into()),
-            |q: &crate::cli::GateQuery<'_>| {
+        let write_env = crate::cli::WriteEnv::for_tests(
+            Some("ops"),
+            |q: &crate::cli::GateQuery<'_>, _freeze| {
                 let (env, profile, verb) = (q.env, q.profile, q.verb);
                 *asked.lock().unwrap() = Some(profile.map(String::from));
                 *verb_asked.lock().unwrap() = Some(verb.to_string());
                 refuse.map(|why| format!("refusing {env} — {why}"))
             },
+        );
+        let dispatched = Dispatches {
+            count: Arc::new(AtomicUsize::new(0)),
+            freeze_after: freeze_after.map(|n| (n, write_env.freeze.clone())),
+        };
+        // After none: declared during the pre-flight, which the test gate
+        // (blind to the freeze, as `refuse` alone decides it) lets past.
+        if freeze_after == Some(0) {
+            dispatched.declare();
+        }
+        let code = rollout_body(
+            &argv,
+            write_env,
             |profile: Option<String>, region: Option<String>| {
                 let region = region.expect("a rollout names every region");
                 built.lock().unwrap().push((profile, region.clone()));
@@ -2324,11 +2288,6 @@ mod rollout {
                     how.map(|h| region_client(name, &region, h, dispatched))
                         .ok_or_else(|| color_eyre::eyre::eyre!("no credentials for {region}"))
                 }
-            },
-            move || {
-                freeze_after
-                    .filter(|n| seen.load(Ordering::SeqCst) >= *n)
-                    .map(|_| "deploys frozen: incident #4321".to_string())
             },
             RolloutIo {
                 out: &mut out,
@@ -2341,7 +2300,7 @@ mod rollout {
             code,
             out: String::from_utf8(out).unwrap(),
             err: String::from_utf8(err).unwrap(),
-            dispatched: dispatched.load(Ordering::SeqCst),
+            dispatched: dispatched.count.load(Ordering::SeqCst),
             built: built.into_inner().unwrap(),
             asked: asked.into_inner().unwrap(),
             verb: verb_asked.into_inner().unwrap(),
@@ -2500,7 +2459,8 @@ mod rollout {
             assert_eq!(r.code, 3, "{extra:?}: {}", r.err);
             assert_eq!(r.dispatched, 1, "{extra:?}");
             assert!(
-                r.err.contains("halting — deploys frozen: incident #4321"),
+                r.err
+                    .contains("halting — fleet freeze active (incident #4321)"),
                 "{extra:?}: {}",
                 r.err
             );

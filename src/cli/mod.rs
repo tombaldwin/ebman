@@ -74,18 +74,6 @@ pub(crate) use crate::deploy_poll::{decide_poll, PollDecision};
 /// crate (lib + bin).
 pub(crate) use crate::util::{json_escape as cli_esc, json_string};
 
-/// The cross-process fleet freeze (0.28), for CLI write paths that
-/// read it themselves: a live TUI session's `:freeze-deploys` /
-/// `:incident START`, or an `ebman freeze` in force. These paths had the
-/// same blind spot the MCP write tools would have had: a fleet frozen
-/// mid-incident could still be written from a second terminal.
-///
-/// A marker, not a refusal: `lint --fix` hands it to the shared gate
-/// per env, which audits and words the refusal as for any other write.
-pub(crate) fn active_freeze() -> Option<crate::freeze::FreezeMarker> {
-    crate::freeze::FreezeStore::real().active()
-}
-
 /// The refusal for a whole run that `freeze` stops before it reads the
 /// fleet, audited — or `None` when there is no freeze, or when the gate
 /// ranks another rung above it.
@@ -289,25 +277,95 @@ pub(crate) struct GateQuery<'a> {
     pub verb: &'a str,
 }
 
-/// What decides whether a CLI write may go: the refusal, if any. A
-/// testable body takes one, so a test sees a refusal without the real
-/// config or freeze; production passes [`real_refusal`]. (Not
-/// `write_gate::Refusal`, the reason a gate refused; this answers with
-/// the message.)
-pub(crate) trait WriteGate: Fn(&GateQuery<'_>) -> Option<String> {}
-impl<T: Fn(&GateQuery<'_>) -> Option<String>> WriteGate for T {}
+/// What decides whether a CLI write may go, given the freeze as it
+/// stands: the refusal, if any. A testable body takes one in its
+/// [`WriteEnv`], so a test sees a refusal without the real config;
+/// production's is [`real_refusal`]. (Not `write_gate::Refusal`, the
+/// reason a gate refused; this answers with the message.)
+pub(crate) trait WriteGate:
+    Fn(&GateQuery<'_>, Option<crate::freeze::FreezeMarker>) -> Option<String>
+{
+}
+impl<T: Fn(&GateQuery<'_>, Option<crate::freeze::FreezeMarker>) -> Option<String>> WriteGate for T {}
 
-/// [`write_refusal`] against the operator's config and the live freeze:
-/// the audited funnel every CLI write goes through.
-pub(crate) fn real_refusal(q: &GateQuery<'_>) -> Option<String> {
+/// [`write_refusal`] against the operator's config and `freeze`: the
+/// audited funnel every CLI write goes through.
+pub(crate) fn real_refusal(
+    q: &GateQuery<'_>,
+    freeze: Option<crate::freeze::FreezeMarker>,
+) -> Option<String> {
     write_refusal(
         &crate::config::load(),
         q.env,
         &q.profile.map(str::to_string),
-        crate::freeze::FreezeStore::real().active(),
+        freeze,
         q.region,
         q.verb,
     )
+}
+
+/// What a CLI write takes from the operator's machine: the account its
+/// pins are checked against, the fleet freeze, and the gate that decides
+/// each write. Every write shell passes [`WriteEnv::real`], so a body
+/// test stands in all three at once and one guard covers every shell.
+/// See `docs/design/write-env.md`.
+pub(crate) struct WriteEnv<G> {
+    /// `AWS_PROFILE`: the account each account pin is checked against
+    /// when the command names no `--profile`.
+    pub ambient_profile: Option<String>,
+    /// The fleet freeze: read for each write, between rollout regions
+    /// and before each `lint --fix` env, and declared and lifted by
+    /// `ebman freeze` and `ebman thaw`.
+    pub freeze: crate::freeze::FreezeStore,
+    /// Decides each write, given the freeze as [`freeze`](Self::freeze)
+    /// reads it.
+    pub gate: G,
+}
+
+/// The production gate's type, so [`WriteEnv::real`] can name it.
+pub(crate) type RealGate =
+    fn(&GateQuery<'_>, Option<crate::freeze::FreezeMarker>) -> Option<String>;
+
+impl WriteEnv<RealGate> {
+    /// The operator's: `AWS_PROFILE`, the store every process shares,
+    /// and [`real_refusal`].
+    pub(crate) fn real() -> Self {
+        WriteEnv {
+            ambient_profile: std::env::var("AWS_PROFILE").ok(),
+            freeze: crate::freeze::FreezeStore::real(),
+            gate: real_refusal,
+        }
+    }
+}
+
+impl<G: WriteGate> WriteEnv<G> {
+    /// The refusal for this write, if any, with the freeze read now: a
+    /// freeze declared mid-run refuses what comes after it.
+    pub(crate) fn refusal(&self, q: &GateQuery<'_>) -> Option<String> {
+        (self.gate)(q, self.freeze.active())
+    }
+}
+
+impl<G> WriteEnv<G> {
+    /// The freeze in force, as its refusal names it: re-read for a rollout
+    /// already in flight.
+    ///
+    /// A write that has not started is refused and exits 3. A rollout
+    /// that is part-way through has regions already dispatched and a
+    /// report to emit, so it needs the reason rather than an exit — it
+    /// halts through the same path a failed region takes, and the
+    /// untouched regions come out as `skipped`.
+    ///
+    /// Re-read per region on purpose. The gate at the top of `rollout_body`
+    /// fires once, before pre-flight; with no cap on `--wait-for-green` and
+    /// none on region count, a sequential rollout can dispatch its last
+    /// region hours later. A freeze is not static config like a pin — it is
+    /// a live incident signal, and it arrives mid-flight by definition.
+    pub(crate) fn freeze_halt(&self) -> Option<String> {
+        self.freeze
+            .active()
+            .map(|m| crate::freeze::refusal_message(&m))
+    }
 }
 
 /// A refusal from [`write_refusal`] naming `subject` rather than the
@@ -641,26 +699,26 @@ mod write_refusal_tests {
 
 #[cfg(test)]
 mod write_gate_input_guard {
-    /// Every write shell hands its body the real gate and the ambient
-    /// profile.
+    /// Every write shell hands its body the operator's [`WriteEnv`].
     ///
-    /// The bodies take both as parameters so a test can stand them in,
-    /// which means nothing the tests drive can see what production
-    /// passes: a shell handing `|_, _, _, _| None` gates nothing, and one
-    /// handing `None` for `AWS_PROFILE` checks every account pin against
-    /// no account — the defect the deleted rollout `--profile` scan
-    /// existed for. Pinned by source because the shells exit the process.
+    /// The bodies take it as a parameter so a test can stand it in, which
+    /// means nothing the tests drive can see what production passes: a
+    /// shell handing a gate of `|_, _| None` gates nothing, one handing
+    /// `None` for `AWS_PROFILE` checks every account pin against no
+    /// account (the defect the deleted rollout `--profile` scan existed
+    /// for), and one handing another store misses every freeze. Pinned
+    /// by source because the shells exit the process. One pattern for
+    /// every shell, which the separate parameters this replaced could
+    /// not give.
     #[test]
-    fn write_shells_pass_the_real_gate_and_the_ambient_profile() {
-        for (module, f, gate) in [
-            ("cli/action.rs", "run", "crate::cli::real_refusal,"),
-            ("cli/action.rs", "run_rollout", "crate::cli::real_refusal,"),
-            (
-                "cli/audit_replay.rs",
-                "run_replay",
-                "crate::cli::real_refusal,",
-            ),
-            ("cli/lint.rs", "run", "crate::cli::active_freeze,"),
+    fn write_shells_pass_the_real_write_env() {
+        for (module, f) in [
+            ("cli/action.rs", "run"),
+            ("cli/action.rs", "run_rollout"),
+            ("cli/audit_replay.rs", "run_replay"),
+            ("cli/lint.rs", "run"),
+            ("cli/freeze.rs", "run_freeze"),
+            ("cli/freeze.rs", "run_thaw"),
         ] {
             let src = crate::app::tests::scan::production_source(module);
             let body = crate::app::tests::scan::fn_bodies(&src)
@@ -669,19 +727,37 @@ mod write_gate_input_guard {
                 .unwrap_or_else(|| panic!("{module}: `{f}` is defined"))
                 .1;
             // The body call's own arguments, not anywhere in the shell: a
-            // shell reading AWS_PROFILE for something else while passing
-            // `None` must not pass.
+            // shell building the real env for something else while passing
+            // a test one must not pass.
             let call = &body[body
                 .find("_body(")
                 .unwrap_or_else(|| panic!("{f} calls a body"))..];
             let args = &call[..call.find("\n    )").unwrap_or(call.len())];
             assert!(
-                args.contains(gate),
-                "{module}: `{f}` must pass `{gate}` to its body: {args}"
+                args.contains("crate::cli::WriteEnv::real(),"),
+                "{module}: `{f}` must pass `WriteEnv::real()` to its body: {args}"
             );
+        }
+    }
+
+    /// And the real env is the operator's: their `AWS_PROFILE`, the store
+    /// every process shares, and the audited gate.
+    #[test]
+    fn the_real_write_env_reads_the_operators_machine() {
+        let src = crate::app::tests::scan::production_source("cli/mod.rs");
+        let body = crate::app::tests::scan::fn_bodies(&src)
+            .into_iter()
+            .find(|(name, _)| name == "real")
+            .expect("`WriteEnv::real` is defined")
+            .1;
+        for part in [
+            "ambient_profile: std::env::var(\"AWS_PROFILE\").ok(),",
+            "freeze: crate::freeze::FreezeStore::real(),",
+            "gate: real_refusal,",
+        ] {
             assert!(
-                args.contains("std::env::var(\"AWS_PROFILE\").ok()"),
-                "{module}: `{f}` must pass the ambient AWS_PROFILE: {args}"
+                body.contains(part),
+                "`WriteEnv::real` must set `{part}`: {body}"
             );
         }
     }
@@ -772,6 +848,74 @@ mod write_gate_input_guard {
         assert!(
             super::write_refusal_unaudited(&open, "any-env", &None, None).is_none(),
             "no standing restriction means no refusal"
+        );
+    }
+}
+
+#[cfg(test)]
+impl<G> WriteEnv<G> {
+    /// `gate` and `ambient_profile`, with a freeze store of its own.
+    pub(crate) fn for_tests(ambient_profile: Option<&str>, gate: G) -> Self {
+        WriteEnv {
+            ambient_profile: ambient_profile.map(String::from),
+            freeze: crate::freeze::FreezeStore::isolated(),
+            gate,
+        }
+    }
+}
+
+#[cfg(test)]
+mod write_env_tests {
+    use super::*;
+
+    /// A freeze declared *during* a rollout stops the regions that have
+    /// not dispatched yet: both dispatch loops read `freeze_halt`
+    /// between regions, and it reads the env's store each time.
+    #[test]
+    fn freeze_halt_reads_the_store_each_time() {
+        let env = WriteEnv::for_tests(None, ());
+        assert!(
+            env.freeze_halt().is_none(),
+            "no freeze declared — a rollout must be free to continue, or \
+             this check would halt every rollout it is asked about"
+        );
+        env.freeze
+            .declare_persistent("incident #4321", true)
+            .expect("declared");
+        let reason = env
+            .freeze_halt()
+            .expect("a freeze declared mid-rollout halts it");
+        assert!(reason.contains("incident #4321"), "{reason}");
+        let _ = env.freeze.thaw();
+        assert!(
+            env.freeze_halt().is_none(),
+            "lifting the freeze releases the halt"
+        );
+    }
+
+    /// The gate is handed the freeze as the env's store reads it at the
+    /// time of the write, not a copy taken when the env was built.
+    #[test]
+    fn the_gate_sees_the_freeze_at_the_time_of_the_write() {
+        let env = WriteEnv::for_tests(
+            None,
+            |q: &GateQuery<'_>, f: Option<crate::freeze::FreezeMarker>| {
+                f.map(|m| format!("refusing {} — {}", q.env, m.reason))
+            },
+        );
+        let q = GateQuery {
+            env: "api",
+            profile: None,
+            region: None,
+            verb: "Restart",
+        };
+        assert_eq!(env.refusal(&q), None);
+        env.freeze
+            .declare_persistent("incident #9", true)
+            .expect("declared");
+        assert_eq!(
+            env.refusal(&q).as_deref(),
+            Some("refusing api — incident #9")
         );
     }
 }
