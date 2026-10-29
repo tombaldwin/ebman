@@ -2912,6 +2912,12 @@ impl Server {
                  needs to know why it is there"
             ));
         }
+        if reason.chars().any(char::is_control) {
+            return Err(format!(
+                "{FREEZE_TOOL}: `reason` must be one line, with no control characters — \
+                 it is shown in a one-line status bar"
+            ));
+        }
         if reason.chars().count() > FREEZE_REASON_MAX {
             return Err(format!(
                 "{FREEZE_TOOL}: `reason` is over {FREEZE_REASON_MAX} characters — say why in a \
@@ -2927,6 +2933,26 @@ impl Server {
                 "frozen": false,
                 "demo": true,
                 "message": "DEMO server: nothing was frozen and no other process is affected.",
+            })
+            .to_string());
+        }
+        // One persistent freeze, and declaring writes it whole: an
+        // agent's call would replace the operator's reason, incident
+        // flag and time. A freeze already standing is left as declared.
+        if let Some(m) = self.freeze.all().into_iter().find(|m| m.persistent) {
+            return Ok(json!({
+                "frozen": true,
+                "already": true,
+                "reason": m.reason,
+                "incident": m.incident,
+                "lift": "ebman thaw",
+                "message": format!(
+                    "The fleet is already frozen ({}), declared {}; nothing changed. Every \
+                     ebman write refuses until the operator runs `ebman thaw`. Tell the \
+                     operator why you would have frozen it.",
+                    m.reason_or_default(),
+                    m.at
+                ),
             })
             .to_string());
         }

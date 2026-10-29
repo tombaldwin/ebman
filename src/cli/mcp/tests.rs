@@ -5485,6 +5485,8 @@ async fn freeze_fleet_needs_a_short_reason() {
         json!({}),
         json!({"reason": "   "}),
         json!({"reason": "x".repeat(writes::FREEZE_REASON_MAX + 1)}),
+        json!({"reason": "two\nlines"}),
+        json!({"reason": "bell\u{7}"}),
     ] {
         let server = granted_server();
         let (is_error, body) = call(&server, "freeze_fleet", args.clone()).await;
@@ -5500,6 +5502,51 @@ async fn freeze_fleet_needs_a_short_reason() {
     )
     .await;
     assert!(!is_error, "exactly the limit is a line");
+}
+
+/// A freeze the operator declared is left as they declared it: one
+/// persistent freeze, and declaring rewrites it whole, so an agent's
+/// reason would have replaced theirs, and its incident flag and time.
+/// A TUI session's freeze is another holder, so it is added beside.
+#[tokio::test]
+async fn freeze_fleet_leaves_a_standing_freeze_as_declared() {
+    let server = granted_server();
+    server
+        .freeze_store()
+        .declare_persistent("INC-42 db failover", true)
+        .expect("declared");
+    let before = crate::cli::audit_delta::mark();
+    let (is_error, body) = call(
+        &server,
+        "freeze_fleet",
+        json!({"reason": "poly-standing-probe"}),
+    )
+    .await;
+    assert!(!is_error, "{body}");
+    assert_eq!(body["already"], true, "{body}");
+    assert_eq!(body["reason"], "INC-42 db failover", "{body}");
+    let m = server.freeze_store().active().expect("still frozen");
+    assert_eq!(m.reason, "INC-42 db failover");
+    assert!(m.incident, "the operator's incident flag survives");
+    assert!(
+        crate::cli::audit_delta::lines_matching(&before, |l| l.contains("poly-standing-probe"))
+            .is_empty(),
+        "nothing was declared, so nothing is audited as declared"
+    );
+
+    let server = granted_server();
+    server
+        .freeze_store()
+        .declare_session(std::process::id(), "tui freeze", false)
+        .expect("declared");
+    let (_, body) = call(&server, "freeze_fleet", json!({"reason": "agent"})).await;
+    assert_eq!(body["frozen"], true, "{body}");
+    assert!(body.get("already").is_none(), "{body}");
+    let holders = server.freeze_store().all();
+    assert!(holders.iter().any(|m| m.persistent && m.reason == "agent"));
+    assert!(holders
+        .iter()
+        .any(|m| !m.persistent && m.reason == "tui freeze"));
 }
 
 /// A demo server freezes nothing, as its other writes do nothing.
@@ -5529,13 +5576,24 @@ async fn freeze_fleet_rides_with_any_grant_and_nothing_lifts() {
     assert!(names(&narrow).contains(&"freeze_fleet".to_string()));
     assert!(names(&WriteScope::All).contains(&"freeze_fleet".to_string()));
     assert!(!names(&WriteScope::None).contains(&"freeze_fleet".to_string()));
-    for name in names(&WriteScope::All) {
-        assert!(
-            !["thaw", "unfreeze", "lift"]
-                .iter()
-                .any(|w| name.contains(w)),
-            "lifting a freeze stays with the operator: `{name}`"
-        );
+    // By name, and by argument: a lift could arrive as either.
+    for tool in tool_table(&WriteScope::All, true).as_array().unwrap() {
+        let name = tool["name"].as_str().unwrap();
+        for word in ["thaw", "unfreeze", "lift", "clear"] {
+            assert!(
+                !name.contains(word),
+                "lifting a freeze stays with the operator: `{name}`"
+            );
+        }
+        if name == "freeze_fleet" {
+            let mut props: Vec<&String> = tool["inputSchema"]["properties"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .collect();
+            props.sort();
+            assert_eq!(props, ["incident", "reason"], "and nothing that lifts");
+        }
     }
 
     // And the dispatch gate agrees: an ungranted server does not run it.
