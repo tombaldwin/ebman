@@ -19,7 +19,7 @@ use super::{flatten_err, App, AppMsg, DlqOp, EnvKey, QueueView};
 impl App {
     pub(super) fn spawn_dlq_fetch(&mut self) {
         let Some(dlq) = self.dlq.as_mut() else { return };
-        dlq.loading = true;
+        let ticket = dlq.fetch.begin();
         dlq.error = None;
         let env_name = dlq.env_name.clone();
         let queue_url = match dlq.viewing {
@@ -35,6 +35,7 @@ impl App {
                 gen,
                 env_name,
                 queue_url: queue_for_msg,
+                ticket,
                 result,
             },
         );

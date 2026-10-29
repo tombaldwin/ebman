@@ -366,9 +366,10 @@ impl App {
             AppMsg::DlqMessages {
                 env_name,
                 queue_url,
+                ticket,
                 result,
                 ..
-            } => self.handle_dlq_messages(env_name, queue_url, result),
+            } => self.handle_dlq_messages(env_name, queue_url, ticket, result),
             AppMsg::DlqActionResult { key, result, .. } => {
                 self.handle_dlq_action_result(key, result)
             }
@@ -1811,6 +1812,7 @@ impl App {
         &mut self,
         env_name: String,
         queue_url: String,
+        ticket: Ticket,
         result: Result<Vec<QueueMessage>, String>,
     ) {
         let Some(dlq) = self.dlq.as_mut() else { return };
@@ -1826,7 +1828,10 @@ impl App {
         if &queue_url != current_url {
             return;
         }
-        dlq.loading = false;
+        // An earlier peek of this queue, answering after a later one.
+        if !dlq.fetch.finish(ticket) {
+            return;
+        }
         match result {
             Ok(messages) => {
                 dlq.messages = messages;

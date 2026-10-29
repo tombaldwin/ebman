@@ -1004,6 +1004,8 @@ pub(crate) enum AppMsg {
         /// mid-fetch used to display the WRONG queue's messages, with
         /// receipt handles AWS would reject).
         queue_url: String,
+        /// The peek it answers: only the latest peek's answer lands.
+        ticket: Ticket,
         result: Result<Vec<QueueMessage>, String>,
     },
     DlqActionResult {

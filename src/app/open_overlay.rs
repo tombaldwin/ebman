@@ -265,7 +265,7 @@ impl App {
             dlq_url,
             messages: Vec::new(),
             list_state: ListState::default(),
-            loading: false,
+            fetch: Default::default(),
             error: None,
             confirm_purge: false,
             purge_typed: TextInput::new(),

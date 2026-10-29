@@ -338,7 +338,7 @@ async fn the_dlq_viewer_renders_its_messages() {
             task: None,
         }],
         list_state: Default::default(),
-        loading: false,
+        fetch: Default::default(),
         error: None,
         confirm_purge: false,
         purge_typed: tui_common::TextInput::new(),
@@ -439,10 +439,12 @@ async fn dlq_messages_from_another_env_or_queue_are_dropped() {
 
     // Baseline: the right env and the currently-viewed queue apply.
     let mut app = armed();
+    let ticket = app.dlq.as_mut().unwrap().fetch.begin();
     app.handle_msg(AppMsg::DlqMessages {
         gen: app.generation,
         env_name: "api-prod".into(),
         queue_url: "https://sqs/q-dlq".into(),
+        ticket,
         result: Ok(vec![msg("new-1"), msg("new-2")]),
     });
     assert_eq!(
@@ -453,10 +455,12 @@ async fn dlq_messages_from_another_env_or_queue_are_dropped() {
 
     // Another env's peek must not land in this view.
     let mut app = armed();
+    let ticket = app.dlq.as_mut().unwrap().fetch.begin();
     app.handle_msg(AppMsg::DlqMessages {
         gen: app.generation,
         env_name: "worker-prod".into(),
         queue_url: "https://sqs/q-dlq".into(),
+        ticket,
         result: Ok(vec![msg("wrong-env")]),
     });
     assert_eq!(ids(&app), vec!["m-1"], "another env's messages were shown");
@@ -464,10 +468,12 @@ async fn dlq_messages_from_another_env_or_queue_are_dropped() {
     // A peek that raced an `m`-toggle: right env, but the main queue
     // while the DLQ is being viewed.
     let mut app = armed();
+    let ticket = app.dlq.as_mut().unwrap().fetch.begin();
     app.handle_msg(AppMsg::DlqMessages {
         gen: app.generation,
         env_name: "api-prod".into(),
         queue_url: "https://sqs/q".into(),
+        ticket,
         result: Ok(vec![msg("main-queue")]),
     });
     assert_eq!(
@@ -475,6 +481,45 @@ async fn dlq_messages_from_another_env_or_queue_are_dropped() {
         vec!["m-1"],
         "the main queue's messages were shown in the DLQ view"
     );
+}
+
+/// An earlier peek answering after a later one does not replace it.
+///
+/// A delete refetches, so a refresh still in flight when the operator
+/// deleted a message answered after the refetch and put the message
+/// back, with a receipt handle AWS would reject. Both peeks are of the
+/// same env and queue, so only the ticket tells them apart.
+#[tokio::test]
+async fn a_late_peek_does_not_bring_back_a_deleted_message() {
+    use crate::app::AppMsg;
+
+    let mut app = test_app();
+    app.dlq = Some(open_dlq_state("api-prod"));
+    let answer = |app: &mut App, ticket, ids: &[&str]| {
+        let gen = app.generation;
+        app.handle_msg(AppMsg::DlqMessages {
+            gen,
+            env_name: "api-prod".into(),
+            queue_url: "https://sqs/q-dlq".into(),
+            ticket,
+            result: Ok(ids.iter().map(|id| msg(id)).collect()),
+        });
+    };
+    let ids = |app: &App| -> Vec<String> {
+        let dlq = app.dlq.as_ref().unwrap();
+        dlq.messages.iter().map(|m| m.id.clone()).collect()
+    };
+    let refresh = app.dlq.as_mut().unwrap().fetch.begin();
+    let after_delete = app.dlq.as_mut().unwrap().fetch.begin();
+    answer(&mut app, after_delete, &[]);
+    assert!(ids(&app).is_empty(), "the latest peek applies");
+    answer(&mut app, refresh, &["m-1"]);
+    assert!(
+        ids(&app).is_empty(),
+        "the earlier peek brought the deleted message back: {:?}",
+        ids(&app)
+    );
+    assert!(!app.dlq.as_ref().unwrap().fetch.in_flight());
 }
 
 /// The cursor after a refetch. `x` deletes whatever the cursor points
@@ -494,10 +539,12 @@ async fn a_dlq_refetch_clamps_the_cursor_into_the_new_page() {
     let sel = |app: &App| app.dlq.as_ref().unwrap().list_state.selected();
     let fetch = |app: &mut App, n: usize| {
         let gen = app.generation;
+        let ticket = app.dlq.as_mut().unwrap().fetch.begin();
         app.handle_msg(AppMsg::DlqMessages {
             gen,
             env_name: "api-prod".into(),
             queue_url: "https://sqs/q-dlq".into(),
+            ticket,
             result: Ok((0..n).map(|i| msg(&format!("m{i}"))).collect()),
         });
     };

@@ -31,7 +31,12 @@ pub(crate) struct DlqState {
     pub dlq_url: String,
     pub messages: Vec<QueueMessage>,
     pub list_state: ListState,
-    pub loading: bool,
+    /// The peek in flight, if any. Only the latest peek's answer lands:
+    /// a refresh, an `m`-toggle and the refetch after every delete each
+    /// issue one, and an earlier peek answering late put back a message
+    /// the operator had just deleted, with a receipt handle AWS would
+    /// reject.
+    pub fetch: crate::app::Request,
     pub error: Option<String>,
     pub confirm_purge: bool,
     pub purge_typed: TextInput,

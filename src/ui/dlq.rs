@@ -53,7 +53,7 @@ pub(crate) fn draw_dlq(f: &mut Frame, area: Rect, app: &mut App) {
     let block = rounded_block(&theme.chrome(), true);
     if dlq.messages.is_empty() {
         let p = Paragraph::new(Span::styled(
-            if dlq.loading {
+            if dlq.fetch.in_flight() {
                 "loading messages…"
             } else {
                 "no messages in DLQ"
