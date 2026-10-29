@@ -801,10 +801,6 @@ fn incident_args_parse_start_end_and_reject_garbage() {
 
 #[tokio::test]
 async fn incident_restart_updates_headline_but_keeps_start_time() {
-    // Shared freeze-marker path; see `freeze::MARKER_LOCK`.
-    let _marker_guard = crate::freeze::MARKER_LOCK
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
     let mut app = test_app();
     app.execute_command("incident START first");
     let t0 = app.incident.as_ref().unwrap().started_at;
@@ -819,10 +815,6 @@ async fn incident_restart_updates_headline_but_keeps_start_time() {
 
 #[tokio::test]
 async fn incident_end_without_active_incident_errors() {
-    // Shared freeze-marker path; see `freeze::MARKER_LOCK`.
-    let _marker_guard = crate::freeze::MARKER_LOCK
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
     let mut app = test_app();
     app.execute_command("incident END");
     assert!(app.incident.is_none());
@@ -832,10 +824,6 @@ async fn incident_end_without_active_incident_errors() {
 
 #[tokio::test]
 async fn incident_banner_renders_red_in_header() {
-    // Shared freeze-marker path; see `freeze::MARKER_LOCK`.
-    let _marker_guard = crate::freeze::MARKER_LOCK
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
     let mut app = test_app();
     app.execute_command("incident START \"db failover\"");
     let theme = app.theme.clone();

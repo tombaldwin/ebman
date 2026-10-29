@@ -668,21 +668,6 @@ pub(crate) fn parse_marker(text: &str) -> Option<FreezeMarker> {
     })
 }
 
-/// Serialises tests that touch the REAL freeze-marker path.
-///
-/// `util::cache_dir()` is per-process under `cfg(test)`, not per-test,
-/// and `clear_marker_if_own` matches on `pid == process::id()` — true
-/// for every test in the binary. So any test driving `:freeze-deploys`,
-/// `:thaw-deploys` or `:incident` shares one marker file with all the
-/// others, running on parallel threads: one clears while another is
-/// mid-round-trip.
-///
-/// They have always raced; the round-trip test added in 0.34.2 just made
-/// it visible (12 failures in 40 runs of `cargo test freeze`). Every
-/// test that writes or clears the real marker takes this.
-#[cfg(test)]
-pub(crate) static MARKER_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
 #[cfg(unix)]
 fn pid_alive(pid: u32) -> bool {
     // kill(pid, 0): signal 0 performs the permission/existence check
@@ -1350,10 +1335,11 @@ mod tests {
     /// The real store round-trips a session freeze through the real
     /// path and the real probes: this process is alive, so its own freeze
     /// reads back, and clearing it lifts it.
+    ///
+    /// The one test that touches the store every process shares; see
+    /// `no_other_test_reads_the_shared_store`.
     #[test]
     fn the_real_store_round_trips_through_the_real_path() {
-        // Exclusive access to the shared marker path; see MARKER_LOCK.
-        let _guard = super::MARKER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let s = FreezeStore::real();
         assert!(
             s.marker().ends_with("freeze.json"),
@@ -1373,6 +1359,75 @@ mod tests {
         assert_eq!(found.pid, std::process::id());
         s.clear_session(std::process::id());
         assert!(s.active().is_none(), "clearing our own freeze must lift it");
+    }
+
+    /// No test but the round trip above names the shared store.
+    ///
+    /// Under `cfg(test)` the cache directory is per process, not per
+    /// test, so the shared store is one marker for every test in the
+    /// binary, on parallel threads. Tests that wrote it took a lock; the
+    /// ones that only read it did not, and every MCP write test and CLI
+    /// write gate was a reader, so one test's freeze could refuse
+    /// another's write. Every surface now takes its store as a value and
+    /// a test passes `FreezeStore::isolated()`, which leaves nothing for
+    /// the lock to serialise. This keeps it that way.
+    #[test]
+    fn no_other_test_reads_the_shared_store() {
+        // Each entry names why the call is not a read of the store.
+        const ALLOWED: &[(&str, usize, &str)] = &[
+            ("src/freeze.rs", 1, "the round trip above"),
+            ("src/cli/mod.rs", 1, "a source guard's expected text"),
+            ("src/cli/mcp/tests.rs", 1, "a source guard's expected text"),
+        ];
+        // Built, so this line is not a match of its own.
+        let needle = concat!("FreezeStore::", "real()");
+        let mut found = Vec::new();
+        for (path, src) in crate::app::tests::scan::source_files() {
+            let test_part: Vec<&str> = if crate::app::tests::scan::is_test_path(&path) {
+                src.lines().collect()
+            } else {
+                // The lines `production_half` cut: it removes whole test
+                // modules and keeps the rest in order, so walking both
+                // together leaves exactly those.
+                let production = crate::app::tests::scan::production_half(&src);
+                let mut kept = production.lines().peekable();
+                src.lines()
+                    .filter(|line| {
+                        if kept.peek() == Some(line) {
+                            kept.next();
+                            false
+                        } else {
+                            true
+                        }
+                    })
+                    .collect()
+            };
+            let n: usize = test_part
+                .iter()
+                .map(|l| {
+                    crate::app::tests::scan::strip_line_comment(l)
+                        .matches(needle)
+                        .count()
+                })
+                .sum();
+            if n > 0 {
+                found.push((path, n));
+            }
+        }
+        let unexpected: Vec<_> = found
+            .iter()
+            .filter(|(path, n)| !ALLOWED.iter().any(|(p, k, _)| path == p && n == k))
+            .collect();
+        assert!(
+            unexpected.is_empty(),
+            "a test reads the shared freeze store; give it `FreezeStore::isolated()` \
+             or the surface's own store: {unexpected:?}"
+        );
+        // Canary: the round trip is found, so the scan sees test code.
+        assert!(
+            found.iter().any(|(p, _)| p == "src/freeze.rs"),
+            "the scan found no test code at all: {found:?}"
+        );
     }
 
     /// The compat half of the design: a reader that does not know
