@@ -117,6 +117,10 @@ pub(super) fn append_cannot_fire(body: String) -> String {
 /// (EBL011/016/020 can't fire here) must be stated IN the tool.
 pub(super) fn tool_table(scope: &super::WriteScope, peek_bodies: bool) -> Value {
     let mut tools = read_tool_table();
+    // On every server, writes or none: it only takes writes away.
+    if let Some(arr) = tools.as_array_mut() {
+        arr.push(writes::freeze_tool_descriptor());
+    }
     if !peek_bodies {
         // The agent must be told the policy is ON, or a withheld body
         // reads as an empty one. The description is the only channel
@@ -137,12 +141,8 @@ pub(super) fn tool_table(scope: &super::WriteScope, peek_bodies: bool) -> Value 
                     // it is the second phase of every write rather
                     // than a verb of its own, so filtering it out
                     // would leave a narrow grant able to plan a write
-                    // and never dispatch it. `freeze_fleet` too: it
-                    // only takes writes away, so any grant covers it.
-                    n == writes::CONFIRM_TOOL
-                        || n == writes::UNDO_TOOL
-                        || n == writes::FREEZE_TOOL
-                        || scope.allows(n)
+                    // and never dispatch it.
+                    n == writes::CONFIRM_TOOL || n == writes::UNDO_TOOL || scope.allows(n)
                 })
             }));
         }

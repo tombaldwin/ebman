@@ -423,6 +423,7 @@ async fn golden_tools_list_frame() {
             "list_versions",
             "app_metrics",
             "fleet_cost",
+            "freeze_fleet",
         ],
         "tool registry changed — update docs/headless.md's table"
     );
@@ -5587,11 +5588,11 @@ async fn a_demo_freeze_freezes_nothing() {
     assert!(server.freeze_store().active().is_none());
 }
 
-/// `freeze_fleet` comes with any grant, the narrowest included, and
-/// not on a server with none: a `--read-only` server offers only tools
-/// that change nothing. Nothing on any surface lifts a freeze.
+/// `freeze_fleet` is on every server, a `--read-only` one included:
+/// it only takes writes away (ruled 2026-10-29). Nothing on any
+/// surface lifts a freeze.
 #[tokio::test]
-async fn freeze_fleet_rides_with_any_grant_and_nothing_lifts() {
+async fn freeze_fleet_is_on_every_server_and_nothing_lifts() {
     let names = |scope: &WriteScope| -> Vec<String> {
         tool_table(scope, true)
             .as_array()
@@ -5603,7 +5604,7 @@ async fn freeze_fleet_rides_with_any_grant_and_nothing_lifts() {
     let narrow = WriteScope::Only(vec!["dlq_delete".into()]);
     assert!(names(&narrow).contains(&"freeze_fleet".to_string()));
     assert!(names(&WriteScope::All).contains(&"freeze_fleet".to_string()));
-    assert!(!names(&WriteScope::None).contains(&"freeze_fleet".to_string()));
+    assert!(names(&WriteScope::None).contains(&"freeze_fleet".to_string()));
     // By name, and by argument: a lift could arrive as either.
     for tool in tool_table(&WriteScope::All, true).as_array().unwrap() {
         let name = tool["name"].as_str().unwrap();
@@ -5624,7 +5625,7 @@ async fn freeze_fleet_rides_with_any_grant_and_nothing_lifts() {
         }
     }
 
-    // And the dispatch gate agrees: an ungranted server does not run it.
+    // And the dispatch gate agrees: an ungranted server runs it.
     let server = Server::with_config(
         false,
         false,
@@ -5639,10 +5640,10 @@ async fn freeze_fleet_rides_with_any_grant_and_nothing_lifts() {
     .await
     .expect("response");
     assert!(
-        resp.get("error").is_some() || resp["result"]["isError"] == true,
+        resp.get("error").is_none() && resp["result"]["isError"] != true,
         "{resp}"
     );
-    assert!(server.freeze_store().active().is_none());
+    assert!(server.freeze_store().active().is_some());
 }
 
 /// `total_usd_month` is the sum of the `by_env` it is shown with: a key

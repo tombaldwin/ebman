@@ -95,8 +95,9 @@ And one found while reading the code:
 ## Not doing
 
 - ~~**An MCP tool to declare a freeze.**~~ Built 2026-10-29 as
-  `freeze_fleet`: the persistent freeze, one step, with any write grant
-  (not on a `--read-only` server), and no way to lift it from MCP.
+  `freeze_fleet`: the persistent freeze, one step, on every server
+  (`--read-only` included, ruled by the maintainer: a freeze only takes
+  writes away), and no way to lift it from MCP.
 - **Making the TUI's own freeze persistent.** Its session scope is what
   stops a crashed TUI phantom-freezing the fleet; an operator who wants
   a freeze to outlive the session now has `ebman freeze` for that.

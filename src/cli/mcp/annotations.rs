@@ -340,6 +340,13 @@ mod tests {
         }
     }
 
+    /// Tools offered with no write grant that are not read-only: each only
+    /// takes writes away, so a `--read-only` server may carry it. Ruled by
+    /// the maintainer on 2026-10-29 for `freeze_fleet`. Not destructive, by
+    /// `only_restricting_tools_are_offered_without_a_grant`; anything else
+    /// changing state without a grant fails that guard.
+    pub(super) const ONLY_RESTRICTS: &[&str] = &["freeze_fleet"];
+
     #[test]
     fn reads_are_marked_read_only_and_writes_are_not() {
         // The distinction the whole feature exists for. Asserted over
@@ -348,6 +355,9 @@ mod tests {
         let reads = super::super::tools::tool_table(&crate::cli::mcp::WriteScope::None, true);
         for tool in reads.as_array().expect("array") {
             let name = tool["name"].as_str().expect("name");
+            if ONLY_RESTRICTS.contains(&name) {
+                continue;
+            }
             assert_eq!(
                 tool["annotations"]["readOnlyHint"], true,
                 "`{name}` is in the read-only table but is not marked read-only"
@@ -369,8 +379,31 @@ mod tests {
         // And enabling writes only ADDS: no read tool changed its hint.
         assert_eq!(
             with_writes.as_array().expect("array").len(),
-            reads.as_array().expect("array").len() + write_names.len()
+            reads.as_array().expect("array").len() + write_names.len() - ONLY_RESTRICTS.len()
         );
+    }
+
+    /// The tools a server with no grant offers that change something
+    /// are exactly `ONLY_RESTRICTS`, and each is non-destructive and
+    /// local: taking writes away is all they may do.
+    #[test]
+    fn only_restricting_tools_are_offered_without_a_grant() {
+        let reads = super::super::tools::tool_table(&crate::cli::mcp::WriteScope::None, true);
+        let changing: Vec<&str> = reads
+            .as_array()
+            .expect("array")
+            .iter()
+            .filter(|t| t["annotations"]["readOnlyHint"] == false)
+            .map(|t| t["name"].as_str().expect("name"))
+            .collect();
+        assert_eq!(
+            changing, ONLY_RESTRICTS,
+            "without a grant, only these change anything"
+        );
+        for name in ONLY_RESTRICTS {
+            let a = attrs_for(name).expect("classified");
+            assert!(!a.destructive && !a.open_world, "`{name}`: {a:?}");
+        }
     }
 
     #[test]

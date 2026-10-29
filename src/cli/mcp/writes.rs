@@ -1448,7 +1448,7 @@ pub(super) fn write_verb_names() -> Vec<String> {
     write_tool_descriptors()
         .iter()
         .filter_map(|d| d.get("name").and_then(|n| n.as_str()))
-        .filter(|n| *n != CONFIRM_TOOL && *n != UNDO_TOOL && *n != FREEZE_TOOL)
+        .filter(|n| *n != CONFIRM_TOOL && *n != UNDO_TOOL)
         .map(str::to_string)
         .collect()
 }
@@ -1476,18 +1476,6 @@ pub(super) fn write_tool_descriptors() -> Vec<Value> {
     let batch_note = format!("ONE CALL COVERS SEVERAL: pass `message_ids` (an array, up to {DLQ_BATCH_CAP}) to handle a set in one plan and ONE confirmation. Prefer it over calling this repeatedly — each plan asks the operator separately, and a person answering the same dialog eight times stops reading it. Over {DLQ_BATCH_CAP} is refused rather than truncated: the cap is what keeps the list readable, and `dlq_purge` is the action for emptying a queue. Give `message_id` or `message_ids`, not both.");
     let confirm_note = format!("TWO-PHASE: this tool DISPATCHES NOTHING. It validates and returns {{pending:true, confirm_token, plan}}; you must surface the plan, then call confirm_action with the token ({CONFIRM_TTL_SECS}s TTL, single-use) to dispatch. Dispatch-only — poll the read tools for progress.");
     vec![
-        json!({
-            "name": "freeze_fleet",
-            "description": "Declare a fleet freeze: every ebman write refuses — the operator's TUI and CLI as well as this server — until the OPERATOR runs `ebman thaw`. Use it when you see a reason no one should change the fleet right now (a bad deploy rolling out, an incident starting) and say so to the operator. One step: no plan and no confirm, because it only takes writes away; it comes with any write grant, as `confirm_action` does. CAVEATS: you cannot lift it, and no tool here can; it does not stop AWS changes made outside ebman (the console, the AWS CLI, CI). Persistent: it outlives this connection. Audited as `FreezeDeploys` (or `IncidentStart`) with `via=mcp`.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "reason": {"type": "string", "description": "Why, in a line (required, at most 200 characters): shown wherever the freeze refuses a write"},
-                    "incident": {"type": "boolean", "description": "Declare it as an incident (audited `IncidentStart`)"}
-                },
-                "required": ["reason"]
-            }
-        }),
         json!({
             "name": "deploy",
             "description": format!("Deploy an existing application version to an environment. {confirm_note}"),
@@ -2878,10 +2866,27 @@ impl Server {
     }
 }
 
-/// The tool that declares a fleet freeze. Not a verb either: it only
-/// takes writes away, so it rides along with any grant and is not
-/// separately grantable.
+/// The tool that declares a fleet freeze. Not a verb: it only takes
+/// writes away, so it is offered on every server and is not grantable.
 pub(super) const FREEZE_TOOL: &str = "freeze_fleet";
+
+/// `freeze_fleet`'s descriptor. Not among the write tools: it is offered
+/// on every server, a `--read-only` one included, since it only takes
+/// writes away (see the annotations tests' `ONLY_RESTRICTS`).
+pub(super) fn freeze_tool_descriptor() -> Value {
+    json!({
+        "name": "freeze_fleet",
+        "description": "Declare a fleet freeze: every ebman write refuses — the operator's TUI and CLI as well as this server — until the OPERATOR runs `ebman thaw`. Use it when you see a reason no one should change the fleet right now (a bad deploy rolling out, an incident starting) and say so to the operator. One step: no plan and no confirm, and on every connection, `--read-only` included, because it only takes writes away. CAVEATS: you cannot lift it, and no tool here can; it does not stop AWS changes made outside ebman (the console, the AWS CLI, CI). Persistent: it outlives this connection. Audited as `FreezeDeploys` (or `IncidentStart`) with `via=mcp`.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "reason": {"type": "string", "description": "Why, in a line (required, at most 200 characters): shown wherever the freeze refuses a write"},
+                "incident": {"type": "boolean", "description": "Declare it as an incident (audited `IncidentStart`)"}
+            },
+            "required": ["reason"]
+        }
+    })
+}
 
 /// Longest reason `freeze_fleet` accepts. The reason is shown wherever
 /// the freeze refuses a write, a TUI status line among them, and an
@@ -2892,12 +2897,10 @@ impl Server {
     /// `freeze_fleet`: declare an `ebman freeze`, which every ebman
     /// process honours until the operator runs `ebman thaw`.
     ///
-    /// One step, no plan and no ask: declaring a freeze only takes
-    /// writes away, so it is the one change an agent may make that the
-    /// operator need not approve. It comes with any write grant, as
-    /// `confirm_action` does, and not on a `--read-only` server, which
-    /// offers only tools that change nothing. Lifting is not offered
-    /// here at all. Persistent, not
+    /// One step, no plan and no ask, on every server, `--read-only`
+    /// included: declaring a freeze only takes writes away, so it is the
+    /// one change an agent may make that the operator need not approve
+    /// (ruled 2026-10-29). Lifting is not offered here at all. Persistent, not
     /// tied to this server's process: a freeze that lifted when the
     /// agent disconnected would fail open mid-incident.
     pub(super) fn tool_freeze_fleet(&self, args: &Value) -> Result<String, String> {

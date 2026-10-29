@@ -15,8 +15,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   writes away. It is the `ebman freeze` freeze, persistent until you run
   `ebman thaw`, and nothing on the MCP surface lifts it. It needs a
   one-line reason of at most 200 characters, leaves a standing
-  `ebman freeze` as you declared it, comes with any write grant as
-  `confirm_action` does (not on a `--read-only` server), does nothing on
+  `ebman freeze` as you declared it, is on every server, `--read-only`
+  included (it only takes writes away), does nothing on
   a demo server, and is audited `FreezeDeploys` (or `IncidentStart`)
   with `via=mcp` and the client's name.
 
