@@ -2062,13 +2062,8 @@ async fn a_red_transition_is_audited_under_the_rows_region() {
 
     app.apply_refresh(app.fanout_epoch, Ok(vec![red]), Vec::new());
 
-    let after = std::fs::read_to_string(&path).unwrap_or_default();
-    let lines: Vec<&str> = after
-        .strip_prefix(&before)
-        .expect("append-only")
-        .lines()
-        .filter(|l| l.contains(env))
-        .collect();
+    let delta = crate::cli::audit_delta::since(&before);
+    let lines: Vec<&str> = delta.lines().filter(|l| l.contains(env)).collect();
     assert_eq!(lines.len(), 1, "{lines:#?}");
     assert!(lines[0].contains("region=eu-west-2"), "{}", lines[0]);
 }
@@ -2087,13 +2082,8 @@ async fn a_red_transition_with_an_empty_region_is_audited_under_home() {
 
     app.apply_refresh(app.fanout_epoch, Ok(vec![red]), Vec::new());
 
-    let after = std::fs::read_to_string(&path).unwrap_or_default();
-    let lines: Vec<&str> = after
-        .strip_prefix(&before)
-        .expect("append-only")
-        .lines()
-        .filter(|l| l.contains(env))
-        .collect();
+    let delta = crate::cli::audit_delta::since(&before);
+    let lines: Vec<&str> = delta.lines().filter(|l| l.contains(env)).collect();
     assert_eq!(lines.len(), 1, "{lines:#?}");
     let home = format!("region={}", app.context.region);
     assert!(lines[0].contains(&home), "{}", lines[0]);

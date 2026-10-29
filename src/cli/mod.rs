@@ -779,23 +779,51 @@ mod write_gate_input_guard {
 /// What a CLI write body wrote to the (test-sandboxed) audit log.
 #[cfg(test)]
 pub(crate) mod audit_delta {
-    fn log() -> String {
-        std::fs::read_to_string(crate::util::cache_dir().join("audit.log")).unwrap_or_default()
+    fn path() -> std::path::PathBuf {
+        crate::util::cache_dir().join("audit.log")
+    }
+
+    fn read(path: &std::path::Path) -> String {
+        std::fs::read_to_string(path).unwrap_or_default()
     }
 
     /// The log as it stands, to compare against after a run.
     pub(crate) fn mark() -> String {
-        log()
+        read(&path())
+    }
+
+    /// Everything appended to the log since `before` (a [`mark`]).
+    ///
+    /// Tests share one sandboxed log and write to it at once, so it
+    /// crosses the 1 MiB rotation during a run. Read as append-only, a
+    /// test whose mark straddled it panicked "rotated mid-test" for
+    /// nothing it did. Its lines are then in `audit.log.1` after the
+    /// mark, and in the fresh `audit.log`.
+    pub(crate) fn since(before: &str) -> String {
+        let rotated = read(&crate::audit::rotated_path(&path()));
+        appended(before, &rotated, &read(&path())).unwrap_or_else(|| {
+            panic!(
+                "the audit log no longer starts with the mark, and neither does \
+                 its rotation: it rotated twice in one test"
+            )
+        })
+    }
+
+    /// What `current` gained since `before`, following one rotation
+    /// into `rotated`; `None` if neither starts with `before`.
+    pub(crate) fn appended(before: &str, rotated: &str, current: &str) -> Option<String> {
+        if let Some(delta) = current.strip_prefix(before) {
+            return Some(delta.to_string());
+        }
+        rotated
+            .strip_prefix(before)
+            .map(|tail| format!("{tail}{current}"))
     }
 
     /// The lines written since `before` that `keep` accepts, for a line
     /// with no target of its own to filter on.
     pub(crate) fn lines_matching(before: &str, keep: impl Fn(&str) -> bool) -> Vec<String> {
-        let after = log();
-        let delta = after
-            .strip_prefix(before)
-            .expect("the audit log is append-only; a non-prefix means it was rotated mid-test");
-        delta
+        since(before)
             .lines()
             .filter(|l| keep(l))
             .map(String::from)
@@ -805,16 +833,26 @@ pub(crate) mod audit_delta {
     /// The lines written since `before` whose target is `target`: give
     /// each test a target no other test writes, as tests run at once.
     pub(crate) fn lines_for(before: &str, target: &str) -> Vec<String> {
-        let after = log();
-        // Strict: the log is append-only, so `before` must be a prefix.
-        let delta = after
-            .strip_prefix(before)
-            .expect("the audit log is append-only; a non-prefix means it was rotated mid-test");
         let needle = format!("target={target}");
-        delta
+        since(before)
             .lines()
             .filter(|l| l.split_whitespace().any(|w| w == needle))
             .map(String::from)
             .collect()
+    }
+
+    #[test]
+    fn a_rotation_after_the_mark_keeps_the_lines_on_both_sides() {
+        assert_eq!(appended("a\n", "old\n", "a\nb\n").as_deref(), Some("b\n"));
+        // Rotated after the mark: `b` went to the backup, `c` to the
+        // fresh file, and both are this test's.
+        assert_eq!(appended("a\n", "a\nb\n", "c\n").as_deref(), Some("b\nc\n"));
+        // The backup is checked only when the live log has moved on: an
+        // old backup that happens to start with the mark is not read.
+        assert_eq!(
+            appended("a\n", "a\nstale\n", "a\nb\n").as_deref(),
+            Some("b\n")
+        );
+        assert_eq!(appended("a\n", "x\n", "y\n"), None, "rotated twice");
     }
 }

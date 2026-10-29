@@ -214,10 +214,7 @@ async fn a_refused_mcp_write_is_recorded_against_the_agent() {
         .expect_err("a pinned env must refuse");
     assert!(err.to_string().contains("safety.envs"), "{err}");
 
-    let after = std::fs::read_to_string(&path).unwrap_or_default();
-    let delta = after
-        .strip_prefix(&before)
-        .expect("the audit log is append-only");
+    let delta = crate::cli::audit_delta::since(&before);
     let lines: Vec<&str> = delta.lines().filter(|l| l.contains(env_name)).collect();
     assert_eq!(lines.len(), 1, "exactly one refusal line: {delta}");
     let line = lines[0];
@@ -256,12 +253,8 @@ async fn a_demo_server_refuses_without_writing_an_audit_line() {
         .tool_write_plan(WriteVerb::Terminate, &json!({"env": env_name}))
         .await
         .expect_err("pinned env must refuse");
-    let after = std::fs::read_to_string(&path).unwrap_or_default();
     assert!(
-        after
-            .strip_prefix(&before)
-            .unwrap_or(&after)
-            .contains(env_name),
+        crate::cli::audit_delta::since(&before).contains(env_name),
         "a real refusal must still be recorded"
     );
 
@@ -273,12 +266,8 @@ async fn a_demo_server_refuses_without_writing_an_audit_line() {
         .await
         .expect_err("demo must still refuse — the verdict is real");
     assert!(err.to_string().contains("safety.envs"), "{err}");
-    let after = std::fs::read_to_string(&path).unwrap_or_default();
     assert!(
-        !after
-            .strip_prefix(&before)
-            .unwrap_or(&after)
-            .contains(env_name),
+        !crate::cli::audit_delta::since(&before).contains(env_name),
         "demo mode writes NO audit lines"
     );
 }
@@ -534,10 +523,7 @@ async fn an_out_of_scope_write_is_recorded_against_the_agent() {
         "{err}"
     );
 
-    let after = std::fs::read_to_string(&path).unwrap_or_default();
-    let delta = after
-        .strip_prefix(&before)
-        .expect("the audit log is append-only");
+    let delta = crate::cli::audit_delta::since(&before);
     let lines: Vec<&str> = delta.lines().filter(|l| l.contains(env_name)).collect();
     assert_eq!(lines.len(), 1, "exactly one refusal line: {delta}");
     let line = lines[0];
@@ -1083,15 +1069,7 @@ fn undo_client(send_ok: bool) -> crate::aws::AwsClient {
 }
 
 fn audit_delta_for(before: &str, env: &str) -> Vec<String> {
-    let after =
-        std::fs::read_to_string(crate::util::cache_dir().join("audit.log")).unwrap_or_default();
-    after
-        .strip_prefix(before)
-        .expect("the audit log is append-only")
-        .lines()
-        .filter(|l| l.contains(env))
-        .map(str::to_owned)
-        .collect()
+    crate::cli::audit_delta::lines_matching(before, |l| l.contains(env))
 }
 
 /// An undo restores a message at most ONCE, and is audited.

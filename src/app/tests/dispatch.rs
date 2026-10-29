@@ -354,8 +354,7 @@ async fn cmd_undo_reaches_an_env_the_filter_hides() {
     let path = crate::util::cache_dir().join("audit.log");
     let before = std::fs::read_to_string(&path).unwrap_or_default();
     app.execute_command("undo");
-    let after = std::fs::read_to_string(&path).unwrap_or_default();
-    let delta = after.strip_prefix(&before).expect("append-only");
+    let delta = crate::cli::audit_delta::since(&before);
     assert!(
         delta
             .lines()
@@ -3579,10 +3578,8 @@ fn toggling_read_only_is_audited() {
     // A no-op toggle changes nothing and records nothing.
     app.execute_command("readonly on");
 
-    let after = std::fs::read_to_string(&path).unwrap_or_default();
-    let lines: Vec<&str> = after
-        .strip_prefix(&before)
-        .expect("the audit log is append-only")
+    let delta = crate::cli::audit_delta::since(&before);
+    let lines: Vec<&str> = delta
         .lines()
         .filter(|l| l.contains(profile) && l.contains("kind=read_only"))
         .collect();
@@ -3608,8 +3605,7 @@ fn toggling_read_only_in_demo_writes_no_audit() {
     let path = crate::util::cache_dir().join("audit.log");
     let before = std::fs::read_to_string(&path).unwrap_or_default();
     app.execute_command("readonly off");
-    let after = std::fs::read_to_string(&path).unwrap_or_default();
-    let delta = after.strip_prefix(&before).expect("append-only");
+    let delta = crate::cli::audit_delta::since(&before);
     assert!(!delta.contains(profile), "{delta}");
 }
 

@@ -639,10 +639,7 @@ mod tests {
             &[],
         );
 
-        let after = std::fs::read_to_string(&path).unwrap_or_default();
-        let delta = after
-            .strip_prefix(&before)
-            .expect("the audit log is append-only");
+        let delta = crate::cli::audit_delta::since(&before);
         let line = delta
             .lines()
             .find(|l| l.contains(env))

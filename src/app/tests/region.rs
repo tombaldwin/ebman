@@ -399,13 +399,7 @@ async fn a_dispatch_and_its_completion_agree_on_the_region() {
     app.generation += 1;
     app.handle_msg(msg);
 
-    let after = std::fs::read_to_string(&path).unwrap_or_default();
-    // Strict: the log is append-only, so `before` must still be a prefix.
-    // Falling back to the whole file on failure is how a concurrent write
-    // turned into a search over unrelated history.
-    let delta = after
-        .strip_prefix(&before)
-        .expect("the audit log is append-only; a non-prefix means it was rotated mid-test");
+    let delta = crate::cli::audit_delta::since(&before);
     let matching: Vec<&str> = delta.lines().filter(|l| l.contains(env_name)).collect();
     assert_eq!(
         matching.len(),

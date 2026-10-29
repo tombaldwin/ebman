@@ -1385,10 +1385,9 @@ async fn ctrl_chords_do_not_move_the_swap_target_picker() {
 /// on a pinned env were indistinguishable from nobody trying at all.
 ///
 /// Reads the log back rather than asserting on a formatter, so the
-/// wiring is pinned and not a copy of it. Follows the append-only
-/// delta convention from `tests/region.rs`: every test in this process
+/// wiring is pinned and not a copy of it. Every test in this process
 /// shares one audit file, so the env name is unique to this test and
-/// the delta is taken with `strip_prefix`.
+/// the delta is `audit_delta::since`, which follows a rotation.
 #[tokio::test]
 async fn a_refused_write_is_recorded_with_its_rule_and_remedy() {
     let env_name = "refusal-audit-probe-env";
@@ -1402,10 +1401,7 @@ async fn a_refused_write_is_recorded_with_its_rule_and_remedy() {
         "must refuse"
     );
 
-    let after = std::fs::read_to_string(&path).unwrap_or_default();
-    let delta = after
-        .strip_prefix(&before)
-        .expect("the audit log is append-only");
+    let delta = crate::cli::audit_delta::since(&before);
     let lines: Vec<&str> = delta.lines().filter(|l| l.contains(env_name)).collect();
     assert_eq!(lines.len(), 1, "exactly one line for the refusal: {delta}");
     let line = lines[0];
@@ -1447,8 +1443,7 @@ async fn demo_mode_refuses_without_writing_an_audit_line() {
         "demo must refuse"
     );
 
-    let after = std::fs::read_to_string(&path).unwrap_or_default();
-    let delta = after.strip_prefix(&before).unwrap_or(&after);
+    let delta = crate::cli::audit_delta::since(&before);
     // Matched on a WORD BOUNDARY, not as a bare substring and not as
     // one named field.
     //
@@ -1491,8 +1486,7 @@ async fn an_allowed_write_files_no_refusal() {
         "must allow"
     );
 
-    let after = std::fs::read_to_string(&path).unwrap_or_default();
-    let delta = after.strip_prefix(&before).unwrap_or(&after);
+    let delta = crate::cli::audit_delta::since(&before);
     assert!(
         !delta.contains(env_name),
         "an allowed write is not a refusal: {delta}"
@@ -1567,10 +1561,7 @@ async fn a_batch_refusal_files_one_matchable_line_per_env() {
         "both envs are pinned"
     );
 
-    let after = std::fs::read_to_string(&path).unwrap_or_default();
-    let delta = after
-        .strip_prefix(&before)
-        .expect("the audit log is append-only");
+    let delta = crate::cli::audit_delta::since(&before);
 
     for (n, region) in [(a, "us-east-1"), (b, "ap-south-1")] {
         let lines: Vec<&str> = delta
@@ -1815,10 +1806,7 @@ async fn a_refusal_is_audited_under_the_label_its_dispatch_uses() {
     // "purge" is the toast verb; `spawn_dlq` dispatches it as `dlq-purge`.
     assert!(app.deny_write(&home_key(env_name), "purge"), "must refuse");
 
-    let after = std::fs::read_to_string(&path).unwrap_or_default();
-    let delta = after
-        .strip_prefix(&before)
-        .expect("the audit log is append-only");
+    let delta = crate::cli::audit_delta::since(&before);
     let line = delta
         .lines()
         .find(|l| l.contains(env_name))
@@ -1843,8 +1831,7 @@ async fn a_refusal_is_audited_under_the_label_its_dispatch_uses() {
         app.deny_write_batch(&[home_key(batch_env)], "purge"),
         "must refuse"
     );
-    let after = std::fs::read_to_string(&path).unwrap_or_default();
-    let delta = after.strip_prefix(&before).expect("append-only");
+    let delta = crate::cli::audit_delta::since(&before);
     let line = delta
         .lines()
         .find(|l| l.contains(batch_env))
@@ -1914,8 +1901,7 @@ fn audit_log() -> String {
 /// A refusal is not a write: its line also names the region, so one
 /// fails here rather than counting as where the write went.
 fn twin_audit_regions(before: &str) -> Vec<String> {
-    let after = audit_log();
-    let delta = after.strip_prefix(before).expect("append-only");
+    let delta = crate::cli::audit_delta::since(before);
     let lines: Vec<&str> = delta.lines().filter(|l| l.contains(&twin())).collect();
     assert!(
         !lines.iter().any(|l| l.contains("stage=refused")),
@@ -2050,13 +2036,8 @@ async fn a_pin_set_after_the_confirm_is_audited_when_it_stops_the_dispatch() {
     app.cfg.safety_envs.insert(twin(), true);
     let before = audit_log();
     app.spawn_action(modal);
-    let after = audit_log();
-    let lines: Vec<&str> = after
-        .strip_prefix(&before)
-        .expect("append-only")
-        .lines()
-        .filter(|l| l.contains(&twin()))
-        .collect();
+    let delta = crate::cli::audit_delta::since(&before);
+    let lines: Vec<&str> = delta.lines().filter(|l| l.contains(&twin())).collect();
     assert_eq!(lines.len(), 1, "{lines:#?}");
     assert!(
         lines[0].contains("stage=refused") && lines[0].contains("region=eu-west-2"),
@@ -2251,13 +2232,8 @@ async fn a_refusal_for_one_of_two_same_named_envs_is_audited_in_its_region() {
     app.cfg.safety_envs.insert(twin(), true);
     let before = audit_log();
     assert!(app.deny_write(&crate::app::EnvKey::new("eu-west-2", twin()), "restart"));
-    let after = audit_log();
-    let lines: Vec<&str> = after
-        .strip_prefix(&before)
-        .expect("append-only")
-        .lines()
-        .filter(|l| l.contains(&twin()))
-        .collect();
+    let delta = crate::cli::audit_delta::since(&before);
+    let lines: Vec<&str> = delta.lines().filter(|l| l.contains(&twin())).collect();
     assert_eq!(lines.len(), 1, "{lines:#?}");
     assert!(
         lines[0].contains("stage=refused") && lines[0].contains("region=eu-west-2"),

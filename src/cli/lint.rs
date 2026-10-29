@@ -3477,13 +3477,8 @@ pub(crate) mod cycle_wiring {
             |_| async { Ok(client_with_failing_update(vec![env.into()])) },
         )
         .await;
-        let after = std::fs::read_to_string(&path).unwrap_or_default();
-        let lines: Vec<&str> = after
-            .strip_prefix(&before)
-            .expect("the audit log is append-only")
-            .lines()
-            .filter(|l| l.contains(env))
-            .collect();
+        let delta = crate::cli::audit_delta::since(&before);
+        let lines: Vec<&str> = delta.lines().filter(|l| l.contains(env)).collect();
         assert!(!lines.is_empty(), "the fix attempt is audited");
         // The client's own resolved region, whatever the fixture sets.
         let region = client_with_failing_update(vec![]).context.region.clone();
