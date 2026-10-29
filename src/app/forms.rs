@@ -679,6 +679,8 @@ impl App {
             // purpose.
             safety_read_only: self.cfg.safety_read_only,
             mcp_peek_bodies: self.cfg.mcp_peek_bodies,
+            mcp_roles: self.cfg.mcp_roles.clone(),
+            mcp_require_role: self.cfg.mcp_require_role,
             terraform_state_path: self.cfg.terraform_state_path.clone(),
             refresh_interval: self.refresh_interval,
             extra_regions: self.extra_regions.clone(),

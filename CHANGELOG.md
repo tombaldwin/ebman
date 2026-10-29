@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- **MCP write roles, slice 1 of 5: the config and the gate**
+  (`docs/design/assume-role-elevation.md`). `mcp.role.NAME.role_arn` /
+  `.verbs` / `.source_profile` / `.external_id` map MCP write verbs to a
+  role, and `mcp.require_role = true` refuses a verb no role lists
+  (`rule=no_role`). A role config that cannot be acted on (a verb in two
+  roles, an unknown verb, a role with no ARN) refuses every MCP write
+  (`rule=role_config_unreadable`). **Not yet a ceiling:** nothing is
+  assumed yet, so a mapped verb still goes out under the base
+  credentials; the AssumeRole call is slice 3.
+
 ## [0.48.0] - 2026-10-29
 
 ### Added

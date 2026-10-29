@@ -269,8 +269,19 @@ impl Server {
         profile: &Option<String>,
         region: Option<&str>,
         action_label: &str,
+        // The write's tool name, which the role config maps; `None` for
+        // `dlq_undo`, which goes out under the delete's session (D4).
+        tool: Option<&str>,
     ) -> Option<Audited> {
         let freeze = self.freeze.active();
+        let role = match tool {
+            Some(tool) => {
+                let known = write_verb_names();
+                let known: Vec<&str> = known.iter().map(String::as_str).collect();
+                crate::config::mcp_role_check(&self.safety_cfg, tool, &known)
+            }
+            None => crate::config::RoleCheck::NotAsked,
+        };
         // The UNAUDITED half deliberately, for both backends: the
         // recording happens in `Audited::record` so there is exactly
         // one place in this module that writes a refusal line. Going
@@ -280,7 +291,7 @@ impl Server {
         // type carries.
         let profile = profile.clone().or_else(|| self.ambient_profile.clone());
         let (refusal, message, pin_profile) =
-            crate::cli::write_refusal_unaudited(&self.safety_cfg, env, &profile, freeze)?;
+            crate::cli::write_refusal_unaudited(&self.safety_cfg, env, &profile, freeze, &role)?;
         Some(Audited::record(
             matches!(self.backend, Backend::Demo),
             pin_profile.as_deref(),
@@ -2048,6 +2059,7 @@ impl Server {
             &profile,
             arg_str(args, "region").as_deref(),
             verb.label(),
+            Some(verb.tool_name()),
         ) {
             return Err(WriteError::Refused(refused));
         }
@@ -2254,9 +2266,13 @@ impl Server {
             // were checked at plan time, but the token window is long
             // enough for an incident to be declared since. A refusal
             // here drops the plan — reality changed, re-plan required.
-            if let Some(refused) =
-                self.gate_refusal(&p.env, &p.profile, p.region.as_deref(), p.verb.label())
-            {
+            if let Some(refused) = self.gate_refusal(
+                &p.env,
+                &p.profile,
+                p.region.as_deref(),
+                p.verb.label(),
+                Some(p.verb.tool_name()),
+            ) {
                 st.pending = None;
                 return Err(WriteError::Refused(refused));
             }
@@ -2387,6 +2403,7 @@ impl Server {
             &pending.profile,
             pending.region.as_deref(),
             pending.verb.label(),
+            Some(pending.verb.tool_name()),
         ) {
             return Err(WriteError::Refused(refused.map_message(|m| {
                 format!("{m} (declared while the confirmation was open — nothing was dispatched)")
@@ -2772,7 +2789,7 @@ impl Server {
         };
 
         if let Some(refused) =
-            self.gate_refusal(&d.env, &d.profile, d.region.as_deref(), "dlq-undo")
+            self.gate_refusal(&d.env, &d.profile, d.region.as_deref(), "dlq-undo", None)
         {
             // A refusal is decided before anything is sent, well
             // inside the window: nothing to add to it.

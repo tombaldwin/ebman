@@ -1050,6 +1050,11 @@ pub(crate) struct ResolvedConfig {
     /// opening the settings form, which is the regression the switch
     /// exists to prevent.
     pub mcp_peek_bodies: bool,
+    /// Mirrors of `Config::mcp_roles` and `Config::mcp_require_role`,
+    /// for the same reason as `mcp_peek_bodies`: the TUI never reads
+    /// them, and without them a `:settings` save deleted every role.
+    pub mcp_roles: std::collections::BTreeMap<String, crate::config::McpRole>,
+    pub mcp_require_role: bool,
     /// `config.toml` `alias.NAME = "expansion"` command aliases.
     pub command_aliases: std::collections::HashMap<String, String>,
     /// Operator-disabled lint rule IDs (`lint.disable = "EBL001,…"`).

@@ -67,10 +67,10 @@ Instead, config states the mapping:
 
 ```toml
 mcp.role.deploys.role_arn = "arn:aws:iam::111122223333:role/EbmanAgentDeploy"
-mcp.role.deploys.verbs = ["deploy", "restart", "rebuild", "set_option"]
+mcp.role.deploys.verbs = "deploy,restart,rebuild,set_option"
 
 mcp.role.dlq.role_arn = "arn:aws:iam::111122223333:role/EbmanAgentDlq"
-mcp.role.dlq.verbs = ["dlq_resend", "dlq_delete", "dlq_purge"]
+mcp.role.dlq.verbs = "dlq_resend,dlq_delete,dlq_purge"
 # mcp.role.dlq.external_id = "..."
 # mcp.role.dlq.source_profile = "ops"
 ```

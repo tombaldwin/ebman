@@ -330,6 +330,8 @@ impl App {
             frozen: self.deploy_freeze.is_some() || self.foreign_freeze_now().is_some(),
             safety_envs: &self.cfg.safety_envs,
             safety_accounts: &self.cfg.safety_accounts,
+            // MCP-only: the TUI acts for the person at the keyboard.
+            role: &crate::config::RoleCheck::NotAsked,
         })
     }
 
@@ -393,6 +395,12 @@ impl App {
             crate::write_gate::Refusal::AccountPinned { profile } => {
                 format!("read-only mode (account pinned via safety.accounts.{profile})")
             }
+            // MCP-only rungs, which the TUI never asks: worded honestly
+            // all the same, since a refusal is not the place to panic.
+            crate::write_gate::Refusal::RoleConfigUnreadable { problem } => {
+                format!("MCP role config unreadable — {problem}")
+            }
+            crate::write_gate::Refusal::NoRole => "no MCP role for this verb".into(),
         }
     }
 

@@ -3259,6 +3259,22 @@ async fn multi_select_space_toggles_the_option_under_the_cursor() {
     );
 }
 
+/// The MCP roles and `mcp.require_role` survive the `:settings` form,
+/// which rebuilds the whole config from App state: without the App
+/// carrying them, opening settings and saving deleted every role.
+#[test]
+fn a_settings_snapshot_preserves_the_mcp_roles() {
+    let cfg = crate::config::parse(
+        "mcp.require_role = true\n\
+         mcp.role.deploys.role_arn = \"arn:aws:iam::111122223333:role/EbmanAgentDeploy\"\n\
+         mcp.role.deploys.verbs = \"deploy,restart\"\n",
+    );
+    let app = crate::app::App::for_tests(crate::aws::AwsClient::stub(), cfg.clone());
+    let written = crate::config::parse(&crate::config::serialize(&app.current_config_snapshot()));
+    assert_eq!(written.mcp_roles, cfg.mcp_roles);
+    assert!(written.mcp_require_role);
+}
+
 /// `mcp.peek_bodies = false` survives the `:settings` form.
 ///
 /// The switch keeps queue payloads out of an agent transcript, and it

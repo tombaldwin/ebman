@@ -262,6 +262,33 @@ safety.accounts.prod.read_only = true
 # is nothing to withhold. Test the setting against a real server.
 # mcp.peek_bodies = false
 
+# Roles for MCP writes (docs/design/assume-role-elevation.md): each
+# names a role and the MCP write verbs it serves, so an agent's write
+# can go out under that role rather than your own credentials. `verbs`
+# is a comma list of MCP tool names (deploy, restart, rebuild,
+# set_option, terminate, dlq_resend, dlq_delete, dlq_purge), not a TOML
+# array. `source_profile` and `external_id` mean what they do for
+# `accounts.NAME.*`.
+#
+# NOT YET A CEILING. This build reads and checks the mapping, and
+# `mcp.require_role` refuses an unmapped verb, but a mapped verb still
+# goes out under the base credentials: the AssumeRole call comes in a
+# later slice. Do not rely on a role's policy limiting anything yet.
+#
+# Fails closed: a verb two roles list, a verb that is no MCP tool, or a
+# role with no role_arn makes every MCP write refuse
+# (`rule=role_config_unreadable`) until it is fixed. MCP only: the TUI
+# and the CLI act as you.
+# mcp.role.deploys.role_arn = "arn:aws:iam::111122223333:role/EbmanAgentDeploy"
+# mcp.role.deploys.verbs = "deploy,restart,rebuild,set_option"
+# mcp.role.deploys.source_profile = "ops"
+# mcp.role.deploys.external_id = "..."
+
+# Refuse an MCP write whose verb no role lists, rather than sending it
+# under your own credentials (`rule=no_role`). Off by default: with no
+# roles configured it closes every MCP write.
+# mcp.require_role = true
+
 # lint.disable = "EBL003,EBL006"
 
 # Per-rule opt-out for `ebman lint --fix`. Listed rules still

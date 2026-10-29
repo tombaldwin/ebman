@@ -41,6 +41,10 @@ pub(crate) struct WriteContext<'a> {
     pub safety_parse_errors: &'a [String],
     pub safety_envs: &'a HashMap<String, bool>,
     pub safety_accounts: &'a HashMap<String, bool>,
+    /// What the MCP role config says about this write
+    /// (`config::mcp_role_check`). `NotAsked` everywhere but MCP: roles
+    /// are MCP-only (`docs/design/assume-role-elevation.md`, D8).
+    pub role: &'a crate::config::RoleCheck,
 }
 
 /// Which rule refused. Carries what a renderer needs to NAME the rule,
@@ -60,6 +64,13 @@ pub(crate) enum Refusal {
     AccountPinned {
         profile: String,
     },
+    /// The `mcp.role.` config cannot be acted on, so which credential a
+    /// write would go out under is not known.
+    RoleConfigUnreadable {
+        problem: String,
+    },
+    /// `mcp.require_role` is set and no role lists this verb.
+    NoRole,
 }
 
 impl Refusal {
@@ -76,6 +87,8 @@ impl Refusal {
             Refusal::Frozen => "frozen",
             Refusal::EnvPinned { .. } => "env_pinned",
             Refusal::AccountPinned { .. } => "account_pinned",
+            Refusal::RoleConfigUnreadable { .. } => "role_config_unreadable",
+            Refusal::NoRole => "no_role",
         }
     }
 
@@ -96,6 +109,8 @@ impl Refusal {
             Refusal::Frozen => false,
             Refusal::EnvPinned { .. } => true,
             Refusal::AccountPinned { .. } => true,
+            Refusal::RoleConfigUnreadable { .. } => false,
+            Refusal::NoRole => false,
         }
     }
 
@@ -132,6 +147,12 @@ impl Refusal {
             Refusal::AccountPinned { profile } => {
                 format!("clear safety.accounts.{profile}.read_only in config.toml")
             }
+            Refusal::RoleConfigUnreadable { problem } => {
+                format!("fix config.toml — {problem}")
+            }
+            Refusal::NoRole => "list the verb under a role's mcp.role.NAME.verbs, or clear \
+                                mcp.require_role, in config.toml"
+                .into(),
         }
     }
 }
@@ -165,6 +186,14 @@ pub(crate) fn decide(ctx: &WriteContext<'_>) -> Option<Refusal> {
             problem: problem.clone(),
         });
     }
+    // Next, for the same reason: a role config that cannot be acted on
+    // says the operator meant to constrain the credential, and which one
+    // a write would use is not known.
+    if let crate::config::RoleCheck::Unreadable { problem } = ctx.role {
+        return Some(Refusal::RoleConfigUnreadable {
+            problem: problem.clone(),
+        });
+    }
     if ctx.global_read_only {
         return Some(Refusal::GlobalReadOnly);
     }
@@ -182,6 +211,14 @@ pub(crate) fn decide(ctx: &WriteContext<'_>) -> Option<Refusal> {
                 profile: p.to_string(),
             });
         }
+    }
+    // Last: the rungs above say whether a write may happen at all; this
+    // one says it may not go out under the base credentials.
+    if matches!(
+        ctx.role,
+        crate::config::RoleCheck::Unmapped { required: true }
+    ) {
+        return Some(Refusal::NoRole);
     }
     None
 }
@@ -225,8 +262,64 @@ mod tests {
                 safety_parse_errors: &[],
                 safety_envs: &self.envs,
                 safety_accounts: &self.accounts,
+                role: &NOT_ASKED,
             }
         }
+    }
+
+    static NOT_ASKED: crate::config::RoleCheck = crate::config::RoleCheck::NotAsked;
+
+    /// An unreadable role config refuses every MCP write, ranked right
+    /// after an unreadable `safety.` line and above every rule, because
+    /// which credential a write would use is not known. `no_role` is
+    /// last, and only when strict mode asked for it.
+    #[test]
+    fn the_role_rungs_rank_where_the_design_puts_them() {
+        use crate::config::RoleCheck;
+        let f = Fixture::new();
+        let broken = RoleCheck::Unreadable {
+            problem: "deploy in two roles".into(),
+        };
+        let strict = RoleCheck::Unmapped { required: true };
+        let lax = RoleCheck::Unmapped { required: false };
+        let mapped = RoleCheck::Mapped {
+            role: "deploys".into(),
+        };
+        let with = |role: &'static RoleCheck, env: &'static str, acct: Option<&'static str>| {
+            let mut c = f.ctx(env, acct);
+            c.role = role;
+            decide(&c).map(|r| r.rule())
+        };
+        let leak = |r: RoleCheck| -> &'static RoleCheck { Box::leak(Box::new(r)) };
+        let (broken, strict, lax, mapped) = (leak(broken), leak(strict), leak(lax), leak(mapped));
+
+        assert_eq!(
+            with(broken, "open-env", None),
+            Some("role_config_unreadable")
+        );
+        // Above every rule, the freeze and a pin included.
+        let mut c = f.ctx("pinned-env", None);
+        c.role = broken;
+        c.frozen = true;
+        c.global_read_only = true;
+        assert_eq!(decide(&c).map(|r| r.rule()), Some("role_config_unreadable"));
+        // Below an unreadable safety config.
+        let errs = vec!["safety.envs.x: bad".to_string()];
+        c.safety_parse_errors = &errs;
+        assert_eq!(
+            decide(&c).map(|r| r.rule()),
+            Some("safety_config_unreadable")
+        );
+
+        assert_eq!(with(strict, "open-env", None), Some("no_role"));
+        // Last: a pin outranks it.
+        assert_eq!(with(strict, "pinned-env", None), Some("env_pinned"));
+        assert_eq!(
+            with(strict, "open-env", Some("pinned-acct")),
+            Some("account_pinned")
+        );
+        assert_eq!(with(lax, "open-env", None), None, "off unless required");
+        assert_eq!(with(mapped, "open-env", None), None);
     }
 
     #[test]

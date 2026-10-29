@@ -310,6 +310,66 @@ async fn an_mcp_write_is_pinned_against_the_servers_profile() {
     assert!(!err.contains("safety.accounts"), "{err}");
 }
 
+/// The role rungs reach an MCP write, audited as refusals: strict mode
+/// refuses a verb no role lists (`no_role`) and lets a mapped one past,
+/// and a role config that cannot be acted on refuses every write
+/// (`role_config_unreadable`). Slice 1 of the assume-role design: no
+/// role is assumed yet.
+#[tokio::test]
+async fn the_role_config_gates_mcp_writes() {
+    let env = "poly-role-probe";
+    let strict = crate::config::parse(
+        "mcp.require_role = true\n\
+         mcp.role.deploys.role_arn = \"arn:aws:iam::111122223333:role/D\"\n\
+         mcp.role.deploys.verbs = \"deploy\"\n",
+    );
+    let server = Server::with_config(false, false, WriteScope::All, strict);
+    let before = crate::cli::audit_delta::mark();
+    let err = server
+        .tool_write_plan(WriteVerb::Restart, &json!({"env": env}))
+        .await
+        .expect_err("restart maps to no role");
+    assert!(err.to_string().contains("mcp.require_role"), "{err}");
+    let lines = crate::cli::audit_delta::lines_for(&before, env);
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("stage=refused") && l.contains("rule=no_role")),
+        "{lines:#?}"
+    );
+    // A mapped verb is not refused by the role rung (it fails later, for
+    // want of AWS, which is not what this asks).
+    let err = server
+        .tool_write_plan(WriteVerb::Deploy, &json!({"env": env, "version": "v1"}))
+        .await
+        .err()
+        .map(|e| e.to_string())
+        .unwrap_or_default();
+    assert!(
+        !err.contains("mcp.require_role") && !err.contains("role config"),
+        "{err}"
+    );
+
+    let broken = crate::config::parse(
+        "mcp.role.a.role_arn = \"arn:a\"\nmcp.role.a.verbs = \"deploy\"\n\
+         mcp.role.b.role_arn = \"arn:b\"\nmcp.role.b.verbs = \"deploy\"\n",
+    );
+    let server = Server::with_config(false, false, WriteScope::All, broken);
+    let before = crate::cli::audit_delta::mark();
+    let err = server
+        .tool_write_plan(WriteVerb::Restart, &json!({"env": env}))
+        .await
+        .expect_err("an unreadable role config refuses every write");
+    assert!(err.to_string().contains("more than one role"), "{err}");
+    let lines = crate::cli::audit_delta::lines_for(&before, env);
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("stage=refused") && l.contains("rule=role_config_unreadable")),
+        "{lines:#?}"
+    );
+}
+
 /// A demo MCP server must refuse the same way and write nothing.
 ///
 /// Demo gets `Config::default()` (no pins), but a production demo

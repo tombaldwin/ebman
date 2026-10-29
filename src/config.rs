@@ -149,6 +149,13 @@ pub struct Config {
     /// is active, so a peek that returns no bodies reads as a policy
     /// choice rather than an empty queue.
     pub(crate) mcp_peek_bodies: bool,
+    /// `mcp.role.NAME.*`: the roles an MCP write assumes, by verb. See
+    /// `docs/design/assume-role-elevation.md`. Sorted, so the file is
+    /// written back the same way each time.
+    pub(crate) mcp_roles: std::collections::BTreeMap<String, McpRole>,
+    /// `mcp.require_role = true`: an MCP write whose verb maps to no
+    /// role is refused rather than going out under the base credentials.
+    pub(crate) mcp_require_role: bool,
     pub(crate) terraform_state_path: Option<String>,
     /// Optional outbound webhook for audit-line fan-out. Each audit
     /// line written to `~/.cache/ebman/audit.log` is also POSTed to
@@ -211,6 +218,89 @@ pub struct Config {
 /// hops still resolve), `external_id` is optional but required by some
 /// trust policies, `region` is optional (falls back to the source
 /// profile's / env default).
+/// A role MCP writes assume for the verbs it lists (`mcp.role.NAME.*`).
+/// `role_arn`, `source_profile` and `external_id` mean what they do for
+/// `accounts.NAME.*`; `verbs` names MCP write tools.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct McpRole {
+    pub role_arn: String,
+    pub source_profile: Option<String>,
+    pub external_id: Option<String>,
+    pub verbs: Vec<String>,
+}
+
+/// What the role config says about one MCP write.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RoleCheck {
+    /// Not an MCP write, or one with no verb of its own (`dlq_undo`
+    /// goes out under the session of the delete it reverses).
+    NotAsked,
+    /// The role config cannot be acted on: every MCP write refuses
+    /// until it is fixed, as an unreadable `safety.` line does.
+    Unreadable { problem: String },
+    /// The verb maps to this role.
+    Mapped { role: String },
+    /// No role lists the verb; `required` is `mcp.require_role`.
+    Unmapped { required: bool },
+}
+
+/// What the role config says about an MCP write of `verb`, given the
+/// MCP write verbs that exist (`known`).
+///
+/// Fails closed, never by guessing: a verb two roles list, a verb no
+/// tool has (a typo, or a TOML array where a comma list belongs) and a
+/// role with no `role_arn` each make the whole config unreadable, since
+/// choosing would be the fail-open the safety parser was rewritten to
+/// stop.
+pub(crate) fn mcp_role_check(cfg: &Config, verb: &str, known: &[&str]) -> RoleCheck {
+    let mut owner: Option<&str> = None;
+    for (name, role) in &cfg.mcp_roles {
+        if role.role_arn.is_empty() {
+            return RoleCheck::Unreadable {
+                problem: format!("mcp.role.{name} has no role_arn"),
+            };
+        }
+        for v in &role.verbs {
+            if !known.contains(&v.as_str()) {
+                return RoleCheck::Unreadable {
+                    problem: format!(
+                        "mcp.role.{name}.verbs names `{v}`, which is not an MCP write \
+                         verb (give a comma list, e.g. \"deploy,restart\"; the verbs are {})",
+                        known.join(", ")
+                    ),
+                };
+            }
+        }
+    }
+    for name_v in known {
+        let owners: Vec<&str> = cfg
+            .mcp_roles
+            .iter()
+            .filter(|(_, r)| r.verbs.iter().any(|v| v == name_v))
+            .map(|(n, _)| n.as_str())
+            .collect();
+        if owners.len() > 1 {
+            return RoleCheck::Unreadable {
+                problem: format!(
+                    "`{name_v}` is listed by more than one role ({}); a verb has one role",
+                    owners.join(", ")
+                ),
+            };
+        }
+        if *name_v == verb {
+            owner = owners.first().copied();
+        }
+    }
+    match owner {
+        Some(role) => RoleCheck::Mapped {
+            role: role.to_string(),
+        },
+        None => RoleCheck::Unmapped {
+            required: cfg.mcp_require_role,
+        },
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct AccountSpec {
     pub role_arn: String,
@@ -241,6 +331,8 @@ impl Default for Config {
             safety_parse_errors: Vec::new(),
             safety_read_only: false,
             mcp_peek_bodies: true,
+            mcp_roles: std::collections::BTreeMap::new(),
+            mcp_require_role: false,
             terraform_state_path: None,
             notify_webhook: None,
             command_aliases: std::collections::HashMap::new(),
@@ -554,6 +646,41 @@ pub(crate) fn parse(text: &str) -> Config {
             "mcp.peek_bodies" => {
                 if let Some(b) = parse_bool(&value) {
                     cfg.mcp_peek_bodies = b;
+                }
+            }
+            "mcp.require_role" => match parse_bool(&value) {
+                Some(b) => cfg.mcp_require_role = b,
+                // Unreadable is not "off": an operator who wrote the key
+                // meant to restrict.
+                None => {
+                    cfg.mcp_require_role = true;
+                    cfg.passthrough.push(line.to_string());
+                }
+            },
+            other if other.starts_with("mcp.role.") => {
+                // `mcp.role.NAME.field`. Split on the last dot, as
+                // `accounts.` does, so a dotted name works.
+                let rest = other.trim_start_matches("mcp.role.");
+                let Some((name, field)) =
+                    rest.rsplit_once('.').filter(|(n, _)| !n.trim().is_empty())
+                else {
+                    cfg.passthrough.push(line.to_string());
+                    continue;
+                };
+                let role = || name.trim().to_string();
+                match field.trim() {
+                    "role_arn" => cfg.mcp_roles.entry(role()).or_default().role_arn = value,
+                    "verbs" => {
+                        cfg.mcp_roles.entry(role()).or_default().verbs =
+                            crate::util::split_csv(&value)
+                    }
+                    "source_profile" => {
+                        cfg.mcp_roles.entry(role()).or_default().source_profile = Some(value)
+                    }
+                    "external_id" => {
+                        cfg.mcp_roles.entry(role()).or_default().external_id = Some(value)
+                    }
+                    _ => cfg.passthrough.push(line.to_string()),
                 }
             }
             "terraform.state_path" => {
@@ -984,6 +1111,27 @@ pub(crate) fn serialize(cfg: &Config) -> String {
     if !cfg.mcp_peek_bodies {
         out.push_str("mcp.peek_bodies = false\n");
     }
+    if cfg.mcp_require_role {
+        out.push_str("mcp.require_role = true\n");
+    }
+    for (name, role) in &cfg.mcp_roles {
+        out.push_str(&format!(
+            "mcp.role.{name}.role_arn = \"{}\"\n",
+            role.role_arn
+        ));
+        if !role.verbs.is_empty() {
+            out.push_str(&format!(
+                "mcp.role.{name}.verbs = \"{}\"\n",
+                role.verbs.join(",")
+            ));
+        }
+        if let Some(v) = &role.source_profile {
+            out.push_str(&format!("mcp.role.{name}.source_profile = \"{v}\"\n"));
+        }
+        if let Some(v) = &role.external_id {
+            out.push_str(&format!("mcp.role.{name}.external_id = \"{v}\"\n"));
+        }
+    }
     out.push_str(&format!("theme = \"{}\"\n", cfg.theme));
     out.push_str(&format!("icons = \"{}\"\n", cfg.icons));
     out.push_str(&format!("notify_bell = {}\n", cfg.notify_bell));
@@ -1183,6 +1331,113 @@ pub(crate) fn parse_profile_themes(raw: &str) -> std::collections::HashMap<Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const VERBS: &[&str] = &["deploy", "restart", "rebuild", "terminate"];
+
+    #[test]
+    fn mcp_roles_parse_and_write_back() {
+        let cfg = parse(
+            "mcp.require_role = true\n\
+             mcp.role.team.deploys.role_arn = \"arn:aws:iam::111122223333:role/D\"\n\
+             mcp.role.team.deploys.verbs = \"deploy, restart\"\n\
+             mcp.role.team.deploys.external_id = \"x-1\"\n\
+             mcp.role.team.deploys.source_profile = \"ops\"\n\
+             mcp.role.team.deploys.future = \"kept\"\n",
+        );
+        assert!(cfg.mcp_require_role);
+        let role = cfg
+            .mcp_roles
+            .get("team.deploys")
+            .expect("a dotted name works");
+        assert_eq!(role.role_arn, "arn:aws:iam::111122223333:role/D");
+        assert_eq!(role.verbs, ["deploy", "restart"]);
+        assert_eq!(role.external_id.as_deref(), Some("x-1"));
+        assert_eq!(role.source_profile.as_deref(), Some("ops"));
+        let again = parse(&serialize(&cfg));
+        assert_eq!(again.mcp_roles, cfg.mcp_roles);
+        assert!(again.mcp_require_role);
+        assert!(
+            serialize(&cfg).contains("mcp.role.team.deploys.future = \"kept\""),
+            "an unknown field is preserved, not dropped"
+        );
+    }
+
+    /// An unreadable `mcp.require_role` is not "off": an operator who
+    /// wrote the key meant to restrict.
+    #[test]
+    fn an_unreadable_require_role_restricts() {
+        assert!(parse("mcp.require_role = yes please\n").mcp_require_role);
+        assert!(!parse("mcp.require_role = false\n").mcp_require_role);
+        assert!(!parse("").mcp_require_role);
+    }
+
+    #[test]
+    fn mcp_role_check_maps_a_verb_or_says_why_not() {
+        let cfg = parse(
+            "mcp.role.deploys.role_arn = \"arn:r\"\n\
+             mcp.role.deploys.verbs = \"deploy,restart\"\n",
+        );
+        assert_eq!(
+            mcp_role_check(&cfg, "deploy", VERBS),
+            RoleCheck::Mapped {
+                role: "deploys".into()
+            }
+        );
+        assert_eq!(
+            mcp_role_check(&cfg, "terminate", VERBS),
+            RoleCheck::Unmapped { required: false }
+        );
+        let strict = parse(
+            "mcp.require_role = true\n\
+             mcp.role.deploys.role_arn = \"arn:r\"\n\
+             mcp.role.deploys.verbs = \"deploy\"\n",
+        );
+        assert_eq!(
+            mcp_role_check(&strict, "terminate", VERBS),
+            RoleCheck::Unmapped { required: true }
+        );
+        // No roles at all: unmapped, as today.
+        assert_eq!(
+            mcp_role_check(&parse(""), "deploy", VERBS),
+            RoleCheck::Unmapped { required: false }
+        );
+    }
+
+    /// Each way the role config cannot be acted on fails closed, for
+    /// every verb: choosing would be the fail-open the safety parser was
+    /// rewritten to stop.
+    #[test]
+    fn a_role_config_that_cannot_be_acted_on_fails_closed() {
+        let unreadable = |text: &str, expect: &str| {
+            let cfg = parse(text);
+            for verb in VERBS {
+                match mcp_role_check(&cfg, verb, VERBS) {
+                    RoleCheck::Unreadable { problem } => {
+                        assert!(problem.contains(expect), "{text}: {problem}")
+                    }
+                    other => panic!("{text}: `{verb}` was {other:?}"),
+                }
+            }
+        };
+        unreadable(
+            "mcp.role.a.role_arn = \"arn:a\"\nmcp.role.a.verbs = \"deploy\"\n\
+             mcp.role.b.role_arn = \"arn:b\"\nmcp.role.b.verbs = \"deploy\"\n",
+            "more than one role (a, b)",
+        );
+        unreadable(
+            "mcp.role.a.role_arn = \"arn:a\"\nmcp.role.a.verbs = \"deplo\"\n",
+            "`deplo`, which is not an MCP write verb",
+        );
+        // A TOML array, where the house form is a comma list.
+        unreadable(
+            "mcp.role.a.role_arn = \"arn:a\"\nmcp.role.a.verbs = [\"deploy\"]\n",
+            "give a comma list",
+        );
+        unreadable(
+            "mcp.role.a.verbs = \"deploy\"\n",
+            "mcp.role.a has no role_arn",
+        );
+    }
 
     /// What a read of the config file means for the `app.` lines, for
     /// the TUI's reload and the MCP server alike.
@@ -1397,6 +1652,18 @@ accounts.staging.external_id = "abc-xyz"
             safety_accounts: std::collections::HashMap::new(),
             safety_parse_errors: Vec::new(),
             mcp_peek_bodies: true,
+            mcp_roles: [(
+                "deploys".to_string(),
+                McpRole {
+                    role_arn: "arn:aws:iam::111122223333:role/EbmanAgentDeploy".into(),
+                    source_profile: Some("ops".into()),
+                    external_id: Some("x-1".into()),
+                    verbs: vec!["deploy".into(), "restart".into()],
+                },
+            )]
+            .into_iter()
+            .collect(),
+            mcp_require_role: true,
             terraform_state_path: None,
             notify_webhook: Some("https://hooks.slack.com/services/EXAMPLE".into()),
             command_aliases: {

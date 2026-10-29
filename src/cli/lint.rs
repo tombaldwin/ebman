@@ -2793,8 +2793,14 @@ async fn apply_fixes_for_env(
             crate::verb::Verb::SetOption.audit_label(),
         )
     } else {
-        crate::cli::write_refusal_unaudited(safety_cfg, &env.name, active_profile_for_safety, None)
-            .map(|(_, message, _)| message)
+        crate::cli::write_refusal_unaudited(
+            safety_cfg,
+            &env.name,
+            active_profile_for_safety,
+            None,
+            &crate::config::RoleCheck::NotAsked,
+        )
+        .map(|(_, message, _)| message)
     };
     if let Some(reason) = refusal {
         notes.push(CycleNote::FixRefused { reason });

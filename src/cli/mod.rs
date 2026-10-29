@@ -106,6 +106,8 @@ pub(crate) fn freeze_refuses_run(
         frozen: true,
         safety_envs: &safety_cfg.safety_envs,
         safety_accounts: &safety_cfg.safety_accounts,
+        // A run-wide freeze check, before any verb: no role rung.
+        role: &crate::config::RoleCheck::NotAsked,
     });
     if verdict != Some(crate::write_gate::Refusal::Frozen) {
         return None;
@@ -162,7 +164,14 @@ pub(crate) fn write_refusal(
     action_label: &str,
 ) -> Option<String> {
     let (refusal, message, pin_profile) =
-        write_refusal_unaudited(safety_cfg, env, profile, active_freeze)?;
+        // The CLI acts for the person at the keyboard: roles are MCP's.
+        write_refusal_unaudited(
+            safety_cfg,
+            env,
+            profile,
+            active_freeze,
+            &crate::config::RoleCheck::NotAsked,
+        )?;
     // Record the attempt. Every CLI and MCP write path funnels through
     // here, so this is the one place that sees a refusal on this side.
     //
@@ -205,6 +214,7 @@ pub(crate) fn write_refusal_unaudited(
     env: &str,
     profile: &Option<String>,
     active_freeze: Option<crate::freeze::FreezeMarker>,
+    role: &crate::config::RoleCheck,
 ) -> Option<(crate::write_gate::Refusal, String, Option<String>)> {
     // The profile is resolved by the caller: the CLI from its
     // `WriteEnv`, MCP from the profile its `Server` read at startup.
@@ -227,6 +237,7 @@ pub(crate) fn write_refusal_unaudited(
         frozen: active_freeze.is_some(),
         safety_envs: &safety_cfg.safety_envs,
         safety_accounts: &safety_cfg.safety_accounts,
+        role,
     })?;
 
     // Wording stays the CLI's own — see `write_gate`'s module docs.
@@ -259,6 +270,12 @@ pub(crate) fn write_refusal_unaudited(
         // be the config key.
         crate::write_gate::Refusal::GlobalReadOnly => {
             format!("refusing {env} — safety.read_only is set in config.toml")
+        }
+        crate::write_gate::Refusal::RoleConfigUnreadable { problem } => {
+            format!("refusing {env} — MCP role config unreadable: {problem}")
+        }
+        crate::write_gate::Refusal::NoRole => {
+            format!("refusing {env} — mcp.require_role is set and no mcp.role lists this verb")
         }
     };
     Some((refusal, message, pin_profile))
@@ -892,7 +909,13 @@ mod write_gate_input_guard {
             ..crate::config::Config::default()
         };
 
-        let refusal = super::write_refusal_unaudited(&cfg, "any-env", &None, None);
+        let refusal = super::write_refusal_unaudited(
+            &cfg,
+            "any-env",
+            &None,
+            None,
+            &crate::config::RoleCheck::NotAsked,
+        );
         let (rule, message, _) = refusal.expect("a standing read-only must refuse");
         assert_eq!(rule.rule(), "global_read_only", "{message}");
 
@@ -900,7 +923,14 @@ mod write_gate_input_guard {
         // the test would pass against a gate that refuses everything.
         let open = crate::config::Config::default();
         assert!(
-            super::write_refusal_unaudited(&open, "any-env", &None, None).is_none(),
+            super::write_refusal_unaudited(
+                &open,
+                "any-env",
+                &None,
+                None,
+                &crate::config::RoleCheck::NotAsked
+            )
+            .is_none(),
             "no standing restriction means no refusal"
         );
     }
