@@ -270,7 +270,7 @@ impl Server {
         region: Option<&str>,
         action_label: &str,
     ) -> Option<Audited> {
-        let freeze = crate::freeze::FreezeStore::real().active();
+        let freeze = self.freeze.active();
         // The UNAUDITED half deliberately, for both backends: the
         // recording happens in `Audited::record` so there is exactly
         // one place in this module that writes a refusal line. Going

@@ -1286,7 +1286,7 @@ impl Server {
         // incident it reported writes as available, and an incident is
         // exactly when a triage agent calls this. A local file read,
         // so it costs nothing the AWS-free contract forbids.
-        let freeze = crate::freeze::FreezeStore::real().active();
+        let freeze = self.freeze.active();
         let frozen = freeze.is_some();
         // Every write is refused when the safety config cannot be
         // parsed — `write_gate::decide` checks that FIRST and
@@ -1336,7 +1336,7 @@ impl Server {
                 m.holder(),
                 m.remedy()
             ));
-        } else if let Some(ended) = crate::freeze::FreezeStore::real().ended() {
+        } else if let Some(ended) = self.freeze.ended() {
             // A freeze that lifted because its TUI exited, not because
             // anyone decided: the agent's user should hear it.
             notes.push(format!(

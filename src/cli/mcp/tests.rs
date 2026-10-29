@@ -5346,28 +5346,63 @@ async fn fleet_cost_keys_are_env_refs() {
 }
 
 /// A freeze that lifted because its TUI exited is news to an agent's
-/// user: doctor says so, rather than only "writes available".
-///
-/// Synchronous, driving its own runtime: the record is shared with every
-/// test that declares a freeze (each clears it), so the lock is held for
-/// the call, and a lock may not be held across an `.await`.
-#[test]
-fn doctor_says_when_a_freeze_ended_with_its_session() {
-    let _guard = crate::freeze::MARKER_LOCK
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    crate::freeze::FreezeStore::real().write_test_ended("incident: db failover");
-    let body = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("runtime")
-        .block_on(call(&demo_server(), "doctor", json!({})))
-        .1
-        .to_string();
-    crate::freeze::FreezeStore::real().clear_ended();
+/// user: doctor says so, rather than only "writes available". Read from
+/// the server's own store, so the record is this test's alone.
+#[tokio::test]
+async fn doctor_says_when_a_freeze_ended_with_its_session() {
+    let server = demo_server();
+    server
+        .freeze_store()
+        .write_test_ended("incident: db failover");
+    let body = call(&server, "doctor", json!({})).await.1.to_string();
     assert!(
         body.contains("incident: db failover") && body.contains("session ended"),
         "{body}"
+    );
+    // And it is the server's store that doctor reads: another server's
+    // record is not this one's news.
+    let body = call(&demo_server(), "doctor", json!({}))
+        .await
+        .1
+        .to_string();
+    assert!(!body.contains("incident: db failover"), "{body}");
+}
+
+/// `doctor` reports a freeze from the server's own store, so an agent
+/// told "writes available" during an incident is told the truth.
+#[tokio::test]
+async fn doctor_reports_a_freeze_in_the_servers_store() {
+    let server = demo_server();
+    server
+        .freeze_store()
+        .declare_persistent("incident #89", true)
+        .expect("declared");
+    let body = call(&server, "doctor", json!({})).await.1.to_string();
+    assert!(body.contains("A deploy freeze is active"), "{body}");
+    let body = call(&demo_server(), "doctor", json!({}))
+        .await
+        .1
+        .to_string();
+    assert!(!body.contains("A deploy freeze is active"), "{body}");
+}
+
+/// A production server reads the freeze every process shares. Under test
+/// each server has its own, which compiles the production branch out of
+/// every test, so it is pinned by source: a server on any other store
+/// would answer writes through a TUI's `:freeze-deploys`.
+#[test]
+fn a_production_server_reads_the_shared_freeze() {
+    let src = crate::app::tests::scan::production_source("cli/mcp/mod.rs");
+    let body = crate::app::tests::scan::fn_bodies(&src)
+        .into_iter()
+        .find(|(name, _)| name == "own_freeze_store")
+        .expect("`own_freeze_store` is defined")
+        .1;
+    let production = &body[body.find("#[cfg(not(test))]").expect("a production branch")..];
+    let production = &production[..production.find("#[cfg(test)]").unwrap_or(production.len())];
+    assert!(
+        production.contains("crate::freeze::FreezeStore::real()"),
+        "{production}"
     );
 }
 

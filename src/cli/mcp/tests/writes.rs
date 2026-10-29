@@ -232,6 +232,54 @@ async fn a_refused_mcp_write_is_recorded_against_the_agent() {
     );
 }
 
+/// A freeze in the server's store refuses an MCP write, audited as one.
+/// Nothing pinned that the write path read the
+/// freeze at all: the store was the shared one, which a test could not
+/// declare in without racing every other test's write.
+#[tokio::test]
+async fn a_freeze_in_the_servers_store_refuses_its_writes() {
+    let env_name = "mcp-freeze-probe-env";
+    let frozen = Server::with_config(
+        false,
+        false,
+        WriteScope::All,
+        crate::config::Config::default(),
+    );
+    frozen
+        .freeze_store()
+        .declare_persistent("incident #88", true)
+        .expect("declared");
+    let before = crate::cli::audit_delta::mark();
+    let err = frozen
+        .tool_write_plan(WriteVerb::Restart, &json!({"env": env_name}))
+        .await
+        .expect_err("a frozen fleet must refuse");
+    assert!(
+        err.to_string()
+            .contains("fleet freeze active (incident #88)"),
+        "{err}"
+    );
+    let lines = crate::cli::audit_delta::lines_matching(&before, |l| l.contains(env_name));
+    assert_eq!(lines.len(), 1, "{lines:#?}");
+    assert!(lines[0].contains("stage=refused") && lines[0].contains("rule=frozen"));
+
+    // Another server's store holds no freeze: the refusal was this
+    // store's, not some shared marker's.
+    let open = Server::with_config(
+        false,
+        false,
+        WriteScope::All,
+        crate::config::Config::default(),
+    );
+    let err = open
+        .tool_write_plan(WriteVerb::Restart, &json!({"env": env_name}))
+        .await
+        .err()
+        .map(|e| e.to_string())
+        .unwrap_or_default();
+    assert!(!err.contains("freeze"), "{err}");
+}
+
 /// A demo MCP server must refuse the same way and write nothing.
 ///
 /// Demo gets `Config::default()` (no pins), but the freeze check

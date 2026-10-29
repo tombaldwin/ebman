@@ -901,6 +901,11 @@ pub(crate) struct Server {
     /// that kept its startup copy answered for config that was gone.
     /// `None` (demo, tests) uses `safety_cfg`'s.
     config_file: Option<std::path::PathBuf>,
+    /// The fleet freeze, re-read on every write and by `doctor`: the
+    /// store every process shares, or under test one of this server's
+    /// own, so no test reads a marker another test wrote. As `App`
+    /// holds one.
+    freeze: crate::freeze::FreezeStore,
     /// Two-phase write state: the single pending-plan slot (spec:
     /// writes are serialized server-wide).
     writes: tokio::sync::Mutex<writes::WriteState>,
@@ -975,6 +980,23 @@ pub(crate) struct Server {
     injected_client: Option<std::sync::Arc<aws::AwsClient>>,
 }
 
+/// The freeze a new server reads: the shared one, or under test a
+/// store of its own (see `Server::freeze`).
+fn own_freeze_store() -> crate::freeze::FreezeStore {
+    #[cfg(not(test))]
+    {
+        crate::freeze::FreezeStore::real()
+    }
+    #[cfg(test)]
+    {
+        static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        crate::freeze::FreezeStore::at(
+            crate::util::cache_dir().join(format!("freeze-mcp-{n}.json")),
+        )
+    }
+}
+
 impl Server {
     /// The one constructor. It takes a scope rather than a bool
     /// because a bool could only ever mean "all or nothing", and
@@ -1025,6 +1047,7 @@ impl Server {
             write_scope: scope,
             safety_cfg,
             config_file: None,
+            freeze: own_freeze_store(),
             writes: tokio::sync::Mutex::new(writes::WriteState::default()),
             outbound: std::sync::Mutex::new(None),
             pending_asks: std::sync::Mutex::new(std::collections::HashMap::new()),
@@ -1054,6 +1077,12 @@ impl Server {
     pub(crate) fn watching_exe(mut self, path: &std::path::Path) -> Self {
         self.exe = Some(ExeIdentity::for_tests(path));
         self
+    }
+
+    /// This server's freeze store, for a test to declare a freeze in.
+    #[cfg(test)]
+    pub(crate) fn freeze_store(&self) -> &crate::freeze::FreezeStore {
+        &self.freeze
     }
 
     #[cfg(test)]
