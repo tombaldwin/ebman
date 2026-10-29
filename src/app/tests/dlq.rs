@@ -483,15 +483,18 @@ async fn dlq_messages_from_another_env_or_queue_are_dropped() {
     );
 }
 
-/// An earlier peek answering after a later one does not replace it.
+/// A peek that read the queue before a delete landed does not put the
+/// deleted message back.
 ///
-/// A delete refetches, so a refresh still in flight when the operator
-/// deleted a message answered after the refetch and put the message
-/// back, with a receipt handle AWS would reject. Both peeks are of the
-/// same env and queue, so only the ticket tells them apart.
+/// A refresh (`^R`) still in flight when the operator deletes a message
+/// answers with a page taken before the delete. It was the latest peek,
+/// so it landed, and the message came back with a receipt handle AWS
+/// would reject. The delete now re-issues a peek in flight, whose ticket
+/// supersedes the stale one. With no peek in flight it asks nothing: a
+/// peek raises every message's receive count.
 #[tokio::test]
 async fn a_late_peek_does_not_bring_back_a_deleted_message() {
-    use crate::app::AppMsg;
+    use crate::app::{AppMsg, DlqOp};
 
     let mut app = test_app();
     app.dlq = Some(open_dlq_state("api-prod"));
@@ -505,21 +508,52 @@ async fn a_late_peek_does_not_bring_back_a_deleted_message() {
             result: Ok(ids.iter().map(|id| msg(id)).collect()),
         });
     };
+    let landed = |app: &mut App, op: DlqOp| {
+        let gen = app.generation;
+        app.handle_msg(AppMsg::DlqActionResult {
+            gen,
+            key: EnvKey::new("us-east-1", "api-prod"),
+            result: Ok(op),
+        });
+    };
+    let deleted = |id: &str| DlqOp::Deleted {
+        message_id: id.into(),
+    };
     let ids = |app: &App| -> Vec<String> {
         let dlq = app.dlq.as_ref().unwrap();
         dlq.messages.iter().map(|m| m.id.clone()).collect()
     };
-    let refresh = app.dlq.as_mut().unwrap().fetch.begin();
-    let after_delete = app.dlq.as_mut().unwrap().fetch.begin();
-    answer(&mut app, after_delete, &[]);
-    assert!(ids(&app).is_empty(), "the latest peek applies");
-    answer(&mut app, refresh, &["m-1"]);
-    assert!(
-        ids(&app).is_empty(),
-        "the earlier peek brought the deleted message back: {:?}",
-        ids(&app)
-    );
-    assert!(!app.dlq.as_ref().unwrap().fetch.in_flight());
+    let in_flight = |app: &App| app.dlq.as_ref().unwrap().fetch.ticket_in_flight();
+
+    // No peek in flight: the delete asks nothing.
+    landed(&mut app, deleted("m-1"));
+    assert!(ids(&app).is_empty());
+    assert_eq!(in_flight(&app), None, "a delete alone must not peek");
+
+    // A refresh in flight, then each op that removes messages.
+    for op in [
+        deleted("m-2"),
+        DlqOp::Resent {
+            message_id: "m-2".into(),
+        },
+        DlqOp::Purged,
+    ] {
+        let label = format!("{op:?}");
+        app.dlq.as_mut().unwrap().messages = vec![msg("m-2")];
+        app.spawn_dlq_fetch();
+        let refresh = in_flight(&app).expect("the refresh is in flight");
+        landed(&mut app, op);
+        let after = in_flight(&app).unwrap_or_else(|| panic!("{label}: not re-asked"));
+        assert_ne!(after, refresh, "{label}");
+        answer(&mut app, refresh, &["m-2"]);
+        assert!(
+            ids(&app).is_empty(),
+            "{label}: the refresh's page brought the message back: {:?}",
+            ids(&app)
+        );
+        answer(&mut app, after, &["m-3"]);
+        assert_eq!(ids(&app), ["m-3"], "{label}: the peek after it lands");
+    }
 }
 
 /// The cursor after a refetch. `x` deletes whatever the cursor points

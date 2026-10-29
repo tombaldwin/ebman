@@ -1861,18 +1861,26 @@ impl App {
             if EnvKey::new(dlq.region.clone(), dlq.env_name.clone()) != key {
                 return;
             }
+            // A peek in flight read the queue before this op landed, so
+            // its page would put a deleted message back, with a receipt
+            // handle AWS rejects. Ask again: the new peek supersedes it.
+            // Not on every op: a peek raises each message's receive count.
+            let superseded = dlq.fetch.in_flight();
             match result {
                 Ok(DlqOp::Resent { message_id }) => {
                     dlq.messages.retain(|m| m.id != message_id);
                     self.status_message = Some(format!("message {message_id} resent"));
+                    refetch = superseded;
                 }
                 Ok(DlqOp::Deleted { message_id }) => {
                     dlq.messages.retain(|m| m.id != message_id);
                     self.status_message = Some(format!("message {message_id} deleted"));
+                    refetch = superseded;
                 }
                 Ok(DlqOp::Purged) => {
                     dlq.messages.clear();
                     self.status_message = Some("DLQ purged".into());
+                    refetch = superseded;
                 }
                 Ok(DlqOp::Replayed { count, failures }) => {
                     if failures == 0 {
