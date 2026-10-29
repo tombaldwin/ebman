@@ -186,14 +186,17 @@ impl FreezeStore {
         }
     }
 
-    /// A store nothing else shares: what a test `App`, MCP server or CLI
-    /// write body reads, so no test sees a freeze another declared, and
-    /// what a `--demo` App reads, so demo neither sees nor sets a real
-    /// freeze.
+    /// A store nothing else shares, in this process or another: what a
+    /// test `App`, MCP server or CLI write body reads, so no test sees a
+    /// freeze another declared, and what a `--demo` App reads, so demo
+    /// neither sees nor sets a real freeze. Named by pid as well as by a
+    /// counter: the counter restarts in each process, and two `--demo`
+    /// sessions shared `freeze-isolated-0.json`.
     pub(crate) fn isolated() -> Self {
         static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        Self::at(crate::util::cache_dir().join(format!("freeze-isolated-{n}.json")))
+        let pid = std::process::id();
+        Self::at(crate::util::cache_dir().join(format!("freeze-isolated-{pid}-{n}.json")))
     }
 
     /// [`at`](Self::at), judged by `liveness`.

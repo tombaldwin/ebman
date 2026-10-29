@@ -707,7 +707,9 @@ mod write_gate_input_guard {
     /// for), and one handing another store misses every freeze. Pinned
     /// by source because the shells exit the process. One pattern for
     /// every shell, which the separate parameters this replaced could
-    /// not give.
+    /// not give. For `lint`, `freeze` and `thaw` it pins the profile and
+    /// the store only: none of them calls the gate (lint decides with
+    /// its setup's config), which is a BACKLOG item.
     #[test]
     fn write_shells_pass_the_real_write_env() {
         for (module, f) in [

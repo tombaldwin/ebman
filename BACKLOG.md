@@ -132,6 +132,43 @@ Tier definitions:
   Since it moved to the shared assembly it does not send
   `LintInputsCached`, so a later pre-deploy confirm refetches tags and
   health. Latency only. *0.45 release review.*
+- [ ] **Three bodies take a `WriteEnv<G>` whose gate they never call**
+  (`lint_body`, `freeze_body`, `thaw_body`; their tests pass `()`), so
+  `write_shells_pass_the_real_write_env` reads as covering lint's gate
+  when it covers only its profile and freeze. Two shapes: (a) split
+  `WriteEnv` into `machine { ambient_profile, freeze }` plus `gate`, and
+  have those three take `machine`; (b) make the gate take the config so
+  lint uses it. The 0.48.0 architecture review recommends (a): it says
+  what each body uses and keeps lint's precedence tests on its own
+  config. M. Needs the maintainer's ruling (two reasonable shapes).
+- [ ] **One validator and one audit shape for declaring a freeze.**
+  `freeze_fleet` refuses control characters, line separators, bidi
+  marks and reasons over 200 characters (shown in a one-line status
+  bar); `ebman freeze` and the TUI's `:freeze-deploys` / `:incident`
+  accept anything, and the same reason applies to them. The audit lines
+  disagree too: `IncidentStart`'s reason is `headline=` in the TUI and
+  `reason=` in the CLI and MCP, `persistent` / `via` appear in some, and
+  the label choice is copied (`cli/freeze.rs`, `cli/mcp/writes.rs`).
+  Shape: the validator and a `declare_label(incident)` in `src/freeze.rs`,
+  called by every declare. S–M. *0.48.0 architecture review.*
+- [ ] **`freeze_fleet` to its own module** (`src/cli/mcp/freeze.rs`):
+  ~150 lines in the 3k-line `writes.rs`, which its own docs say it is
+  not part of. S. *0.48.0 architecture review.*
+- [ ] **The CLI gate subsystem to `src/cli/write_env.rs`.**
+  `cli/mod.rs` grew 786 → 1016 lines and now holds `WriteEnv`,
+  `GateQuery`, `WriteGate`, `RealGate`, `write_refusal*`,
+  `freeze_refuses_run` and their guards; `audit_delta` (test-only)
+  belongs beside `audit::rotated_path` or in test support. Keep the
+  source guards' module paths in step. S. *0.48.0 architecture review.*
+- [ ] **`DlqState::open(..)` and `DlqState::viewed_url()`.** The struct
+  is built field by field in three places (0.48.0 added two fields to
+  each), and "the URL of the queue on screen" is spelled out four
+  times. S. *0.48.0 architecture review.*
+- [ ] **One `AppMsg::Preflight { key, ticket, answer }`.** Five
+  near-identical arms in `msg.rs` settle a pre-flight check by ticket,
+  and each is listed again in the generation-guard match. S–M. *0.48.0
+  architecture review.*
+
 - [ ] **`freeze_fleet`'s standing-freeze check and its declare are two
   steps.** An `ebman freeze` landing between them is rewritten with the
   agent's reason, which is what the check exists to stop. Shape: a
