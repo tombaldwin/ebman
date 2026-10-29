@@ -282,10 +282,10 @@ async fn a_freeze_in_the_servers_store_refuses_its_writes() {
 
 /// A demo MCP server must refuse the same way and write nothing.
 ///
-/// Demo gets `Config::default()` (no pins), but the freeze check
-/// (`FreezeStore::real().active()`) reads the REAL cross-process marker — so a demo write attempted
-/// during a live `:freeze-deploys` was appending a real line to the
-/// real audit log, against this module's stated contract.
+/// Demo gets `Config::default()` (no pins), but a production demo
+/// server's freeze check reads the REAL cross-process marker — so a demo
+/// write attempted during a live `:freeze-deploys` was appending a real
+/// line to the real audit log, against this module's stated contract.
 #[tokio::test]
 async fn a_demo_server_refuses_without_writing_an_audit_line() {
     let env_name = "mcp-demo-refusal-probe-env";

@@ -734,8 +734,10 @@ mod write_gate_input_guard {
                 .unwrap_or_else(|| panic!("{f} calls a body"))..];
             let args = &call[..call.find("\n    )").unwrap_or(call.len())];
             assert!(
-                args.contains("crate::cli::WriteEnv::real(),"),
-                "{module}: `{f}` must pass `WriteEnv::real()` to its body: {args}"
+                // Built, so it is not a read of the shared store to
+                // `no_other_test_reads_the_shared_store`.
+                args.contains(concat!("crate::cli::WriteEnv::", "real(),")),
+                "{module}: `{f}` must pass the real write env to its body: {args}"
             );
         }
     }
@@ -943,7 +945,19 @@ pub(crate) mod audit_delta {
     /// test whose mark straddled it panicked "rotated mid-test" for
     /// nothing it did. Its lines are then in `audit.log.1` after the
     /// mark, and in the fresh `audit.log`.
+    ///
+    /// The live log is read first, and the backup only if the live log
+    /// no longer starts with the mark: read the other way round, a
+    /// rotation between the two reads left neither starting with it.
+    /// An empty mark (no log yet) cannot tell a rotation since from an
+    /// older backup, so it reads the live log alone; under test the log
+    /// starts empty in a fresh directory, and a mark that early would
+    /// need a whole 1 MiB written before its test reads.
     pub(crate) fn since(before: &str) -> String {
+        let current = read(&path());
+        if let Some(delta) = current.strip_prefix(before) {
+            return delta.to_string();
+        }
         let rotated = read(&crate::audit::rotated_path(&path()));
         appended(before, &rotated, &read(&path())).unwrap_or_else(|| {
             panic!(

@@ -4214,9 +4214,28 @@ mod body {
         let call = &seam[seam
             .find("audit::fire_webhook(")
             .unwrap_or_else(|| panic!("`run` must post through `audit::fire_webhook`: {seam}"))..];
-        for field in ["p.url", "p.profile", "p.region", "p.detail", "p.when"] {
-            assert!(call.contains(field), "`run` drops `{field}`: {call}");
-        }
+        // The arguments in order: `detail` and `when` are both `&str`,
+        // so a swap compiles. Joined here, so this is not a match of the
+        // production line.
+        let args: String = call["audit::fire_webhook(".len()..]
+            .split(')')
+            .next()
+            .unwrap_or("")
+            .split_whitespace()
+            .collect();
+        let expected = [
+            "p.url",
+            "None",
+            "p.profile",
+            "p.region",
+            "p.detail",
+            "p.when",
+        ]
+        .join(",");
+        assert_eq!(
+            args, expected,
+            "`run` must pass every field, in order: {call}"
+        );
     }
 
     /// The stop signal ends a watch after the cycle in flight, and the

@@ -539,10 +539,14 @@ mod body {
             .find(|(name, _)| name == "run")
             .expect("`run` is defined")
             .1;
+        // The call's own arguments, and in the place that takes them:
+        // after the disables, which are a `&[String]` too.
         let call = &body[body.find("explain_body(").expect("`run` calls the body")..];
+        let call = &call[..call.find("\n    )").unwrap_or(call.len())];
+        let args: String = call.split_whitespace().collect();
         assert!(
-            call.contains("&cfg.required_tags,"),
-            "`run` must pass the configured required tags: {call}"
+            args.contains("&disabled,&cfg.required_tags,"),
+            "`run` must pass the configured required tags after the disables: {call}"
         );
     }
 

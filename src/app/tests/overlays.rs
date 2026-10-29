@@ -286,11 +286,10 @@ async fn handle_unavailability_estimate_stuffs_line_into_modal() {
 }
 
 #[tokio::test]
-async fn deploy_modal_opens_with_version_preview_loading_flag_set() {
-    // `:deploy LABEL` (no --preview) now sets
-    // `loading_version_preview` so the modal reserves space
-    // for the preview block. The actual fetch lands via
-    // `handle_version_preview` and unsets the flag.
+async fn deploy_modal_opens_with_its_version_preview_in_flight() {
+    // `:deploy LABEL` (no --preview) begins the version preview, so
+    // the modal reserves space for the preview block. The answer
+    // settles it through its ticket.
     let mut app = test_app();
     app.environments = vec![mk_env("prod", "shop", "Web", "Green")];
     app.rebuild_view();

@@ -1379,8 +1379,12 @@ mod tests {
             ("src/cli/mod.rs", 1, "a source guard's expected text"),
             ("src/cli/mcp/tests.rs", 1, "a source guard's expected text"),
         ];
-        // Built, so this line is not a match of its own.
-        let needle = concat!("FreezeStore::", "real()");
+        // Built, so these lines are not matches of their own. A test
+        // that builds the real write env reads the shared store too.
+        let needles = [
+            concat!("FreezeStore::", "real()"),
+            concat!("WriteEnv::", "real()"),
+        ];
         let mut found = Vec::new();
         for (path, src) in crate::app::tests::scan::source_files() {
             let test_part: Vec<&str> = if crate::app::tests::scan::is_test_path(&path) {
@@ -1405,9 +1409,11 @@ mod tests {
             let n: usize = test_part
                 .iter()
                 .map(|l| {
-                    crate::app::tests::scan::strip_line_comment(l)
-                        .matches(needle)
-                        .count()
+                    let code = crate::app::tests::scan::strip_line_comment(l);
+                    needles
+                        .iter()
+                        .map(|n| code.matches(n).count())
+                        .sum::<usize>()
                 })
                 .sum();
             if n > 0 {
