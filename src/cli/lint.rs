@@ -2766,17 +2766,18 @@ async fn apply_fixes_for_env(
     // Asked only when something would be set: a pinned or frozen env
     // whose findings are all manual, fix-disabled or fixless was refused
     // and audited, and exited 3, every run, for a write that was never
-    // going to happen. Through the shared gate, freeze included. It was passed `None`
+    // going to happen.
+    //
+    // Through the shared gate, freeze included. It was passed `None`
     // here once, with the freeze checked only up front, so a freeze
     // declared during a long run fixed every env after it. Each env the
     // freeze stops is refused, audited and named, and the run goes on
     // linting.
-    // A `--dry-run` preview goes through the pure
-    // half: it dispatched nothing, so filing
-    // `stage=refused` would fill the log with refusals
-    // of writes that were never going to happen. Same
-    // reasoning the exit-code branch below already
-    // applies.
+    //
+    // A `--dry-run` preview goes through the pure half: it dispatched
+    // nothing, so filing `stage=refused` would fill the log with
+    // refusals of writes that were never going to happen. Same
+    // reasoning the exit-code branch below already applies.
     let refusal = if to_set.is_empty() {
         None
     } else if yes {
@@ -4028,8 +4029,8 @@ mod body {
         }
         let before = crate::cli::audit_delta::mark();
         let (code, err) = fix("poly-manual-only", MockFaults::default()).await;
-        assert_ne!(
-            code, 3,
+        assert_eq!(
+            code, 0,
             "nothing would be set, so nothing was refused: {err}"
         );
         assert!(!err.contains("refusing"), "{err}");

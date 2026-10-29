@@ -1628,12 +1628,13 @@ pub async fn run(args: &[String]) -> Result<()> {
             std::process::exit(2);
         }
     };
-    // Writes fan audit lines out to the configured webhook — the
-    // reads-only server stays free of the config-disk read.
-    if should_init_audit(&write_scope, demo) {
-        crate::audit::init_from_config_disk();
-    }
     let server = Arc::new(Server::with_scope(demo, no_redact, write_scope.clone()));
+    // Writes fan audit lines out to the configured webhook — the
+    // reads-only server stays free of the config-disk read. Through the
+    // server, so initialize does not read the config a second time.
+    if should_init_audit(&write_scope, demo) {
+        server.ensure_audit_wired();
+    }
     server
         .mcp_read_only
         .store(read_only, std::sync::atomic::Ordering::Relaxed);
