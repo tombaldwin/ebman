@@ -352,8 +352,8 @@ async fn the_role_config_gates_mcp_writes() {
     );
 
     let broken = crate::config::parse(
-        "mcp.role.a.role_arn = \"arn:a\"\nmcp.role.a.verbs = \"deploy\"\n\
-         mcp.role.b.role_arn = \"arn:b\"\nmcp.role.b.verbs = \"deploy\"\n",
+        "mcp.role.a.role_arn = \"arn:aws:iam::111122223333:role/A\"\nmcp.role.a.verbs = \"deploy\"\n\
+         mcp.role.b.role_arn = \"arn:aws:iam::111122223333:role/B\"\nmcp.role.b.verbs = \"deploy\"\n",
     );
     let server = Server::with_config(false, false, WriteScope::All, broken);
     let before = crate::cli::audit_delta::mark();

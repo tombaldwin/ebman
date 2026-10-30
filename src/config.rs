@@ -260,6 +260,18 @@ pub(crate) fn mcp_role_check(cfg: &Config, verb: &str, known: &[&str]) -> RoleCh
                 problem: format!("mcp.role.{name} has no role_arn"),
             };
         }
+        // The plan reads the role's account from its ARN to check it
+        // against the env's: one it cannot read is a role it cannot
+        // check, and AssumeRole would refuse it anyway.
+        if parse_role_arn(&role.role_arn).is_none() {
+            return RoleCheck::Unreadable {
+                problem: format!(
+                    "mcp.role.{name}.role_arn `{}` is not an IAM role ARN \
+                     (arn:aws:iam::ACCOUNT:role/NAME)",
+                    role.role_arn
+                ),
+            };
+        }
         for v in &role.verbs {
             if !known.contains(&v.as_str()) {
                 return RoleCheck::Unreadable {
@@ -299,6 +311,40 @@ pub(crate) fn mcp_role_check(cfg: &Config, verb: &str, known: &[&str]) -> RoleCh
             required: cfg.mcp_require_role,
         },
     }
+}
+
+/// What an IAM role ARN says: the account it is in and the role's name
+/// (the last path segment, as IAM and the console name it).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RoleArn {
+    pub account: String,
+    pub name: String,
+}
+
+/// `arn:PARTITION:iam::ACCOUNT:role/[PATH/]NAME`, or `None`. The account
+/// is twelve digits; any partition (`aws`, `aws-cn`, `aws-us-gov`).
+pub(crate) fn parse_role_arn(arn: &str) -> Option<RoleArn> {
+    let mut parts = arn.trim().splitn(6, ':');
+    let (arn_, partition, service, region, account, resource) = (
+        parts.next()?,
+        parts.next()?,
+        parts.next()?,
+        parts.next()?,
+        parts.next()?,
+        parts.next()?,
+    );
+    let name = resource.strip_prefix("role/")?.rsplit('/').next()?;
+    let ok = arn_ == "arn"
+        && !partition.is_empty()
+        && service == "iam"
+        && region.is_empty()
+        && account.len() == 12
+        && account.bytes().all(|b| b.is_ascii_digit())
+        && !name.is_empty();
+    ok.then(|| RoleArn {
+        account: account.to_string(),
+        name: name.to_string(),
+    })
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -1374,7 +1420,7 @@ mod tests {
     #[test]
     fn mcp_role_check_maps_a_verb_or_says_why_not() {
         let cfg = parse(
-            "mcp.role.deploys.role_arn = \"arn:r\"\n\
+            "mcp.role.deploys.role_arn = \"arn:aws:iam::111122223333:role/R\"\n\
              mcp.role.deploys.verbs = \"deploy,restart\"\n",
         );
         assert_eq!(
@@ -1389,7 +1435,7 @@ mod tests {
         );
         let strict = parse(
             "mcp.require_role = true\n\
-             mcp.role.deploys.role_arn = \"arn:r\"\n\
+             mcp.role.deploys.role_arn = \"arn:aws:iam::111122223333:role/R\"\n\
              mcp.role.deploys.verbs = \"deploy\"\n",
         );
         assert_eq!(
@@ -1420,23 +1466,66 @@ mod tests {
             }
         };
         unreadable(
-            "mcp.role.a.role_arn = \"arn:a\"\nmcp.role.a.verbs = \"deploy\"\n\
-             mcp.role.b.role_arn = \"arn:b\"\nmcp.role.b.verbs = \"deploy\"\n",
+            "mcp.role.a.role_arn = \"arn:aws:iam::111122223333:role/A\"\nmcp.role.a.verbs = \"deploy\"\n\
+             mcp.role.b.role_arn = \"arn:aws:iam::111122223333:role/B\"\nmcp.role.b.verbs = \"deploy\"\n",
             "more than one role (a, b)",
         );
         unreadable(
-            "mcp.role.a.role_arn = \"arn:a\"\nmcp.role.a.verbs = \"deplo\"\n",
+            "mcp.role.a.role_arn = \"arn:aws:iam::111122223333:role/A\"\nmcp.role.a.verbs = \"deplo\"\n",
             "`deplo`, which is not an MCP write verb",
         );
         // A TOML array, where the house form is a comma list.
         unreadable(
-            "mcp.role.a.role_arn = \"arn:a\"\nmcp.role.a.verbs = [\"deploy\"]\n",
+            "mcp.role.a.role_arn = \"arn:aws:iam::111122223333:role/A\"\nmcp.role.a.verbs = [\"deploy\"]\n",
             "give a comma list",
         );
         unreadable(
             "mcp.role.a.verbs = \"deploy\"\n",
             "mcp.role.a has no role_arn",
         );
+        unreadable(
+            "mcp.role.a.role_arn = \"arn:aws:iam::1:role/A\"\nmcp.role.a.verbs = \"deploy\"\n",
+            "mcp.role.a.role_arn `arn:aws:iam::1:role/A` is not an IAM role ARN",
+        );
+    }
+
+    #[test]
+    fn a_role_arn_gives_its_account_and_name() {
+        let ok = |arn: &str, account: &str, name: &str| {
+            assert_eq!(
+                parse_role_arn(arn),
+                Some(RoleArn {
+                    account: account.into(),
+                    name: name.into()
+                }),
+                "{arn}"
+            )
+        };
+        ok(
+            "arn:aws:iam::111122223333:role/Deploy",
+            "111122223333",
+            "Deploy",
+        );
+        ok(
+            "arn:aws-us-gov:iam::111122223333:role/team/ci/Deploy",
+            "111122223333",
+            "Deploy",
+        );
+        ok(" arn:aws:iam::111122223333:role/D ", "111122223333", "D");
+        for bad in [
+            "",
+            "arn:r",
+            "arn:aws:iam::111122223333:user/ops",
+            "arn:aws:sts::111122223333:assumed-role/D/s",
+            "arn:aws:iam:us-east-1:111122223333:role/D",
+            "arn:aws:iam::11112222333:role/D",
+            "arn:aws:iam::11112222333x:role/D",
+            "arn:aws:iam::111122223333:role/",
+            "arn::iam::111122223333:role/D",
+            "nar:aws:iam::111122223333:role/D",
+        ] {
+            assert_eq!(parse_role_arn(bad), None, "{bad}");
+        }
     }
 
     /// What a read of the config file means for the `app.` lines, for
