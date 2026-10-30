@@ -284,6 +284,7 @@ mod tests {
         let lax = RoleCheck::Unmapped { required: false };
         let mapped = RoleCheck::Mapped {
             role: "deploys".into(),
+            arn: crate::config::parse_role_arn("arn:aws:iam::111122223333:role/D").unwrap(),
         };
         let with = |role: &'static RoleCheck, env: &'static str, acct: Option<&'static str>| {
             let mut c = f.ctx(env, acct);

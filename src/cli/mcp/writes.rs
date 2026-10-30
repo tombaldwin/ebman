@@ -269,19 +269,12 @@ impl Server {
         profile: &Option<String>,
         region: Option<&str>,
         action_label: &str,
-        // The write's tool name, which the role config maps; `None` for
-        // `dlq_undo`, which goes out under the delete's session (D4).
-        tool: Option<&str>,
+        // What the role config says of the write's verb
+        // (`Server::role_check`); `NotAsked` for `dlq_undo`, which goes
+        // out under the delete's session (D4).
+        role: &crate::config::RoleCheck,
     ) -> Option<Audited> {
         let freeze = self.freeze.active();
-        let role = match tool {
-            Some(tool) => {
-                let known = write_verb_names();
-                let known: Vec<&str> = known.iter().map(String::as_str).collect();
-                crate::config::mcp_role_check(&self.safety_cfg, tool, &known)
-            }
-            None => crate::config::RoleCheck::NotAsked,
-        };
         // The UNAUDITED half deliberately, for both backends: the
         // recording happens in `Audited::record` so there is exactly
         // one place in this module that writes a refusal line. Going
@@ -291,7 +284,7 @@ impl Server {
         // type carries.
         let profile = profile.clone().or_else(|| self.ambient_profile.clone());
         let (refusal, message, pin_profile) =
-            crate::cli::write_refusal_unaudited(&self.safety_cfg, env, &profile, freeze, &role)?;
+            crate::cli::write_refusal_unaudited(&self.safety_cfg, env, &profile, freeze, role)?;
         let region = self.audit_region(&profile, region).await;
         Some(Audited::record(
             matches!(self.backend, Backend::Demo),
@@ -307,6 +300,13 @@ impl Server {
 }
 
 impl Server {
+    /// What the role config says of an MCP write of `verb`.
+    fn role_check(&self, verb: WriteVerb) -> crate::config::RoleCheck {
+        let known = write_verb_names();
+        let known: Vec<&str> = known.iter().map(String::as_str).collect();
+        crate::config::mcp_role_check(&self.safety_cfg, verb.tool_name(), &known)
+    }
+
     /// The region a refusal line records: the one the write's client
     /// would have resolved, as its dispatched and completed lines do.
     /// `"-"` was written whenever the call named none, so a refusal and
@@ -1481,7 +1481,9 @@ impl PlanRole {
             "; the verb maps to role `{}` ({}), which this ebman does not assume yet, so \
              it goes out as that identity",
             sanitize_for_ask(&self.name),
-            sanitize_for_ask(&self.arn)
+            // Whole: `parse_role_arn` bounds it by IAM's limits, and a
+            // value the operator approves is shown whole or refused.
+            sanitize_whole(&self.arn)
         )
     }
 
@@ -1497,39 +1499,106 @@ impl PlanRole {
     }
 }
 
-/// The role a verb maps to, from the role config. `None` for a verb no
-/// role lists, and for a config the gate has already refused as
-/// unreadable.
-pub(super) fn plan_role(cfg: &crate::config::Config, verb: WriteVerb) -> Option<PlanRole> {
-    let known = write_verb_names();
-    let known: Vec<&str> = known.iter().map(String::as_str).collect();
-    let crate::config::RoleCheck::Mapped { role } =
-        crate::config::mcp_role_check(cfg, verb.tool_name(), &known)
-    else {
-        return None;
-    };
-    let arn = cfg.mcp_roles.get(&role)?.role_arn.trim().to_string();
-    let parsed = crate::config::parse_role_arn(&arn)?;
-    Some(PlanRole {
-        key: role,
-        arn,
-        account: parsed.account,
-        name: parsed.name,
-    })
+impl PlanRole {
+    /// The role a [`RoleCheck::Mapped`](crate::config::RoleCheck) names;
+    /// `None` for any other answer, which the gate has already acted on.
+    pub(super) fn from_check(check: &crate::config::RoleCheck) -> Option<PlanRole> {
+        match check {
+            crate::config::RoleCheck::Mapped { role, arn } => Some(PlanRole {
+                key: role.clone(),
+                arn: arn.arn.clone(),
+                account: arn.account.clone(),
+                name: arn.name.clone(),
+            }),
+            _ => None,
+        }
+    }
 }
 
-/// The account a write would run in, when its role is in another: the
-/// plan refuses then (D3), naming both, rather than reaching AWS as an
-/// AccessDenied an agent reads as a permissions problem. `None` when
-/// they agree, or when the identity is unknown and there is nothing to
-/// compare with.
-pub(super) fn role_account_mismatch<'a>(
+/// The account in an AWS ARN (`arn:PARTITION:SERVICE:REGION:ACCOUNT:…`),
+/// when it is twelve digits.
+fn arn_account(arn: &str) -> Option<&str> {
+    let account = arn.split(':').nth(4)?;
+    (account.len() == 12 && account.bytes().all(|b| b.is_ascii_digit())).then_some(account)
+}
+
+/// Why a mapped role cannot carry this write (D3), decided locally
+/// before anyone is asked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum RoleAccountRefusal {
+    /// The role is in another account than the env.
+    WrongAccount { env_account: String },
+    /// Neither the env's ARN nor the identity says which account the
+    /// env is in, so a role cannot be checked against it. Closed: with
+    /// slice 3 a cross-account trust would send the write to the role's
+    /// account, whatever account the env was found in.
+    AccountUnknown,
+}
+
+impl RoleAccountRefusal {
+    pub(super) fn rule(&self) -> &'static str {
+        match self {
+            Self::WrongAccount { .. } => "role_wrong_account",
+            Self::AccountUnknown => "role_account_unknown",
+        }
+    }
+
+    pub(super) fn remedy(&self) -> String {
+        match self {
+            // A verb has one role, so a role in another account cannot
+            // be added beside it: writes in this account cannot use the
+            // mapping at all.
+            Self::WrongAccount { env_account } => format!(
+                "a verb's role is in one account; writes in account {env_account} cannot use \
+                 this mapping"
+            ),
+            Self::AccountUnknown => {
+                "allow sts:GetCallerIdentity, or remove the verb from mcp.role.NAME.verbs".into()
+            }
+        }
+    }
+
+    pub(super) fn message(&self, verb: WriteVerb, env: &str, role: &PlanRole) -> String {
+        match self {
+            Self::WrongAccount { env_account } => format!(
+                "{} on {env} was not planned: it maps to role `{}` ({}) in account {}, but \
+                 {env} is in account {env_account}. A verb's role is in one account, so writes \
+                 in account {env_account} cannot use this mapping.",
+                verb.label(),
+                role.name,
+                role.arn,
+                role.account,
+            ),
+            Self::AccountUnknown => format!(
+                "{} on {env} was not planned: it maps to role `{}` ({}) in account {}, and \
+                 ebman cannot tell which account {env} is in (no account in its ARN, and \
+                 sts:GetCallerIdentity failed), so it cannot check the role against it.",
+                verb.label(),
+                role.name,
+                role.arn,
+                role.account,
+            ),
+        }
+    }
+}
+
+/// The env's account, from its ARN, or else the identity's; then
+/// whether `role` can carry the write.
+pub(super) fn role_account_refusal(
     role: &PlanRole,
-    caller: &'a CallerIdentity,
-) -> Option<&'a str> {
-    match caller {
-        CallerIdentity::Known { account, .. } if *account != role.account => Some(account.as_str()),
-        _ => None,
+    env: &crate::aws::Environment,
+    caller: &CallerIdentity,
+) -> Option<RoleAccountRefusal> {
+    let env_account = env.arn.as_deref().and_then(arn_account).or(match caller {
+        CallerIdentity::Known { account, .. } => Some(account.as_str()),
+        CallerIdentity::Unknown { .. } => None,
+    });
+    match env_account {
+        None => Some(RoleAccountRefusal::AccountUnknown),
+        Some(a) if a != role.account => Some(RoleAccountRefusal::WrongAccount {
+            env_account: a.to_string(),
+        }),
+        Some(_) => None,
     }
 }
 
@@ -1931,6 +2000,10 @@ impl Server {
                 account: "123456789012".into(),
             };
         }
+        #[cfg(test)]
+        if let Some(id) = &self.injected_identity {
+            return id.clone();
+        }
         let client = match self.client(args).await {
             Ok(c) => c,
             Err(e) => return CallerIdentity::Unknown { why: e },
@@ -2164,13 +2237,14 @@ impl Server {
         // construction, so a *pin* added during a long-lived session is
         // not seen until restart. This comment used to claim it was.
         let profile = arg_str(args, "profile");
+        let role_check = self.role_check(verb);
         if let Some(refused) = self
             .gate_refusal(
                 &env_name,
                 &profile,
                 arg_str(args, "region").as_deref(),
                 verb.label(),
-                Some(verb.tool_name()),
+                &role_check,
             )
             .await
         {
@@ -2184,6 +2258,36 @@ impl Server {
             .ok_or_else(|| format!("env '{env_name}' not found"))?
             .clone();
 
+        // Resolved before the plan is rendered so the operator sees
+        // it in the confirmation, which is the only moment they can
+        // act on it.
+        let caller = self.caller_identity(args).await;
+
+        // The role the verb maps to, and whether it is in the env's
+        // account. Before anything verb-specific is read: a DLQ plan
+        // peeks the queue, which bumps each message's receive count,
+        // and a refusal that depends only on config and the env must
+        // not cost that.
+        let role = PlanRole::from_check(&role_check);
+        if let Some(r) = &role {
+            if let Some(refusal) = role_account_refusal(r, &env, &caller) {
+                let audit_profile = profile.clone().or_else(|| self.ambient_profile.clone());
+                let region = self
+                    .audit_region(&profile, arg_str(args, "region").as_deref())
+                    .await;
+                return Err(WriteError::Refused(Audited::record(
+                    matches!(self.backend, Backend::Demo),
+                    audit_profile.as_deref(),
+                    &region,
+                    verb.label(),
+                    &env.name,
+                    refusal.rule(),
+                    &refusal.remedy(),
+                    refusal.message(verb, &env.name, r),
+                )));
+            }
+        }
+
         let PlanDetails {
             version,
             settings,
@@ -2195,44 +2299,6 @@ impl Server {
         } = self
             .resolve_plan_details(verb, args, &env, &profile)
             .await?;
-
-        // Resolved before the plan is rendered so the operator sees
-        // it in the confirmation, which is the only moment they can
-        // act on it.
-        let caller = self.caller_identity(args).await;
-
-        // The role the verb maps to, and whether it is in the account
-        // the write would run in. Checked here, locally, so a mismatch
-        // is refused with both accounts named before anyone is asked.
-        let role = plan_role(&self.safety_cfg, verb);
-        if let Some(r) = &role {
-            if let Some(account) = role_account_mismatch(r, &caller) {
-                let audit_profile = profile.clone().or_else(|| self.ambient_profile.clone());
-                let region = self
-                    .audit_region(&profile, arg_str(args, "region").as_deref())
-                    .await;
-                return Err(WriteError::Refused(Audited::record(
-                    matches!(self.backend, Backend::Demo),
-                    audit_profile.as_deref(),
-                    &region,
-                    verb.label(),
-                    &env.name,
-                    "role_wrong_account",
-                    &format!("map the verb to a role in account {account}"),
-                    format!(
-                        "{} on {} was not planned: it maps to role `{}` ({}) in account {}, \
-                         but it would run in account {account}. Map `{}` to a role in that \
-                         account in mcp.role.NAME.verbs.",
-                        verb.label(),
-                        env.name,
-                        r.name,
-                        r.arn,
-                        r.account,
-                        verb.tool_name(),
-                    ),
-                )));
-            }
-        }
 
         // Recent events give the plan operational context (3 max).
         let events_json = match self.backend {
@@ -2422,7 +2488,7 @@ impl Server {
                     &p.profile,
                     p.region.as_deref(),
                     p.verb.label(),
-                    Some(p.verb.tool_name()),
+                    &self.role_check(p.verb),
                 )
                 .await
             {
@@ -2557,7 +2623,7 @@ impl Server {
                 &pending.profile,
                 pending.region.as_deref(),
                 pending.verb.label(),
-                Some(pending.verb.tool_name()),
+                &self.role_check(pending.verb),
             )
             .await
         {
@@ -2945,7 +3011,13 @@ impl Server {
         };
 
         if let Some(refused) = self
-            .gate_refusal(&d.env, &d.profile, d.region.as_deref(), "dlq-undo", None)
+            .gate_refusal(
+                &d.env,
+                &d.profile,
+                d.region.as_deref(),
+                "dlq-undo",
+                &crate::config::RoleCheck::NotAsked,
+            )
             .await
         {
             // A refusal is decided before anything is sent, well

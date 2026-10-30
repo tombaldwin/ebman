@@ -238,8 +238,8 @@ pub(crate) enum RoleCheck {
     /// The role config cannot be acted on: every MCP write refuses
     /// until it is fixed, as an unreadable `safety.` line does.
     Unreadable { problem: String },
-    /// The verb maps to this role.
-    Mapped { role: String },
+    /// The verb maps to the role `mcp.role.ROLE`, whose ARN says this.
+    Mapped { role: String, arn: RoleArn },
     /// No role lists the verb; `required` is `mcp.require_role`.
     Unmapped { required: bool },
 }
@@ -263,10 +263,12 @@ pub(crate) fn mcp_role_check(cfg: &Config, verb: &str, known: &[&str]) -> RoleCh
         // The plan reads the role's account from its ARN to check it
         // against the env's: one it cannot read is a role it cannot
         // check, and AssumeRole would refuse it anyway.
+        // Debug-quoted: the problem reaches an agent and a status bar,
+        // and what failed to parse is by definition not a clean ARN.
         if parse_role_arn(&role.role_arn).is_none() {
             return RoleCheck::Unreadable {
                 problem: format!(
-                    "mcp.role.{name}.role_arn `{}` is not an IAM role ARN \
+                    "mcp.role.{name}.role_arn {:?} is not an IAM role ARN \
                      (arn:aws:iam::ACCOUNT:role/NAME)",
                     role.role_arn
                 ),
@@ -303,9 +305,22 @@ pub(crate) fn mcp_role_check(cfg: &Config, verb: &str, known: &[&str]) -> RoleCh
             owner = owners.first().copied();
         }
     }
+    // Parsed above for every role, so this cannot be `None`; were the
+    // two ever to drift, unreadable is the closed answer, never
+    // "unmapped".
     match owner {
-        Some(role) => RoleCheck::Mapped {
-            role: role.to_string(),
+        Some(role) => match cfg
+            .mcp_roles
+            .get(role)
+            .and_then(|r| parse_role_arn(&r.role_arn))
+        {
+            Some(arn) => RoleCheck::Mapped {
+                role: role.to_string(),
+                arn,
+            },
+            None => RoleCheck::Unreadable {
+                problem: format!("mcp.role.{role} could not be read"),
+            },
         },
         None => RoleCheck::Unmapped {
             required: cfg.mcp_require_role,
@@ -317,12 +332,17 @@ pub(crate) fn mcp_role_check(cfg: &Config, verb: &str, known: &[&str]) -> RoleCh
 /// (the last path segment, as IAM and the console name it).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RoleArn {
+    /// The whole ARN, trimmed.
+    pub arn: String,
     pub account: String,
     pub name: String,
 }
 
-/// `arn:PARTITION:iam::ACCOUNT:role/[PATH/]NAME`, or `None`. The account
-/// is twelve digits; any partition (`aws`, `aws-cn`, `aws-us-gov`).
+/// `arn:PARTITION:iam::ACCOUNT:role/[PATH/]NAME`, or `None`, by IAM's
+/// own rules: an AWS partition (`aws`, `aws-cn`, `aws-us-gov`,
+/// `aws-iso…`), a twelve-digit account, a path of printable ASCII up to
+/// 512 characters, and a name of `[A-Za-z0-9+=,.@_-]` up to 64. So what
+/// parses is bounded and plain, and shows whole in a dialog.
 pub(crate) fn parse_role_arn(arn: &str) -> Option<RoleArn> {
     let mut parts = arn.trim().splitn(6, ':');
     let (arn_, partition, service, region, account, resource) = (
@@ -333,15 +353,25 @@ pub(crate) fn parse_role_arn(arn: &str) -> Option<RoleArn> {
         parts.next()?,
         parts.next()?,
     );
-    let name = resource.strip_prefix("role/")?.rsplit('/').next()?;
+    let path_and_name = resource.strip_prefix("role/")?;
+    let (path, name) = path_and_name
+        .rsplit_once('/')
+        .unwrap_or(("", path_and_name));
+    let name_char = |b: u8| b.is_ascii_alphanumeric() || b"+=,.@_-".contains(&b);
     let ok = arn_ == "arn"
-        && !partition.is_empty()
+        && (matches!(partition, "aws" | "aws-cn" | "aws-us-gov")
+            || partition.starts_with("aws-iso"))
         && service == "iam"
         && region.is_empty()
         && account.len() == 12
         && account.bytes().all(|b| b.is_ascii_digit())
-        && !name.is_empty();
+        // IAM counts the path's leading and trailing slash.
+        && (path.is_empty() || path.len() + 2 <= 512)
+        && path.bytes().all(|b| (0x21..=0x7e).contains(&b))
+        && (1..=64).contains(&name.len())
+        && name.bytes().all(name_char);
     ok.then(|| RoleArn {
+        arn: arn.trim().to_string(),
         account: account.to_string(),
         name: name.to_string(),
     })
@@ -1426,7 +1456,12 @@ mod tests {
         assert_eq!(
             mcp_role_check(&cfg, "deploy", VERBS),
             RoleCheck::Mapped {
-                role: "deploys".into()
+                role: "deploys".into(),
+                arn: RoleArn {
+                    arn: "arn:aws:iam::111122223333:role/R".into(),
+                    account: "111122223333".into(),
+                    name: "R".into(),
+                },
             }
         );
         assert_eq!(
@@ -1485,8 +1520,26 @@ mod tests {
         );
         unreadable(
             "mcp.role.a.role_arn = \"arn:aws:iam::1:role/A\"\nmcp.role.a.verbs = \"deploy\"\n",
-            "mcp.role.a.role_arn `arn:aws:iam::1:role/A` is not an IAM role ARN",
+            "mcp.role.a.role_arn \"arn:aws:iam::1:role/A\" is not an IAM role ARN",
         );
+    }
+
+    /// What failed to parse reaches an agent and a status bar escaped,
+    /// never raw: a direction override or a newline in a TOML escape
+    /// must not rewrite the line.
+    #[test]
+    fn an_unreadable_role_arn_is_quoted_escaped() {
+        let mut cfg = parse("mcp.role.a.verbs = \"deploy\"\n");
+        cfg.mcp_roles.get_mut("a").unwrap().role_arn =
+            "arn:aws:iam::111122223333:role/D\u{202E}\nx".into();
+        let RoleCheck::Unreadable { problem } = mcp_role_check(&cfg, "deploy", VERBS) else {
+            panic!("unreadable");
+        };
+        assert!(
+            !problem.contains('\u{202E}') && !problem.contains('\n'),
+            "{problem:?}"
+        );
+        assert!(problem.contains("\\u{202e}"), "{problem:?}");
     }
 
     #[test]
@@ -1495,6 +1548,7 @@ mod tests {
             assert_eq!(
                 parse_role_arn(arn),
                 Some(RoleArn {
+                    arn: arn.trim().into(),
                     account: account.into(),
                     name: name.into()
                 }),
@@ -1512,6 +1566,23 @@ mod tests {
             "Deploy",
         );
         ok(" arn:aws:iam::111122223333:role/D ", "111122223333", "D");
+        ok(
+            "arn:aws-iso-b:iam::111122223333:role/D",
+            "111122223333",
+            "D",
+        );
+        ok(
+            "arn:aws:iam::111122223333:role/a+b=c,d.e@f_g-h",
+            "111122223333",
+            "a+b=c,d.e@f_g-h",
+        );
+        let long_name = format!("arn:aws:iam::111122223333:role/{}", "n".repeat(64));
+        assert!(parse_role_arn(&long_name).is_some(), "64 is IAM's limit");
+        let long_path = format!("arn:aws:iam::111122223333:role/{}/D", "p".repeat(510));
+        assert!(
+            parse_role_arn(&long_path).is_some(),
+            "512 with its two slashes"
+        );
         for bad in [
             "",
             "arn:r",
@@ -1524,9 +1595,22 @@ mod tests {
             "arn:aws:iam::111122223333:role/",
             "arn::iam::111122223333:role/D",
             "nar:aws:iam::111122223333:role/D",
+            "arn:foo bar:iam::111122223333:role/D",
+            "arn:azure:iam::111122223333:role/D",
+            "nar:aws-iso:iam::111122223333:role/D",
+            "arn:aws:iam::111122223333:role/a:b",
+            "arn:aws:iam::111122223333:role/a b",
+            "arn:aws:iam::111122223333:role/`D`",
+            "arn:aws:iam::111122223333:role/D\u{202E}x",
+            "arn:aws:iam::111122223333:role/D\nx",
+            "arn:aws:iam::111122223333:role/team x/D",
         ] {
-            assert_eq!(parse_role_arn(bad), None, "{bad}");
+            assert_eq!(parse_role_arn(bad), None, "{bad:?}");
         }
+        let too_long_name = format!("arn:aws:iam::111122223333:role/{}", "n".repeat(65));
+        assert_eq!(parse_role_arn(&too_long_name), None);
+        let too_long_path = format!("arn:aws:iam::111122223333:role/{}/D", "p".repeat(511));
+        assert_eq!(parse_role_arn(&too_long_path), None);
     }
 
     /// What a read of the config file means for the `app.` lines, for

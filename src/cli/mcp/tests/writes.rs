@@ -1878,6 +1878,16 @@ fn role_cfg(account: &str) -> crate::config::Config {
     ))
 }
 
+fn plan_role(cfg: &crate::config::Config, verb: WriteVerb) -> Option<PlanRole> {
+    let known = write_verb_names();
+    let known: Vec<&str> = known.iter().map(String::as_str).collect();
+    PlanRole::from_check(&crate::config::mcp_role_check(
+        cfg,
+        verb.tool_name(),
+        &known,
+    ))
+}
+
 /// The role a verb maps to, with its account and name from the ARN;
 /// none for an unmapped verb or a config the gate refuses.
 #[test]
@@ -1904,22 +1914,60 @@ fn a_plan_resolves_the_role_its_verb_maps_to() {
     assert_eq!(plan_role(&broken, WriteVerb::Restart), None, "unreadable");
 }
 
+/// The env's account comes from its ARN, and only failing that from
+/// the identity; with neither, the role cannot be checked and refuses.
 #[test]
-fn a_role_in_another_account_is_a_mismatch_and_an_unknown_identity_is_not() {
+fn a_role_is_checked_against_the_env_s_account() {
     let role = plan_role(&role_cfg("111122223333"), WriteVerb::Restart).unwrap();
+    let env = |arn: Option<&str>| crate::aws::Environment {
+        arn: arn.map(String::from),
+        ..crate::demo_fixture::envs().remove(0)
+    };
+    let in_ = |account: &str| {
+        Some(format!(
+            "arn:aws:elasticbeanstalk:us-east-1:{account}:environment/poly/api"
+        ))
+    };
     let known = |account: &str| CallerIdentity::Known {
         arn: format!("arn:aws:iam::{account}:user/ops"),
         account: account.into(),
     };
-    assert_eq!(
-        role_account_mismatch(&role, &known("123456789012")),
-        Some("123456789012")
-    );
-    assert_eq!(role_account_mismatch(&role, &known("111122223333")), None);
     let unknown = CallerIdentity::Unknown {
         why: "sts denied".into(),
     };
-    assert_eq!(role_account_mismatch(&role, &unknown), None);
+    let wrong = |a: &str| {
+        Some(RoleAccountRefusal::WrongAccount {
+            env_account: a.into(),
+        })
+    };
+    // The env's ARN decides, whatever the identity says.
+    assert_eq!(
+        role_account_refusal(
+            &role,
+            &env(in_("999999999999").as_deref()),
+            &known("111122223333")
+        ),
+        wrong("999999999999")
+    );
+    assert_eq!(
+        role_account_refusal(&role, &env(in_("111122223333").as_deref()), &unknown),
+        None,
+        "STS denied, but the env's ARN answers"
+    );
+    // No account in the ARN: the identity's.
+    assert_eq!(
+        role_account_refusal(&role, &env(None), &known("123456789012")),
+        wrong("123456789012")
+    );
+    assert_eq!(
+        role_account_refusal(&role, &env(Some("not-an-arn")), &known("111122223333")),
+        None
+    );
+    // Neither: closed.
+    assert_eq!(
+        role_account_refusal(&role, &env(None), &unknown),
+        Some(RoleAccountRefusal::AccountUnknown)
+    );
 }
 
 /// Slice 2 names the role in the plan and the confirmation, and says
@@ -1972,6 +2020,91 @@ async fn the_plan_and_the_ask_name_the_role_and_that_it_is_not_assumed() {
     assert!(!ask.contains("role"), "{ask}");
 }
 
+/// The live refusal: an env whose ARN is in another account than the
+/// role is refused on the AWS backend with exactly one audited line,
+/// carrying the rule, the resolved region and the server's profile. The
+/// demo test above cannot see any of that, since a demo writes nothing.
+#[tokio::test]
+async fn a_role_in_another_account_is_audited_once_on_the_aws_backend() {
+    use aws_sdk_elasticbeanstalk::operation::describe_environments::DescribeEnvironmentsOutput;
+    use aws_sdk_elasticbeanstalk::types::EnvironmentDescription;
+    let env = "poly-role-live-probe";
+    let listing = aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::describe_environments)
+        .then_output(move || {
+            DescribeEnvironmentsOutput::builder()
+                .environments(
+                    EnvironmentDescription::builder()
+                        .environment_name(env)
+                        .application_name("poly")
+                        .environment_arn(format!(
+                            "arn:aws:elasticbeanstalk:us-east-1:999999999999:environment/poly/{env}"
+                        ))
+                        .status("Ready".into())
+                        .health("Green".into())
+                        .build(),
+                )
+                .build()
+        });
+    let eb = aws_smithy_mocks::mock_client!(
+        aws_sdk_elasticbeanstalk,
+        aws_smithy_mocks::RuleMode::MatchAny,
+        [&listing]
+    );
+    let cfg = aws_config::SdkConfig::builder()
+        .region(aws_config::Region::new("us-east-1"))
+        .behavior_version(aws_config::BehaviorVersion::latest())
+        .build();
+    let mut client = crate::aws::AwsClient::for_tests(
+        eb,
+        aws_sdk_sqs::Client::new(&cfg),
+        aws_sdk_cloudwatch::Client::new(&cfg),
+        aws_sdk_cloudwatchlogs::Client::new(&cfg),
+        aws_sdk_s3::Client::new(&cfg),
+        aws_sdk_ec2::Client::new(&cfg),
+    );
+    client.context.region = "poly-role-1".into();
+    let mut cfg = role_cfg("111122223333");
+    cfg.mcp_roles.get_mut("deploys").unwrap().verbs = vec!["restart".into(), "dlq_delete".into()];
+    let mut s = Server::with_injected_client(WriteScope::All, cfg, client)
+        .with_ambient_profile("poly-role-ops");
+    // The identity is in the role's account: the env's ARN must win.
+    s.injected_identity = Some(CallerIdentity::Known {
+        arn: "arn:aws:iam::111122223333:user/ops".into(),
+        account: "111122223333".into(),
+    });
+    // A DLQ delete too, and refused before its plan peeks the queue:
+    // the SQS client here is unmocked, so a peek would fail with an AWS
+    // error, not this refusal.
+    for (verb, args) in [
+        (WriteVerb::Restart, json!({"env": env})),
+        (
+            WriteVerb::DlqDelete,
+            json!({"env": env, "message_id": "m-1"}),
+        ),
+    ] {
+        let before = crate::cli::audit_delta::mark();
+        let err = s
+            .tool_write_plan(verb, &args)
+            .await
+            .expect_err("the env is in another account");
+        assert!(matches!(err, WriteError::Refused(_)), "{verb:?}: {err}");
+        assert!(
+            err.to_string().contains("is in account 999999999999"),
+            "{verb:?}: {err}"
+        );
+        let lines = audit_delta_for(&before, env);
+        assert_eq!(lines.len(), 1, "{verb:?}: {lines:#?}");
+        for part in [
+            "stage=refused",
+            "rule=role_wrong_account",
+            "region=poly-role-1",
+            "profile=poly-role-ops",
+        ] {
+            assert!(lines[0].contains(part), "{verb:?}: {part}: {}", lines[0]);
+        }
+    }
+}
+
 /// However long the identity line, the role sentence is whole: capped
 /// with it as one field, the cut fell on "does not assume yet".
 #[test]
@@ -2003,8 +2136,8 @@ async fn a_role_in_another_account_refuses_the_plan() {
         "was not planned",
         "role `EbmanAgentDeploy`",
         "in account 111122223333",
-        "would run in account 123456789012",
-        "Map `restart` to a role in that account",
+        "poly-batch is in account 123456789012",
+        "writes in account 123456789012 cannot use this mapping",
     ] {
         assert!(text.contains(part), "{part}: {text}");
     }

@@ -993,6 +993,13 @@ pub(crate) struct Server {
     /// reason.
     #[cfg(test)]
     injected_client: Option<std::sync::Arc<aws::AwsClient>>,
+    /// The identity a plan resolves, under test. `verify_identity`
+    /// builds its own STS client, so an injected `AwsClient` cannot
+    /// answer it, and a plan's identity-dependent paths (the role's
+    /// account check) were reachable only on the demo backend, which
+    /// writes no audit line.
+    #[cfg(test)]
+    injected_identity: Option<writes::CallerIdentity>,
 }
 
 /// The freeze a new server reads: the shared one, or under test a
@@ -1091,6 +1098,8 @@ impl Server {
             exe: ExeIdentity::current(),
             #[cfg(test)]
             injected_client: None,
+            #[cfg(test)]
+            injected_identity: None,
         }
     }
 
