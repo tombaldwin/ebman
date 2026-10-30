@@ -270,17 +270,21 @@ safety.accounts.prod.read_only = true
 # array. `source_profile` and `external_id` mean what they do for
 # `accounts.NAME.*`.
 #
+# A verb has one role, so with a role mapped, that verb's MCP writes are
+# for the role's account: a plan for an environment in another account
+# refuses (`rule=role_wrong_account`), as does one whose account ebman
+# cannot tell (`rule=role_account_unknown`).
+#
 # NOT YET A CEILING. This build reads and checks the mapping, names the
-# role in the plan and the confirmation, and refuses a plan whose role
-# is in another account than the identity it runs as
-# (`rule=role_wrong_account`); `mcp.require_role` refuses an unmapped
-# verb. But a mapped verb still goes out under the base credentials, and
+# role in the plan and the confirmation, and checks it against the
+# environment's account; `mcp.require_role` refuses an unmapped verb. But a mapped verb still goes out under the base credentials, and
 # the confirmation says so: the AssumeRole call comes in a later slice.
 # Do not rely on a role's policy limiting anything yet.
 #
 # Fails closed: a verb two roles list, a verb that is no MCP tool, or a
 # role with no role_arn, or one that is not an IAM role ARN
-# (arn:aws:iam::ACCOUNT:role/NAME), makes every MCP write refuse
+# (arn:PARTITION:iam::ACCOUNT:role/[PATH/]NAME, by IAM's own rules),
+# makes every MCP write refuse
 # (`rule=role_config_unreadable`) until it is fixed. MCP only: the TUI
 # and the CLI act as you.
 # mcp.role.deploys.role_arn = "arn:aws:iam::111122223333:role/EbmanAgentDeploy"

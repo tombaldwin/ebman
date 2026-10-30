@@ -19,10 +19,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   credentials; the AssumeRole call is slice 3.
 - **MCP write roles, slice 2: the plan names the role.** A plan for a
   mapped verb carries a `role` object and its confirmation names the
-  role, saying it is not assumed yet (`assumed: false`). A role in
-  another account than the identity the write runs as refuses the plan,
-  both accounts named (`rule=role_wrong_account`). A `role_arn` that is
-  not an IAM role ARN makes the role config unreadable.
+  role, saying it is not assumed yet (`assumed: false`). The role is
+  checked against the environment's account (from its ARN, else the
+  identity's) before anything else is read: another account refuses the
+  plan with both named (`rule=role_wrong_account`), and an account ebman
+  cannot tell refuses too (`rule=role_account_unknown`). A verb's role is
+  in one account. A `role_arn` that is not an IAM role ARN makes the role
+  config unreadable.
 
 ### Changed
 

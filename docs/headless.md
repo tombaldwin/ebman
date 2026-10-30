@@ -408,11 +408,18 @@ deny STS while Elastic Beanstalk works.
 When the verb is listed by an `mcp.role.NAME.verbs` (see
 `docs/configuration.md`), the plan carries a `role` object (`config`,
 `arn`, `account`, `name`, `assumed`) and the confirmation names the role
-after the identity. This build does not assume it yet: `assumed` is
-`false` and the dialog says the write goes out as the identity above.
-A role in a different account from that identity refuses the plan,
-naming both accounts (`rule=role_wrong_account`); with the identity
-unknown there is nothing to compare, and the plan goes ahead.
+after the identity; for any other verb `role` is `null`. This build does
+not assume the role yet: `assumed` is `false` and the dialog says the
+write goes out as the identity above.
+
+The role is checked against the environment's account, read from the
+environment's ARN, or failing that from the identity, before anything
+else about the write is read. A role in another account refuses the
+plan with both accounts named (`rule=role_wrong_account`): a verb's role
+is in one account, so writes in any other account cannot use that
+mapping. With neither the ARN nor the identity saying which account the
+environment is in, the plan refuses (`rule=role_account_unknown`) rather
+than go ahead unchecked.
 
 The confirmation **enumerates** them — task and id per line — rather
 than saying "2 messages". A count is something to agree with; a list is
