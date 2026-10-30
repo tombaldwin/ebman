@@ -1096,7 +1096,50 @@ fn audit_line(
     )
 }
 
+/// A `--demo` process writes no audit line, whatever path it takes.
+///
+/// Demo suppression was decided per call site: MCP checked
+/// `Backend::Demo` at eight sites and the TUI `!self.demo_mode` at more,
+/// and a site that forgot wrote a synthetic fleet's actions into the
+/// operator's real log (`:thaw-deploys` did). The call-site checks stay,
+/// as the layer tests exercise; this is the one place that holds
+/// whatever a new site forgets. Set once at startup, as the webhook
+/// is, by the `--demo` TUI and `mcp serve --demo`.
+#[cfg(not(test))]
+static HERMETIC: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(test)]
+thread_local! {
+    // Per test thread: a process-wide switch thrown by one test would
+    // silence every other test's audit lines.
+    static TEST_HERMETIC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Drop every audit line from now on, in this process (a test thread,
+/// under test). Called by a `--demo` process at startup.
+pub fn make_hermetic() {
+    #[cfg(test)]
+    TEST_HERMETIC.with(|c| c.set(true));
+    #[cfg(not(test))]
+    HERMETIC.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+#[cfg(test)]
+pub(crate) fn clear_hermetic_for_test() {
+    TEST_HERMETIC.with(|c| c.set(false));
+}
+
+fn hermetic() -> bool {
+    #[cfg(test)]
+    return TEST_HERMETIC.with(|c| c.get());
+    #[cfg(not(test))]
+    HERMETIC.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 fn write_audit_line(account: Option<&str>, profile: Option<&str>, region: &str, detail: &str) {
+    if hermetic() {
+        return;
+    }
     let dir = crate::util::cache_dir();
     if std::fs::create_dir_all(&dir).is_err() {
         return;
@@ -1129,6 +1172,9 @@ fn write_audit_line(account: Option<&str>, profile: Option<&str>, region: &str, 
 /// `account=A\tprofile=P\tregion=R` opener (rollout uses
 /// `rollout_id=...\tregion=...`; lint-fix uses just `region=...`).
 fn write_audit_line_raw(tail: &str) {
+    if hermetic() {
+        return;
+    }
     let dir = crate::util::cache_dir();
     if std::fs::create_dir_all(&dir).is_err() {
         return;
@@ -1375,6 +1421,55 @@ mod tests {
     }
 
     use super::*;
+
+    /// A hermetic process writes no line by either writer: the
+    /// standard one and the raw one rollouts and `lint --fix` use. The
+    /// same probes land once it is cleared, so they would have.
+    #[test]
+    fn a_hermetic_process_writes_no_audit_line() {
+        let probe = |tag: &str| {
+            append_action_dispatched(None, None, "poly-hermetic-1", "ThawDeploys", tag, &[]);
+            append_rollout(
+                "r-1",
+                None,
+                "poly-hermetic-1",
+                tag,
+                "v1",
+                "dispatched",
+                None,
+            );
+        };
+        let before = crate::cli::audit_delta::mark();
+        make_hermetic();
+        probe("poly-hermetic-off");
+        clear_hermetic_for_test();
+        probe("poly-hermetic-on");
+        let off =
+            crate::cli::audit_delta::lines_matching(&before, |l| l.contains("poly-hermetic-off"));
+        let on =
+            crate::cli::audit_delta::lines_matching(&before, |l| l.contains("poly-hermetic-on"));
+        assert!(off.is_empty(), "{off:#?}");
+        assert_eq!(on.len(), 2, "{on:#?}");
+    }
+
+    /// A `--demo` TUI and `mcp serve --demo` throw the switch before
+    /// anything can audit. Both are process entry points no test runs,
+    /// so their source is what can be pinned.
+    #[test]
+    fn both_demo_entry_points_make_the_process_hermetic() {
+        let main = crate::app::tests::scan::production_source("main.rs");
+        assert!(
+            main.contains("ebman::audit::make_hermetic();\n        let app = App::new_demo(cfg);"),
+            "the --demo TUI, before its App exists"
+        );
+        let serve = crate::app::tests::scan::production_source("cli/mcp/mod.rs");
+        assert!(
+            serve.contains(
+                "if demo {\n        crate::audit::make_hermetic();\n    }\n    let server"
+            ),
+            "mcp serve --demo, before its server exists"
+        );
+    }
 
     #[test]
     fn dlq_op_detail_preserves_wire_shape() {

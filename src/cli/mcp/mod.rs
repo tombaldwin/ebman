@@ -1639,6 +1639,11 @@ pub async fn run(args: &[String]) -> Result<()> {
             std::process::exit(2);
         }
     };
+    // A demo server writes no audit line by any path: see
+    // `audit::make_hermetic`.
+    if demo {
+        crate::audit::make_hermetic();
+    }
     let server = Arc::new(Server::with_scope(demo, no_redact, write_scope.clone()));
     // Writes fan audit lines out to the configured webhook — the
     // reads-only server stays free of the config-disk read. Through the
