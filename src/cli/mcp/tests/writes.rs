@@ -1963,6 +1963,17 @@ fn a_role_is_checked_against_the_env_s_account() {
         role_account_refusal(&role, &env(Some("not-an-arn")), &known("111122223333")),
         None
     );
+    // An ARN whose account field is not an account: the identity's.
+    assert_eq!(
+        role_account_refusal(
+            &role,
+            &env(Some(
+                "arn:aws:elasticbeanstalk:us-east-1:12345:environment/poly/api"
+            )),
+            &known("111122223333")
+        ),
+        None
+    );
     // Neither: closed, and said so.
     let refusal = role_account_refusal(&role, &env(None), &unknown);
     assert_eq!(refusal, Some(RoleAccountRefusal::AccountUnknown));
@@ -2127,6 +2138,17 @@ fn a_long_identity_never_cuts_the_role_sentence() {
         ask.contains("which this ebman does not assume yet, so it goes out as that identity"),
         "{ask}"
     );
+
+    // And the ARN is shown whole, however long its path: it is what
+    // the operator approves, and IAM bounds it.
+    let path = "deep/".repeat(30);
+    let mut cfg = role_cfg("123456789012");
+    cfg.mcp_roles.get_mut("deploys").unwrap().role_arn =
+        format!("arn:aws:iam::123456789012:role/{path}EbmanAgentDeploy");
+    p.role = plan_role(&cfg, WriteVerb::Restart);
+    let arn = p.role.as_ref().expect("mapped").arn.clone();
+    assert!(arn.len() > 120, "longer than a capped field");
+    assert!(ask_summary(&p).contains(&arn), "{}", ask_summary(&p));
 }
 
 /// A role in another account than the write's refuses the plan, with
