@@ -1878,14 +1878,11 @@ fn role_cfg(account: &str) -> crate::config::Config {
     ))
 }
 
+/// The role a server with `cfg` resolves for `verb`, through the
+/// production path.
 fn plan_role(cfg: &crate::config::Config, verb: WriteVerb) -> Option<PlanRole> {
-    let known = write_verb_names();
-    let known: Vec<&str> = known.iter().map(String::as_str).collect();
-    PlanRole::from_check(&crate::config::mcp_role_check(
-        cfg,
-        verb.tool_name(),
-        &known,
-    ))
+    let server = Server::with_config(true, false, WriteScope::All, cfg.clone());
+    PlanRole::from_check(&server.role_check(verb))
 }
 
 /// The role a verb maps to, with its account and name from the ARN;
