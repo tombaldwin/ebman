@@ -1517,6 +1517,7 @@ mod tests {
             "arn:r",
             "arn:aws:iam::111122223333:user/ops",
             "arn:aws:sts::111122223333:assumed-role/D/s",
+            "arn:aws:s3::111122223333:role/D",
             "arn:aws:iam:us-east-1:111122223333:role/D",
             "arn:aws:iam::11112222333:role/D",
             "arn:aws:iam::11112222333x:role/D",
