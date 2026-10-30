@@ -1,0 +1,21 @@
+# cargo-mutants configuration.
+#
+# `exclude_re` is the one escape for a mutant no test can tell apart
+# from the original, on the changed lines (`mutants.yml`'s verdict job
+# fails on any survivor) or in the weekly sweep. It is an allowlist:
+# only the maintainer adds to it, and an agent that meets a survivor
+# fixes the test or skips the item and reports the mutant it would
+# have excluded (CLAUDE.md, stop conditions).
+#
+# Each entry is a regex over the name `cargo mutants --list` prints,
+# which starts with `path:line:col:`. Anchor the path, leave the
+# position free so the entry survives code moving, and pin the whole
+# mutation so it excuses nothing else:
+#
+#   "^src/cli/freeze\\.rs:\\d+:\\d+: replace match guard m\\.agent\\.is_some\\(\\) with true in thaw_body$",
+#
+# with a comment above it naming the commit and why no test can see
+# the difference. `scripts/mutants-exclusions.sh` fails on an entry
+# that matches no mutant, so the list shrinks when the code it excused
+# goes away.
+exclude_re = []

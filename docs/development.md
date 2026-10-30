@@ -28,9 +28,13 @@ same tests locally. Also in CI, all non-gating:
   against the built binary, also run on every release artifact.
 - A line-coverage report on pushes to main (`cargo llvm-cov`). It is a map of
   untested layers, not a gate.
-- `cargo mutants --in-diff` on every push to main, with survivors in the job
-  summary (a PR fails on them). A weekly whole-tree sweep reports only new
-  survivors.
+- A weekly whole-tree `cargo mutants` sweep, which reports only new survivors.
+
+`cargo mutants --in-diff` runs on every push to main and every PR, and fails
+the run when a mutant survives on the changed lines. A mutant no test can tell
+apart from the original is excused by an `exclude_re` entry in
+`.cargo/mutants.toml`, added by the maintainer; an entry that stops matching
+any mutant fails the run too.
 
 Rendered screens are snapshot-tested with `insta` (`src/app/tests/snapshots/`):
 review an intended change with `cargo insta review`. `scripts/install-hooks.sh`

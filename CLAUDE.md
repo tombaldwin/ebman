@@ -80,8 +80,11 @@ If an autonomous-mode item hits any of these, **skip it and move to the next ite
   fires, the fix is the code, not the list. Adding a name to
   `HOME_CLIENT_IS_CORRECT_BECAUSE`, `ITEMS_IS_CORRECT_BECAUSE` or
   `COVERED_INDIVIDUALLY`, bumping a `const KNOWN: usize`, adding a
-  RUSTSEC id to `deny.toml`'s `ignore`, or reaching for `#[allow(...)]`
-  — all of it is a stop condition, not a step.
+  RUSTSEC id to `deny.toml`'s `ignore`, adding an `exclude_re` entry to
+  `.cargo/mutants.toml` or a `#[mutants::skip]`, or reaching for
+  `#[allow(...)]` — all of it is a stop condition, not a step. A
+  surviving mutant gets a test; if you believe no test can catch it,
+  skip the item and report the mutant you would have excluded.
 
   This is here because it is the cheapest wrong path in the repo and it
   always works. Every guard has an escape hatch; every hatch is shorter

@@ -45,7 +45,9 @@ jobs:
   # question worth asking at review time: is the test that came with this
   # change load-bearing? Blocking, because on a diff-sized surface a
   # surviving mutant is nearly always a real gap rather than an
-  # equivalent-mutant argument.
+  # equivalent-mutant argument. The shards only run; `verdict` below
+  # judges them, so a red shard means the job broke and a red verdict
+  # means a mutant survived.
   #
   # Sharded four ways. Unsharded under a 60-minute cap, a push with more
   # than about 45 mutants on its lines was killed at the cap and judged
@@ -97,6 +99,7 @@ jobs:
           # diff must not read as a pass.
           if [ ! -s pr.diff ]; then
             echo "no src/**/*.rs changes; nothing to mutate"
+            mkdir -p mutants.out && echo empty > mutants.out/complete
             exit 0
           fi
           shard="${{ matrix.shard }}/4"
@@ -106,41 +109,63 @@ jobs:
           echo "shard $shard: $count mutants"
           if [ "$count" = 0 ]; then
             echo "shard $shard has no mutants on the changed lines"
+            mkdir -p mutants.out && echo empty > mutants.out/complete
             exit 0
           fi
-          # Exit 2 is "mutants survived" (3 is timeouts): on a push that
-          # is a report, since a push cannot be refused after the fact,
-          # and on a PR it blocks. Anything else (1 usage or diff error,
-          # 4 the baseline tests failing) fails either way: a broken job
-          # must not read as green.
+          # Exit 2 is "mutants survived" and 3 timeouts: the verdict job
+          # reads those from the artifact, so the shard stays green.
+          # Anything else (1 usage or diff error, 4 the baseline tests
+          # failing) fails here: a broken job must not read as green.
+          # `complete` is written only once cargo-mutants has judged
+          # every mutant: a shard killed at its timeout, or a broken
+          # one, still uploads, without it.
           set +e
           cargo mutants --in-diff pr.diff --shard "$shard" --no-shuffle --timeout 120 -- --lib
           code=$?
           set -e
-          if [ "$code" = 0 ]; then exit 0; fi
-          if { [ "$code" = 2 ] || [ "$code" = 3 ]; } && [ "${{ github.event_name }}" = "push" ]; then
-            echo "::warning::mutants survived on the changed lines (exit $code): see the job summary"
-            exit 0
-          fi
-          exit "$code"
-      - name: Survivors to the job summary
-        if: always()
-        run: |
-          if [ -s mutants.out/missed.txt ]; then
-            {
-              echo "### Surviving mutants on the changed lines (shard ${{ matrix.shard }}/4)"
-              echo
-              echo '```'
-              cat mutants.out/missed.txt
-              echo '```'
-            } >> "$GITHUB_STEP_SUMMARY"
-          fi
+          case "$code" in
+            0|2|3) echo "$code" > mutants.out/complete ;;
+            *) exit "$code" ;;
+          esac
       - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: mutants-in-diff-${{ matrix.shard }}
           path: mutants.out/
           retention-days: 14
+
+  # Judges the shards: fails when a shard did not finish or any mutant
+  # survived, on push and pull request alike. A push used to report
+  # survivors as a `::warning::` on a green run, and a run's status is
+  # all `gh run watch` and the failure email carry: 2868ad1's ten
+  # survivors and 052bb0b's one were found by reading logs. A push
+  # cannot be refused after the fact, but neither can clippy's, and a
+  # red main is the signal.
+  verdict:
+    name: cargo-mutants (verdict on changed lines)
+    needs: in-diff
+    if: always() && (github.event_name == 'pull_request' || github.event_name == 'push')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: mutants-in-diff-*
+          path: shards
+      - run: scripts/mutants-verdict.sh shards 4
+
+  # An `exclude_re` entry in `.cargo/mutants.toml` that no longer matches
+  # a mutant is an allowlist entry outliving its reason. Every event, so
+  # the push that deletes the code also flags the entry.
+  exclusions:
+    name: cargo-mutants (exclusions still match)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo install cargo-mutants --locked
+      - run: scripts/mutants-exclusions.sh
 
   # Whole-tree sweep, sharded TWENTY-FOUR ways. Third number, and the
   # first one derived from a completed run rather than an estimate.
