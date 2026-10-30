@@ -17,6 +17,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   (`rule=role_config_unreadable`). **Not yet a ceiling:** nothing is
   assumed yet, so a mapped verb still goes out under the base
   credentials; the AssumeRole call is slice 3.
+- **MCP write roles, slice 2: the plan names the role.** A plan for a
+  mapped verb carries a `role` object and its confirmation names the
+  role, saying it is not assumed yet (`assumed: false`). A role in
+  another account than the identity the write runs as refuses the plan,
+  both accounts named (`rule=role_wrong_account`). A `role_arn` that is
+  not an IAM role ARN makes the role config unreadable.
 
 ### Changed
 

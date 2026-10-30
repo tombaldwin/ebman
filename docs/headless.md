@@ -405,6 +405,15 @@ is denied the plan is not refused: `identity` is null, `identity_error`
 says why, and the dialog says the identity is UNKNOWN. A policy can
 deny STS while Elastic Beanstalk works.
 
+When the verb is listed by an `mcp.role.NAME.verbs` (see
+`docs/configuration.md`), the plan carries a `role` object (`config`,
+`arn`, `account`, `name`, `assumed`) and the confirmation names the role
+after the identity. This build does not assume it yet: `assumed` is
+`false` and the dialog says the write goes out as the identity above.
+A role in a different account from that identity refuses the plan,
+naming both accounts (`rule=role_wrong_account`); with the identity
+unknown there is nothing to compare, and the plan goes ahead.
+
 The confirmation **enumerates** them — task and id per line — rather
 than saying "2 messages". A count is something to agree with; a list is
 something to read.
