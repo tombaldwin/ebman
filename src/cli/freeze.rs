@@ -366,6 +366,11 @@ mod tests {
 
         let (code, text) = run(thaw_body, &store, &["thaw"]);
         assert_eq!(code, 0, "{text}");
+        assert_eq!(
+            text.trim(),
+            "fleet freeze lifted",
+            "the operator's own: no holder"
+        );
         assert!(store.active().is_none());
 
         // A session's own freeze (this process is alive) is not ours.
