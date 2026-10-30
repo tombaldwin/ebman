@@ -367,6 +367,8 @@ pub(crate) fn parse_role_arn(arn: &str) -> Option<RoleArn> {
         && account.bytes().all(|b| b.is_ascii_digit())
         // IAM counts the path's leading and trailing slash.
         && (path.is_empty() || path.len() + 2 <= 512)
+        // `role//D` and `role/a//D`: IAM's path has no empty segment.
+        && !(path_and_name.contains('/') && path.split('/').any(str::is_empty))
         && path.bytes().all(|b| (0x21..=0x7e).contains(&b))
         && (1..=64).contains(&name.len())
         && name.bytes().all(name_char);
@@ -1604,6 +1606,9 @@ mod tests {
             "arn:aws:iam::111122223333:role/D\u{202E}x",
             "arn:aws:iam::111122223333:role/D\nx",
             "arn:aws:iam::111122223333:role/team x/D",
+            "arn:aws:iam::111122223333:role//D",
+            "arn:aws:iam::111122223333:role/a//D",
+            "arn:aws:iam::111122223333:role/a/b//D",
         ] {
             assert_eq!(parse_role_arn(bad), None, "{bad:?}");
         }
