@@ -301,7 +301,7 @@ impl Server {
 
 impl Server {
     /// What the role config says of an MCP write of `verb`.
-    fn role_check(&self, verb: WriteVerb) -> crate::config::RoleCheck {
+    pub(super) fn role_check(&self, verb: WriteVerb) -> crate::config::RoleCheck {
         let known = write_verb_names();
         let known: Vec<&str> = known.iter().map(String::as_str).collect();
         crate::config::mcp_role_check(&self.safety_cfg, verb.tool_name(), &known)
@@ -1549,8 +1549,8 @@ impl RoleAccountRefusal {
             // be added beside it: writes in this account cannot use the
             // mapping at all.
             Self::WrongAccount { env_account } => format!(
-                "a verb's role is in one account; writes in account {env_account} cannot use \
-                 this mapping"
+                "remove the verb from mcp.role.NAME.verbs to write in account {env_account} as \
+                 the base identity (refused under mcp.require_role)"
             ),
             Self::AccountUnknown => {
                 "allow sts:GetCallerIdentity, or remove the verb from mcp.role.NAME.verbs".into()
