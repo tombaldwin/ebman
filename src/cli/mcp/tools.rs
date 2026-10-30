@@ -1354,6 +1354,17 @@ impl Server {
                 ended.message()
             ));
         }
+        if freeze.is_none() {
+            // The operator's thaw binds `freeze_fleet` for a while: an
+            // agent that is about to call it should know it will refuse.
+            if let Some(thawed) = self.freeze.recently_thawed() {
+                notes.push(format!(
+                    "The operator lifted a fleet freeze: {}. If the fleet should be \
+                     frozen before then, ask them to run `ebman freeze`.",
+                    thawed.message()
+                ));
+            }
+        }
         if self.safety_cfg.safety_read_only {
             notes.push(
                 "safety.read_only is set: EVERY write is refused, everywhere. No grant \

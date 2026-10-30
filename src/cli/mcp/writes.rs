@@ -2967,6 +2967,46 @@ impl Server {
             })
             .to_string());
         }
+        let client = self
+            .client_name
+            .lock()
+            .map(|c| c.clone())
+            .unwrap_or_default();
+        // The operator just lifted a freeze: re-declaring it reverses
+        // their decision, and a freeze refuses their own writes too,
+        // the rollback that fixes what the agent saw included. Refused
+        // for an `incident` too: the agent sets that flag. Audited, so
+        // a loop shows in the log and the webhook channel.
+        if let Some(t) = self.freeze.recently_thawed() {
+            self.ensure_audit_wired();
+            crate::audit::append_refused(
+                None,
+                self.ambient_profile.as_deref(),
+                "-",
+                &crate::audit::Refused {
+                    action_label: if incident {
+                        "IncidentStart"
+                    } else {
+                        "FreezeDeploys"
+                    },
+                    target: "",
+                    rule: "thawed_recently",
+                    remedy: "the operator declares it with `ebman freeze`",
+                    extras: &[("via", "mcp"), ("client", client.as_str())],
+                },
+            );
+            let ago = (chrono::Utc::now() - t.thawed_at).num_minutes();
+            return Err(format!(
+                "{FREEZE_TOOL}: the operator lifted a fleet freeze ({}, {}) at {}, {ago} min \
+                 ago; that decision holds until {} and this tool will not reverse it. If the \
+                 fleet should be frozen, tell the operator now (`ebman freeze` is one step \
+                 for them) and do not retry before then.",
+                t.marker.reason_or_default(),
+                t.marker.holder(),
+                t.thawed_at.format("%H:%M UTC"),
+                t.holds_until().format("%H:%M UTC"),
+            ));
+        }
         // One persistent freeze, and declaring writes it whole: an
         // agent's call would replace the operator's reason, incident
         // flag and time. A freeze already standing is left as declared.
@@ -2992,11 +3032,6 @@ impl Server {
         // its session, which is the operator's to see: hand it to the
         // agent, so it reaches them.
         let ended = self.freeze.ended().map(|e| e.message());
-        let client = self
-            .client_name
-            .lock()
-            .map(|c| c.clone())
-            .unwrap_or_default();
         // The marker names the client, so a refusal and `ebman thaw` say
         // an agent declared it. The name is the client's own claim, and
         // lands in a one-line status bar: sanitised and capped.

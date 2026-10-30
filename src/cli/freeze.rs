@@ -140,6 +140,9 @@ fn status_text(store: &crate::freeze::FreezeStore) -> String {
         if let Some(ended) = store.ended() {
             lines.push(format!("note: {}", ended.message()));
         }
+        if let Some(thawed) = store.recently_thawed() {
+            lines.push(format!("note: {}", thawed.message()));
+        }
     }
     lines.join("\n")
 }
@@ -196,8 +199,19 @@ pub(crate) fn thaw_body<G>(
                 // Who declared it, when it was not the operator: an
                 // agent's freeze lifted without a word looks like their
                 // own.
+                // And that it cannot simply freeze again: the thaw holds.
                 None if m.agent.is_some() => {
-                    let _ = writeln!(out, "fleet freeze lifted (it was {})", m.holder());
+                    let until = write_env
+                        .freeze
+                        .recently_thawed()
+                        .map(|t| {
+                            format!(
+                                "; `freeze_fleet` is refused until {}",
+                                t.holds_until().format("%H:%M UTC")
+                            )
+                        })
+                        .unwrap_or_default();
+                    let _ = writeln!(out, "fleet freeze lifted (it was {}){until}", m.holder());
                     0
                 }
                 None => {
@@ -328,7 +342,26 @@ mod tests {
         assert!(text.contains(agent), "{text}");
         let (code, text) = run(thaw_body, &store, &["thaw"]);
         assert_eq!(code, 0, "{text}");
-        assert_eq!(text.trim(), format!("fleet freeze lifted (it was {agent})"));
+        // And that the agent cannot freeze again until the thaw ends.
+        let until = store
+            .recently_thawed()
+            .expect("the thaw holds")
+            .holds_until()
+            .format("%H:%M UTC")
+            .to_string();
+        assert_eq!(
+            text.trim(),
+            format!(
+                "fleet freeze lifted (it was {agent}); `freeze_fleet` is refused until {until}"
+            )
+        );
+        let (_, text) = run(freeze_body, &store, &["freeze", "--status"]);
+        assert!(
+            text.contains("not frozen")
+                && text.contains("note: a fleet freeze (bad deploy) was lifted at ")
+                && text.contains(&format!("refused until {until}")),
+            "{text}"
+        );
 
         // Lifted while a session's still holds: it names what it lifted.
         store

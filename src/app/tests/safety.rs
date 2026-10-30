@@ -2340,10 +2340,18 @@ async fn thaw_deploys_lifts_an_ebman_freeze_but_not_another_sessions() {
             && !l.contains("via=cli")
     });
     assert_eq!(lifted.len(), 1, "{lifted:#?}");
+    // And the lift holds an agent's `freeze_fleet` off, as `ebman
+    // thaw`'s does.
+    let t = app.freeze.recently_thawed().expect("the thaw holds");
+    assert_eq!(t.marker.reason, "release window");
 
     let mut app = app_with_prod();
     app.freeze.write_test_marker(1, "incident: db", false);
     app.execute_command("thaw-deploys");
+    assert!(
+        app.freeze.recently_thawed().is_none(),
+        "nothing persistent was lifted, so nothing holds"
+    );
     assert!(
         app.foreign_freeze_now().is_some(),
         "another session's stays"

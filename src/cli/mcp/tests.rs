@@ -5519,6 +5519,78 @@ async fn freeze_fleet_names_a_nameless_client() {
     );
 }
 
+/// The operator's thaw binds `freeze_fleet` for half an hour: an agent
+/// cannot reverse it by declaring again, `incident` included, each try
+/// is audited, and `doctor` says so. Once the thaw has run out, it can.
+#[tokio::test]
+async fn freeze_fleet_will_not_reverse_a_fresh_thaw() {
+    let server = granted_server();
+    rpc(
+        &server,
+        json!({"jsonrpc":"2.0","id":0,"method":"initialize",
+               "params":{"protocolVersion":"2025-06-18","capabilities":{},
+                         "clientInfo":{"name": "poly-thaw-probe","version":"0"}}}),
+    )
+    .await
+    .expect("initialize");
+    let store = server.freeze_store();
+    let (is_error, body) = call(&server, "freeze_fleet", json!({"reason": "bad deploy"})).await;
+    assert!(!is_error, "{body}");
+    assert!(matches!(store.thaw(), crate::freeze::Thaw::Lifted { .. }));
+
+    let before = crate::cli::audit_delta::mark();
+    for incident in [false, true] {
+        let (is_error, body) = call(
+            &server,
+            "freeze_fleet",
+            json!({"reason": "bad deploy", "incident": incident}),
+        )
+        .await;
+        assert!(is_error, "incident={incident}: {body}");
+        let text = body.as_str().unwrap_or_default();
+        for part in [
+            "the operator lifted a fleet freeze (bad deploy, declared by an agent \
+             (poly-thaw-probe) with `freeze_fleet`)",
+            "will not reverse it",
+            "do not retry",
+        ] {
+            assert!(text.contains(part), "incident={incident}: {part}: {text}");
+        }
+        assert!(
+            store.active().is_none(),
+            "incident={incident}: nothing frozen"
+        );
+    }
+    let lines =
+        crate::cli::audit_delta::lines_matching(&before, |l| l.contains("client=poly-thaw-probe"));
+    assert_eq!(lines.len(), 2, "{lines:#?}");
+    for (line, action) in lines.iter().zip(["FreezeDeploys", "IncidentStart"]) {
+        for part in [
+            "stage=refused",
+            "rule=thawed_recently",
+            "via=mcp",
+            &format!("action={action}"),
+        ] {
+            assert!(line.contains(part), "{part}: {line}");
+        }
+    }
+    let doctor = call(&server, "doctor", json!({})).await.1.to_string();
+    assert!(
+        doctor.contains("The operator lifted a fleet freeze")
+            && doctor.contains("`freeze_fleet` is refused until"),
+        "{doctor}"
+    );
+
+    // A thaw that has run out binds nothing.
+    let t = store.recently_thawed().expect("still holds");
+    store.write_test_thawed(&t.marker, t.thawed_at - chrono::Duration::minutes(31));
+    let (is_error, body) = call(&server, "freeze_fleet", json!({"reason": "bad deploy"})).await;
+    assert!(!is_error, "{body}");
+    assert!(store.active().is_some());
+    let doctor = call(&server, "doctor", json!({})).await.1.to_string();
+    assert!(!doctor.contains("The operator lifted"), "{doctor}");
+}
+
 #[tokio::test]
 async fn freeze_fleet_as_an_incident_is_audited_as_one() {
     let server = granted_server();

@@ -241,6 +241,10 @@ impl FreezeStore {
         self.marker.with_extension("ended.json")
     }
 
+    fn thawed_file(&self) -> PathBuf {
+        self.marker.with_extension("thawed.json")
+    }
+
     /// Declare session `pid`'s freeze. Writes its own holder file only,
     /// so no other holder is replaced. `Err` when it could not be
     /// written — the caller MUST surface that, because an absent marker
@@ -263,6 +267,7 @@ impl FreezeStore {
         )?;
         self.sync_legacy(&self.holders());
         self.clear_ended();
+        self.clear_thawed();
         Ok(())
     }
 
@@ -300,6 +305,11 @@ impl FreezeStore {
         )?;
         self.sync_legacy(&self.holders());
         self.clear_ended();
+        // An operator's freeze is a new ruling, so a thaw no longer
+        // holds; an agent's must not erase the one that binds it.
+        if agent.is_none() {
+            self.clear_thawed();
+        }
         Ok(())
     }
 
@@ -322,6 +332,7 @@ impl FreezeStore {
         match lifted {
             Some(marker) => {
                 self.clear_ended();
+                write_thawed_at(&self.thawed_file(), &marker, chrono::Utc::now());
                 Thaw::Lifted { marker, still_held }
             }
             None => match still_held {
@@ -361,6 +372,28 @@ impl FreezeStore {
     /// A session freeze that ended with its session in the last day.
     pub(crate) fn ended(&self) -> Option<EndedFreeze> {
         read_ended_at(&self.ended_file(), chrono::Utc::now())
+    }
+
+    /// A persistent freeze lifted in the last [`THAW_HOLDS_MINS`]: while
+    /// it holds, `freeze_fleet` refuses, so an agent cannot reverse the
+    /// operator's thaw by re-declaring what they just lifted.
+    pub(crate) fn recently_thawed(&self) -> Option<ThawedFreeze> {
+        read_thawed_at(&self.thawed_file(), chrono::Utc::now())
+    }
+
+    /// Forget a thaw: an operator's freeze since is a new ruling.
+    fn clear_thawed(&self) {
+        let _ = std::fs::remove_file(self.thawed_file());
+    }
+
+    /// Record a thaw at `thawed_at`, as [`thaw`](Self::thaw) does now.
+    #[cfg(test)]
+    pub(crate) fn write_test_thawed(
+        &self,
+        m: &FreezeMarker,
+        thawed_at: chrono::DateTime<chrono::Utc>,
+    ) {
+        write_thawed_at(&self.thawed_file(), m, thawed_at);
     }
 
     /// Forget an ended freeze: a freeze or a thaw since is the
@@ -694,6 +727,69 @@ fn read_ended_at(path: &Path, now: chrono::DateTime<chrono::Utc>) -> Option<Ende
         .with_timezone(&chrono::Utc);
     (now.signed_duration_since(ended_at).num_hours() < ENDED_REPORT_HOURS)
         .then_some(EndedFreeze { marker, ended_at })
+}
+
+/// How long an operator's thaw binds `freeze_fleet`. A constant, not a
+/// config key: a looping agent re-declares in seconds, a rollback takes
+/// minutes, and a refusal in the window costs one message to an
+/// operator who has just been at the keyboard.
+pub(crate) const THAW_HOLDS_MINS: i64 = 30;
+
+/// A persistent freeze the operator lifted, while the thaw holds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ThawedFreeze {
+    pub marker: FreezeMarker,
+    pub thawed_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl ThawedFreeze {
+    /// When `freeze_fleet` may declare again.
+    pub(crate) fn holds_until(&self) -> chrono::DateTime<chrono::Utc> {
+        self.thawed_at + chrono::Duration::minutes(THAW_HOLDS_MINS)
+    }
+
+    /// One line for `ebman thaw`, `ebman freeze --status` and `doctor`.
+    pub(crate) fn message(&self) -> String {
+        format!(
+            "a fleet freeze ({}) was lifted at {}; an agent's `freeze_fleet` is refused \
+             until {}",
+            self.marker.reason_or_default(),
+            self.thawed_at.format("%Y-%m-%d %H:%M UTC"),
+            self.holds_until().format("%H:%M UTC")
+        )
+    }
+}
+
+fn write_thawed_at(path: &Path, m: &FreezeMarker, thawed_at: chrono::DateTime<chrono::Utc>) {
+    let mut v = serde_json::json!({
+        "pid": m.pid,
+        "reason": m.reason,
+        "incident": m.incident,
+        "at": m.at,
+        "persistent": m.persistent,
+        "thawed_at": thawed_at.to_rfc3339(),
+    });
+    if let Some(agent) = &m.agent {
+        v["agent"] = serde_json::Value::String(agent.clone());
+    }
+    if let Err(e) = crate::util::write_secure(path, format!("{v}\n").as_bytes()) {
+        // Said, not swallowed: without the record an agent can freeze
+        // again at once, which is the loop this exists to stop.
+        tracing::warn!(error = %e, "could not record a thaw; freeze_fleet is not held off");
+    }
+}
+
+/// `None` for a missing or unreadable record, as for a corrupt marker:
+/// no hold, which only gives an agent back the tool it had.
+fn read_thawed_at(path: &Path, now: chrono::DateTime<chrono::Utc>) -> Option<ThawedFreeze> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let marker = parse_marker(&text)?;
+    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let thawed_at = chrono::DateTime::parse_from_rfc3339(v.get("thawed_at")?.as_str()?)
+        .ok()?
+        .with_timezone(&chrono::Utc);
+    (now.signed_duration_since(thawed_at).num_seconds() < THAW_HOLDS_MINS * 60)
+        .then_some(ThawedFreeze { marker, thawed_at })
 }
 
 fn parse_file(path: &Path) -> Option<FreezeMarker> {
@@ -1359,6 +1455,80 @@ mod tests {
         assert_eq!(m.holder(), "declared with `ebman freeze`");
         assert_eq!(m.short_holder(), "ebman freeze");
         assert_eq!(parse_file(&s.marker).and_then(|m| m.agent), None);
+    }
+
+    /// A thaw holds for [`THAW_HOLDS_MINS`], to the second, and its
+    /// record carries what was lifted.
+    #[test]
+    fn a_thaw_holds_for_thirty_minutes() {
+        let s = store("thawed", Liveness::ALL_ALIVE);
+        assert_eq!(s.recently_thawed(), None, "nothing lifted yet");
+        s.declare_persistent_by_agent("bad deploy", true, "claude-code")
+            .unwrap();
+        assert!(matches!(s.thaw(), Thaw::Lifted { .. }));
+        let t = s.recently_thawed().expect("the thaw holds");
+        assert_eq!(t.marker.reason, "bad deploy");
+        assert!(t.marker.incident);
+        assert_eq!(t.marker.agent.as_deref(), Some("claude-code"));
+        assert_eq!(t.holds_until() - t.thawed_at, chrono::Duration::minutes(30));
+
+        let at = t.thawed_at;
+        let path = s.thawed_file();
+        let just_inside = at + chrono::Duration::seconds(30 * 60 - 1);
+        let at_the_end = at + chrono::Duration::minutes(30);
+        assert!(read_thawed_at(&path, just_inside).is_some(), "29:59 holds");
+        assert!(
+            read_thawed_at(&path, at_the_end).is_none(),
+            "30:00 does not"
+        );
+
+        // A thaw that found nothing to lift records nothing new.
+        s.write_test_thawed(&t.marker, at - chrono::Duration::hours(1));
+        assert_eq!(s.thaw(), Thaw::Nothing);
+        assert_eq!(s.recently_thawed(), None);
+        done(&s);
+    }
+
+    /// An operator's freeze, persistent or a session's, is a new
+    /// ruling and ends the hold; an agent's declaring never does.
+    #[test]
+    fn only_an_operator_s_freeze_ends_a_thaw_s_hold() {
+        let s = store("thawed-clear", Liveness::ALL_ALIVE);
+        let lift = |s: &FreezeStore| {
+            s.declare_persistent("x", false).unwrap();
+            assert!(matches!(s.thaw(), Thaw::Lifted { .. }));
+            assert!(s.recently_thawed().is_some());
+        };
+
+        lift(&s);
+        s.declare_persistent_by_agent("again", false, "claude-code")
+            .unwrap();
+        assert!(s.recently_thawed().is_some(), "an agent's never clears it");
+
+        lift(&s);
+        s.declare_persistent("operator", false).unwrap();
+        assert_eq!(s.recently_thawed(), None, "ebman freeze clears it");
+        let _ = s.thaw();
+
+        lift(&s);
+        s.declare_session(4242, "session", false).unwrap();
+        assert_eq!(s.recently_thawed(), None, ":freeze-deploys clears it");
+        done(&s);
+    }
+
+    /// One the reader cannot make sense of holds nothing off.
+    #[test]
+    fn an_unreadable_thaw_record_holds_nothing() {
+        let s = store("thawed-bad", Liveness::ALL_ALIVE);
+        std::fs::write(s.thawed_file(), "{not json").unwrap();
+        assert_eq!(s.recently_thawed(), None);
+        std::fs::write(
+            s.thawed_file(),
+            r#"{"pid":1,"reason":"x","thawed_at":"yesterday"}"#,
+        )
+        .unwrap();
+        assert_eq!(s.recently_thawed(), None);
+        done(&s);
     }
 
     #[test]
