@@ -5591,9 +5591,9 @@ async fn a_freeze_from_a_read_only_server_is_posted() {
         WriteScope::None,
         crate::config::Config::default(),
     );
-    assert!(!server.audit_is_wired(), "nothing to post yet");
+    assert_eq!(server.audit_reads(), 0, "nothing to post yet");
     let (_, list) = call(&server, "doctor", json!({})).await;
-    assert!(!server.audit_is_wired(), "a read wires nothing: {list}");
+    assert_eq!(server.audit_reads(), 0, "a read wires nothing: {list}");
     assert!(
         list.to_string()
             .contains("`freeze_fleet` still declares a freeze"),
@@ -5606,14 +5606,17 @@ async fn a_freeze_from_a_read_only_server_is_posted() {
     )
     .await;
     assert!(!is_error, "{body}");
-    assert!(
-        server.audit_is_wired(),
+    assert_eq!(
+        server.audit_reads(),
+        1,
         "the freeze's line must reach the webhook"
     );
+    server.ensure_audit_wired();
+    assert_eq!(server.audit_reads(), 1, "the config is read once");
 
     let demo = demo_server();
     let _ = call(&demo, "freeze_fleet", json!({"reason": "demo"})).await;
-    assert!(!demo.audit_is_wired());
+    assert_eq!(demo.audit_reads(), 0);
 }
 
 /// A demo server freezes nothing, as its other writes do nothing.

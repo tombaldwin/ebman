@@ -916,6 +916,11 @@ pub(crate) struct Server {
     /// one line it can write, so until then it never reads the config
     /// disk.
     audit_wired: std::sync::atomic::AtomicBool,
+    /// How many times this server actually read the config to wire the
+    /// webhook: the effect `audit_wired` stands for, which a test can
+    /// tell apart from the flag being set.
+    #[cfg(test)]
+    audit_reads: std::sync::atomic::AtomicUsize,
     /// Two-phase write state: the single pending-plan slot (spec:
     /// writes are serialized server-wide).
     writes: tokio::sync::Mutex<writes::WriteState>,
@@ -1069,6 +1074,8 @@ impl Server {
             freeze: own_freeze_store(),
             ambient_profile: own_ambient_profile(),
             audit_wired: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(test)]
+            audit_reads: std::sync::atomic::AtomicUsize::new(0),
             writes: tokio::sync::Mutex::new(writes::WriteState::default()),
             outbound: std::sync::Mutex::new(None),
             pending_asks: std::sync::Mutex::new(std::collections::HashMap::new()),
@@ -1112,13 +1119,17 @@ impl Server {
             .swap(true, std::sync::atomic::Ordering::Relaxed)
         {
             crate::audit::init_from_config_disk();
+            #[cfg(test)]
+            self.audit_reads
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
     }
 
-    /// Whether this server has wired its audit webhook.
+    /// How many times this server has read the config to wire its
+    /// audit webhook: 0 before, and 1 ever after.
     #[cfg(test)]
-    pub(crate) fn audit_is_wired(&self) -> bool {
-        self.audit_wired.load(std::sync::atomic::Ordering::Relaxed)
+    pub(crate) fn audit_reads(&self) -> usize {
+        self.audit_reads.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Pin writes against `profile`, as a server started under
