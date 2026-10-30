@@ -1963,11 +1963,19 @@ fn a_role_is_checked_against_the_env_s_account() {
         role_account_refusal(&role, &env(Some("not-an-arn")), &known("111122223333")),
         None
     );
-    // Neither: closed.
-    assert_eq!(
-        role_account_refusal(&role, &env(None), &unknown),
-        Some(RoleAccountRefusal::AccountUnknown)
+    // Neither: closed, and said so.
+    let refusal = role_account_refusal(&role, &env(None), &unknown);
+    assert_eq!(refusal, Some(RoleAccountRefusal::AccountUnknown));
+    let refusal = refusal.unwrap();
+    assert_eq!(refusal.rule(), "role_account_unknown");
+    assert!(
+        refusal
+            .message(WriteVerb::Restart, "poly-api", &role)
+            .contains("cannot tell which account poly-api is in"),
+        "{}",
+        refusal.message(WriteVerb::Restart, "poly-api", &role)
     );
+    assert!(refusal.remedy().contains("sts:GetCallerIdentity"));
 }
 
 /// Slice 2 names the role in the plan and the confirmation, and says
