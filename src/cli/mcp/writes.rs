@@ -263,7 +263,7 @@ impl Server {
     /// appending a real line to the real audit log. This module's own
     /// docs promise demo writes none, and a refusal being genuine does
     /// not make the fleet genuine.
-    fn gate_refusal(
+    async fn gate_refusal(
         &self,
         env: &str,
         profile: &Option<String>,
@@ -292,16 +292,42 @@ impl Server {
         let profile = profile.clone().or_else(|| self.ambient_profile.clone());
         let (refusal, message, pin_profile) =
             crate::cli::write_refusal_unaudited(&self.safety_cfg, env, &profile, freeze, &role)?;
+        let region = self.audit_region(&profile, region).await;
         Some(Audited::record(
             matches!(self.backend, Backend::Demo),
             pin_profile.as_deref(),
-            region.unwrap_or("-"),
+            &region,
             action_label,
             env,
             refusal.rule(),
             &refusal.remedy(),
             message,
         ))
+    }
+}
+
+impl Server {
+    /// The region a refusal line records: the one the write's client
+    /// would have resolved, as its dispatched and completed lines do.
+    /// `"-"` was written whenever the call named none, so a refusal and
+    /// a dispatch for the same default-region write disagreed. Building
+    /// the client reads the profile's config and sends nothing; a demo
+    /// server writes no line, so it builds none.
+    async fn audit_region(&self, profile: &Option<String>, region: Option<&str>) -> String {
+        if let Some(r) = region.filter(|r| !r.is_empty()) {
+            return r.to_string();
+        }
+        if matches!(self.backend, Backend::Demo) {
+            return "-".to_string();
+        }
+        let args = json!({
+            "profile": profile.clone().unwrap_or_default(),
+            "region": "",
+        });
+        self.client(&args)
+            .await
+            .map(|c| c.context.region.clone())
+            .unwrap_or_else(|_| "-".to_string())
     }
 }
 
@@ -2054,13 +2080,16 @@ impl Server {
         // construction, so a *pin* added during a long-lived session is
         // not seen until restart. This comment used to claim it was.
         let profile = arg_str(args, "profile");
-        if let Some(refused) = self.gate_refusal(
-            &env_name,
-            &profile,
-            arg_str(args, "region").as_deref(),
-            verb.label(),
-            Some(verb.tool_name()),
-        ) {
+        if let Some(refused) = self
+            .gate_refusal(
+                &env_name,
+                &profile,
+                arg_str(args, "region").as_deref(),
+                verb.label(),
+                Some(verb.tool_name()),
+            )
+            .await
+        {
             return Err(WriteError::Refused(refused));
         }
 
@@ -2266,13 +2295,16 @@ impl Server {
             // were checked at plan time, but the token window is long
             // enough for an incident to be declared since. A refusal
             // here drops the plan — reality changed, re-plan required.
-            if let Some(refused) = self.gate_refusal(
-                &p.env,
-                &p.profile,
-                p.region.as_deref(),
-                p.verb.label(),
-                Some(p.verb.tool_name()),
-            ) {
+            if let Some(refused) = self
+                .gate_refusal(
+                    &p.env,
+                    &p.profile,
+                    p.region.as_deref(),
+                    p.verb.label(),
+                    Some(p.verb.tool_name()),
+                )
+                .await
+            {
                 st.pending = None;
                 return Err(WriteError::Refused(refused));
             }
@@ -2398,13 +2430,16 @@ impl Server {
         // to win, and `safety-and-privacy.md` promises exactly that.
         // The freeze is re-read from disk here, so this is the check
         // that catches it.
-        if let Some(refused) = self.gate_refusal(
-            &pending.env,
-            &pending.profile,
-            pending.region.as_deref(),
-            pending.verb.label(),
-            Some(pending.verb.tool_name()),
-        ) {
+        if let Some(refused) = self
+            .gate_refusal(
+                &pending.env,
+                &pending.profile,
+                pending.region.as_deref(),
+                pending.verb.label(),
+                Some(pending.verb.tool_name()),
+            )
+            .await
+        {
             return Err(WriteError::Refused(refused.map_message(|m| {
                 format!("{m} (declared while the confirmation was open — nothing was dispatched)")
             })));
@@ -2788,8 +2823,9 @@ impl Server {
             }
         };
 
-        if let Some(refused) =
-            self.gate_refusal(&d.env, &d.profile, d.region.as_deref(), "dlq-undo", None)
+        if let Some(refused) = self
+            .gate_refusal(&d.env, &d.profile, d.region.as_deref(), "dlq-undo", None)
+            .await
         {
             // A refusal is decided before anything is sent, well
             // inside the window: nothing to add to it.

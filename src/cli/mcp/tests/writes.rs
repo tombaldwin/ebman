@@ -1211,6 +1211,68 @@ fn audit_delta_for(before: &str, env: &str) -> Vec<String> {
     crate::cli::audit_delta::lines_matching(before, |l| l.contains(env))
 }
 
+/// A refusal records the region the write would have gone to, as its
+/// dispatched and completed lines do, when the call named none. Every
+/// MCP gate refusal wrote `region=-` then, so the log could not put a
+/// refused undo and the delete it would have reversed side by side.
+#[tokio::test]
+async fn a_refusal_records_the_resolved_region_when_none_was_named() {
+    let env = "mcp-refusal-region-probe-env";
+    let mut client = undo_client(true);
+    client.context.region = "poly-refusal-1".into();
+    let s = Server::with_injected_client(
+        crate::cli::mcp::WriteScope::All,
+        crate::config::Config::default(),
+        client,
+    );
+    let msg = crate::demo_fixture::dlq_messages_for_env("poly-batch")
+        .into_iter()
+        .next()
+        .expect("fixture");
+    let id = msg.id.clone();
+    s.remember_deleted(&deleted_from(env, Some("https://q/undo-dlq".into())), msg)
+        .await;
+    s.freeze_store()
+        .declare_persistent("poly-refusal-freeze", false)
+        .unwrap();
+    let before =
+        std::fs::read_to_string(crate::util::cache_dir().join("audit.log")).unwrap_or_default();
+
+    let _ = s
+        .tool_dlq_undo(&json!({"message_id": id}))
+        .await
+        .expect_err("frozen");
+    let _ = s
+        .tool_write_plan(WriteVerb::Restart, &json!({"env": env}))
+        .await
+        .expect_err("frozen");
+    // A region the call names is still the one recorded.
+    let _ = s
+        .tool_write_plan(
+            WriteVerb::Restart,
+            &json!({"env": env, "region": "poly-named-2"}),
+        )
+        .await
+        .expect_err("frozen");
+
+    let lines = audit_delta_for(&before, env);
+    assert_eq!(lines.len(), 3, "{lines:#?}");
+    assert!(
+        lines.iter().all(|l| l.contains("stage=refused")),
+        "{lines:#?}"
+    );
+    assert!(lines[0].contains("action=dlq-undo"), "{}", lines[0]);
+    for (line, region) in lines
+        .iter()
+        .zip(["poly-refusal-1", "poly-refusal-1", "poly-named-2"])
+    {
+        assert!(
+            line.contains(&format!("region={region}")),
+            "{region}: {line}"
+        );
+    }
+}
+
 /// An undo restores a message at most ONCE, and is audited.
 ///
 /// `recoverable()` hands back a copy, and the restore used to read
