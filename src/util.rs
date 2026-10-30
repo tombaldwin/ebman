@@ -1072,3 +1072,8 @@ mod cursor_tests {
         assert_eq!(wrap_index(1, 1, 3), clamp_index(1, 1, 3));
     }
 }
+
+/// Throwaway: an untested guard to prove the mutants verdict fails. Never merged.
+pub fn verdict_proof_only(x: u32) -> bool {
+    x > 3
+}
