@@ -128,10 +128,6 @@ Tier definitions:
   of `src/cli/mcp/writes.rs` (`DeletedMessage`, `Claim`, the
   remember / claim / finish / recoverable methods) → `mcp/undo.rs`.
   *0.45 release review.*
-- [ ] **TUI `:lint` no longer primes the confirm modal's input cache.**
-  Since it moved to the shared assembly it does not send
-  `LintInputsCached`, so a later pre-deploy confirm refetches tags and
-  health. Latency only. *0.45 release review.*
 - [ ] **Three bodies take a `WriteEnv<G>` whose gate they never call**
   (`lint_body`, `freeze_body`, `thaw_body`; their tests pass `()`), so
   `write_shells_pass_the_real_write_env` reads as covering lint's gate
@@ -141,16 +137,6 @@ Tier definitions:
   lint uses it. The 0.48.0 architecture review recommends (a): it says
   what each body uses and keeps lint's precedence tests on its own
   config. M. Needs the maintainer's ruling (two reasonable shapes).
-- [ ] **One validator and one audit shape for declaring a freeze.**
-  `freeze_fleet` refuses control characters, line separators, bidi
-  marks and reasons over 200 characters (shown in a one-line status
-  bar); `ebman freeze` and the TUI's `:freeze-deploys` / `:incident`
-  accept anything, and the same reason applies to them. The audit lines
-  disagree too: `IncidentStart`'s reason is `headline=` in the TUI and
-  `reason=` in the CLI and MCP, `persistent` / `via` appear in some, and
-  the label choice is copied (`cli/freeze.rs`, `cli/mcp/writes.rs`).
-  Shape: the validator and a `declare_label(incident)` in `src/freeze.rs`,
-  called by every declare. S–M. *0.48.0 architecture review.*
 - [ ] **`freeze_fleet` to its own module** (`src/cli/mcp/freeze.rs`):
   ~150 lines in the 3k-line `writes.rs`, which its own docs say it is
   not part of. S. *0.48.0 architecture review.*
@@ -169,12 +155,6 @@ Tier definitions:
   and each is listed again in the generation-guard match. S–M. *0.48.0
   architecture review.*
 
-- [ ] **`freeze_fleet`'s standing-freeze check and its declare are two
-  steps.** An `ebman freeze` landing between them is rewritten with the
-  agent's reason, which is what the check exists to stop. Shape: a
-  create-if-absent `FreezeStore::declare_persistent_unless_held`
-  (`O_EXCL` on `persistent.json`). Window of microseconds. *2026-10-29
-  review.*
 
 - [ ] **Merged doc comments on `pub(crate)` items are still
   unguarded.** 0.42.0 closed this for the PUBLIC surface —

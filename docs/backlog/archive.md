@@ -5533,3 +5533,22 @@ a `--read-only` server.
    both writers. The call-site checks stay as the tested layer; the TUI's
    freeze, thaw and incident commands had none.
 
+3. *(architecture)* **`App::new` and `App::for_tests` each build the ~115-field struct
+   by hand** (`src/app.rs`, two literals of ~260 and ~175 lines).
+   `for_tests` is production code too — `new_demo` builds on it — and
+   nothing checks that the two agree on defaults, so every new field is
+   two edits. Shape: a shared `App::assemble(aws, config, seed)`. S–M.
+   From the 2026-09-25 implementation review.
+   Since 2026-10-29 the freeze store is one more default the two must
+   agree on (`FreezeStore::real()` / `isolated()`).
+
+   Done 2026-10-30 (657b3ed, guard 097cabd): `App::fresh` is the one literal;
+   `new` sets the 20 fields it reads from the machine. Reviewed
+   behaviour-neutral field by field; a guard pins that `fresh` reads
+   nothing from the machine.
+
+- [x] **`freeze_fleet`'s standing-freeze check and its declare are two
+  steps.** Done 2026-10-30 (032b1d1): the agent's declare is exclusive
+  (temp + hard link), answers `Held` with a standing freeze, and is the
+  only check.
+

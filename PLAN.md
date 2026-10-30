@@ -167,14 +167,21 @@ it.*
 
 ### Next
 
-3. *(architecture)* **`App::new` and `App::for_tests` each build the ~115-field struct
-   by hand** (`src/app.rs`, two literals of ~260 and ~175 lines).
-   `for_tests` is production code too — `new_demo` builds on it — and
-   nothing checks that the two agree on defaults, so every new field is
-   two edits. Shape: a shared `App::assemble(aws, config, seed)`. S–M.
-   From the 2026-09-25 implementation review.
-   Since 2026-10-29 the freeze store is one more default the two must
-   agree on (`FreezeStore::real()` / `isolated()`).
+3. *(behaviour)* **One validator and one audit shape for declaring a freeze.**
+   `freeze_fleet` refuses control characters, line separators, bidi
+   marks and reasons over 200 characters (shown in a one-line status
+   bar); `ebman freeze` and the TUI's `:freeze-deploys` / `:incident`
+   accept anything, and the same reason applies to them. The audit lines
+   disagree too: `IncidentStart`'s reason is `headline=` in the TUI and
+   `reason=` in the CLI and MCP, `persistent` / `via` appear in some, and
+   the label choice is copied (`cli/freeze.rs`, `cli/mcp/writes.rs`).
+   Shape: the validator and a `declare_label(incident)` in `src/freeze.rs`,
+   called by every declare. S–M. *0.48.0 architecture review.*
+
+4. *(mechanical)* **TUI `:lint` no longer primes the confirm modal's input cache.**
+   Since it moved to the shared assembly it does not send
+   `LintInputsCached`, so a later pre-deploy confirm refetches tags and
+   health. Latency only. *0.45 release review.*
 
 ### Released
 
