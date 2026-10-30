@@ -2418,6 +2418,42 @@ fn the_app_uses_no_global_freeze_path() {
     assert!(in_app.is_empty(), "{in_app:#?}");
 }
 
+/// `App::fresh` is the one App literal, and what every test App and the
+/// `--demo` App are built from: it must read nothing about this machine.
+/// Anything `new` wants from the machine is set after it, in `new`. A
+/// field added to the literal as `state::load().x` would have every test
+/// read the developer's real state.
+#[test]
+fn the_fresh_app_reads_nothing_from_the_machine() {
+    let src = super::scan::production_source("app.rs");
+    let body = src
+        .split("    fn fresh(aws: Arc<crate::aws::AwsClient>, config: Config) -> Self {")
+        .nth(1)
+        .and_then(|rest| rest.split("\n    }\n").next())
+        .expect("App::fresh is here");
+    assert!(body.contains("Self {"), "the body was found: {body}");
+    let code: String = body
+        .lines()
+        .map(super::scan::strip_line_comment)
+        .collect::<Vec<_>>()
+        .join("\n");
+    for reads in [
+        "state::load",
+        "state::file_exists",
+        "load_from_cwd",
+        "std::env::var",
+        "FreezeStore::real",
+        "latest_session_expiry",
+        "stamp_of",
+        "plugins::load",
+        "config_path",
+        "config_dir",
+        "cache_dir",
+    ] {
+        assert!(!code.contains(reads), "App::fresh reads `{reads}`");
+    }
+}
+
 /// The chip follows the marker on idle ticks, at most every two seconds:
 /// it used to update only on a refresh, so with auto-refresh paused an
 /// `ebman freeze` refused writes with no chip showing.

@@ -1463,8 +1463,8 @@ impl App {
     }
 
     /// The one App literal: a fresh App, before anything about this
-    /// machine is read (persisted state, the cwd's terraform and EB CLI
-    /// files, plugins, `RUST_LOG`, the SSO cache) and with a freeze store
+    /// machine is read (persisted state, the cwd's terraform state,
+    /// plugins, `RUST_LOG`, the SSO cache) and with a freeze store
     /// nothing else shares. `for_tests` is exactly this; `new` builds it
     /// and then sets what it reads from the machine. There were two
     /// hand-written literals of the ~100 fields, and nothing checked
