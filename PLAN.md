@@ -155,15 +155,7 @@ it.*
 
 ### Next
 
-3. *(behaviour)* **Demo audit suppression in one place.** Done per call site: MCP
-   checks `Backend::Demo` at seven sites, the TUI `!self.demo_mode` at
-   several more, and it has already leaked once. Evidence it is still
-   inconsistent: `:thaw-deploys` writes an audit line in demo mode, and
-   0112e6d's `:readonly` does not. Shape: a process-wide audit sink mode
-   set once at startup, as `set_notify_webhook` does. S.
-   `freeze_fleet` (2026-10-29) is an eighth MCP `Backend::Demo` check.
-
-4. *(architecture)* **`App::new` and `App::for_tests` each build the ~115-field struct
+3. *(architecture)* **`App::new` and `App::for_tests` each build the ~115-field struct
    by hand** (`src/app.rs`, two literals of ~260 and ~175 lines).
    `for_tests` is production code too — `new_demo` builds on it — and
    nothing checks that the two agree on defaults, so every new field is

@@ -5520,3 +5520,16 @@ a `--read-only` server.
    the elicited re-check, `dlq_undo`) resolves the region the write's
    client would, when the call named none.
 
+3. *(behaviour)* **Demo audit suppression in one place.** Done per call site: MCP
+   checks `Backend::Demo` at seven sites, the TUI `!self.demo_mode` at
+   several more, and it has already leaked once. Evidence it is still
+   inconsistent: `:thaw-deploys` writes an audit line in demo mode, and
+   0112e6d's `:readonly` does not. Shape: a process-wide audit sink mode
+   set once at startup, as `set_notify_webhook` does. S.
+   `freeze_fleet` (2026-10-29) is an eighth MCP `Backend::Demo` check.
+
+   Done 2026-10-30 (e8ee780): `audit::make_hermetic`, called by the
+   `--demo` TUI and `mcp serve --demo` at startup, drops every line at
+   both writers. The call-site checks stay as the tested layer; the TUI's
+   freeze, thaw and incident commands had none.
+
