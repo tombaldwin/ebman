@@ -27,6 +27,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   lifted. The name is the client's own claim: direction overrides and
   control characters are replaced and it is cut at 64 characters.
 
+### Fixed
+
+- `cargo test` no longer runs the deploy confirm's health-check probe,
+  which sent a real `curl` to the test env's CNAME from the machine
+  running the suite.
+
 ## [0.48.0] - 2026-10-29
 
 ### Added
