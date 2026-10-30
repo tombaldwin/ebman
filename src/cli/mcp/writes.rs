@@ -2978,10 +2978,11 @@ impl Server {
                 "incident": m.incident,
                 "lift": "ebman thaw",
                 "message": format!(
-                    "The fleet is already frozen ({}), declared {}; nothing changed. Every \
+                    "The fleet is already frozen ({}), {} at {}; nothing changed. Every \
                      ebman write refuses until the operator runs `ebman thaw`. Tell the \
                      operator why you would have frozen it.",
                     m.reason_or_default(),
+                    m.holder(),
                     m.at
                 ),
             })
@@ -2999,7 +3000,10 @@ impl Server {
         // The marker names the client, so a refusal and `ebman thaw` say
         // an agent declared it. The name is the client's own claim, and
         // lands in a one-line status bar: sanitised and capped.
-        let agent = sanitize_capped(&client, FREEZE_AGENT_MAX);
+        let agent = match sanitize_capped(client.trim(), FREEZE_AGENT_MAX) {
+            named if !named.is_empty() => named,
+            _ => "an unnamed client".to_string(),
+        };
         if let Err(e) = self
             .freeze
             .declare_persistent_by_agent(reason, incident, &agent)

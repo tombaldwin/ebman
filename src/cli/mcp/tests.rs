@@ -5490,6 +5490,35 @@ async fn freeze_fleet_names_the_agent_in_the_marker() {
     assert!(agent.ends_with('…'), "{agent}");
 }
 
+/// A client that sends no name is still named as an agent, not as
+/// "an agent ()".
+#[tokio::test]
+async fn freeze_fleet_names_a_nameless_client() {
+    let server = granted_server();
+    rpc(
+        &server,
+        json!({"jsonrpc":"2.0","id":0,"method":"initialize",
+               "params":{"protocolVersion":"2025-06-18","capabilities":{},
+                         "clientInfo":{"name": "  ","version":"0"}}}),
+    )
+    .await
+    .expect("initialize");
+    let _ = call(&server, "freeze_fleet", json!({"reason": "bad deploy"})).await;
+    let m = server.freeze_store().active().expect("frozen");
+    assert_eq!(m.agent.as_deref(), Some("an unnamed client"));
+
+    // And a second agent is told whose freeze is standing.
+    let (_, body) = call(&server, "freeze_fleet", json!({"reason": "again"})).await;
+    assert_eq!(body["already"], true, "{body}");
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap()
+            .contains("declared by an agent (an unnamed client)"),
+        "{body}"
+    );
+}
+
 #[tokio::test]
 async fn freeze_fleet_as_an_incident_is_audited_as_one() {
     let server = granted_server();
