@@ -265,6 +265,16 @@ Tier definitions:
 
 #### Correctness and safety, from the 2026-09-25 reviews
 
+- [ ] **MCP write roles are one account per verb.** A verb has one role
+  (two listing it make the role config unreadable), so with a role
+  mapped, that verb's MCP writes work only in the role's account: a plan
+  for an env elsewhere refuses `rule=role_wrong_account`. An operator who
+  reaches several accounts through the `profile` argument cannot map a
+  role per account. **Ruling needed** (from the slice 2 review,
+  2026-10-30): let a verb sit in several roles when their ARNs name
+  different accounts, and pick by the env's account; or keep one account
+  per verb, as documented now.
+
 - [ ] **The pre-deploy lint still fetches its own way.** Since 0.45 it
   shares everything after the fetch with `:lint` / `:explain` (the
   snapshot, `lint::inputs::assemble`, `LintSnapshot::finish`), and a
