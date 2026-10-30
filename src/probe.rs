@@ -31,6 +31,26 @@ pub(crate) fn build_health_check_probe_url(cname: &str, path: &str) -> String {
 /// errors. The reason string is surfaced in the modal so the
 /// operator can decide whether the warning matters.
 pub(crate) async fn run_health_check_probe(url: &str) -> Result<(), String> {
+    // Stubbed under `cfg(test)`, as `yank` is: every test that opens a
+    // `:deploy LABEL` confirm reaches here, and the real probe resolves
+    // and connects to the env's CNAME from the developer's machine.
+    #[cfg(test)]
+    {
+        let _ = url;
+        Err(NOT_PROBED_UNDER_TEST.to_string())
+    }
+    #[cfg(not(test))]
+    {
+        probe_with_curl(url).await
+    }
+}
+
+/// What the probe answers under `cfg(test)`, where it sends nothing.
+#[cfg(test)]
+pub(crate) const NOT_PROBED_UNDER_TEST: &str = "not probed under test";
+
+#[cfg(not(test))]
+async fn probe_with_curl(url: &str) -> Result<(), String> {
     use tokio::process::Command;
     let out = Command::new("curl")
         .args([
@@ -91,6 +111,16 @@ pub(crate) fn classify_health_check_status(code: u16) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    /// The probe sends nothing from `cargo test`: a hostname that would
+    /// resolve and answer still gets the stub's answer, not curl's.
+    #[tokio::test]
+    async fn the_probe_does_not_leave_the_machine_under_test() {
+        assert_eq!(
+            super::run_health_check_probe("http://127.0.0.1:9/").await,
+            Err(super::NOT_PROBED_UNDER_TEST.to_string())
+        );
+    }
+
     #[test]
     fn build_health_check_probe_url_normalises_path() {
         // Path starting with `/` passes through.
