@@ -3239,8 +3239,8 @@ impl Server {
         // One persistent freeze, and declaring writes it whole: an
         // agent's call would replace the operator's reason, incident
         // flag and time. A freeze already standing is left as declared.
-        if let Some(m) = self.freeze.all().into_iter().find(|m| m.persistent) {
-            return Ok(json!({
+        let already = |m: crate::freeze::FreezeMarker| {
+            json!({
                 "frozen": true,
                 "already": true,
                 "reason": m.reason,
@@ -3255,8 +3255,8 @@ impl Server {
                     m.at
                 ),
             })
-            .to_string());
-        }
+            .to_string()
+        };
         // Declaring clears the note that an earlier freeze lifted with
         // its session, which is the operator's to see: hand it to the
         // agent, so it reaches them.
@@ -3268,13 +3268,21 @@ impl Server {
             named if !named.is_empty() => named,
             _ => "an unnamed client".to_string(),
         };
-        if let Err(e) = self
+        // One step: the declare is exclusive, so a standing freeze, one
+        // an `ebman freeze` lands a moment before this, is kept and
+        // answered. A check-then-declare let that one be rewritten.
+        match self
             .freeze
             .declare_persistent_by_agent(reason, incident, &agent)
         {
-            return Err(format!(
-                "{FREEZE_TOOL}: could not write the freeze marker ({e}) — the fleet is NOT frozen"
-            ));
+            Ok(crate::freeze::AgentDeclare::Declared) => {}
+            Ok(crate::freeze::AgentDeclare::Held(m)) => return Ok(already(m)),
+            Err(e) => {
+                return Err(format!(
+                    "{FREEZE_TOOL}: could not write the freeze marker ({e}) — the fleet is NOT \
+                     frozen"
+                ));
+            }
         }
         // A read-only server has not wired the webhook: this is the one
         // line it writes, and a freeze is what a team's channel most

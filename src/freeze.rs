@@ -278,14 +278,39 @@ impl FreezeStore {
     }
 
     /// [`declare_persistent`](Self::declare_persistent) for MCP
-    /// `freeze_fleet`, recording which client declared it.
+    /// `freeze_fleet`, recording which client declared it, and only if
+    /// no persistent freeze stands: an agent's declare must never
+    /// rewrite the operator's reason, incident flag and time. Created
+    /// exclusively, so an `ebman freeze` landing between the caller's
+    /// check and this write is kept, not overwritten: the answer is then
+    /// [`AgentDeclare::Held`] with that freeze.
     pub(crate) fn declare_persistent_by_agent(
         &self,
         reason: &str,
         incident: bool,
         agent: &str,
-    ) -> std::io::Result<()> {
-        self.write_persistent(reason, incident, Some(agent))
+    ) -> std::io::Result<AgentDeclare> {
+        let file = self.persistent_file();
+        let created = write_marker_exclusive(&file, reason, incident, agent)?;
+        if !created {
+            match parse_file(&file) {
+                Some(m) => return Ok(AgentDeclare::Held(m)),
+                // A corrupt marker blocks nothing, so it must not stop
+                // a freeze either: replace it, as an operator's would.
+                None => write_marker_full(
+                    &file,
+                    PERSISTENT_PID,
+                    reason,
+                    incident,
+                    true,
+                    false,
+                    Some(agent),
+                )?,
+            }
+        }
+        self.sync_legacy(&self.holders());
+        self.clear_ended();
+        Ok(AgentDeclare::Declared)
     }
 
     fn write_persistent(
@@ -553,6 +578,53 @@ pub(crate) enum Thaw {
 
 /// Write one marker body to `path`, atomically. `mirror` marks the
 /// legacy copy for older readers.
+/// What an agent's declare did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum AgentDeclare {
+    Declared,
+    /// A persistent freeze already stood, and stands unchanged.
+    Held(FreezeMarker),
+}
+
+/// A persistent agent marker at `path`, only if none is there: the
+/// body goes to a temp file and is hard-linked into place, which is
+/// atomic and fails if `path` exists, so a reader never sees a partial
+/// marker and an existing one is never replaced. `Ok(false)` when one
+/// was there.
+fn write_marker_exclusive(
+    path: &Path,
+    reason: &str,
+    incident: bool,
+    agent: &str,
+) -> std::io::Result<bool> {
+    // Unique per write, as `write_marker_full`'s temp is.
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let tmp = path.with_extension(format!(
+        "excl.{}.{}",
+        std::process::id(),
+        SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    write_marker_full(
+        &tmp,
+        PERSISTENT_PID,
+        reason,
+        incident,
+        true,
+        false,
+        Some(agent),
+    )?;
+    let linked = std::fs::hard_link(&tmp, path);
+    let _ = std::fs::remove_file(&tmp);
+    match linked {
+        Ok(()) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+        Err(e) => {
+            tracing::warn!(error = %e, "could not persist freeze marker — cross-process enforcement inactive");
+            Err(e)
+        }
+    }
+}
+
 fn write_marker_full(
     path: &Path,
     pid: u32,
@@ -1455,6 +1527,61 @@ mod tests {
         assert_eq!(m.holder(), "declared with `ebman freeze`");
         assert_eq!(m.short_holder(), "ebman freeze");
         assert_eq!(parse_file(&s.marker).and_then(|m| m.agent), None);
+    }
+
+    /// An agent's declare never replaces a standing persistent freeze:
+    /// it answers with that freeze, which is left byte for byte. One it
+    /// cannot read is replaced (a corrupt marker blocks nothing, so it
+    /// must not stop a freeze), and no temp file is left behind.
+    #[test]
+    fn an_agent_s_declare_keeps_a_standing_freeze() {
+        let s = store("agent-excl", Liveness::ALL_ALIVE);
+        let leftovers = |s: &FreezeStore| -> Vec<String> {
+            std::fs::read_dir(s.holders_dir())
+                .unwrap()
+                .flatten()
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .filter(|n| n != "persistent.json")
+                .collect()
+        };
+
+        s.declare_persistent("release window", true).unwrap();
+        let before = std::fs::read(s.persistent_file()).unwrap();
+        match s
+            .declare_persistent_by_agent("bad deploy", false, "claude-code")
+            .unwrap()
+        {
+            AgentDeclare::Held(m) => {
+                assert_eq!(m.reason, "release window");
+                assert!(m.incident);
+                assert_eq!(m.agent, None);
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(std::fs::read(s.persistent_file()).unwrap(), before);
+        assert_eq!(leftovers(&s), Vec::<String>::new());
+
+        std::fs::write(s.persistent_file(), "{not json").unwrap();
+        assert_eq!(
+            s.declare_persistent_by_agent("bad deploy", false, "claude-code")
+                .unwrap(),
+            AgentDeclare::Declared
+        );
+        let m = s.active().expect("frozen");
+        assert_eq!(
+            (m.reason.as_str(), m.agent.as_deref()),
+            ("bad deploy", Some("claude-code"))
+        );
+
+        let _ = s.thaw();
+        assert_eq!(
+            s.declare_persistent_by_agent("fresh", false, "claude-code")
+                .unwrap(),
+            AgentDeclare::Declared
+        );
+        assert_eq!(s.active().expect("frozen").reason, "fresh");
+        assert_eq!(leftovers(&s), Vec::<String>::new());
+        done(&s);
     }
 
     /// A thaw holds for [`THAW_HOLDS_MINS`], to the second, and its
