@@ -5478,3 +5478,33 @@ a `--read-only` server.
    tool on the registry surface and lifting must stay with the operator.
    Left out of the freeze work by design (`docs/design/persistent-freeze.md`).
 
+## Rulings from the 2026-10-30 Fable panel
+
+- [x] **An agent can re-declare a freeze the operator just lifted.**
+  `freeze_fleet` is on every server, `--read-only` included, and leaves
+  a standing freeze alone, so the one loop left is: the operator runs
+  `ebman thaw`, the agent sees the same symptom and freezes again. Since
+  2026-10-30 the marker names the agent, so the operator can see who;
+  they cannot stop it short of disconnecting the client. **Ruling
+  needed** (from the 0.48.0 release panel): a cooldown after a thaw
+  (how long, and does it apply to an `incident` freeze?), a config key
+  that withholds the tool, or leave it, since a freeze only takes writes
+  away.
+
+- [x] **A push's in-diff mutant survivors are green.** On `push` the
+  job exits 0 with a `::warning::` when mutants survive, by design (a
+  push cannot be refused), so a watcher that reads the run's status (as
+  the release panel and every post-push watch did) reads it as clean:
+  2868ad1's 10 survivors were found only by a panellist reading the
+  summary. Make them visible to a status reader without refusing the
+  push, e.g. a separate non-required job that fails on survivors, or a
+  check annotation count the watch scripts assert on.
+
+  Both ruled 2026-10-30 on a Fable recommendation the maintainer
+  approved. The re-declare: an operator's thaw of a persistent freeze
+  holds `freeze_fleet` off for 30 minutes (`THAW_HOLDS_MINS`), `incident`
+  included; an operator freeze ends the hold. The survivors: a verdict
+  job fails the run on any survivor or unfinished shard, push included;
+  the escape is a maintainer-only `.cargo/mutants.toml` `exclude_re`,
+  with a job failing on entries that match nothing. Building the proof
+  found the diff pathspec had never matched files directly under `src/`.
