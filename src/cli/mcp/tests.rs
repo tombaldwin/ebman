@@ -5460,6 +5460,36 @@ async fn freeze_fleet_declares_a_freeze_that_refuses_writes() {
     assert!(err.to_string().contains("fleet freeze active"), "{err}");
 }
 
+/// The marker names the client that declared it, so a refusal and
+/// `ebman thaw` say an agent froze the fleet. The name is the client's
+/// own claim at initialize: what could rewrite a status line is
+/// replaced, and it is cut at 64 characters.
+#[tokio::test]
+async fn freeze_fleet_names_the_agent_in_the_marker() {
+    let server = granted_server();
+    let claimed = format!("claude-code\u{202E}edoc{}", "x".repeat(100));
+    rpc(
+        &server,
+        json!({"jsonrpc":"2.0","id":0,"method":"initialize",
+               "params":{"protocolVersion":"2025-06-18","capabilities":{},
+                         "clientInfo":{"name": claimed,"version":"0"}}}),
+    )
+    .await
+    .expect("initialize");
+    let (is_error, body) = call(&server, "freeze_fleet", json!({"reason": "bad deploy"})).await;
+    assert!(!is_error, "{body}");
+
+    let agent = server
+        .freeze_store()
+        .active()
+        .and_then(|m| m.agent)
+        .expect("the marker names the agent");
+    assert!(agent.starts_with("claude-code\u{FFFD}edoc"), "{agent}");
+    assert!(!agent.contains('\u{202E}'), "{agent}");
+    assert_eq!(agent.chars().count(), 65, "64 and an ellipsis: {agent}");
+    assert!(agent.ends_with('…'), "{agent}");
+}
+
 #[tokio::test]
 async fn freeze_fleet_as_an_incident_is_audited_as_one() {
     let server = granted_server();

@@ -185,12 +185,20 @@ pub(crate) fn thaw_body<G>(
                 Some(s) => {
                     let _ = writeln!(
                         out,
-                        "the `ebman freeze` freeze is lifted, but the fleet is still frozen: \
+                        "the freeze {} is lifted, but the fleet is still frozen: \
                          it is {}; lift it there with `{}`",
+                        m.holder(),
                         s.holder(),
                         s.remedy()
                     );
                     3
+                }
+                // Who declared it, when it was not the operator: an
+                // agent's freeze lifted without a word looks like their
+                // own.
+                None if m.agent.is_some() => {
+                    let _ = writeln!(out, "fleet freeze lifted (it was {})", m.holder());
+                    0
                 }
                 None => {
                     let _ = writeln!(out, "fleet freeze lifted");
@@ -304,6 +312,38 @@ mod tests {
             })
         );
         assert!(parse_freeze_args(&argv(&["freeze", "--frozen"])).is_err());
+    }
+
+    /// A freeze an agent declared is named as one by `--status` and by
+    /// the thaw that lifts it, so the operator does not take it for
+    /// their own.
+    #[test]
+    fn status_and_thaw_name_an_agent_s_freeze() {
+        let store = crate::freeze::FreezeStore::isolated();
+        let agent = "declared by an agent (claude-code) with `freeze_fleet`";
+        store
+            .declare_persistent_by_agent("bad deploy", false, "claude-code")
+            .unwrap();
+        let (_, text) = run(freeze_body, &store, &["freeze", "--status"]);
+        assert!(text.contains(agent), "{text}");
+        let (code, text) = run(thaw_body, &store, &["thaw"]);
+        assert_eq!(code, 0, "{text}");
+        assert_eq!(text.trim(), format!("fleet freeze lifted (it was {agent})"));
+
+        // Lifted while a session's still holds: it names what it lifted.
+        store
+            .declare_persistent_by_agent("bad deploy", false, "claude-code")
+            .unwrap();
+        store
+            .declare_session(std::process::id(), "tui freeze", false)
+            .unwrap();
+        let (code, text) = run(thaw_body, &store, &["thaw"]);
+        assert_eq!(code, 3, "{text}");
+        assert!(
+            text.contains(&format!("the freeze {agent} is lifted")),
+            "{text}"
+        );
+        store.clear_session(std::process::id());
     }
 
     /// Declare, status, thaw, and the thaw refusing a live session's

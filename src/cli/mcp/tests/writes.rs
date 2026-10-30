@@ -30,6 +30,7 @@ fn write_gate_refuses_under_freeze_and_pin() {
         incident: true,
         at: "now".into(),
         persistent: false,
+        agent: None,
     };
     let msg =
         crate::cli::write_refusal(&cfg, "prod", &None, Some(m), None, "Test").expect("refused");

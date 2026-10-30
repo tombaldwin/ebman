@@ -41,6 +41,11 @@ pub(crate) struct FreezeMarker {
     /// Declared with `ebman freeze`: no session owns it, and it holds
     /// until an explicit thaw.
     pub persistent: bool,
+    /// The MCP client that declared it with `freeze_fleet`, sanitised:
+    /// the operator lifting a freeze needs to know an agent put it
+    /// there, not that they ran `ebman freeze` and forgot. `None` for
+    /// one an operator declared.
+    pub agent: Option<String>,
 }
 
 impl FreezeMarker {
@@ -57,7 +62,9 @@ impl FreezeMarker {
 
     /// Who holds it, for a refusal or a status line.
     pub(crate) fn holder(&self) -> String {
-        if self.persistent {
+        if let (true, Some(agent)) = (self.persistent, &self.agent) {
+            format!("declared by an agent ({agent}) with `freeze_fleet`")
+        } else if self.persistent {
             "declared with `ebman freeze`".to_string()
         } else {
             format!("held by a TUI session (pid {})", self.pid)
@@ -66,7 +73,9 @@ impl FreezeMarker {
 
     /// Who holds it in a few words, for the header chip.
     pub(crate) fn short_holder(&self) -> String {
-        if self.persistent {
+        if self.persistent && self.agent.is_some() {
+            "agent freeze".to_string()
+        } else if self.persistent {
             "ebman freeze".to_string()
         } else {
             format!("pid {}", self.pid)
@@ -238,7 +247,15 @@ impl FreezeStore {
         reason: &str,
         incident: bool,
     ) -> std::io::Result<()> {
-        write_marker_full(&self.session_file(pid), pid, reason, incident, false, false)?;
+        write_marker_full(
+            &self.session_file(pid),
+            pid,
+            reason,
+            incident,
+            false,
+            false,
+            None,
+        )?;
         self.sync_legacy(&self.holders());
         self.clear_ended();
         Ok(())
@@ -247,6 +264,26 @@ impl FreezeStore {
     /// Declare a persistent freeze (`ebman freeze`): no session owns it.
     /// Same failure contract as [`declare_session`](Self::declare_session).
     pub(crate) fn declare_persistent(&self, reason: &str, incident: bool) -> std::io::Result<()> {
+        self.write_persistent(reason, incident, None)
+    }
+
+    /// [`declare_persistent`](Self::declare_persistent) for MCP
+    /// `freeze_fleet`, recording which client declared it.
+    pub(crate) fn declare_persistent_by_agent(
+        &self,
+        reason: &str,
+        incident: bool,
+        agent: &str,
+    ) -> std::io::Result<()> {
+        self.write_persistent(reason, incident, Some(agent))
+    }
+
+    fn write_persistent(
+        &self,
+        reason: &str,
+        incident: bool,
+        agent: Option<&str>,
+    ) -> std::io::Result<()> {
         write_marker_full(
             &self.persistent_file(),
             PERSISTENT_PID,
@@ -254,6 +291,7 @@ impl FreezeStore {
             incident,
             true,
             false,
+            agent,
         )?;
         self.sync_legacy(&self.holders());
         self.clear_ended();
@@ -347,6 +385,7 @@ impl FreezeStore {
             incident: true,
             at: chrono::Utc::now().to_rfc3339(),
             persistent: false,
+            agent: None,
         };
         write_ended_at(&self.ended_file(), &m);
     }
@@ -431,7 +470,10 @@ impl FreezeStore {
             Some(h) => {
                 let m = &h.marker;
                 let up_to_date = current.as_ref().is_some_and(|c| {
-                    c.pid == m.pid && c.reason == m.reason && c.persistent == m.persistent
+                    c.pid == m.pid
+                        && c.reason == m.reason
+                        && c.persistent == m.persistent
+                        && c.agent == m.agent
                 }) && is_mirror(&self.marker);
                 if !up_to_date && !an_older_tui_holds() {
                     let _ = write_marker_full(
@@ -441,6 +483,7 @@ impl FreezeStore {
                         m.incident,
                         m.persistent,
                         true,
+                        m.agent.as_deref(),
                     );
                 }
             }
@@ -479,12 +522,16 @@ fn write_marker_full(
     incident: bool,
     persistent: bool,
     mirror: bool,
+    agent: Option<&str>,
 ) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
+    let agent = agent
+        .map(|a| format!(",\"agent\":{}", crate::util::json_string(a)))
+        .unwrap_or_default();
     let body = format!(
-        "{{\"pid\":{pid},\"reason\":{},\"incident\":{incident},\"at\":{},\"persistent\":{persistent},\"mirror\":{mirror}}}\n",
+        "{{\"pid\":{pid},\"reason\":{},\"incident\":{incident},\"at\":{},\"persistent\":{persistent},\"mirror\":{mirror}{agent}}}\n",
         crate::util::json_string(reason),
         crate::util::json_string(&chrono::Utc::now().to_rfc3339()),
     );
@@ -668,6 +715,7 @@ pub(crate) fn parse_marker(text: &str) -> Option<FreezeMarker> {
             .get("persistent")
             .and_then(|b| b.as_bool())
             .unwrap_or(false),
+        agent: v.get("agent").and_then(|a| a.as_str()).map(str::to_string),
     })
 }
 
@@ -1016,7 +1064,16 @@ mod tests {
                 start_epoch: |_| None,
             },
         );
-        write_marker_full(&s.session_file(9999), 9999, "dead", false, false, false).unwrap();
+        write_marker_full(
+            &s.session_file(9999),
+            9999,
+            "dead",
+            false,
+            false,
+            false,
+            None,
+        )
+        .unwrap();
         std::thread::sleep(std::time::Duration::from_millis(5));
         s.declare_session(1, "live", false).unwrap();
         assert_eq!(
@@ -1137,7 +1194,7 @@ mod tests {
             .into_iter()
             .find(|h| !h.legacy)
             .expect("the session file");
-        write_marker_full(&read.path, 4242, "rewritten live", true, false, false).unwrap();
+        write_marker_full(&read.path, 4242, "rewritten live", true, false, false, None).unwrap();
         s.reap(&read);
         assert_eq!(
             parse_file(&read.path).map(|f| f.reason),
@@ -1267,6 +1324,38 @@ mod tests {
         );
     }
 
+    /// A freeze an agent declared says so wherever it is shown, and in
+    /// the legacy mirror; one the operator declared does not.
+    #[test]
+    fn an_agent_s_freeze_names_the_agent() {
+        let s = FreezeStore::isolated();
+        s.declare_persistent_by_agent("bad deploy", false, "claude-code")
+            .unwrap();
+        let m = s.active().expect("frozen");
+        assert_eq!(m.agent.as_deref(), Some("claude-code"));
+        assert_eq!(
+            m.holder(),
+            "declared by an agent (claude-code) with `freeze_fleet`"
+        );
+        assert_eq!(m.short_holder(), "agent freeze");
+        assert!(refusal_message(&m).contains("agent (claude-code)"));
+        assert_eq!(
+            parse_file(&s.marker).and_then(|m| m.agent).as_deref(),
+            Some("claude-code"),
+            "the mirror carries it"
+        );
+
+        // The operator's own, declared over it, drops the name: the
+        // mirror is rewritten, not left naming the agent. The same
+        // reason, so the name is all that differs.
+        s.declare_persistent("bad deploy", false).unwrap();
+        let m = s.active().expect("frozen");
+        assert_eq!(m.agent, None);
+        assert_eq!(m.holder(), "declared with `ebman freeze`");
+        assert_eq!(m.short_holder(), "ebman freeze");
+        assert_eq!(parse_file(&s.marker).and_then(|m| m.agent), None);
+    }
+
     #[test]
     fn one_freeze_refusal_sentence_for_every_surface() {
         // The CLI and the MCP write gate each rendered their own copy
@@ -1279,6 +1368,7 @@ mod tests {
             incident: false,
             at: "2026-08-22T10:00:00Z".into(),
             persistent: false,
+            agent: None,
         };
         let msg = refusal_message(&m);
         assert!(msg.contains("prod incident"), "{msg}");

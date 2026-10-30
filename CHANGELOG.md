@@ -18,6 +18,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   assumed yet, so a mapped verb still goes out under the base
   credentials; the AssumeRole call is slice 3.
 
+### Changed
+
+- **A freeze an agent declared says so.** `freeze_fleet` records the MCP
+  client's name in the marker, so a refusal, `ebman freeze --status`
+  and the TUI header (`agent freeze`) say an agent declared it rather
+  than that you ran `ebman freeze`, and `ebman thaw` names what it
+  lifted. The name is the client's own claim: direction overrides and
+  control characters are replaced and it is cut at 64 characters.
+
 ## [0.48.0] - 2026-10-29
 
 ### Added

@@ -2905,6 +2905,10 @@ pub(super) fn freeze_tool_descriptor() -> Value {
 /// operator lifting it needs to read it at a glance.
 pub(super) const FREEZE_REASON_MAX: usize = 200;
 
+/// Longest client name a freeze marker records: the rest is cut, as
+/// the name is whatever the client sent at initialize.
+const FREEZE_AGENT_MAX: usize = 64;
+
 impl Server {
     /// `freeze_fleet`: declare an `ebman freeze`, which every ebman
     /// process honours until the operator runs `ebman thaw`.
@@ -2987,16 +2991,23 @@ impl Server {
         // its session, which is the operator's to see: hand it to the
         // agent, so it reaches them.
         let ended = self.freeze.ended().map(|e| e.message());
-        if let Err(e) = self.freeze.declare_persistent(reason, incident) {
-            return Err(format!(
-                "{FREEZE_TOOL}: could not write the freeze marker ({e}) — the fleet is NOT frozen"
-            ));
-        }
         let client = self
             .client_name
             .lock()
             .map(|c| c.clone())
             .unwrap_or_default();
+        // The marker names the client, so a refusal and `ebman thaw` say
+        // an agent declared it. The name is the client's own claim, and
+        // lands in a one-line status bar: sanitised and capped.
+        let agent = sanitize_capped(&client, FREEZE_AGENT_MAX);
+        if let Err(e) = self
+            .freeze
+            .declare_persistent_by_agent(reason, incident, &agent)
+        {
+            return Err(format!(
+                "{FREEZE_TOOL}: could not write the freeze marker ({e}) — the fleet is NOT frozen"
+            ));
+        }
         // A read-only server has not wired the webhook: this is the one
         // line it writes, and a freeze is what a team's channel most
         // needs to hear about.
