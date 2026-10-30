@@ -46,11 +46,22 @@ jobs:
   # change load-bearing? Blocking, because on a diff-sized surface a
   # surviving mutant is nearly always a real gap rather than an
   # equivalent-mutant argument.
+  #
+  # Sharded four ways. Unsharded under a 60-minute cap, a push with more
+  # than about 45 mutants on its lines was killed at the cap and judged
+  # nothing: twice on 2026-10-29 (47 and 70 mutants), each shown as
+  # "cancelled", which reads as superseded by a later push rather than
+  # as a gap. The runner does about 0.75 mutants a minute ("37 mutants
+  # tested in 50m"), so four shards under 90 minutes cover about 240.
   in-diff:
-    name: cargo-mutants (changed lines)
+    name: cargo-mutants (changed lines, shard ${{ matrix.shard }}/4)
     if: github.event_name == 'pull_request' || github.event_name == 'push'
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
     steps:
       - uses: actions/checkout@v7
         with:
@@ -88,13 +99,22 @@ jobs:
             echo "no src/**/*.rs changes; nothing to mutate"
             exit 0
           fi
+          shard="${{ matrix.shard }}/4"
+          # A small diff leaves some shards empty: say so, and skip the
+          # baseline build they would otherwise pay for.
+          count=$(cargo mutants --in-diff pr.diff --shard "$shard" --list | wc -l)
+          echo "shard $shard: $count mutants"
+          if [ "$count" = 0 ]; then
+            echo "shard $shard has no mutants on the changed lines"
+            exit 0
+          fi
           # Exit 2 is "mutants survived" (3 is timeouts): on a push that
           # is a report, since a push cannot be refused after the fact,
           # and on a PR it blocks. Anything else (1 usage or diff error,
           # 4 the baseline tests failing) fails either way: a broken job
           # must not read as green.
           set +e
-          cargo mutants --in-diff pr.diff --no-shuffle --timeout 120 -- --lib
+          cargo mutants --in-diff pr.diff --shard "$shard" --no-shuffle --timeout 120 -- --lib
           code=$?
           set -e
           if [ "$code" = 0 ]; then exit 0; fi
@@ -108,7 +128,7 @@ jobs:
         run: |
           if [ -s mutants.out/missed.txt ]; then
             {
-              echo "### Surviving mutants on the changed lines"
+              echo "### Surviving mutants on the changed lines (shard ${{ matrix.shard }}/4)"
               echo
               echo '```'
               cat mutants.out/missed.txt
@@ -118,7 +138,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: mutants-in-diff
+          name: mutants-in-diff-${{ matrix.shard }}
           path: mutants.out/
           retention-days: 14
 
