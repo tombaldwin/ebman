@@ -281,6 +281,26 @@ Tier definitions:
   `lint.disable` from the config file, which the orchestration harness
   cannot inject.
 
+- [ ] **An agent can re-declare a freeze the operator just lifted.**
+  `freeze_fleet` is on every server, `--read-only` included, and leaves
+  a standing freeze alone, so the one loop left is: the operator runs
+  `ebman thaw`, the agent sees the same symptom and freezes again. Since
+  2026-10-30 the marker names the agent, so the operator can see who;
+  they cannot stop it short of disconnecting the client. **Ruling
+  needed** (from the 0.48.0 release panel): a cooldown after a thaw
+  (how long, and does it apply to an `incident` freeze?), a config key
+  that withholds the tool, or leave it, since a freeze only takes writes
+  away.
+
+- [ ] **A push's in-diff mutant survivors are green.** On `push` the
+  job exits 0 with a `::warning::` when mutants survive, by design (a
+  push cannot be refused), so a watcher that reads the run's status (as
+  the release panel and every post-push watch did) reads it as clean:
+  2868ad1's 10 survivors were found only by a panellist reading the
+  summary. Make them visible to a status reader without refusing the
+  push, e.g. a separate non-required job that fails on survivors, or a
+  check annotation count the watch scripts assert on.
+
 #### Product, from the 2026-09-25 review
 
 - [ ] **Decision: should a TUI rebuild render red?** MCP annotates
