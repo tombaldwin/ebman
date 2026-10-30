@@ -467,7 +467,7 @@ pub(super) fn ask_summary(p: &PendingWrite) -> String {
         )
     };
     format!(
-        "{what}{detail} on {}, {}.\n\n{}",
+        "{what}{detail} on {}, {}{}.\n\n{}",
         sanitize_for_ask(&p.env),
         // Sanitised like every other foreign field. `line()` carries
         // an ARN from STS, and on the `Unknown` arm a raw SDK error
@@ -478,6 +478,8 @@ pub(super) fn ask_summary(p: &PendingWrite) -> String {
         // that was not, and it sits in the sentence a human reads
         // before destroying something.
         sanitize_for_ask(&p.caller.line()),
+        // Its own slot: see `PlanRole::line`.
+        p.role.as_ref().map(PlanRole::line).unwrap_or_default(),
         // `dlq_visible` is carried on the plan so a purge dialog can
         // say how much it destroys. Passing `None` here rendered
         // "every message in the queue" with no number, while the plan
@@ -1447,6 +1449,88 @@ pub(super) struct PendingWrite {
     /// original, and reported success. The work never reached the
     /// worker. The TUI always used the reported main queue.
     pub dlq_main_url: Option<String>,
+    /// The role the verb maps to (`mcp.role.NAME.verbs`), resolved at
+    /// plan time so the confirmation names it. `None` for a verb no
+    /// role lists.
+    pub role: Option<PlanRole>,
+}
+
+/// The role a plan's verb maps to: assume-role slice 2
+/// (`docs/design/assume-role-elevation.md`, D3). Named in the plan and
+/// the confirmation, checked against the env's account, and NOT yet
+/// assumed: until slice 3 the write goes out under the base
+/// credentials, and both say so rather than name a credential the
+/// write does not use.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct PlanRole {
+    /// The `mcp.role.KEY` that lists the verb.
+    pub key: String,
+    pub arn: String,
+    pub account: String,
+    /// The role's own name, from the ARN.
+    pub name: String,
+}
+
+impl PlanRole {
+    /// What the confirmation adds after the identity. Each field is
+    /// capped on its own and the sentence around them never is: capped
+    /// as one with the identity, the cut fell on "does not assume yet",
+    /// the half that keeps the dialog honest.
+    pub(super) fn line(&self) -> String {
+        format!(
+            "; the verb maps to role `{}` ({}), which this ebman does not assume yet, so \
+             it goes out as that identity",
+            sanitize_for_ask(&self.name),
+            sanitize_for_ask(&self.arn)
+        )
+    }
+
+    /// The plan's `role` field.
+    pub(super) fn json(&self) -> String {
+        format!(
+            "{{\"config\":{},\"arn\":{},\"account\":{},\"name\":{},\"assumed\":false}}",
+            util::json_string(&format!("mcp.role.{}", self.key)),
+            util::json_string(&self.arn),
+            util::json_string(&self.account),
+            util::json_string(&self.name),
+        )
+    }
+}
+
+/// The role a verb maps to, from the role config. `None` for a verb no
+/// role lists, and for a config the gate has already refused as
+/// unreadable.
+pub(super) fn plan_role(cfg: &crate::config::Config, verb: WriteVerb) -> Option<PlanRole> {
+    let known = write_verb_names();
+    let known: Vec<&str> = known.iter().map(String::as_str).collect();
+    let crate::config::RoleCheck::Mapped { role } =
+        crate::config::mcp_role_check(cfg, verb.tool_name(), &known)
+    else {
+        return None;
+    };
+    let arn = cfg.mcp_roles.get(&role)?.role_arn.trim().to_string();
+    let parsed = crate::config::parse_role_arn(&arn)?;
+    Some(PlanRole {
+        key: role,
+        arn,
+        account: parsed.account,
+        name: parsed.name,
+    })
+}
+
+/// The account a write would run in, when its role is in another: the
+/// plan refuses then (D3), naming both, rather than reaching AWS as an
+/// AccessDenied an agent reads as a permissions problem. `None` when
+/// they agree, or when the identity is unknown and there is nothing to
+/// compare with.
+pub(super) fn role_account_mismatch<'a>(
+    role: &PlanRole,
+    caller: &'a CallerIdentity,
+) -> Option<&'a str> {
+    match caller {
+        CallerIdentity::Known { account, .. } if *account != role.account => Some(account.as_str()),
+        _ => None,
+    }
 }
 
 /// Token TTL — long enough for an agent round-trip, short enough
@@ -2117,6 +2201,39 @@ impl Server {
         // act on it.
         let caller = self.caller_identity(args).await;
 
+        // The role the verb maps to, and whether it is in the account
+        // the write would run in. Checked here, locally, so a mismatch
+        // is refused with both accounts named before anyone is asked.
+        let role = plan_role(&self.safety_cfg, verb);
+        if let Some(r) = &role {
+            if let Some(account) = role_account_mismatch(r, &caller) {
+                let audit_profile = profile.clone().or_else(|| self.ambient_profile.clone());
+                let region = self
+                    .audit_region(&profile, arg_str(args, "region").as_deref())
+                    .await;
+                return Err(WriteError::Refused(Audited::record(
+                    matches!(self.backend, Backend::Demo),
+                    audit_profile.as_deref(),
+                    &region,
+                    verb.label(),
+                    &env.name,
+                    "role_wrong_account",
+                    &format!("map the verb to a role in account {account}"),
+                    format!(
+                        "{} on {} was not planned: it maps to role `{}` ({}) in account {}, \
+                         but it would run in account {account}. Map `{}` to a role in that \
+                         account in mcp.role.NAME.verbs.",
+                        verb.label(),
+                        env.name,
+                        r.name,
+                        r.arn,
+                        r.account,
+                        verb.tool_name(),
+                    ),
+                )));
+            }
+        }
+
         // Recent events give the plan operational context (3 max).
         let events_json = match self.backend {
             Backend::Demo => String::new(),
@@ -2169,6 +2286,7 @@ impl Server {
                 dlq_targets: dlq_targets.clone(),
                 dlq_url: dlq_url.clone(),
                 dlq_main_url: dlq_main_url.clone(),
+                role: role.clone(),
             });
         }
 
@@ -2205,7 +2323,7 @@ impl Server {
             format!("call confirm_action with the confirm_token to dispatch{gate}")
         };
         Ok(format!(
-            "{{\"pending\":true,\"confirm_token\":{},\"expires_in_secs\":{CONFIRM_TTL_SECS},\"plan\":{{\"action\":{},\"env\":{},\"application\":{},\"health\":{},\"status\":{},\"identity\":{},\"forecloses\":{}{plan_extra}{events_json}}},\"next\":{}}}",
+            "{{\"pending\":true,\"confirm_token\":{},\"expires_in_secs\":{CONFIRM_TTL_SECS},\"plan\":{{\"action\":{},\"env\":{},\"application\":{},\"health\":{},\"status\":{},\"identity\":{},\"role\":{},\"forecloses\":{}{plan_extra}{events_json}}},\"next\":{}}}",
             util::json_string(&token),
             util::json_string(verb.label()),
             util::json_string(&env.name),
@@ -2214,6 +2332,9 @@ impl Server {
             util::json_string(&env.status),
             // Already JSON — an object, or `null` plus the reason.
             caller.json(),
+            role.as_ref()
+                .map(PlanRole::json)
+                .unwrap_or_else(|| "null".to_string()),
             util::json_string(&forecloses(verb, dlq_visible, dlq_targets.len())),
             util::json_string(&next),
         ))

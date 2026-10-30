@@ -88,6 +88,7 @@ fn a_superseded_token_says_so_rather_than_unknown() {
         dlq_targets: Vec::new(),
         dlq_url: None,
         dlq_main_url: None,
+        role: None,
     };
     st.install(plan("tok-a"));
     assert!(st.retired.is_empty(), "the first plan replaces nothing");
@@ -608,6 +609,7 @@ async fn the_confirm_gate_refuses_a_plan_outside_the_scope() {
             dlq_targets: Vec::new(),
             dlq_url: None,
             dlq_main_url: None,
+            role: None,
         });
     }
 
@@ -1698,6 +1700,7 @@ fn a_batch_ask_enumerates_the_messages() {
         dlq_targets: targets,
         dlq_url: Some("https://sqs/q-dlq".into()),
         dlq_main_url: None,
+        role: None,
     };
     let summary = ask_summary(&p);
     for i in 1..=3 {
@@ -1849,6 +1852,7 @@ fn the_ask_says_whose_credentials_it_would_use() {
         dlq_targets: Vec::new(),
         dlq_url: None,
         dlq_main_url: None,
+        role: None,
     };
     let s = ask_summary(&p);
     assert!(
@@ -1864,6 +1868,149 @@ fn the_ask_says_whose_credentials_it_would_use() {
     assert!(
         ask_summary(&p).contains("UNKNOWN"),
         "and an unresolved identity must be visible in the dialog too"
+    );
+}
+
+fn role_cfg(account: &str) -> crate::config::Config {
+    crate::config::parse(&format!(
+        "mcp.role.deploys.role_arn = \"arn:aws:iam::{account}:role/team/EbmanAgentDeploy\"\n\
+         mcp.role.deploys.verbs = \"restart,deploy\"\n"
+    ))
+}
+
+/// The role a verb maps to, with its account and name from the ARN;
+/// none for an unmapped verb or a config the gate refuses.
+#[test]
+fn a_plan_resolves_the_role_its_verb_maps_to() {
+    let cfg = role_cfg("123456789012");
+    assert_eq!(
+        plan_role(&cfg, WriteVerb::Restart),
+        Some(PlanRole {
+            key: "deploys".into(),
+            arn: "arn:aws:iam::123456789012:role/team/EbmanAgentDeploy".into(),
+            account: "123456789012".into(),
+            name: "EbmanAgentDeploy".into(),
+        })
+    );
+    assert_eq!(plan_role(&cfg, WriteVerb::Terminate), None, "unmapped");
+    assert_eq!(
+        plan_role(&crate::config::Config::default(), WriteVerb::Restart),
+        None
+    );
+    let broken = crate::config::parse(
+        "mcp.role.a.role_arn = \"arn:aws:iam::123456789012:role/A\"\nmcp.role.a.verbs = \"restart\"\n\
+         mcp.role.b.role_arn = \"arn:aws:iam::123456789012:role/B\"\nmcp.role.b.verbs = \"restart\"\n",
+    );
+    assert_eq!(plan_role(&broken, WriteVerb::Restart), None, "unreadable");
+}
+
+#[test]
+fn a_role_in_another_account_is_a_mismatch_and_an_unknown_identity_is_not() {
+    let role = plan_role(&role_cfg("111122223333"), WriteVerb::Restart).unwrap();
+    let known = |account: &str| CallerIdentity::Known {
+        arn: format!("arn:aws:iam::{account}:user/ops"),
+        account: account.into(),
+    };
+    assert_eq!(
+        role_account_mismatch(&role, &known("123456789012")),
+        Some("123456789012")
+    );
+    assert_eq!(role_account_mismatch(&role, &known("111122223333")), None);
+    let unknown = CallerIdentity::Unknown {
+        why: "sts denied".into(),
+    };
+    assert_eq!(role_account_mismatch(&role, &unknown), None);
+}
+
+/// Slice 2 names the role in the plan and the confirmation, and says
+/// it is not assumed: until slice 3 the write goes out as the base
+/// identity, and the dialog must not name a credential it does not use.
+#[tokio::test]
+async fn the_plan_and_the_ask_name_the_role_and_that_it_is_not_assumed() {
+    // The demo identity is in 123456789012.
+    let s = Server::with_config(true, false, WriteScope::All, role_cfg("123456789012"));
+    let body = s
+        .tool_write_plan(WriteVerb::Restart, &json!({"env": "poly-batch"}))
+        .await
+        .expect("plans");
+    let v: Value = serde_json::from_str(&body).expect("json");
+    assert_eq!(
+        v["plan"]["role"],
+        json!({
+            "config": "mcp.role.deploys",
+            "arn": "arn:aws:iam::123456789012:role/team/EbmanAgentDeploy",
+            "account": "123456789012",
+            "name": "EbmanAgentDeploy",
+            "assumed": false,
+        }),
+        "{v}"
+    );
+    let ask = {
+        let st = s.writes.lock().await;
+        ask_summary(st.pending.as_ref().expect("installed"))
+    };
+    assert!(
+        ask.contains(
+            "as arn:aws:iam::123456789012:user/demo; the verb maps to role `EbmanAgentDeploy` \
+             (arn:aws:iam::123456789012:role/team/EbmanAgentDeploy), which this ebman does not \
+             assume yet, so it goes out as that identity"
+        ),
+        "{ask}"
+    );
+
+    // An unmapped verb: no role, and the ask is as it was.
+    let body = s
+        .tool_write_plan(WriteVerb::Rebuild, &json!({"env": "poly-batch"}))
+        .await
+        .expect("plans");
+    let v: Value = serde_json::from_str(&body).expect("json");
+    assert_eq!(v["plan"]["role"], Value::Null, "{v}");
+    let ask = {
+        let st = s.writes.lock().await;
+        ask_summary(st.pending.as_ref().expect("installed"))
+    };
+    assert!(!ask.contains("role"), "{ask}");
+}
+
+/// However long the identity line, the role sentence is whole: capped
+/// with it as one field, the cut fell on "does not assume yet".
+#[test]
+fn a_long_identity_never_cuts_the_role_sentence() {
+    let mut p = pending_for(WriteVerb::Restart);
+    p.caller = CallerIdentity::Unknown {
+        why: "x".repeat(300),
+    };
+    p.role = plan_role(&role_cfg("123456789012"), WriteVerb::Restart);
+    let ask = ask_summary(&p);
+    assert!(
+        ask.contains("which this ebman does not assume yet, so it goes out as that identity"),
+        "{ask}"
+    );
+}
+
+/// A role in another account than the write's refuses the plan, with
+/// both accounts named, and installs nothing to confirm.
+#[tokio::test]
+async fn a_role_in_another_account_refuses_the_plan() {
+    let s = Server::with_config(true, false, WriteScope::All, role_cfg("111122223333"));
+    let err = s
+        .tool_write_plan(WriteVerb::Restart, &json!({"env": "poly-batch"}))
+        .await
+        .expect_err("the role is in another account");
+    assert!(matches!(err, WriteError::Refused(_)), "{err}");
+    let text = err.to_string();
+    for part in [
+        "was not planned",
+        "role `EbmanAgentDeploy`",
+        "in account 111122223333",
+        "would run in account 123456789012",
+        "Map `restart` to a role in that account",
+    ] {
+        assert!(text.contains(part), "{part}: {text}");
+    }
+    assert!(
+        s.writes.lock().await.pending.is_none(),
+        "nothing to confirm"
     );
 }
 
@@ -2160,6 +2307,7 @@ fn pending_for(verb: WriteVerb) -> PendingWrite {
         dlq_targets: Vec::new(),
         dlq_url: None,
         dlq_main_url: None,
+        role: None,
     }
 }
 
