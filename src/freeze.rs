@@ -201,11 +201,16 @@ impl FreezeStore {
     /// neither sees nor sets a real freeze. Named by pid as well as by a
     /// counter: the counter restarts in each process, and two `--demo`
     /// sessions shared `freeze-isolated-0.json`.
+    ///
+    /// In the OS temp dir, not the cache: a demo `:freeze-deploys` left
+    /// its `.d/` directory in `~/.cache/ebman` on thaw, and every file
+    /// after a crash, one name per session, which nothing ever reads
+    /// again or removes.
     pub(crate) fn isolated() -> Self {
         static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let pid = std::process::id();
-        Self::at(crate::util::cache_dir().join(format!("freeze-isolated-{pid}-{n}.json")))
+        Self::at(std::env::temp_dir().join(format!("ebman-freeze-isolated-{pid}-{n}.json")))
     }
 
     /// [`at`](Self::at), judged by `liveness`.
@@ -1464,6 +1469,19 @@ mod tests {
     /// another's write. Every surface now takes its store as a value and
     /// a test passes `FreezeStore::isolated()`, which leaves nothing for
     /// the lock to serialise. This keeps it that way.
+    /// An isolated store, a `--demo` App's among them, lives outside
+    /// the cache, where its files would outlive the session.
+    #[test]
+    fn an_isolated_store_is_not_in_the_cache() {
+        let s = FreezeStore::isolated();
+        assert!(
+            !s.marker.starts_with(crate::util::cache_dir()),
+            "{:?}",
+            s.marker
+        );
+        assert!(s.marker.starts_with(std::env::temp_dir()), "{:?}", s.marker);
+    }
+
     #[test]
     fn no_other_test_reads_the_shared_store() {
         // Each entry names why the call is not a read of the store.
