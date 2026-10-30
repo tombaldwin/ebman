@@ -2521,6 +2521,77 @@ mod mutants_found_these {
              exclusions above prove nothing"
         );
     }
+
+    /// Which of the open confirm modal's pre-flight checks are in
+    /// flight: dry run, events, version preview, health check,
+    /// unavailability, lint.
+    fn preflight_in_flight(app: &App) -> [bool; 6] {
+        let Some(crate::app::ActionFlow::Confirm(modal)) = &app.action_flow else {
+            panic!("expected a confirm modal, got {:?}", app.mode);
+        };
+        let p = &modal.preflight;
+        [
+            p.dryrun.in_flight(),
+            p.events.in_flight(),
+            p.version_preview.in_flight(),
+            p.health_check.in_flight(),
+            p.unavailability.in_flight(),
+            p.lint.in_flight(),
+        ]
+    }
+
+    /// Every pre-flight check a `:deploy LABEL` confirm begins is
+    /// answered through the real channel and settles the modal. Each
+    /// `spawn_*` replaced by `()` survived: the tests set a check in
+    /// flight and fed `handle_msg` a hand-built answer, so nothing
+    /// showed the spawn sending one, or with the ticket it was given.
+    #[tokio::test]
+    async fn a_deploy_confirm_s_preflight_checks_all_answer_through_the_channel() {
+        let mut app = test_app();
+        app.environments = vec![mk_env("api-prod", "poly", "WebServer", "Green")];
+        app.rebuild_view();
+        app.table_state.select(Some(0));
+        while app.msg_rx.try_recv().is_ok() {}
+        app.execute_command("deploy build-900");
+        assert_eq!(preflight_in_flight(&app), [true; 6], "all six begin");
+
+        // The stub client fails at once and the probe is stubbed, so
+        // every answer is an error; the error settles the check too.
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        while preflight_in_flight(&app).contains(&true) {
+            let Ok(Some(msg)) = tokio::time::timeout_at(deadline, app.msg_rx.recv()).await else {
+                panic!("unanswered within 10s: {:?}", preflight_in_flight(&app));
+            };
+            app.handle_msg(msg);
+        }
+    }
+
+    /// The deploy-only checks begin only for a deploy with a label, and
+    /// the health check only with a CNAME to probe. Each `&&` in those
+    /// conditions flipped to `||` survived.
+    #[tokio::test]
+    async fn the_deploy_only_preflight_checks_stay_on_deploys() {
+        let open = |cname: &str, command: &str| {
+            let mut app = test_app();
+            let mut env = mk_env("api-prod", "poly", "WebServer", "Green");
+            env.cname = cname.into();
+            app.environments = vec![env];
+            app.rebuild_view();
+            app.table_state.select(Some(0));
+            app.execute_command(command);
+            preflight_in_flight(&app)
+        };
+        assert_eq!(
+            open("api-prod.example.com", "rebuild"),
+            [true, true, false, false, false, true],
+            "a rebuild has no version to preview, probe or size"
+        );
+        assert_eq!(
+            open("", "deploy build-900"),
+            [true, true, true, false, true, true],
+            "no CNAME, nothing to probe"
+        );
+    }
 }
 
 /// Every `append_rollout` call must pass a profile.
