@@ -90,7 +90,10 @@ jobs:
             : > pr.diff
             exit 0
           fi
-          git diff "${base}" -- 'src/**/*.rs' > pr.diff
+          # `:(glob)`, or `**/` needs a directory: a plain pathspec
+          # never matched a file directly under src/ (freeze.rs,
+          # audit.rs, util.rs...), so none was ever mutated here.
+          git diff "${base}" -- ':(glob)src/**/*.rs' > pr.diff
           wc -l < pr.diff | xargs echo "diff lines:"
       - name: Mutate the changed lines
         run: |
