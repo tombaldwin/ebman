@@ -277,9 +277,10 @@ safety.accounts.prod.read_only = true
 #
 # NOT YET A CEILING. This build reads and checks the mapping, names the
 # role in the plan and the confirmation, and checks it against the
-# environment's account; `mcp.require_role` refuses an unmapped verb. But a mapped verb still goes out under the base credentials, and
-# the confirmation says so: the AssumeRole call comes in a later slice.
-# Do not rely on a role's policy limiting anything yet.
+# environment's account; `mcp.require_role` refuses an unmapped verb.
+# But a mapped verb still goes out under the base credentials, and the
+# confirmation says so: the AssumeRole call comes in a later slice. Do
+# not rely on a role's policy limiting anything yet.
 #
 # Fails closed: a verb two roles list, a verb that is no MCP tool, or a
 # role with no role_arn, or one that is not an IAM role ARN

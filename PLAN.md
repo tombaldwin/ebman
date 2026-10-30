@@ -159,7 +159,8 @@ it.*
    (`not_granted`, `not_approved`, `role_wrong_account`,
    `role_account_unknown`, and slice 3's `role_unassumable`) are string
    literals nothing pins against `docs/safety-and-privacy.md`: a typed
-   enum and a docs-drift check belong with slice 3, when the fifth joins. It builds on the shipped ask
+   enum and a docs-drift check belong with slice 3, when the fifth joins.
+   It builds on the shipped ask
    (stage 5 was killed on 2026-09-25, so there is nothing to replace)
    and splits into five slices. Its three contestable calls are listed
    at its foot.
