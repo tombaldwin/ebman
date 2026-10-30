@@ -5750,6 +5750,29 @@ async fn a_freeze_from_a_read_only_server_is_posted() {
     assert_eq!(demo.audit_reads(), 0);
 }
 
+/// A refusal for a fresh thaw reaches the webhook from a read-only
+/// server too: a looping agent is what a team's channel needs to see.
+#[tokio::test]
+async fn a_refused_freeze_from_a_read_only_server_is_posted() {
+    let server = Server::with_config(
+        false,
+        false,
+        WriteScope::None,
+        crate::config::Config::default(),
+    );
+    let store = server.freeze_store();
+    store.declare_persistent("release window", false).unwrap();
+    assert!(matches!(store.thaw(), crate::freeze::Thaw::Lifted { .. }));
+    assert_eq!(server.audit_reads(), 0);
+    let (is_error, body) = call(&server, "freeze_fleet", json!({"reason": "again"})).await;
+    assert!(is_error, "{body}");
+    assert_eq!(
+        server.audit_reads(),
+        1,
+        "the refusal's line must reach the webhook"
+    );
+}
+
 /// A demo server freezes nothing, as its other writes do nothing.
 #[tokio::test]
 async fn a_demo_freeze_freezes_nothing() {
