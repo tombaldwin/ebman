@@ -145,19 +145,17 @@ it.*
    or builds on it, so neither is designed twice. **Drafted
    2026-10-24, accepted 2026-10-29 with all three contested calls as
    written:** `docs/design/assume-role-elevation.md`. Next: its five
-   slices, in order. It builds on the shipped ask
+   slices, in order. **Slices 1 and 2 done** (2026-10-29, 2026-10-30:
+   the config and gate; the plan and confirmation name the role, say it
+   is not assumed, and refuse a role in another account). Next is slice
+   3, the AssumeRole call at confirm. It builds on the shipped ask
    (stage 5 was killed on 2026-09-25, so there is nothing to replace)
    and splits into five slices. Its three contestable calls are listed
    at its foot.
 
-3. *(mechanical)* **The `dlq_undo` refusal audit line records `region="-"`** when the
-   delete used the default region, while the dispatched / completed lines
-   record the resolved one. Same pattern as the other MCP gate refusals —
-   fix the class. *0.45 release review.*
-
 ### Next
 
-4. *(behaviour)* **Demo audit suppression in one place.** Done per call site: MCP
+3. *(behaviour)* **Demo audit suppression in one place.** Done per call site: MCP
    checks `Backend::Demo` at seven sites, the TUI `!self.demo_mode` at
    several more, and it has already leaked once. Evidence it is still
    inconsistent: `:thaw-deploys` writes an audit line in demo mode, and
@@ -165,7 +163,7 @@ it.*
    set once at startup, as `set_notify_webhook` does. S.
    `freeze_fleet` (2026-10-29) is an eighth MCP `Backend::Demo` check.
 
-5. *(architecture)* **`App::new` and `App::for_tests` each build the ~115-field struct
+4. *(architecture)* **`App::new` and `App::for_tests` each build the ~115-field struct
    by hand** (`src/app.rs`, two literals of ~260 and ~175 lines).
    `for_tests` is production code too — `new_demo` builds on it — and
    nothing checks that the two agree on defaults, so every new field is

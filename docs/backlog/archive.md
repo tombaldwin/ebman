@@ -5508,3 +5508,15 @@ a `--read-only` server.
   the escape is a maintainer-only `.cargo/mutants.toml` `exclude_re`,
   with a job failing on entries that match nothing. Building the proof
   found the diff pathspec had never matched files directly under `src/`.
+
+## PLAN.md items done 2026-10-30
+
+3. *(mechanical)* **The `dlq_undo` refusal audit line records `region="-"`** when the
+   delete used the default region, while the dispatched / completed lines
+   record the resolved one. Same pattern as the other MCP gate refusals —
+   fix the class. *0.45 release review.*
+
+   Done 2026-10-30 (36901b8): every MCP gate refusal (plan, confirm,
+   the elicited re-check, `dlq_undo`) resolves the region the write's
+   client would, when the call named none.
+
