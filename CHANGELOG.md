@@ -26,6 +26,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   than that you ran `ebman freeze`, and `ebman thaw` names what it
   lifted. The name is the client's own claim: direction overrides and
   control characters are replaced and it is cut at 64 characters.
+- **An agent cannot freeze again straight after you thaw.** For 30
+  minutes after `ebman thaw` or `:thaw-deploys` lifts a persistent
+  freeze, `freeze_fleet` refuses (an `incident` freeze too) and tells the
+  agent to ask you; each try is audited `rule=thawed_recently`. `ebman
+  thaw`, `ebman freeze --status` and MCP `doctor` say until when. Your
+  own `ebman freeze` or `:freeze-deploys` ends the hold.
 
 ### Fixed
 
