@@ -15,7 +15,8 @@
 #   "^src/cli/freeze\\.rs:\\d+:\\d+: replace match guard m\\.agent\\.is_some\\(\\) with true in thaw_body$",
 #
 # with a comment above it naming the commit and why no test can see
-# the difference. `scripts/mutants-exclusions.sh` fails on an entry
+# the difference. An entry is global: it also hides that mutant from the
+# weekly whole-tree sweep and its "new survivors" report. `scripts/mutants-exclusions.sh` fails on an entry
 # that matches no mutant, so the list shrinks when the code it excused
 # goes away.
 exclude_re = []
