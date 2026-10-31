@@ -124,10 +124,6 @@ Tier definitions:
   while `verb.rs`, `aws/tests/` and `cli` all use it. A crate-level
   test-support module split into `scan` and `packaging`. *0.45 release
   review.*
-- [ ] **The MCP undo buffer to its own file.** ~200 self-contained lines
-  of `src/cli/mcp/writes.rs` (`DeletedMessage`, `Claim`, the
-  remember / claim / finish / recoverable methods) → `mcp/undo.rs`.
-  *0.45 release review.*
 - [ ] **Three bodies take a `WriteEnv<G>` whose gate they never call**
   (`lint_body`, `freeze_body`, `thaw_body`; their tests pass `()`), so
   `write_shells_pass_the_real_write_env` reads as covering lint's gate
@@ -137,9 +133,6 @@ Tier definitions:
   lint uses it. The 0.48.0 architecture review recommends (a): it says
   what each body uses and keeps lint's precedence tests on its own
   config. M. Needs the maintainer's ruling (two reasonable shapes).
-- [ ] **`freeze_fleet` to its own module** (`src/cli/mcp/freeze.rs`):
-  ~150 lines in the 3k-line `writes.rs`, which its own docs say it is
-  not part of. S. *0.48.0 architecture review.*
 - [ ] **The CLI gate subsystem to `src/cli/write_env.rs`.**
   `cli/mod.rs` grew 786 → 1016 lines and now holds `WriteEnv`,
   `GateQuery`, `WriteGate`, `RealGate`, `write_refusal*`,
@@ -244,6 +237,16 @@ Tier definitions:
   surfaces, or should helpers be named `render_*`?
 
 #### Correctness and safety, from the 2026-09-25 reviews
+
+- [ ] **The freeze audit lines disagree on field names.** The TUI's
+  `IncidentStart` / `IncidentEnd` record the headline as `headline=`;
+  `ebman freeze --incident` and `freeze_fleet` record `reason=`, with
+  `persistent=` / `via=` the TUI's lines lack. The validator and the
+  label choice are shared since 2026-10-30; the field names were left
+  because renaming `headline=` changes what an operator's own log
+  tooling reads. **Ruling needed:** rename to `reason=` (with the stored
+  reason, `incident: …`, or the bare headline?), add `reason=` beside
+  `headline=`, or leave it.
 
 - [ ] **MCP write roles are one account per verb.** A verb has one role
   (two listing it make the role config unreadable), so with a role

@@ -167,21 +167,15 @@ it.*
 
 ### Next
 
-3. *(behaviour)* **One validator and one audit shape for declaring a freeze.**
-   `freeze_fleet` refuses control characters, line separators, bidi
-   marks and reasons over 200 characters (shown in a one-line status
-   bar); `ebman freeze` and the TUI's `:freeze-deploys` / `:incident`
-   accept anything, and the same reason applies to them. The audit lines
-   disagree too: `IncidentStart`'s reason is `headline=` in the TUI and
-   `reason=` in the CLI and MCP, `persistent` / `via` appear in some, and
-   the label choice is copied (`cli/freeze.rs`, `cli/mcp/writes.rs`).
-   Shape: the validator and a `declare_label(incident)` in `src/freeze.rs`,
-   called by every declare. S–M. *0.48.0 architecture review.*
+3. *(architecture)* **The MCP undo buffer to its own file.** ~200 self-contained lines
+   of `src/cli/mcp/writes.rs` (`DeletedMessage`, `Claim`, the
+   remember / claim / finish / recoverable methods) → `mcp/undo.rs`.
+   Ahead of assume-role slice 4, which keeps the delete's session in
+   that buffer. *0.45 release review.*
 
-4. *(mechanical)* **TUI `:lint` no longer primes the confirm modal's input cache.**
-   Since it moved to the shared assembly it does not send
-   `LintInputsCached`, so a later pre-deploy confirm refetches tags and
-   health. Latency only. *0.45 release review.*
+4. *(architecture)* **`freeze_fleet` to its own module** (`src/cli/mcp/freeze.rs`):
+   ~150 lines in the 3k-line `writes.rs`, which its own docs say it is
+   not part of. S. *0.48.0 architecture review.*
 
 ### Released
 

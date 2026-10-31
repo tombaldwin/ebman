@@ -5552,3 +5552,24 @@ a `--read-only` server.
   (temp + hard link), answers `Held` with a standing freeze, and is the
   only check.
 
+3. *(behaviour)* **One validator and one audit shape for declaring a freeze.**
+   `freeze_fleet` refuses control characters, line separators, bidi
+   marks and reasons over 200 characters (shown in a one-line status
+   bar); `ebman freeze` and the TUI's `:freeze-deploys` / `:incident`
+   accept anything, and the same reason applies to them. The audit lines
+   disagree too: `IncidentStart`'s reason is `headline=` in the TUI and
+   `reason=` in the CLI and MCP, `persistent` / `via` appear in some, and
+   the label choice is copied (`cli/freeze.rs`, `cli/mcp/writes.rs`).
+   Shape: the validator and a `declare_label(incident)` in `src/freeze.rs`,
+   called by every declare. S–M. *0.48.0 architecture review.*
+
+4. *(mechanical)* **TUI `:lint` no longer primes the confirm modal's input cache.**
+   Since it moved to the shared assembly it does not send
+   `LintInputsCached`, so a later pre-deploy confirm refetches tags and
+   health. Latency only. *0.45 release review.*
+
+   Both done 2026-10-30/31: `freeze::check_reason` and
+   `freeze::declare_label` for every declare (2e3744b; the audit field
+   names are a BACKLOG ruling); `:lint` / `:explain` prime the lint-input
+   cache (4f0392e).
+
