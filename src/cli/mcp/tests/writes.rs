@@ -1317,6 +1317,75 @@ async fn a_scope_refusal_records_the_resolved_region() {
     );
 }
 
+fn held_message(id: &str) -> crate::aws::QueueMessage {
+    let mut m = crate::demo_fixture::dlq_messages_for_env("poly-batch")
+        .into_iter()
+        .next()
+        .expect("fixture");
+    m.id = id.to_string();
+    m
+}
+
+/// A claim stands for exactly twice the tool timeout: a restore still
+/// running is never raced, and one whose call was dropped lapses.
+#[tokio::test(start_paused = true)]
+async fn an_undo_claim_lapses_at_twice_the_tool_timeout() {
+    let s = Server::with_scope(true, false, crate::cli::mcp::WriteScope::All);
+    let p = deleted_from("poly-undo-claim", Some("https://q/claim-dlq".into()));
+    s.remember_deleted(&p, held_message("m-claim")).await;
+    assert!(matches!(
+        s.claim_for_restore("m-claim").await,
+        Claim::Claimed(_)
+    ));
+    let window = std::time::Duration::from_secs(2 * crate::cli::mcp::TOOL_TIMEOUT_SECS);
+    tokio::time::advance(window - std::time::Duration::from_secs(1)).await;
+    assert!(
+        matches!(
+            s.claim_for_restore("m-claim").await,
+            Claim::InProgress {
+                retry_after_secs: 1
+            }
+        ),
+        "one second short of the lapse"
+    );
+    tokio::time::advance(std::time::Duration::from_secs(1)).await;
+    assert!(
+        matches!(s.claim_for_restore("m-claim").await, Claim::Claimed(_)),
+        "lapsed: restorable again"
+    );
+}
+
+/// A held message exactly a window old has expired when the next one
+/// is remembered: it must not count towards the cap and push out a
+/// message that is still recoverable. Seen with the old one claimed,
+/// which is the case eviction otherwise skips.
+#[tokio::test(start_paused = true)]
+async fn an_expired_message_never_evicts_a_live_one() {
+    let s = Server::with_scope(true, false, crate::cli::mcp::WriteScope::All);
+    let p = deleted_from("poly-undo-cap", Some("https://q/cap-dlq".into()));
+    s.remember_deleted(&p, held_message("m-old")).await;
+    assert!(matches!(
+        s.claim_for_restore("m-old").await,
+        Claim::Claimed(_)
+    ));
+    tokio::time::advance(std::time::Duration::from_secs(UNDO_WINDOW_SECS)).await;
+    for i in 0..UNDO_CAPACITY {
+        s.remember_deleted(&p, held_message(&format!("m-{i}")))
+            .await;
+    }
+    let held: Vec<String> = s
+        .recoverable()
+        .await
+        .into_iter()
+        .map(|d| d.original_id)
+        .collect();
+    assert_eq!(held.len(), UNDO_CAPACITY, "{held:?}");
+    assert!(
+        held.contains(&"m-0".to_string()),
+        "the first live one was evicted: {held:?}"
+    );
+}
+
 /// An undo restores a message at most ONCE, and is audited.
 ///
 /// `recoverable()` hands back a copy, and the restore used to read
