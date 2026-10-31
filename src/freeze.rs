@@ -295,6 +295,15 @@ impl FreezeStore {
         if !created {
             match parse_file(&file) {
                 Some(m) => return Ok(AgentDeclare::Held(m)),
+                // Gone again between the link and this read: a thaw
+                // lifted it. Not written here, which would make this a
+                // declare that is not exclusive: say so, and let the
+                // caller try again.
+                None if !file.exists() => {
+                    return Err(std::io::Error::other(
+                        "a freeze was lifted while this one was declared; try again",
+                    ));
+                }
                 // A corrupt marker blocks nothing, so it must not stop
                 // a freeze either: replace it, as an operator's would.
                 None => write_marker_full(
@@ -586,6 +595,25 @@ pub(crate) enum AgentDeclare {
     Held(FreezeMarker),
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Under test, make exclusive links fail with this error: as a
+    /// full or read-only disk would, or as a marker a thaw then lifted
+    /// would (`AlreadyExists` with nothing there). Nothing else can
+    /// reach those paths, since the temp file is written into the same
+    /// directory first.
+    pub(crate) static LINK_FAILS: std::cell::Cell<Option<std::io::ErrorKind>> =
+        const { std::cell::Cell::new(None) };
+}
+
+fn link_into_place(tmp: &Path, path: &Path) -> std::io::Result<()> {
+    #[cfg(test)]
+    if let Some(kind) = LINK_FAILS.with(|f| f.get()) {
+        return Err(std::io::Error::from(kind));
+    }
+    std::fs::hard_link(tmp, path)
+}
+
 /// A persistent agent marker at `path`, only if none is there: the
 /// body goes to a temp file and is hard-linked into place, which is
 /// atomic and fails if `path` exists, so a reader never sees a partial
@@ -613,7 +641,7 @@ fn write_marker_exclusive(
         false,
         Some(agent),
     )?;
-    let linked = std::fs::hard_link(&tmp, path);
+    let linked = link_into_place(&tmp, path);
     let _ = std::fs::remove_file(&tmp);
     match linked {
         Ok(()) => Ok(true),
@@ -1641,6 +1669,26 @@ mod tests {
         );
         assert_eq!(s.active().expect("frozen").reason, "fresh");
         assert_eq!(leftovers(&s), Vec::<String>::new());
+
+        // A link that fails for any other reason is that failure: not
+        // "one stood", and nothing is written another way.
+        let _ = s.thaw();
+        let fail = |kind| {
+            LINK_FAILS.with(|f| f.set(Some(kind)));
+            let r = s.declare_persistent_by_agent("disk full", false, "claude-code");
+            LINK_FAILS.with(|f| f.set(None));
+            r
+        };
+        let err = fail(std::io::ErrorKind::PermissionDenied).expect_err("the link failed");
+        assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied, "{err}");
+        assert!(s.active().is_none(), "nothing written another way");
+        assert_eq!(leftovers(&s), Vec::<String>::new());
+
+        // One stood when linked, and a thaw lifted it before it was read:
+        // an error to retry, never a write that is not exclusive.
+        let err = fail(std::io::ErrorKind::AlreadyExists).expect_err("lifted meanwhile");
+        assert!(err.to_string().contains("lifted while"), "{err}");
+        assert!(s.active().is_none(), "nothing written another way");
         done(&s);
     }
 
