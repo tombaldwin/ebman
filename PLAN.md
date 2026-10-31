@@ -165,10 +165,35 @@ it.*
 
 ### Next
 
-*Refilled twice on 2026-10-31: first from the design review's "later"
-list (all eight done and archived, "PLAN.md items done 2026-10-31"),
-then four from BACKLOG.md (done), then these three. Each its own
-change.*
+*2026-10-31: the design review's eight "later" items and seven BACKLOG
+items were done in this window and archived ("PLAN.md items done
+2026-10-31"). These three are next.*
+
+3. *(architecture)* **`src/app/tests/scan.rs` has outgrown its name and location**
+   (~1,100 lines): source-scan primitives, git/packaging checks (account
+   IDs, protected names) and the `write_gate` guard, under `app/tests/`
+   while `verb.rs`, `aws/tests/` and `cli` all use it. A crate-level
+   test-support module split into `scan` and `packaging`. *0.45 release
+   review.*
+
+4. *(architecture)* **Split `cli::write_refusal`'s rendering from its decision**, the
+   way `app/safety.rs` is split (`refusal_for` / `render_refusal` /
+   `audit_refusal`). The CLI's rendering is still inline in the pure half
+   (`write_refusal_unaudited`). It was parked "until stage 5's `Decision`
+   lands, since that changes the return type anyway"; stage 5 was killed
+   on 2026-09-25, so that trigger will never fire. Do it on its own
+   merits or drop it. *Re-opened 2026-09-25: archived as absorbed by the
+   verb vocabulary, which did not in fact do it.*
+
+5. *(behaviour)* **Coverage gaps are untyped strings.** `explain_verdict`
+   identifies a warning by its first word; today one formatter,
+   `ProbeOutcome::coverage_warning`, produces every warning it sees, so
+   that holds. The stronger case: the confirm modal's `not_run:
+   Vec<String>` mixes whole-lint failures ("lint could not run: …", no
+   rule id) with per-rule gaps, MCP's `rule_skipped` is another format,
+   and `fetch_stale_platform_issues`'s branch warnings a third. A typed
+   `CoverageGap { rule: Option<RuleId>, why }` rendered at each surface.
+   *0.45 release review.*
 
 *Left in BACKLOG.md: `Server::refuse(..)` for the six `Audited::record`
 callers, whose profile choices differ on purpose and need settling

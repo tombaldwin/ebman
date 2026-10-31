@@ -94,15 +94,6 @@ Tier definitions:
   to the audit vocabulary. The structural fix: `append_action_*` takes
   `AuditLabel::{Shared(Verb), Local(&'static str)}` so the compiler
   enforces it (~40 call sites). *0.45 release review.*
-- [ ] **Coverage gaps are untyped strings.** `explain_verdict`
-  identifies a warning by its first word; today one formatter,
-  `ProbeOutcome::coverage_warning`, produces every warning it sees, so
-  that holds. The stronger case: the confirm modal's `not_run:
-  Vec<String>` mixes whole-lint failures ("lint could not run: …", no
-  rule id) with per-rule gaps, MCP's `rule_skipped` is another format,
-  and `fetch_stale_platform_issues`'s branch warnings a third. A typed
-  `CoverageGap { rule: Option<RuleId>, why }` rendered at each surface.
-  *0.45 release review.*
 - [ ] **`PolledByEnv` as one map of states.** Since 2026-10-21 the
   three fleet polls share `PolledByEnv<T>` (one reconcile, one prune,
   keyed by region and name), but it still keeps a value map and two
@@ -113,12 +104,6 @@ Tier definitions:
   `latest_stacks_error` are one fact in two fields, and the cache is the
   HOME region's only — lint now reports an env elsewhere as not
   evaluated, but a per-region cache would let EBL008 run for it.
-- [ ] **`src/app/tests/scan.rs` has outgrown its name and location**
-  (~1,100 lines): source-scan primitives, git/packaging checks (account
-  IDs, protected names) and the `write_gate` guard, under `app/tests/`
-  while `verb.rs`, `aws/tests/` and `cli` all use it. A crate-level
-  test-support module split into `scan` and `packaging`. *0.45 release
-  review.*
 - [ ] **Three bodies take a `WriteEnv<G>` whose gate they never call**
   (`lint_body`, `freeze_body`, `thaw_body`; their tests pass `()`), so
   `write_shells_pass_the_real_write_env` reads as covering lint's gate
@@ -155,15 +140,6 @@ Tier definitions:
   signatures, which is not the same as no merged doc existing
   anywhere. The scan cannot become a guard at a 100% false-positive
   rate, exactly as the old entry predicted.
-
-- [ ] **Split `cli::write_refusal`'s rendering from its decision**, the
-  way `app/safety.rs` is split (`refusal_for` / `render_refusal` /
-  `audit_refusal`). The CLI's rendering is still inline in the pure half
-  (`write_refusal_unaudited`). It was parked "until stage 5's `Decision`
-  lands, since that changes the return type anyway"; stage 5 was killed
-  on 2026-09-25, so that trigger will never fire. Do it on its own
-  merits or drop it. *Re-opened 2026-09-25: archived as absorbed by the
-  verb vocabulary, which did not in fact do it.*
 
 - [ ] **Shared test fixtures and module placement** *(0.47.0 release
   architecture review)*. A `#[cfg(test)] aws::test_support` with
