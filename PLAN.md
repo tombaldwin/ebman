@@ -200,14 +200,6 @@ archived, "PLAN.md items done 2026-10-31"). Each its own change.*
 8. *(mechanical)* **`tool_doctor` as per-concern `doctor_notes()`**
    (238 lines of pushed notes) before slice 5 adds the role section.
 
-9. *(mechanical)* **CI tweaks.** A pre-commit hook refusing a change to
-   `.cargo/mutants.toml` without `EBMAN_MAINTAINER=1` (the "maintainer
-   only" rule is CLAUDE.md text today); the `exclusions` job gated on
-   the list being non-empty (it installs cargo-mutants on every push to
-   check an empty list); a PR's commits run the shards on both `push`
-   and `pull_request` (a `concurrency` group without cancelling a
-   verdict).
-
 *Left in BACKLOG.md: `Server::refuse(..)` for the six `Audited::record`
 callers, whose profile choices differ on purpose and need settling
 first.*

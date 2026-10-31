@@ -5599,3 +5599,19 @@ a `--read-only` server.
     (`ebman-freeze-isolated-PID/`), and the first isolated store a
     process makes removes those of dead processes, the old file layout
     included.
+
+9. *(mechanical)* **CI tweaks.** A pre-commit hook refusing a change to
+   `.cargo/mutants.toml` without `EBMAN_MAINTAINER=1` (the "maintainer
+   only" rule is CLAUDE.md text today); the `exclusions` job gated on
+   the list being non-empty (it installs cargo-mutants on every push to
+   check an empty list); a PR's commits run the shards on both `push`
+   and `pull_request` (a `concurrency` group without cancelling a
+   verdict).
+
+   Done 2026-10-31: the hook (9ef60de; an attribute, not a mention in
+   prose, and `.cargo/mutants.toml` by path; six cases, six mutations
+   CAUGHT) and the gated job (111d90a). The third part was **killed by
+   evidence**: `push` triggers on `main` only, so a PR's commits run the
+   shards once, on `pull_request`; the merge re-judges only when it
+   fast-forwards to the PR's head, and work here lands on `main`
+   directly (every PR on record is Dependabot's).
