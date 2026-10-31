@@ -469,7 +469,7 @@ pub(super) fn ask_summary(p: &PendingWrite) -> String {
         // before destroying something.
         sanitize_for_ask(&p.caller.line()),
         // Its own slot: see `PlanRole::line`.
-        p.role.as_ref().map(PlanRole::line).unwrap_or_default(),
+        p.role().as_ref().map(PlanRole::line).unwrap_or_default(),
         // `dlq_visible` is carried on the plan so a purge dialog can
         // say how much it destroys. Passing `None` here rendered
         // "every message in the queue" with no number, while the plan
@@ -1239,10 +1239,19 @@ pub(super) struct PendingWrite {
     /// original, and reported success. The work never reached the
     /// worker. The TUI always used the reported main queue.
     pub dlq_main_url: Option<String>,
-    /// The role the verb maps to (`mcp.role.NAME.verbs`), resolved at
-    /// plan time so the confirmation names it. `None` for a verb no
-    /// role lists.
-    pub role: Option<PlanRole>,
+    /// What the role config said of the verb at plan time. Confirm
+    /// re-gates on THIS, so plan and confirm agree by construction, and
+    /// the role the confirmation names ([`PendingWrite::role`]) is the
+    /// one slice 3 assumes.
+    pub role_check: crate::config::RoleCheck,
+}
+
+impl PendingWrite {
+    /// The role the verb maps to (`mcp.role.NAME.verbs`), as planned;
+    /// `None` for a verb no role lists.
+    pub(super) fn role(&self) -> Option<PlanRole> {
+        PlanRole::from_check(&self.role_check)
+    }
 }
 
 /// Token TTL — long enough for an agent round-trip, short enough
@@ -1998,7 +2007,7 @@ impl Server {
                 dlq_targets: dlq_targets.clone(),
                 dlq_url: dlq_url.clone(),
                 dlq_main_url: dlq_main_url.clone(),
-                role: role.clone(),
+                role_check: role_check.clone(),
             });
         }
 
@@ -2136,7 +2145,7 @@ impl Server {
                     &p.profile,
                     p.region.as_deref(),
                     p.verb.label(),
-                    &self.role_check(p.verb),
+                    &p.role_check,
                 )
                 .await
             {
@@ -2277,7 +2286,7 @@ impl Server {
                 &pending.profile,
                 pending.region.as_deref(),
                 pending.verb.label(),
-                &self.role_check(pending.verb),
+                &pending.role_check,
             )
             .await
         {

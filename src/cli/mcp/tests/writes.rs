@@ -88,7 +88,7 @@ fn a_superseded_token_says_so_rather_than_unknown() {
         dlq_targets: Vec::new(),
         dlq_url: None,
         dlq_main_url: None,
-        role: None,
+        role_check: crate::config::RoleCheck::Unmapped { required: false },
     };
     st.install(plan("tok-a"));
     assert!(st.retired.is_empty(), "the first plan replaces nothing");
@@ -609,7 +609,7 @@ async fn the_confirm_gate_refuses_a_plan_outside_the_scope() {
             dlq_targets: Vec::new(),
             dlq_url: None,
             dlq_main_url: None,
-            role: None,
+            role_check: crate::config::RoleCheck::Unmapped { required: false },
         });
     }
 
@@ -629,6 +629,31 @@ async fn the_confirm_gate_refuses_a_plan_outside_the_scope() {
         st.pending.is_none(),
         "a plan the scope rejects must not stay confirmable"
     );
+}
+
+/// Confirm re-gates on the role answer the PLAN recorded, not on a
+/// fresh lookup: plan and confirm agree by construction, and the role a
+/// confirmation named is the one checked. Here the plan said a role is
+/// required and none was mapped, on a server whose own config maps none
+/// and requires none: a fresh lookup would let it through.
+#[tokio::test]
+async fn confirm_gates_on_the_plan_s_role_answer() {
+    let s = Server::with_scope(true, false, crate::cli::mcp::WriteScope::All);
+    {
+        let mut st = s.writes.lock().await;
+        let mut p = pending_for(WriteVerb::Restart);
+        p.token = "tok-role".into();
+        p.env = "poly-batch".into();
+        p.role_check = crate::config::RoleCheck::Unmapped { required: true };
+        p.expires_at = tokio::time::Instant::now() + std::time::Duration::from_secs(60);
+        st.install(p);
+    }
+    let err = s
+        .tool_confirm_action(&json!({"confirm_token": "tok-role"}))
+        .await
+        .expect_err("the plan required a role");
+    assert!(matches!(err, WriteError::Refused(_)), "{err}");
+    assert!(err.to_string().contains("mcp.role"), "{err}");
 }
 
 /// A verb refused for being ungranted leaves a trace.
@@ -1811,7 +1836,7 @@ fn a_batch_ask_enumerates_the_messages() {
         dlq_targets: targets,
         dlq_url: Some("https://sqs/q-dlq".into()),
         dlq_main_url: None,
-        role: None,
+        role_check: crate::config::RoleCheck::Unmapped { required: false },
     };
     let summary = ask_summary(&p);
     for i in 1..=3 {
@@ -1963,7 +1988,7 @@ fn the_ask_says_whose_credentials_it_would_use() {
         dlq_targets: Vec::new(),
         dlq_url: None,
         dlq_main_url: None,
-        role: None,
+        role_check: crate::config::RoleCheck::Unmapped { required: false },
     };
     let s = ask_summary(&p);
     assert!(
@@ -1991,11 +2016,15 @@ fn role_cfg(account: &str) -> crate::config::Config {
     ))
 }
 
-/// The role a server with `cfg` resolves for `verb`, through the
+/// What a server with `cfg` says of `verb`'s role, through the
 /// production path.
+fn role_check_for(cfg: &crate::config::Config, verb: WriteVerb) -> crate::config::RoleCheck {
+    Server::with_config(true, false, WriteScope::All, cfg.clone()).role_check(verb)
+}
+
+/// The role a server with `cfg` resolves for `verb`.
 fn plan_role(cfg: &crate::config::Config, verb: WriteVerb) -> Option<PlanRole> {
-    let server = Server::with_config(true, false, WriteScope::All, cfg.clone());
-    PlanRole::from_check(&server.role_check(verb))
+    PlanRole::from_check(&role_check_for(cfg, verb))
 }
 
 /// The role a verb maps to, with its account and name from the ARN;
@@ -2244,7 +2273,7 @@ fn a_long_identity_never_cuts_the_role_sentence() {
     p.caller = CallerIdentity::Unknown {
         why: "x".repeat(300),
     };
-    p.role = plan_role(&role_cfg("123456789012"), WriteVerb::Restart);
+    p.role_check = role_check_for(&role_cfg("123456789012"), WriteVerb::Restart);
     let ask = ask_summary(&p);
     assert!(
         ask.contains("which this ebman does not assume yet, so it goes out as that identity"),
@@ -2257,8 +2286,8 @@ fn a_long_identity_never_cuts_the_role_sentence() {
     let mut cfg = role_cfg("123456789012");
     cfg.mcp_roles.get_mut("deploys").unwrap().role_arn =
         format!("arn:aws:iam::123456789012:role/{path}EbmanAgentDeploy");
-    p.role = plan_role(&cfg, WriteVerb::Restart);
-    let arn = p.role.as_ref().expect("mapped").arn.clone();
+    p.role_check = role_check_for(&cfg, WriteVerb::Restart);
+    let arn = p.role().expect("mapped").arn;
     assert!(arn.len() > 120, "longer than a capped field");
     assert!(ask_summary(&p).contains(&arn), "{}", ask_summary(&p));
 }
@@ -2582,7 +2611,7 @@ fn pending_for(verb: WriteVerb) -> PendingWrite {
         dlq_targets: Vec::new(),
         dlq_url: None,
         dlq_main_url: None,
-        role: None,
+        role_check: crate::config::RoleCheck::Unmapped { required: false },
     }
 }
 

@@ -3849,6 +3849,48 @@ fn demo_answering(
     (s, asked)
 }
 
+/// A plan whose role answer refuses is refused at confirm BEFORE the
+/// operator is asked: asking someone to approve a write that will then
+/// be refused regardless wastes the one moment they look.
+#[tokio::test]
+async fn a_role_refusal_at_confirm_asks_no_one() {
+    let (s, asked) = demo_answering("accept");
+    {
+        let mut st = s.writes.lock().await;
+        st.install(writes::PendingWrite {
+            token: "tok-role-ask".into(),
+            verb: writes::WriteVerb::Restart,
+            env: "poly-batch".into(),
+            version: None,
+            settings: Vec::new(),
+            profile: None,
+            region: None,
+            expires_at: tokio::time::Instant::now() + std::time::Duration::from_secs(60),
+            dlq_visible: None,
+            caller: writes::CallerIdentity::Known {
+                arn: "arn:aws:iam::123456789012:user/demo".into(),
+                account: "123456789012".into(),
+            },
+            name_retry_used: false,
+            dlq_targets: Vec::new(),
+            dlq_url: None,
+            dlq_main_url: None,
+            role_check: crate::config::RoleCheck::Unmapped { required: true },
+        });
+    }
+    let (err, out) = call(
+        &s,
+        "confirm_action",
+        json!({"confirm_token": "tok-role-ask"}),
+    )
+    .await;
+    assert!(err, "refused: {out}");
+    assert!(
+        asked.lock().expect("lock").is_empty(),
+        "nobody asked: {out}"
+    );
+}
+
 /// On the AWS backend, where the lines are written: a declined ask
 /// records `stage=asked` and the `not_approved` refusal in the region
 /// the write would have gone to, when the call named none. They wrote
