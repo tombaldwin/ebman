@@ -2596,7 +2596,7 @@ async fn a_failed_restore_says_whether_the_window_is_still_open() {
     // The live failure paths (client, send) use the answer. They are
     // not reachable on the demo backend, so pin the wiring: a literal
     // `true` there would tell an agent to retry a message that is gone.
-    let prod = crate::app::tests::scan::production_source("cli/mcp/writes.rs");
+    let prod = crate::app::tests::scan::production_source("cli/mcp/undo.rs");
     let calls: Vec<&str> = prod
         .match_indices("restore_failed(&")
         .map(|(i, _)| prod[i..].lines().next().unwrap_or_default())

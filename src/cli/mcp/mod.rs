@@ -37,6 +37,7 @@ mod annotations;
 mod app_metrics;
 mod setup;
 mod tools;
+mod undo;
 mod writes;
 use tools::*;
 
@@ -656,7 +657,7 @@ impl WriteScope {
 /// the allow rule IS the standing grant and must be named as one.
 fn host_denial_body(can_ask: bool) -> String {
     let ttl = writes::CONFIRM_TTL_SECS;
-    let undo_mins = writes::UNDO_WINDOW_SECS / 60;
+    let undo_mins = undo::UNDO_WINDOW_SECS / 60;
     // Hedged on purpose: a client that declares elicitation is not proof
     // a person sees the dialog — headless `claude -p` declares it and
     // declines by itself. The Claude Code case is
@@ -947,7 +948,7 @@ pub(crate) struct Server {
     /// customer data — `mcp.peek_bodies` exists for that reason — and a
     /// durable copy would be worse than showing one to an agent. Dies
     /// with the process, by design.
-    deleted: tokio::sync::Mutex<Vec<writes::DeletedMessage>>,
+    deleted: tokio::sync::Mutex<Vec<undo::DeletedMessage>>,
     /// Whether a write dispatch is in flight — separate AtomicBool so
     /// the confirm path's RAII guard can reset it on an unwind
     /// (pre-tag review I2).

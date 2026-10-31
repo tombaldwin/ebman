@@ -4088,7 +4088,7 @@ fn a_granted_surface_says_what_a_host_denial_means() {
             assert!(
                 t.contains(&format!(
                     "{} minutes from the delete",
-                    super::writes::UNDO_WINDOW_SECS / 60
+                    super::undo::UNDO_WINDOW_SECS / 60
                 )),
                 "a denied undo is urgent: say how long the window is: {t}"
             );
@@ -5310,7 +5310,7 @@ fn headless_md_states_the_token_and_undo_windows_the_code_has() {
     let undo = number_after("Its window is ");
     assert_eq!(
         undo,
-        vec![super::writes::UNDO_WINDOW_SECS / 60],
+        vec![super::undo::UNDO_WINDOW_SECS / 60],
         "headless.md's dlq_undo window must be the code's, in minutes"
     );
 }
