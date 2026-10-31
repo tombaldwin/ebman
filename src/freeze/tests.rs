@@ -1160,3 +1160,64 @@ proptest::proptest! {
         let _ = parse_marker(&s);
     }
 }
+
+/// The legacy mirror is rewritten when the live holder differs from it
+/// in any field it carries: the pid, the reason, or whether it is
+/// persistent. Each alone, so a check that ignored one is seen.
+#[test]
+fn the_mirror_follows_a_change_in_any_one_field() {
+    let s = store("mirror-fields", Liveness::ALL_ALIVE);
+    let mirror = |pid, reason: &str, persistent| {
+        write_marker_full(&s.marker, pid, reason, false, persistent, true, None).unwrap();
+    };
+    let shown = || parse_file(&s.marker).expect("a mirror");
+
+    // The pid: same reason, another session.
+    s.declare_session(4243, "deploy", false).unwrap();
+    mirror(4242, "deploy", false);
+    let _ = s.all();
+    assert_eq!(shown().pid, 4243);
+    let _ = std::fs::remove_file(s.session_file(4243));
+
+    // The reason: same session.
+    s.declare_session(4242, "now this", false).unwrap();
+    mirror(4242, "deploy", false);
+    let _ = s.all();
+    assert_eq!(shown().reason, "now this");
+    let _ = std::fs::remove_file(s.session_file(4242));
+
+    // Persistence: an `ebman freeze` with the pid and reason a stale
+    // session-shaped mirror already shows.
+    s.declare_persistent("deploy", false).unwrap();
+    mirror(PERSISTENT_PID, "deploy", false);
+    let _ = s.all();
+    assert!(shown().persistent, "{:?}", shown());
+    done(&s);
+}
+
+/// A freeze declared after one ended with its session answers it: the
+/// ended note goes, so it is not reported beside the new freeze.
+#[test]
+fn declaring_a_freeze_clears_the_ended_note() {
+    let s = store("ended-cleared", Liveness::NONE_ALIVE);
+    s.declare_session(4242, "incident: db", true).unwrap();
+    let _ = s.all();
+    assert!(
+        s.ended().is_some(),
+        "the dead session's freeze was recorded"
+    );
+    s.declare_persistent("still bad", false).unwrap();
+    assert_eq!(s.ended(), None);
+    done(&s);
+}
+
+/// A store's debug form names where it is, which is what a log line
+/// about it needs.
+#[test]
+fn a_store_debugs_as_its_marker_path() {
+    let s = store("debug", Liveness::ALL_ALIVE);
+    let shown = format!("{s:?}");
+    assert!(shown.starts_with("FreezeStore"), "{shown}");
+    assert!(shown.contains("debug/freeze.json"), "{shown}");
+    done(&s);
+}
