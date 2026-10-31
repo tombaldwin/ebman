@@ -219,8 +219,8 @@ Tier definitions:
   `REGION/NAME`, `EnvKey`), and `app/cost.rs` (pricing) beside
   `app/costs.rs` (state) misleads: `app/pricing.rs`. S. `cli/lint.rs`
   and `cli/action.rs` are two-thirds inline tests; `cli/<sub>/tests.rs`
-  as `cli/mcp/tests/` does. M. `freeze.rs`'s `/proc` and pid probing is
-  not about freezing: a `proc_liveness` module behind `Liveness`. S.
+  as `cli/mcp/tests/` does. M. (`freeze.rs`'s pid probing moved to
+  `freeze/liveness.rs` on 2026-10-31.)
 
 - [ ] **Functions over the 300-line trigger** (2026-09-25 count):
   `draw_action` 673, `draw_why_red_overlay` 474, `execute_command` 418
