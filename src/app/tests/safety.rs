@@ -2561,3 +2561,43 @@ async fn thaw_deploys_says_when_another_session_still_holds() {
         "{err}"
     );
 }
+
+/// The TUI's freeze declares are audited as `ebman freeze` and
+/// `freeze_fleet` are: `via=tui`, the reason the freeze holds and
+/// `persistent=false`, with `:incident`'s `headline=` kept beside them.
+#[tokio::test]
+async fn the_tui_s_freeze_lines_name_what_every_declare_names() {
+    let mut app = test_app();
+    let before = crate::audit::delta::mark();
+    app.execute_command("freeze-deploys poly-tui-freeze-probe");
+    let lines =
+        crate::audit::delta::lines_matching(&before, |l| l.contains("poly-tui-freeze-probe"));
+    assert_eq!(lines.len(), 1, "{lines:#?}");
+    for part in [
+        "action=FreezeDeploys",
+        "via=tui",
+        "reason=poly-tui-freeze-probe",
+        "persistent=false",
+    ] {
+        assert!(lines[0].contains(part), "{part}: {}", lines[0]);
+    }
+
+    let before = crate::audit::delta::mark();
+    app.execute_command("incident START \"poly-tui-incident-probe\"");
+    let lines =
+        crate::audit::delta::lines_matching(&before, |l| l.contains("poly-tui-incident-probe"));
+    assert_eq!(lines.len(), 1, "{lines:#?}");
+    for part in [
+        "action=IncidentStart",
+        "via=tui",
+        "headline=poly-tui-incident-probe",
+        "persistent=false",
+    ] {
+        assert!(lines[0].contains(part), "{part}: {}", lines[0]);
+    }
+    assert!(
+        lines[0].contains("reason=\"incident: poly-tui-incident-probe\""),
+        "the reason the freeze holds: {}",
+        lines[0]
+    );
+}

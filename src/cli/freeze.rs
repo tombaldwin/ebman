@@ -86,22 +86,17 @@ pub(crate) fn freeze_body<G>(
                 );
                 return 1;
             }
-            let audit_reason = if reason.is_empty() {
-                "no-reason"
-            } else {
-                reason.as_str()
-            };
-            crate::audit::append_action_dispatched(
+            crate::audit::append_freeze_declared(
                 None,
                 write_env.ambient_profile.as_deref(),
                 "-",
-                crate::freeze::declare_label(incident),
-                "",
-                &[
-                    ("reason", audit_reason),
-                    ("persistent", "true"),
-                    ("via", "cli"),
-                ],
+                &crate::audit::FreezeDeclared {
+                    incident,
+                    reason: &reason,
+                    persistent: true,
+                    via: crate::audit::FreezeVia::Cli,
+                    extras: &[],
+                },
             );
             let _ = writeln!(
                 out,

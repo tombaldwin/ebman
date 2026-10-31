@@ -318,18 +318,17 @@ impl App {
                 tracing::warn!(error = %e, "freeze marker persist failed");
             }
         }
-        let audit_reason = if reason_for_store.is_empty() {
-            "no-reason".to_string()
-        } else {
-            reason_for_store.clone()
-        };
-        crate::audit::append_action_dispatched(
+        crate::audit::append_freeze_declared(
             self.context.account_id.as_deref(),
             self.context.profile.as_deref(),
             &self.context.region,
-            crate::freeze::declare_label(false),
-            "",
-            &[("reason", audit_reason.as_str())],
+            &crate::audit::FreezeDeclared {
+                incident: false,
+                reason: &reason_for_store,
+                persistent: false,
+                via: crate::audit::FreezeVia::Tui,
+                extras: &[],
+            },
         );
         let verb = if was_frozen { "updated" } else { "set" };
         if marker_failed {
@@ -507,13 +506,22 @@ impl App {
                 } else {
                     headline.clone()
                 };
-                crate::audit::append_action_dispatched(
+                let reason = self
+                    .deploy_freeze
+                    .as_ref()
+                    .map(|f| f.reason.clone())
+                    .unwrap_or_default();
+                crate::audit::append_freeze_declared(
                     self.context.account_id.as_deref(),
                     self.context.profile.as_deref(),
                     &self.context.region,
-                    crate::freeze::declare_label(true),
-                    "",
-                    &[("headline", audit_headline.as_str())],
+                    &crate::audit::FreezeDeclared {
+                        incident: true,
+                        reason: &reason,
+                        persistent: false,
+                        via: crate::audit::FreezeVia::Tui,
+                        extras: &[("headline", audit_headline.as_str())],
+                    },
                 );
                 let verb = if was_active { "updated" } else { "started" };
                 if marker_failed {

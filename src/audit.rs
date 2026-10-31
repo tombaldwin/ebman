@@ -493,6 +493,67 @@ pub(crate) fn append_action_dispatched(
     write_audit_line(account, profile, region, &detail);
 }
 
+/// Which surface declared a freeze: the `via=` of its audit line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FreezeVia {
+    Tui,
+    Cli,
+    Mcp,
+}
+
+impl FreezeVia {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Tui => "tui",
+            Self::Cli => "cli",
+            Self::Mcp => "mcp",
+        }
+    }
+}
+
+/// A freeze declared, as every surface records it: `via=`, the
+/// surface's own fields (`extras`: the TUI incident's `headline=`, an MCP
+/// client's name), then `reason=` (the reason the freeze holds, as
+/// stored; `no-reason` when empty) and `persistent=`. One writer, so
+/// `ebman freeze`, `freeze_fleet`, `:freeze-deploys` and `:incident
+/// START` name the same thing the same way: the TUI's lines had
+/// `headline=` alone and no `via=` or `persistent=` (ruled 2026-10-31:
+/// add beside `headline=`, which an operator's tooling may read, rather
+/// than rename it).
+pub(crate) fn append_freeze_declared(
+    account: Option<&str>,
+    profile: Option<&str>,
+    region: &str,
+    d: &FreezeDeclared<'_>,
+) {
+    let reason = if d.reason.is_empty() {
+        "no-reason"
+    } else {
+        d.reason
+    };
+    let mut fields: Vec<(&str, &str)> = vec![("via", d.via.as_str())];
+    fields.extend(d.extras.iter().copied());
+    fields.push(("reason", reason));
+    fields.push(("persistent", if d.persistent { "true" } else { "false" }));
+    append_action_dispatched(
+        account,
+        profile,
+        region,
+        crate::freeze::declare_label(d.incident),
+        "",
+        &fields,
+    );
+}
+
+/// What [`append_freeze_declared`] records.
+pub(crate) struct FreezeDeclared<'a> {
+    pub incident: bool,
+    pub reason: &'a str,
+    pub persistent: bool,
+    pub via: FreezeVia,
+    pub extras: &'a [(&'a str, &'a str)],
+}
+
 /// Append a `stage=completed` line for a TUI-driven action. `result`
 /// is mapped to `outcome=ok` (Ok) or `outcome=err err="…"` (Err); the
 /// error string goes through [`escape_value`] so a multi-line AWS

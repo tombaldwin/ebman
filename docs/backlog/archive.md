@@ -5792,3 +5792,22 @@ a `--read-only` server.
    reads it, or the injected copy), so the orchestration tests can
    disable a rule. Two tests: the injected config, and a disable written
    to the file the server reads. Three mutations CAUGHT.
+
+- [x] **The freeze audit lines disagree on field names.** The TUI's
+  `IncidentStart` / `IncidentEnd` record the headline as `headline=`;
+  `ebman freeze --incident` and `freeze_fleet` record `reason=`, with
+  `persistent=` / `via=` the TUI's lines lack. The validator and the
+  label choice are shared since 2026-10-30; the field names were left
+  because renaming `headline=` changes what an operator's own log
+  tooling reads. **Ruling needed:** rename to `reason=` (with the stored
+  reason, `incident: …`, or the bare headline?), add `reason=` beside
+  `headline=`, or leave it. The 2026-10-31 design review recommends
+  additive: `reason=incident: <headline>` beside `headline=`, and
+  `via=tui` / `persistent=false` on the TUI's lines, all through one
+  `audit::freeze_declared(..)` helper every declare calls.
+
+  Done 2026-10-31 as the maintainer ruled (additive): one
+  `audit::append_freeze_declared` for all four declares, writing `via=`,
+  the surface's own fields, `reason=` and `persistent=`; the TUI keeps
+  `headline=` beside them. New test of the TUI's two lines; four
+  mutations CAUGHT.

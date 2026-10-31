@@ -5616,6 +5616,7 @@ async fn freeze_fleet_declares_a_freeze_that_refuses_writes() {
     ] {
         assert!(lines[0].contains(part), "{part}: {}", lines[0]);
     }
+    assert_eq!(lines[0].matches("via=").count(), 1, "{}", lines[0]);
 
     let err = server
         .tool_write_plan(writes::WriteVerb::Restart, &json!({"env": "api"}))

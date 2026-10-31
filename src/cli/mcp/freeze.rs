@@ -169,17 +169,24 @@ impl Server {
         // line it writes, and a freeze is what a team's channel most
         // needs to hear about.
         self.ensure_audit_wired();
-        let mut extras = self.write_extras(&client, None, 0, None, None);
-        extras.push(("reason", reason.to_string()));
-        extras.push(("persistent", "true".to_string()));
-        let extras: Vec<(&str, &str)> = extras.iter().map(|(k, v)| (*k, v.as_str())).collect();
-        crate::audit::append_action_dispatched(
+        let extras = self.write_extras(&client, None, 0, None, None);
+        // `via=` is the helper's to write.
+        let extras: Vec<(&str, &str)> = extras
+            .iter()
+            .filter(|(k, _)| *k != "via")
+            .map(|(k, v)| (*k, v.as_str()))
+            .collect();
+        crate::audit::append_freeze_declared(
             None,
             self.ambient_profile.as_deref(),
             "-",
-            crate::freeze::declare_label(incident),
-            "",
-            &extras,
+            &crate::audit::FreezeDeclared {
+                incident,
+                reason,
+                persistent: true,
+                via: crate::audit::FreezeVia::Mcp,
+                extras: &extras,
+            },
         );
         Ok(json!({
             "frozen": true,

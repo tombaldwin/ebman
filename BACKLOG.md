@@ -189,19 +189,6 @@ Tier definitions:
   judges the macOS one (whose tests run there). The other four
   survivors of that run had tests missing and have them (65c8eec).
 
-- [ ] **The freeze audit lines disagree on field names.** The TUI's
-  `IncidentStart` / `IncidentEnd` record the headline as `headline=`;
-  `ebman freeze --incident` and `freeze_fleet` record `reason=`, with
-  `persistent=` / `via=` the TUI's lines lack. The validator and the
-  label choice are shared since 2026-10-30; the field names were left
-  because renaming `headline=` changes what an operator's own log
-  tooling reads. **Ruling needed:** rename to `reason=` (with the stored
-  reason, `incident: …`, or the bare headline?), add `reason=` beside
-  `headline=`, or leave it. The 2026-10-31 design review recommends
-  additive: `reason=incident: <headline>` beside `headline=`, and
-  `via=tui` / `persistent=false` on the TUI's lines, all through one
-  `audit::freeze_declared(..)` helper every declare calls.
-
 - [ ] **MCP write roles are one account per verb.** A verb has one role
   (two listing it make the role config unreadable), so with a role
   mapped, that verb's MCP writes work only in the role's account: a plan
