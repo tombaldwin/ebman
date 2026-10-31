@@ -184,11 +184,6 @@ archived, "PLAN.md items done 2026-10-31"). Each its own change.*
    and the link failure as a `FreezeStore` field beside `Liveness`, so it
    cannot be silently off on a tokio worker thread.
 
-5. *(behaviour)* **`make_hermetic` in the demo constructors**
-   (`Server::with_config(demo)`, `App::new_demo`) so demo tests exercise
-   it; a behavioural test replacing the whitespace-exact source pin;
-   then the per-site `demo` parameters retired.
-
 *Left in BACKLOG.md: `Server::refuse(..)` for the six `Audited::record`
 callers, whose profile choices differ on purpose and need settling
 first.*

@@ -227,7 +227,6 @@ impl Server {
             .load(std::sync::atomic::Ordering::Relaxed)
         {
             return WriteError::Refused(Audited::record(
-                matches!(self.backend, Backend::Demo),
                 None,
                 &region,
                 verb.label(),
@@ -245,7 +244,6 @@ impl Server {
             ));
         }
         WriteError::Refused(Audited::record(
-            matches!(self.backend, Backend::Demo),
             None,
             &region,
             verb.label(),
@@ -291,7 +289,6 @@ impl Server {
             crate::cli::write_refusal_unaudited(&self.safety_cfg, env, &profile, freeze, role)?;
         let region = self.audit_region(&profile, region).await;
         Some(Audited::record(
-            matches!(self.backend, Backend::Demo),
             pin_profile.as_deref(),
             &region,
             action_label,
@@ -953,13 +950,11 @@ mod audited {
         /// Record a refusal and render it. The ONLY way to make an
         /// `Audited` from nothing.
         ///
-        /// `demo` suppresses the write, not the refusal: a demo server
-        /// reads the real cross-process freeze marker, so its verdict
-        /// is genuine while its fleet is not, and it must leave no
-        /// line in a real operator's log.
-        #[allow(clippy::too_many_arguments)]
+        /// A demo server's refusal is recorded nowhere: its constructor
+        /// made the process hermetic (`audit::make_hermetic`), and a demo
+        /// server reads the real cross-process freeze marker, so its
+        /// verdict is genuine while its fleet is not.
         pub(super) fn record(
-            demo: bool,
             profile: Option<&str>,
             region: &str,
             action: &str,
@@ -968,11 +963,7 @@ mod audited {
             remedy: &str,
             message: String,
         ) -> Self {
-            if !demo {
-                crate::audit::append_action_refused(
-                    None, profile, region, action, env, rule, remedy,
-                );
-            }
+            crate::audit::append_action_refused(None, profile, region, action, env, rule, remedy);
             Audited(message)
         }
 
@@ -1938,7 +1929,6 @@ impl Server {
                     .audit_region(&profile, arg_str(args, "region").as_deref())
                     .await;
                 return Err(WriteError::Refused(Audited::record(
-                    matches!(self.backend, Backend::Demo),
                     audit_profile.as_deref(),
                     &region,
                     verb.label(),
@@ -2081,7 +2071,6 @@ impl Server {
             // way. Reachable exactly as that one is — via a cached
             // tool list from a wider grant.
             return Err(WriteError::Refused(Audited::record(
-                matches!(self.backend, Backend::Demo),
                 arg_str(args, "profile").as_deref(),
                 arg_str(args, "region").as_deref().unwrap_or("-"),
                 "confirm",
@@ -2269,7 +2258,6 @@ impl Server {
                 .audit_region(&pending.profile, pending.region.as_deref())
                 .await;
             return Err(WriteError::Refused(Audited::record(
-                matches!(self.backend, Backend::Demo),
                 pending.profile.as_deref(),
                 &region,
                 pending.verb.label(),

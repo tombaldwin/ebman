@@ -5641,3 +5641,15 @@ a `--read-only` server.
    guard scans `none()` as well, and pins that only `new` seeds; four
    mutations, three CAUGHT and one inconclusive by design (did not
    compile), re-run as a compiling one and CAUGHT.
+
+5. *(behaviour)* **`make_hermetic` in the demo constructors**
+   (`Server::with_config(demo)`, `App::new_demo`) so demo tests exercise
+   it; a behavioural test replacing the whitespace-exact source pin;
+   then the per-site `demo` parameters retired.
+
+   Done 2026-10-31: `App::new_demo` and a demo `Server::with_config`
+   throw it (f050ecb; a behavioural test, three mutations CAUGHT), and
+   `Audited::record`'s `demo` parameter is gone, with its
+   `too_many_arguments` allow; `a_demo_server_refuses_without_writing_an_audit_line`
+   still holds through the constructor. The TUI's inline
+   `!self.demo_mode` checks are conditions, not parameters, and stay.
