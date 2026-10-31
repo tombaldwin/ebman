@@ -162,16 +162,27 @@ jobs:
 
   # An `exclude_re` entry in `.cargo/mutants.toml` that no longer matches
   # a mutant is an allowlist entry outliving its reason. Every event, so
-  # the push that deletes the code also flags the entry.
+  # the push that deletes the code also flags the entry. An empty list
+  # has nothing to check: it skips the toolchain and the cargo-mutants
+  # install every push otherwise paid for.
   exclusions:
     name: cargo-mutants (exclusions still match)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo install cargo-mutants --locked
-      - run: scripts/mutants-exclusions.sh
+      - id: entries
+        run: |
+          n=$(python3 -I -c 'import tomllib; print(len(tomllib.load(open(".cargo/mutants.toml", "rb")).get("exclude_re", [])))')
+          echo "$n exclude_re entries"
+          echo "count=$n" >> "$GITHUB_OUTPUT"
+      - if: steps.entries.outputs.count != '0'
+        uses: dtolnay/rust-toolchain@stable
+      - if: steps.entries.outputs.count != '0'
+        uses: Swatinem/rust-cache@v2
+      - if: steps.entries.outputs.count != '0'
+        run: cargo install cargo-mutants --locked
+      - if: steps.entries.outputs.count != '0'
+        run: scripts/mutants-exclusions.sh
 
   # Whole-tree sweep, sharded TWENTY-FOUR ways. Third number, and the
   # first one derived from a completed run rather than an estimate.
