@@ -3129,11 +3129,6 @@ pub(super) fn freeze_tool_descriptor() -> Value {
     })
 }
 
-/// Longest reason `freeze_fleet` accepts. The reason is shown wherever
-/// the freeze refuses a write, a TUI status line among them, and an
-/// operator lifting it needs to read it at a glance.
-pub(super) const FREEZE_REASON_MAX: usize = 200;
-
 /// Longest client name a freeze marker records: the rest is cut, as
 /// the name is whatever the client sent at initialize.
 const FREEZE_AGENT_MAX: usize = 64;
@@ -3160,29 +3155,18 @@ impl Server {
                  needs to know why it is there"
             ));
         }
-        // Control characters, and the line breaks and direction
-        // overrides Unicode spells outside them: each can make the one
-        // line show something other than what was declared.
-        let breaks_the_line = |c: char| {
-            c.is_control()
-                || matches!(
-                    c,
-                    '\u{2028}' | '\u{2029}' | '\u{200E}' | '\u{200F}' | '\u{061C}'
-                )
-                || ('\u{202A}'..='\u{202E}').contains(&c)
-                || ('\u{2066}'..='\u{2069}').contains(&c)
-        };
-        if reason.chars().any(breaks_the_line) {
-            return Err(format!(
-                "{FREEZE_TOOL}: `reason` must be one line, with no control characters — \
-                 it is shown in a one-line status bar"
-            ));
-        }
-        if reason.chars().count() > FREEZE_REASON_MAX {
-            return Err(format!(
-                "{FREEZE_TOOL}: `reason` is over {FREEZE_REASON_MAX} characters — say why in a \
-                 line; the detail belongs in your reply to the operator"
-            ));
+        match crate::freeze::check_reason(reason) {
+            Ok(()) => {}
+            Err(bad @ crate::freeze::BadReason::BreaksTheLine) => {
+                return Err(format!("{FREEZE_TOOL}: `reason` {}", bad.what()));
+            }
+            Err(bad @ crate::freeze::BadReason::TooLong) => {
+                return Err(format!(
+                    "{FREEZE_TOOL}: `reason` {} — say why in a line; the detail belongs in \
+                     your reply to the operator",
+                    bad.what()
+                ));
+            }
         }
         let incident = args
             .get("incident")
@@ -3213,11 +3197,7 @@ impl Server {
                 self.ambient_profile.as_deref(),
                 "-",
                 &crate::audit::Refused {
-                    action_label: if incident {
-                        "IncidentStart"
-                    } else {
-                        "FreezeDeploys"
-                    },
+                    action_label: crate::freeze::declare_label(incident),
                     target: "",
                     rule: "thawed_recently",
                     remedy: "the operator declares it with `ebman freeze`",
@@ -3296,11 +3276,7 @@ impl Server {
             None,
             self.ambient_profile.as_deref(),
             "-",
-            if incident {
-                "IncidentStart"
-            } else {
-                "FreezeDeploys"
-            },
+            crate::freeze::declare_label(incident),
             "",
             &extras,
         );

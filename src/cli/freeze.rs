@@ -75,6 +75,10 @@ pub(crate) fn freeze_body<G>(
             0
         }
         Ok(FreezeCmd::Declare { reason, incident }) => {
+            if let Err(bad) = crate::freeze::check_reason(&reason) {
+                let _ = writeln!(err, "ebman freeze: the reason {}", bad.what());
+                return 2;
+            }
             if let Err(e) = write_env.freeze.declare_persistent(&reason, incident) {
                 let _ = writeln!(
                     err,
@@ -91,11 +95,7 @@ pub(crate) fn freeze_body<G>(
                 None,
                 write_env.ambient_profile.as_deref(),
                 "-",
-                if incident {
-                    "IncidentStart"
-                } else {
-                    "FreezeDeploys"
-                },
+                crate::freeze::declare_label(incident),
                 "",
                 &[
                     ("reason", audit_reason),
@@ -377,6 +377,20 @@ mod tests {
             "{text}"
         );
         store.clear_session(std::process::id());
+    }
+
+    /// `ebman freeze` follows the rule `freeze_fleet` does: a reason that
+    /// is not one short line is refused, and nothing is frozen.
+    #[test]
+    fn freeze_refuses_a_reason_that_is_not_one_short_line() {
+        let store = crate::freeze::FreezeStore::isolated();
+        let long = "x".repeat(crate::freeze::REASON_MAX + 1);
+        for reason in ["db\u{202E}failover", long.as_str()] {
+            let (code, text) = run(freeze_body, &store, &["freeze", reason]);
+            assert_eq!(code, 2, "{text}");
+            assert!(text.starts_with("ebman freeze: the reason "), "{text}");
+            assert!(store.active().is_none(), "nothing frozen: {text}");
+        }
     }
 
     /// Declare, status, thaw, and the thaw refusing a live session's

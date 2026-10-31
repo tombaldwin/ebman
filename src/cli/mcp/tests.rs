@@ -5616,7 +5616,7 @@ async fn freeze_fleet_needs_a_short_reason() {
     for args in [
         json!({}),
         json!({"reason": "   "}),
-        json!({"reason": "x".repeat(writes::FREEZE_REASON_MAX + 1)}),
+        json!({"reason": "x".repeat(crate::freeze::REASON_MAX + 1)}),
         json!({"reason": "two\nlines"}),
         json!({"reason": "bell\u{7}"}),
         json!({"reason": "line\u{2028}separator"}),
@@ -5634,7 +5634,7 @@ async fn freeze_fleet_needs_a_short_reason() {
     let (is_error, _) = call(
         &server,
         "freeze_fleet",
-        json!({"reason": "x".repeat(writes::FREEZE_REASON_MAX)}),
+        json!({"reason": "x".repeat(crate::freeze::REASON_MAX)}),
     )
     .await;
     assert!(!is_error, "exactly the limit is a line");

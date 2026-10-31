@@ -147,6 +147,43 @@ async fn freeze_deploys_blocks_writes_with_reason_surfaced() {
     );
 }
 
+/// The TUI's two declares follow the rule `freeze_fleet` and `ebman
+/// freeze` do: a reason that is not one short line is refused, with
+/// nothing frozen and no incident started. Asserted on the rendered
+/// message, which is one line.
+#[tokio::test]
+async fn the_tui_refuses_a_freeze_reason_that_is_not_one_short_line() {
+    let long = "x".repeat(crate::freeze::REASON_MAX + 1);
+    let mut app = test_app();
+    app.execute_command(&format!("freeze-deploys {long}"));
+    assert!(app.deploy_freeze.is_none());
+    let err = app.error_message.clone().unwrap_or_default();
+    assert!(
+        err.starts_with("freeze not set: the reason is over 200"),
+        "{err}"
+    );
+
+    let mut app = test_app();
+    app.execute_command("freeze-deploys db\u{202E}failover");
+    assert!(app.deploy_freeze.is_none());
+    let err = app.error_message.clone().unwrap_or_default();
+    assert!(err.contains("one-line status bar"), "{err}");
+    assert_no_run_on_spaces(&err);
+
+    // The headline as the freeze stores it ("incident: …"), so 191
+    // characters is one too many.
+    let mut app = test_app();
+    app.execute_command(&format!("incident START \"{}\"", "x".repeat(191)));
+    assert!(app.incident.is_none() && app.deploy_freeze.is_none());
+    let err = app.error_message.clone().unwrap_or_default();
+    assert!(
+        err.starts_with("incident not started: the headline"),
+        "{err}"
+    );
+    app.execute_command(&format!("incident START \"{}\"", "x".repeat(190)));
+    assert!(app.incident.is_some() && app.deploy_freeze.is_some());
+}
+
 #[tokio::test]
 async fn freeze_deploys_with_no_reason_still_blocks() {
     // Reason is optional — empty-reason freeze still blocks

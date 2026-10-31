@@ -801,6 +801,66 @@ fn read_ended_at(path: &Path, now: chrono::DateTime<chrono::Utc>) -> Option<Ende
         .then_some(EndedFreeze { marker, ended_at })
 }
 
+/// Longest reason a freeze takes. It is shown wherever the freeze
+/// refuses a write, a one-line status bar among them, and whoever lifts
+/// it needs to read it at a glance.
+pub(crate) const REASON_MAX: usize = 200;
+
+/// Why a freeze reason was refused. Every declare checks it: `ebman
+/// freeze`, `:freeze-deploys`, `:incident START` and `freeze_fleet`.
+/// Only the last did, and the reason the rule exists (one line in a
+/// status bar, read by whoever lifts it) is the same for all four.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BadReason {
+    /// A control character, or a line break or direction override
+    /// Unicode spells outside them: each can make the one line show
+    /// something other than what was declared.
+    BreaksTheLine,
+    TooLong,
+}
+
+impl BadReason {
+    /// What is wrong, after "the reason".
+    pub(crate) fn what(self) -> String {
+        match self {
+            Self::BreaksTheLine => {
+                "must be one line, with no control characters — it is shown in a one-line \
+                 status bar"
+                    .to_string()
+            }
+            Self::TooLong => format!("is over {REASON_MAX} characters"),
+        }
+    }
+}
+
+pub(crate) fn check_reason(reason: &str) -> Result<(), BadReason> {
+    let breaks_the_line = |c: char| {
+        c.is_control()
+            || matches!(
+                c,
+                '\u{2028}' | '\u{2029}' | '\u{200E}' | '\u{200F}' | '\u{061C}'
+            )
+            || ('\u{202A}'..='\u{202E}').contains(&c)
+            || ('\u{2066}'..='\u{2069}').contains(&c)
+    };
+    if reason.chars().any(breaks_the_line) {
+        return Err(BadReason::BreaksTheLine);
+    }
+    if reason.chars().count() > REASON_MAX {
+        return Err(BadReason::TooLong);
+    }
+    Ok(())
+}
+
+/// The audit label for declaring a freeze.
+pub(crate) fn declare_label(incident: bool) -> &'static str {
+    if incident {
+        "IncidentStart"
+    } else {
+        "FreezeDeploys"
+    }
+}
+
 /// How long an operator's thaw binds `freeze_fleet`. A constant, not a
 /// config key: a looping agent re-declares in seconds, a rollback takes
 /// minutes, and a refusal in the window costs one message to an
@@ -1582,6 +1642,34 @@ mod tests {
         assert_eq!(s.active().expect("frozen").reason, "fresh");
         assert_eq!(leftovers(&s), Vec::<String>::new());
         done(&s);
+    }
+
+    /// One rule for every declare: one line, at most 200 characters.
+    #[test]
+    fn a_freeze_reason_is_one_short_line() {
+        assert_eq!(check_reason(""), Ok(()));
+        assert_eq!(check_reason(&"x".repeat(REASON_MAX)), Ok(()));
+        assert_eq!(
+            check_reason(&"é".repeat(REASON_MAX)),
+            Ok(()),
+            "characters, not bytes"
+        );
+        assert_eq!(
+            check_reason(&"x".repeat(REASON_MAX + 1)),
+            Err(BadReason::TooLong)
+        );
+        for bad in [
+            "a\nb",
+            "a\tb",
+            "a\u{2028}b",
+            "a\u{202E}b",
+            "a\u{2067}b",
+            "a\u{200F}b",
+        ] {
+            assert_eq!(check_reason(bad), Err(BadReason::BreaksTheLine), "{bad:?}");
+        }
+        assert_eq!(declare_label(true), "IncidentStart");
+        assert_eq!(declare_label(false), "FreezeDeploys");
     }
 
     /// A thaw holds for [`THAW_HOLDS_MINS`], to the second, and its

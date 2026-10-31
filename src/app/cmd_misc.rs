@@ -293,6 +293,12 @@ impl App {
         let reason = rest.join(" ");
         let trimmed = reason.trim();
         let reason_for_store = trimmed.to_string();
+        // The rule every declare follows: one line, read at a glance by
+        // whoever lifts it.
+        if let Err(bad) = crate::freeze::check_reason(&reason_for_store) {
+            self.pin_error(format!("freeze not set: the reason {}", bad.what()));
+            return;
+        }
         let was_frozen = self.deploy_freeze.is_some();
         self.deploy_freeze = Some(crate::app::DeployFreeze {
             reason: reason_for_store.clone(),
@@ -442,6 +448,20 @@ impl App {
         match parse_incident_args(rest) {
             Err(msg) => self.error_message = Some(msg),
             Ok(IncidentCmd::Start(headline)) => {
+                // Checked as the freeze will store it, before anything
+                // changes: the same rule every declare follows.
+                let freeze_reason = if headline.is_empty() {
+                    "incident".to_string()
+                } else {
+                    format!("incident: {headline}")
+                };
+                if let Err(bad) = crate::freeze::check_reason(&freeze_reason) {
+                    self.pin_error(format!(
+                        "incident not started: the headline, as the freeze's reason, {}",
+                        bad.what()
+                    ));
+                    return;
+                }
                 let was_active = self.incident.is_some();
                 let now = chrono::Utc::now();
                 // Keep the original start time on a headline update —
