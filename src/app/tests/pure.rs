@@ -808,11 +808,11 @@ async fn handle_unavailability_estimate_silent_on_fetch_failure() {
     app.rebuild_view();
     app.table_state.select(Some(0));
     app.execute_command("deploy build-900");
-    app.handle_msg(AppMsg::UnavailabilityEstimate {
+    app.handle_msg(AppMsg::Preflight {
         gen: app.generation,
         key: EnvKey::new("us-east-1", "prod"),
         ticket: preflight_ticket(&app, |p| p.unavailability.ticket_in_flight()),
-        line: None,
+        answer: PreflightAnswer::Unavailability(None),
     });
     match &app.action_flow {
         Some(ActionFlow::Confirm(modal)) => {
@@ -832,11 +832,11 @@ async fn handle_health_check_probe_renders_warning_on_failure() {
     app.rebuild_view();
     app.table_state.select(Some(0));
     app.execute_command("deploy build-900");
-    app.handle_msg(AppMsg::HealthCheckProbe {
+    app.handle_msg(AppMsg::Preflight {
         gen: app.generation,
         key: EnvKey::new("us-east-1", "prod"),
         ticket: preflight_ticket(&app, |p| p.health_check.ticket_in_flight()),
-        result: Err("HTTP 404".into()),
+        answer: PreflightAnswer::HealthCheck(Err("HTTP 404".into())),
     });
     match &app.action_flow {
         Some(ActionFlow::Confirm(modal)) => {
@@ -857,11 +857,11 @@ async fn handle_health_check_probe_silent_on_ok() {
     app.rebuild_view();
     app.table_state.select(Some(0));
     app.execute_command("deploy build-900");
-    app.handle_msg(AppMsg::HealthCheckProbe {
+    app.handle_msg(AppMsg::Preflight {
         gen: app.generation,
         key: EnvKey::new("us-east-1", "prod"),
         ticket: preflight_ticket(&app, |p| p.health_check.ticket_in_flight()),
-        result: Ok(()),
+        answer: PreflightAnswer::HealthCheck(Ok(())),
     });
     match &app.action_flow {
         Some(ActionFlow::Confirm(modal)) => {

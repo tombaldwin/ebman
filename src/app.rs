@@ -516,6 +516,39 @@ pub struct App {
     quit: bool,
 }
 
+/// What one confirm-modal pre-flight check found.
+#[derive(Debug)]
+pub(crate) enum PreflightAnswer {
+    /// The instances a dry run would touch.
+    DryRun(Result<Vec<Instance>, String>),
+    /// The env's recent events.
+    Events(Result<Vec<EbEvent>, String>),
+    /// Pre-deploy version preview: the pre-rendered
+    /// `format_deploy_preview` body, so the handler only stores it.
+    VersionPreview(Result<String, String>),
+    /// Pre-deploy health-check probe. `Ok(())` is a 2xx; `Err(reason)`
+    /// is non-2xx / timeout / connect error, and the modal renders a
+    /// yellow warning so the operator can decide whether to continue.
+    /// Doesn't block the deploy either way.
+    HealthCheck(Result<(), String>),
+    /// Pre-deploy unavailability estimate: the rendered modal text plus
+    /// a caution flag for colouring. `None` if the option-settings fetch
+    /// failed: the modal stays silent rather than rendering an error
+    /// line (the impact is observability, not safety).
+    Unavailability(Option<(String, bool)>),
+    /// Lint findings against the modal's env, from
+    /// `spawn_confirm_lint`. Same `Issue` shape as the `:lint` overlay
+    /// and `ebman lint`: one engine, three surfaces.
+    Lint {
+        issues: Vec<crate::lint::Issue>,
+        /// The checks that could not run, each with why: the whole lint
+        /// (client or option fetch failed) or one rule's input. Listed
+        /// because an empty `issues` renders as nothing, which is also
+        /// how a clean result renders.
+        not_run: Vec<String>,
+    },
+}
+
 pub(crate) enum AppMsg {
     Refresh {
         gen: u64,
@@ -851,15 +884,6 @@ pub(crate) enum AppMsg {
         session_id: u64,
         result: Result<Vec<crate::aws::QueueMessage>, String>,
     },
-    DryRunResult {
-        gen: u64,
-        /// The modal's env: an answer for a same-named env is dropped.
-        key: EnvKey,
-        /// The request it answers: an answer to a modal since closed is
-        /// dropped, though it names the same env.
-        ticket: Ticket,
-        result: Result<Vec<Instance>, String>,
-    },
     /// `fetch_env_vars` result for `:env-edit`. The handler stashes
     /// the env-name + KV pairs in `App.pending_env_edit`; the main
     /// loop tick takes them and shells out to `$EDITOR`. Two-step
@@ -873,72 +897,17 @@ pub(crate) enum AppMsg {
         region: String,
         result: Result<Vec<(String, String)>, String>,
     },
-    PreflightEvents {
+    /// One pre-flight check's answer, for the confirm modal open on
+    /// `key`. One variant for all six, settled by ticket: each was its
+    /// own variant with the same three fields and the same arm.
+    Preflight {
         gen: u64,
         /// The modal's env: an answer for a same-named env is dropped.
         key: EnvKey,
         /// The request it answers: an answer to a modal since closed is
         /// dropped, though it names the same env.
         ticket: Ticket,
-        result: Result<Vec<EbEvent>, String>,
-    },
-    /// Pre-deploy version preview for the confirm modal. Carries
-    /// the pre-rendered `format_deploy_preview` body so the
-    /// handler stays trivial — just stuff it into the modal slot.
-    VersionPreview {
-        gen: u64,
-        /// The modal's env: an answer for a same-named env is dropped.
-        key: EnvKey,
-        /// The request it answers: an answer to a modal since closed is
-        /// dropped, though it names the same env.
-        ticket: Ticket,
-        result: Result<String, String>,
-    },
-    /// Pre-deploy health-check probe outcome. `Ok(())` means the
-    /// probe was successful (2xx); `Err(reason)` means non-2xx /
-    /// timeout / connect error and the modal should render a
-    /// yellow warning so the operator can decide whether to
-    /// continue. Doesn't block the deploy either way.
-    HealthCheckProbe {
-        gen: u64,
-        /// The modal's env: an answer for a same-named env is dropped.
-        key: EnvKey,
-        /// The request it answers: an answer to a modal since closed is
-        /// dropped, though it names the same env.
-        ticket: Ticket,
-        result: Result<(), String>,
-    },
-    /// Pre-deploy unavailability estimate. `line` is the rendered
-    /// modal text plus a caution flag for colouring. `None` if the
-    /// option-settings fetch failed — the modal stays silent rather
-    /// than rendering an error line (the impact is observability,
-    /// not safety).
-    UnavailabilityEstimate {
-        gen: u64,
-        /// The modal's env: an answer for a same-named env is dropped.
-        key: EnvKey,
-        /// The request it answers: an answer to a modal since closed is
-        /// dropped, though it names the same env.
-        ticket: Ticket,
-        line: Option<(String, bool)>,
-    },
-    /// Lint findings against the confirm-modal's target env,
-    /// emitted by `spawn_confirm_lint`. Same `Issue` shape as
-    /// the `:lint` TUI overlay + `ebman lint` CLI — designed
-    /// for one engine, three surfaces.
-    ConfirmModalLint {
-        gen: u64,
-        /// The modal's env: an answer for a same-named env is dropped.
-        key: EnvKey,
-        /// The request it answers: an answer to a modal since closed is
-        /// dropped, though it names the same env.
-        ticket: Ticket,
-        issues: Vec<crate::lint::Issue>,
-        /// The checks that could not run, each with why: the whole lint
-        /// (client or option fetch failed) or one rule's input. Listed
-        /// because an empty `issues` renders as nothing, which is also
-        /// how a clean result renders.
-        not_run: Vec<String>,
+        answer: PreflightAnswer,
     },
     /// 0.21: side-channel cache update for the lint-input caches.
     /// Emitted by `spawn_confirm_lint` (and any future lint call site)

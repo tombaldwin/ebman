@@ -677,11 +677,11 @@ impl App {
             self.client_for(env),
             "preflight_events",
             move |aws| async move { aws.list_events_for_env(&env_name, 3).await },
-            move |gen, result| AppMsg::PreflightEvents {
+            move |gen, result| AppMsg::Preflight {
                 gen,
                 key: EnvKey::new(region.clone(), env_for_msg),
                 ticket,
-                result,
+                answer: PreflightAnswer::Events(result),
             },
         );
     }
@@ -694,11 +694,11 @@ impl App {
             self.client_for(env),
             "dry_run_list_instances",
             move |aws| async move { aws.list_instances(&env_name).await },
-            move |gen, result| AppMsg::DryRunResult {
+            move |gen, result| AppMsg::Preflight {
                 gen,
                 key: EnvKey::new(region.clone(), env_for_msg),
                 ticket,
-                result,
+                answer: PreflightAnswer::DryRun(result),
             },
         );
     }
@@ -735,11 +735,11 @@ impl App {
                     )),
                     Err(e) => Err(e),
                 };
-                AppMsg::VersionPreview {
+                AppMsg::Preflight {
                     gen,
                     key: EnvKey::new(region.clone(), env_for_msg),
                     ticket,
-                    result: body,
+                    answer: PreflightAnswer::VersionPreview(body),
                 }
             },
         );
@@ -794,11 +794,11 @@ impl App {
             };
             let url = crate::probe::build_health_check_probe_url(&cname, &path);
             let result = crate::probe::run_health_check_probe(&url).await;
-            let _ = tx.send(AppMsg::HealthCheckProbe {
+            let _ = tx.send(AppMsg::Preflight {
                 gen,
                 key: EnvKey::new(region.clone(), env_for_msg),
                 ticket,
-                result,
+                answer: PreflightAnswer::HealthCheck(result),
             });
         });
     }
@@ -830,11 +830,11 @@ impl App {
                     let count = compute_unavailability_count(&policy, batch, &btype, asg_max);
                     format_unavailability_line(&policy, count, asg_max)
                 });
-                AppMsg::UnavailabilityEstimate {
+                AppMsg::Preflight {
                     gen,
                     key: EnvKey::new(region.clone(), env_for_msg),
                     ticket,
-                    line,
+                    answer: PreflightAnswer::Unavailability(line),
                 }
             },
         );
@@ -898,12 +898,14 @@ impl App {
             let aws = match client.resolve().await {
                 Ok(aws) => aws,
                 Err(e) => {
-                    let _ = tx.send(AppMsg::ConfirmModalLint {
+                    let _ = tx.send(AppMsg::Preflight {
                         gen,
                         key: EnvKey::new(region.clone(), env_for_msg),
                         ticket,
-                        issues: Vec::new(),
-                        not_run: vec![format!("lint could not run: {e}")],
+                        answer: PreflightAnswer::Lint {
+                            issues: Vec::new(),
+                            not_run: vec![format!("lint could not run: {e}")],
+                        },
                     });
                     return;
                 }
@@ -980,12 +982,11 @@ impl App {
                 // produces — right before a deploy.
                 Err(e) => (Vec::new(), vec![format!("lint could not run: {e}")]),
             };
-            let _ = tx.send(AppMsg::ConfirmModalLint {
+            let _ = tx.send(AppMsg::Preflight {
                 gen,
                 key: EnvKey::new(region.clone(), env_for_msg),
                 ticket,
-                issues,
-                not_run,
+                answer: PreflightAnswer::Lint { issues, not_run },
             });
         });
     }

@@ -289,12 +289,14 @@ async fn handle_confirm_modal_lint_stuffs_issues_into_modal() {
     app.table_state.select(Some(0));
     app.execute_command("deploy build-900");
     // Empty issues — handler still clears the loading flag.
-    app.handle_msg(AppMsg::ConfirmModalLint {
+    app.handle_msg(AppMsg::Preflight {
         gen: app.generation,
         key: EnvKey::new("us-east-1", "prod"),
         ticket: preflight_ticket(&app, |p| p.lint.ticket_in_flight()),
-        issues: vec![],
-        not_run: vec![],
+        answer: PreflightAnswer::Lint {
+            issues: vec![],
+            not_run: vec![],
+        },
     });
     match &app.action_flow {
         Some(ActionFlow::Confirm(modal)) => {
@@ -325,14 +327,16 @@ async fn a_lint_that_could_not_run_reaches_the_modal_as_a_reason() {
     app.rebuild_view();
     app.table_state.select(Some(0));
     app.execute_command("deploy build-900");
-    app.handle_msg(AppMsg::ConfirmModalLint {
+    app.handle_msg(AppMsg::Preflight {
         gen: app.generation,
         key: EnvKey::new("us-east-1", "prod"),
         ticket: preflight_ticket(&app, |p| p.lint.ticket_in_flight()),
-        issues: vec![],
-        not_run: vec![
-            "lint could not run: DescribeConfigurationSettings failed: AccessDenied".into(),
-        ],
+        answer: PreflightAnswer::Lint {
+            issues: vec![],
+            not_run: vec![
+                "lint could not run: DescribeConfigurationSettings failed: AccessDenied".into(),
+            ],
+        },
     });
     match &app.action_flow {
         Some(ActionFlow::Confirm(modal)) => {
@@ -367,20 +371,22 @@ async fn handle_confirm_modal_lint_drops_stale_target_results() {
     // Late-arriving lint result for prod — should be dropped. It
     // carries the open modal's own ticket, so only the env check can
     // drop it.
-    app.handle_msg(AppMsg::ConfirmModalLint {
+    app.handle_msg(AppMsg::Preflight {
         gen: app.generation,
         key: EnvKey::new("us-east-1", "prod"),
         ticket: preflight_ticket(&app, |p| p.lint.ticket_in_flight()),
-        issues: vec![crate::lint::Issue {
-            rule_id: "EBL001".into(),
-            severity: crate::lint::Severity::Warn,
-            env_name: Some("prod".into()),
-            title: "stale".into(),
-            detail: "stale".into(),
-            suggestion: None,
-            fields: Default::default(),
-        }],
-        not_run: vec![],
+        answer: PreflightAnswer::Lint {
+            issues: vec![crate::lint::Issue {
+                rule_id: "EBL001".into(),
+                severity: crate::lint::Severity::Warn,
+                env_name: Some("prod".into()),
+                title: "stale".into(),
+                detail: "stale".into(),
+                suggestion: None,
+                fields: Default::default(),
+            }],
+            not_run: vec![],
+        },
     });
     match &app.action_flow {
         Some(ActionFlow::Confirm(modal)) => {

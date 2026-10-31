@@ -176,11 +176,6 @@ then these four from BACKLOG.md. Each its own change.*
    belongs beside `audit::rotated_path` or in test support. Keep the
    source guards' module paths in step. S. *0.48.0 architecture review.*
 
-5. *(architecture)* **One `AppMsg::Preflight { key, ticket, answer }`.** Five
-   near-identical arms in `msg.rs` settle a pre-flight check by ticket,
-   and each is listed again in the generation-guard match. S–M. *0.48.0
-   architecture review.*
-
 *Left in BACKLOG.md: `Server::refuse(..)` for the six `Audited::record`
 callers, whose profile choices differ on purpose and need settling
 first.*

@@ -265,14 +265,14 @@ async fn handle_unavailability_estimate_stuffs_line_into_modal() {
     app.rebuild_view();
     app.table_state.select(Some(0));
     app.execute_command("deploy build-900");
-    app.handle_msg(AppMsg::UnavailabilityEstimate {
+    app.handle_msg(AppMsg::Preflight {
         gen: app.generation,
         key: EnvKey::new("us-east-1", "prod"),
         ticket: preflight_ticket(&app, |p| p.unavailability.ticket_in_flight()),
-        line: Some((
+        answer: PreflightAnswer::Unavailability(Some((
             "deploy plan: Rolling → max 1/4 instance unavailable".into(),
             true,
-        )),
+        ))),
     });
     match &app.action_flow {
         Some(ActionFlow::Confirm(modal)) => {
@@ -317,11 +317,11 @@ async fn deploy_modal_handle_version_preview_stuffs_body_in_slot() {
     app.table_state.select(Some(0));
     app.execute_command("deploy build-900");
     let body = "candidate: build-900\ncurrent: build-820\n".to_string();
-    app.handle_msg(AppMsg::VersionPreview {
+    app.handle_msg(AppMsg::Preflight {
         gen: app.generation,
         key: EnvKey::new("us-east-1", "prod"),
         ticket: preflight_ticket(&app, |p| p.version_preview.ticket_in_flight()),
-        result: Ok(body.clone()),
+        answer: PreflightAnswer::VersionPreview(Ok(body.clone())),
     });
     match &app.action_flow {
         Some(ActionFlow::Confirm(modal)) => {
@@ -344,11 +344,11 @@ async fn deploy_modal_handle_version_preview_error_renders_inline() {
     app.rebuild_view();
     app.table_state.select(Some(0));
     app.execute_command("deploy build-900");
-    app.handle_msg(AppMsg::VersionPreview {
+    app.handle_msg(AppMsg::Preflight {
         gen: app.generation,
         key: EnvKey::new("us-east-1", "prod"),
         ticket: preflight_ticket(&app, |p| p.version_preview.ticket_in_flight()),
-        result: Err("ListApplicationVersions throttled".into()),
+        answer: PreflightAnswer::VersionPreview(Err("ListApplicationVersions throttled".into())),
     });
     assert!(!preflight(&app).version_preview.in_flight());
     app.mode = Mode::Action;

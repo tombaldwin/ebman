@@ -2098,11 +2098,11 @@ async fn the_confirm_modal_ignores_an_answer_for_its_name_in_another_region() {
     // tell them apart.
     let ticket = preflight_ticket(&app, |p| p.version_preview.ticket_in_flight());
     for (region, body) in [("eu-west-2", "EU-OWN"), ("us-east-1", "HOME-TWIN")] {
-        app.handle_msg(AppMsg::VersionPreview {
+        app.handle_msg(AppMsg::Preflight {
             gen: app.generation,
             key: EnvKey::new(region, "api-prod"),
             ticket,
-            result: Ok(body.into()),
+            answer: PreflightAnswer::VersionPreview(Ok(body.into())),
         });
         assert_eq!(
             preflight(&app).version_preview.ready().map(String::as_str),
@@ -2697,67 +2697,69 @@ fn preflight_cases() -> Vec<PreflightCase> {
     vec![
         (
             "dry run",
-            |key, gen, ticket| AppMsg::DryRunResult {
+            |key, gen, ticket| AppMsg::Preflight {
                 gen,
                 key,
                 ticket,
-                result: Ok(vec![]),
+                answer: PreflightAnswer::DryRun(Ok(vec![])),
             },
             |p| p.dryrun.ticket_in_flight(),
             |p| p.dryrun.ready().is_some(),
         ),
         (
             "events",
-            |key, gen, ticket| AppMsg::PreflightEvents {
+            |key, gen, ticket| AppMsg::Preflight {
                 gen,
                 key,
                 ticket,
-                result: Ok(vec![]),
+                answer: PreflightAnswer::Events(Ok(vec![])),
             },
             |p| p.events.ticket_in_flight(),
             |p| p.events.ready().is_some(),
         ),
         (
             "version preview",
-            |key, gen, ticket| AppMsg::VersionPreview {
+            |key, gen, ticket| AppMsg::Preflight {
                 gen,
                 key,
                 ticket,
-                result: Ok("x".into()),
+                answer: PreflightAnswer::VersionPreview(Ok("x".into())),
             },
             |p| p.version_preview.ticket_in_flight(),
             |p| p.version_preview.ready().is_some(),
         ),
         (
             "health check",
-            |key, gen, ticket| AppMsg::HealthCheckProbe {
+            |key, gen, ticket| AppMsg::Preflight {
                 gen,
                 key,
                 ticket,
-                result: Ok(()),
+                answer: PreflightAnswer::HealthCheck(Ok(())),
             },
             |p| p.health_check.ticket_in_flight(),
             |p| p.health_check.ready().is_some(),
         ),
         (
             "unavailability",
-            |key, gen, ticket| AppMsg::UnavailabilityEstimate {
+            |key, gen, ticket| AppMsg::Preflight {
                 gen,
                 key,
                 ticket,
-                line: Some(("x".into(), false)),
+                answer: PreflightAnswer::Unavailability(Some(("x".into(), false))),
             },
             |p| p.unavailability.ticket_in_flight(),
             |p| p.unavailability.ready().is_some(),
         ),
         (
             "lint",
-            |key, gen, ticket| AppMsg::ConfirmModalLint {
+            |key, gen, ticket| AppMsg::Preflight {
                 gen,
                 key,
                 ticket,
-                issues: vec![],
-                not_run: vec![],
+                answer: PreflightAnswer::Lint {
+                    issues: vec![],
+                    not_run: vec![],
+                },
             },
             |p| p.lint.ticket_in_flight(),
             |p| p.lint.ready().is_some(),

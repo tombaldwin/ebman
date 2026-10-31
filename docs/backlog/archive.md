@@ -5711,3 +5711,15 @@ a `--read-only` server.
    above `cli/lint.rs`'s first test module, and the doc line that had
    merged into its doc ("The seam exists to be driven") is back on
    `cycle_wiring`. A move: 2315 tests before and after.
+
+5. *(architecture)* **One `AppMsg::Preflight { key, ticket, answer }`.** Five
+   near-identical arms in `msg.rs` settle a pre-flight check by ticket,
+   and each is listed again in the generation-guard match. S–M. *0.48.0
+   architecture review.*
+
+   Done 2026-10-31: six variants, not five (`DryRunResult` is the same
+   shape), are one `AppMsg::Preflight { gen, key, ticket, answer }` with
+   `PreflightAnswer`, settled by `settle_preflight`; 24 senders rewritten
+   by a brace-matching script and checked for dropped comments (none).
+   The generation match is exhaustive, so dropping the variant from it
+   does not compile; `region.rs`'s per-check test still drives all six.

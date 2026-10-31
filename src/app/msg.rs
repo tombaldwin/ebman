@@ -39,7 +39,7 @@ impl AppMsg {
             | DetailLogs { gen, .. }
             | TextOverlay { gen, .. }
             | AppVersions { gen, .. }
-            | DryRunResult { gen, .. }
+            | Preflight { gen, .. }
             | Alarms { gen, .. }
             | WhyRedEvents { gen, .. }
             | WhyRedAlarms { gen, .. }
@@ -47,11 +47,6 @@ impl AppMsg {
             | WhyRedDeploys { gen, .. }
             | WhyRedQueues { gen, .. }
             | WhyRedDlqMessages { gen, .. }
-            | PreflightEvents { gen, .. }
-            | VersionPreview { gen, .. }
-            | HealthCheckProbe { gen, .. }
-            | UnavailabilityEstimate { gen, .. }
-            | ConfirmModalLint { gen, .. }
             | LintInputsCached { gen, .. }
             | RolloutPreflight { gen, .. }
             | RolloutDispatched { gen, .. }
@@ -167,12 +162,12 @@ impl App {
             } => self.handle_app_versions(application, deployed_label, result),
             AppMsg::UpdateCheck(latest) => self.handle_update_check(latest),
             AppMsg::AutoRollbackCheck { env, .. } => self.handle_auto_rollback_check(env),
-            AppMsg::DryRunResult {
+            AppMsg::Preflight {
                 key,
                 ticket,
-                result,
+                answer,
                 ..
-            } => self.handle_dry_run_result(key, ticket, result),
+            } => self.settle_preflight(key, ticket, answer),
             AppMsg::Alarms { env, result, .. } => self.handle_alarms(env, result),
             AppMsg::WhyRedEvents {
                 session_id, result, ..
@@ -192,58 +187,6 @@ impl App {
             AppMsg::WhyRedDlqMessages {
                 session_id, result, ..
             } => self.handle_why_red_dlq_messages(session_id, result),
-            AppMsg::PreflightEvents {
-                key,
-                ticket,
-                result,
-                ..
-            } => {
-                if let Some(p) = self.preflight_for(&key) {
-                    p.events.settle_ticket(ticket, result);
-                }
-            }
-            AppMsg::VersionPreview {
-                key,
-                ticket,
-                result,
-                ..
-            } => {
-                if let Some(p) = self.preflight_for(&key) {
-                    p.version_preview.settle_ticket(ticket, result);
-                }
-            }
-            AppMsg::HealthCheckProbe {
-                key,
-                ticket,
-                result,
-                ..
-            } => {
-                if let Some(p) = self.preflight_for(&key) {
-                    p.health_check.settle_ticket(ticket, result);
-                }
-            }
-            AppMsg::UnavailabilityEstimate {
-                key, ticket, line, ..
-            } => {
-                // `None` is a failed settings fetch, which renders as
-                // nothing: the estimate is observability, not safety.
-                if let Some(p) = self.preflight_for(&key) {
-                    let line = line.ok_or_else(|| "no deployment settings".to_string());
-                    p.unavailability.settle_ticket(ticket, line);
-                }
-            }
-            AppMsg::ConfirmModalLint {
-                key,
-                ticket,
-                issues,
-                not_run,
-                ..
-            } => {
-                if let Some(p) = self.preflight_for(&key) {
-                    let lint = ConfirmLint { issues, not_run };
-                    p.lint.settle_ticket(ticket, Ok(lint));
-                }
-            }
             AppMsg::LintInputsCached {
                 key, tags, healthy, ..
             } => self.handle_lint_inputs_cached(key, tags, healthy),
@@ -792,27 +735,47 @@ impl App {
         }
     }
 
-    fn handle_dry_run_result(
-        &mut self,
-        key: EnvKey,
-        ticket: Ticket,
-        result: Result<Vec<Instance>, String>,
-    ) {
-        let Some(preflight) = self.preflight_for(&key) else {
+    /// Settle one pre-flight check's answer on the modal open for `key`,
+    /// if the ticket is still the latest for that check.
+    fn settle_preflight(&mut self, key: EnvKey, ticket: Ticket, answer: PreflightAnswer) {
+        let Some(p) = self.preflight_for(&key) else {
             return;
         };
-        let info = result.map(|instances| {
-            let azs: std::collections::HashSet<&str> = instances
-                .iter()
-                .map(|i| i.availability_zone.as_str())
-                .filter(|az| !az.is_empty())
-                .collect();
-            DryRunInfo {
-                instance_count: instances.len(),
-                az_count: azs.len(),
+        match answer {
+            PreflightAnswer::DryRun(result) => {
+                let info = result.map(|instances| {
+                    let azs: std::collections::HashSet<&str> = instances
+                        .iter()
+                        .map(|i| i.availability_zone.as_str())
+                        .filter(|az| !az.is_empty())
+                        .collect();
+                    DryRunInfo {
+                        instance_count: instances.len(),
+                        az_count: azs.len(),
+                    }
+                });
+                p.dryrun.settle_ticket(ticket, info);
             }
-        });
-        preflight.dryrun.settle_ticket(ticket, info);
+            PreflightAnswer::Events(result) => {
+                p.events.settle_ticket(ticket, result);
+            }
+            PreflightAnswer::VersionPreview(result) => {
+                p.version_preview.settle_ticket(ticket, result);
+            }
+            PreflightAnswer::HealthCheck(result) => {
+                p.health_check.settle_ticket(ticket, result);
+            }
+            PreflightAnswer::Unavailability(line) => {
+                // `None` is a failed settings fetch, which renders as
+                // nothing: the estimate is observability, not safety.
+                let line = line.ok_or_else(|| "no deployment settings".to_string());
+                p.unavailability.settle_ticket(ticket, line);
+            }
+            PreflightAnswer::Lint { issues, not_run } => {
+                p.lint
+                    .settle_ticket(ticket, Ok(ConfirmLint { issues, not_run }));
+            }
+        }
     }
 
     fn handle_alarms(&mut self, env: EnvKey, result: Result<Vec<CwAlarm>, String>) {
