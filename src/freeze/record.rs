@@ -28,15 +28,7 @@ impl EndedFreeze {
 }
 
 pub(super) fn write_ended_at(path: &Path, m: &FreezeMarker) {
-    let body = format!(
-        "{{\"pid\":{},\"reason\":{},\"incident\":{},\"at\":{},\"ended_at\":{}}}\n",
-        m.pid,
-        crate::util::json_string(&m.reason),
-        m.incident,
-        crate::util::json_string(&m.at),
-        crate::util::json_string(&chrono::Utc::now().to_rfc3339()),
-    );
-    if let Err(e) = crate::util::write_secure(path, body.as_bytes()) {
+    if let Err(e) = write_record(path, m, "ended_at", chrono::Utc::now()) {
         tracing::warn!(error = %e, "could not record that a freeze ended with its session");
     }
 }
@@ -45,14 +37,8 @@ pub(super) fn read_ended_at(
     path: &Path,
     now: chrono::DateTime<chrono::Utc>,
 ) -> Option<EndedFreeze> {
-    let text = std::fs::read_to_string(path).ok()?;
-    let marker = parse_marker(&text)?;
-    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
-    let ended_at = chrono::DateTime::parse_from_rfc3339(v.get("ended_at")?.as_str()?)
-        .ok()?
-        .with_timezone(&chrono::Utc);
-    (now.signed_duration_since(ended_at).num_hours() < ENDED_REPORT_HOURS)
-        .then_some(EndedFreeze { marker, ended_at })
+    let (marker, ended_at) = read_record(path, "ended_at")?;
+    within(now, ended_at, ENDED_REPORT_HOURS * 3600).then_some(EndedFreeze { marker, ended_at })
 }
 
 /// How long an operator's thaw binds `freeze_fleet`. A constant, not a
@@ -91,29 +77,7 @@ pub(super) fn write_thawed_at(
     m: &FreezeMarker,
     thawed_at: chrono::DateTime<chrono::Utc>,
 ) {
-    let mut v = serde_json::json!({
-        "pid": m.pid,
-        "reason": m.reason,
-        "incident": m.incident,
-        "at": m.at,
-        "persistent": m.persistent,
-        "thawed_at": thawed_at.to_rfc3339(),
-    });
-    if let Some(agent) = &m.agent {
-        v["agent"] = serde_json::Value::String(agent.clone());
-    }
-    // Temp then rename, as the markers are: written in place, a reader
-    // between the truncate and the write saw an empty record, so no hold.
-    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let tmp = path.with_extension(format!(
-        "tmp.{}.{}",
-        std::process::id(),
-        SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-    ));
-    let written = crate::util::write_secure(&tmp, format!("{v}\n").as_bytes())
-        .and_then(|()| std::fs::rename(&tmp, path));
-    if let Err(e) = written {
-        let _ = std::fs::remove_file(&tmp);
+    if let Err(e) = write_record(path, m, "thawed_at", thawed_at) {
         // Said, not swallowed: without the record an agent can freeze
         // again at once, which is the loop this exists to stop.
         tracing::warn!(error = %e, "could not record a thaw; freeze_fleet is not held off");
@@ -126,17 +90,67 @@ pub(super) fn read_thawed_at(
     path: &Path,
     now: chrono::DateTime<chrono::Utc>,
 ) -> Option<ThawedFreeze> {
+    let (marker, thawed_at) = read_record(path, "thawed_at")?;
+    within(now, thawed_at, THAW_HOLDS_MINS * 60).then_some(ThawedFreeze { marker, thawed_at })
+}
+
+/// Write `m` to `path` with `key` saying when, as both records are: the
+/// marker's own fields, so it parses as one, and a timestamp.
+///
+/// Temp then rename, as the markers are: written in place, a reader
+/// between the truncate and the write saw an empty record (for a thaw,
+/// no hold). The ended record was written in place, and hand-formatted
+/// apart from the thaw's `json!`.
+fn write_record(
+    path: &Path,
+    m: &FreezeMarker,
+    key: &str,
+    when: chrono::DateTime<chrono::Utc>,
+) -> std::io::Result<()> {
+    let mut v = serde_json::json!({
+        "pid": m.pid,
+        "reason": m.reason,
+        "incident": m.incident,
+        "at": m.at,
+        "persistent": m.persistent,
+    });
+    v[key] = serde_json::Value::String(when.to_rfc3339());
+    if let Some(agent) = &m.agent {
+        v["agent"] = serde_json::Value::String(agent.clone());
+    }
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let tmp = path.with_extension(format!(
+        "tmp.{}.{}",
+        std::process::id(),
+        SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    let written = crate::util::write_secure(&tmp, format!("{v}\n").as_bytes())
+        .and_then(|()| std::fs::rename(&tmp, path));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    written
+}
+
+/// The marker and the `key` timestamp a record holds; `None` when either
+/// is missing or unreadable.
+fn read_record(path: &Path, key: &str) -> Option<(FreezeMarker, chrono::DateTime<chrono::Utc>)> {
     let text = std::fs::read_to_string(path).ok()?;
     let marker = parse_marker(&text)?;
     let v: serde_json::Value = serde_json::from_str(&text).ok()?;
-    let thawed_at = chrono::DateTime::parse_from_rfc3339(v.get("thawed_at")?.as_str()?)
+    let when = chrono::DateTime::parse_from_rfc3339(v.get(key)?.as_str()?)
         .ok()?
         .with_timezone(&chrono::Utc);
-    // Bounded below too: a record from the future (a clock stepped
-    // back, a record copied from another host) held until the clock
-    // passed it, however far that was.
-    let age = now.signed_duration_since(thawed_at).num_seconds();
-    (-START_SLACK_SECS..THAW_HOLDS_MINS * 60)
-        .contains(&age)
-        .then_some(ThawedFreeze { marker, thawed_at })
+    Some((marker, when))
+}
+
+/// Is `when` less than `secs` ago? Bounded below too: a record from the
+/// future (a clock stepped back, a record copied from another host)
+/// held until the clock passed it, however far that was.
+fn within(
+    now: chrono::DateTime<chrono::Utc>,
+    when: chrono::DateTime<chrono::Utc>,
+    secs: i64,
+) -> bool {
+    (-START_SLACK_SECS..secs).contains(&now.signed_duration_since(when).num_seconds())
 }

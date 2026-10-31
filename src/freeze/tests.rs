@@ -124,11 +124,28 @@ fn a_dead_sessions_freeze_is_reaped_and_recorded() {
         "{}",
         ended.message()
     );
-    let later = chrono::Utc::now() + chrono::Duration::hours(ENDED_REPORT_HOURS);
+    let at = ended.ended_at;
+    let path = s.ended_file();
+    let day = chrono::Duration::hours(ENDED_REPORT_HOURS);
+    let second = chrono::Duration::seconds(1);
     assert!(
-        read_ended_at(&s.ended_file(), later).is_none(),
+        read_ended_at(&path, at + day - second).is_some(),
         "reported for a day"
     );
+    assert!(read_ended_at(&path, at + day).is_none(), "and no longer");
+    let slack = chrono::Duration::seconds(START_SLACK_SECS);
+    assert!(
+        read_ended_at(&path, at - slack).is_some(),
+        "a clock a little behind"
+    );
+    assert!(
+        read_ended_at(&path, at - slack - second).is_none(),
+        "a record from further in the future is not reported for days"
+    );
+    // The record carries the marker whole, as the thaw record does.
+    let text = std::fs::read_to_string(&path).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(v["persistent"], false, "{text}");
     done(&s);
 }
 
