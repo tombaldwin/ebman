@@ -316,6 +316,25 @@ impl AwsClient {
         target_name: &str,
         spec: &crate::config::AccountSpec,
     ) -> Result<Self> {
+        let mut client =
+            Self::assume_role_with(spec, &format!("ebman-{target_name}"), None).await?;
+        // Track the friendly account name as the "profile" breadcrumb so
+        // the header reads `account=prod` rather than the source profile
+        // name (which is just the launchpad, not the destination).
+        client.context.profile = Some(target_name.to_string());
+        Ok(client)
+    }
+
+    /// [`assume_role`](Self::assume_role) with the session's name and
+    /// lifetime chosen by the caller: the one STS path, so the MCP write
+    /// role (assume-role slice 3: a 900-second session named for the
+    /// write) and the `:account` switch cannot drift into two. `None`
+    /// takes STS's default lifetime.
+    pub(crate) async fn assume_role_with(
+        spec: &crate::config::AccountSpec,
+        session_name: &str,
+        duration_secs: Option<i32>,
+    ) -> Result<Self> {
         // `with` is offline under test; this read `~/.aws` and called
         // STS with the developer's credentials. Under `:account NAME` a
         // Detail or `:why` on a row in another region reaches it through
@@ -339,11 +358,11 @@ impl AwsClient {
 
         // Stage 2: STS:AssumeRole against the configured role.
         let sts = StsClient::new(&base_config);
-        let session_name = format!("ebman-{target_name}");
         let mut req = sts
             .assume_role()
             .role_arn(spec.role_arn.clone())
-            .role_session_name(session_name);
+            .role_session_name(session_name)
+            .set_duration_seconds(duration_secs);
         if let Some(eid) = spec.external_id.as_ref() {
             req = req.external_id(eid.clone());
         }
@@ -394,11 +413,8 @@ impl AwsClient {
             config,
             context: AwsContext {
                 region,
-                // Track the friendly account name as the "profile"
-                // breadcrumb so the header reads `account=prod` rather
-                // than the source profile name (which is just the
-                // launchpad, not the destination).
-                profile: Some(target_name.to_string()),
+                // The launchpad; `assume_role` names the destination.
+                profile: spec.source_profile.clone(),
                 account_id: None,
                 caller_arn: None,
             },
