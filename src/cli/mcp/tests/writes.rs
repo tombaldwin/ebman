@@ -89,6 +89,7 @@ fn a_superseded_token_says_so_rather_than_unknown() {
         dlq_url: None,
         dlq_main_url: None,
         role_check: crate::config::RoleCheck::Unmapped { required: false },
+        role: None,
     };
     st.install(plan("tok-a"));
     assert!(st.retired.is_empty(), "the first plan replaces nothing");
@@ -362,7 +363,7 @@ async fn the_role_config_gates_mcp_writes() {
         .tool_write_plan(WriteVerb::Restart, &json!({"env": env}))
         .await
         .expect_err("an unreadable role config refuses every write");
-    assert!(err.to_string().contains("more than one role"), "{err}");
+    assert!(err.to_string().contains("two roles in account"), "{err}");
     let lines = crate::audit::delta::lines_for(&before, env);
     assert!(
         lines
@@ -610,6 +611,7 @@ async fn the_confirm_gate_refuses_a_plan_outside_the_scope() {
             dlq_url: None,
             dlq_main_url: None,
             role_check: crate::config::RoleCheck::Unmapped { required: false },
+            role: None,
         });
     }
 
@@ -1881,6 +1883,7 @@ fn a_batch_ask_enumerates_the_messages() {
         dlq_url: Some("https://sqs/q-dlq".into()),
         dlq_main_url: None,
         role_check: crate::config::RoleCheck::Unmapped { required: false },
+        role: None,
     };
     let summary = ask_summary(&p);
     for i in 1..=3 {
@@ -2033,6 +2036,7 @@ fn the_ask_says_whose_credentials_it_would_use() {
         dlq_url: None,
         dlq_main_url: None,
         role_check: crate::config::RoleCheck::Unmapped { required: false },
+        role: None,
     };
     let s = ask_summary(&p);
     assert!(
@@ -2068,7 +2072,10 @@ fn role_check_for(cfg: &crate::config::Config, verb: WriteVerb) -> crate::config
 
 /// The role a server with `cfg` resolves for `verb`.
 fn plan_role(cfg: &crate::config::Config, verb: WriteVerb) -> Option<PlanRole> {
-    PlanRole::from_check(&role_check_for(cfg, verb))
+    match role_check_for(cfg, verb) {
+        crate::config::RoleCheck::Mapped { roles } => roles.first().map(PlanRole::from_mapped),
+        _ => None,
+    }
 }
 
 /// The role a verb maps to, with its account and name from the ARN;
@@ -2103,7 +2110,16 @@ fn a_plan_resolves_the_role_its_verb_maps_to() {
 /// the identity; with neither, the role cannot be checked and refuses.
 #[test]
 fn a_role_is_checked_against_the_env_s_account() {
-    let role = plan_role(&role_cfg("111122223333"), WriteVerb::Restart).unwrap();
+    let crate::config::RoleCheck::Mapped { roles } =
+        role_check_for(&role_cfg("111122223333"), WriteVerb::Restart)
+    else {
+        panic!("mapped");
+    };
+    let role = PlanRole::from_mapped(&roles[0]);
+    let role_account_refusal =
+        |_: &PlanRole, env: &crate::aws::Environment, caller: &CallerIdentity| {
+            role_for_env(&roles, env, caller).err()
+        };
     let env = |arn: Option<&str>| crate::aws::Environment {
         arn: arn.map(String::from),
         ..crate::demo_fixture::envs().remove(0)
@@ -2166,10 +2182,10 @@ fn a_role_is_checked_against_the_env_s_account() {
     assert_eq!(refusal.rule().as_str(), "role_account_unknown");
     assert!(
         refusal
-            .message(WriteVerb::Restart, "poly-api", &role)
+            .message(WriteVerb::Restart, "poly-api", &roles)
             .contains("cannot tell which account poly-api is in"),
         "{}",
-        refusal.message(WriteVerb::Restart, "poly-api", &role)
+        refusal.message(WriteVerb::Restart, "poly-api", &roles)
     );
     assert!(refusal.remedy().contains("sts:GetCallerIdentity"));
 }
@@ -2385,7 +2401,7 @@ fn a_long_identity_never_cuts_the_role_sentence() {
     p.caller = CallerIdentity::Unknown {
         why: "x".repeat(300),
     };
-    p.role_check = role_check_for(&role_cfg("123456789012"), WriteVerb::Restart);
+    p.role = plan_role(&role_cfg("123456789012"), WriteVerb::Restart);
     let ask = ask_summary(&p);
     assert!(
         ask.contains("which this ebman does not assume yet, so it goes out as that identity"),
@@ -2398,8 +2414,8 @@ fn a_long_identity_never_cuts_the_role_sentence() {
     let mut cfg = role_cfg("123456789012");
     cfg.mcp_roles.get_mut("deploys").unwrap().role_arn =
         format!("arn:aws:iam::123456789012:role/{path}EbmanAgentDeploy");
-    p.role_check = role_check_for(&cfg, WriteVerb::Restart);
-    let arn = p.role().expect("mapped").arn;
+    p.role = plan_role(&cfg, WriteVerb::Restart);
+    let arn = p.role().expect("mapped").arn.clone();
     assert!(arn.len() > 120, "longer than a capped field");
     assert!(ask_summary(&p).contains(&arn), "{}", ask_summary(&p));
 }
@@ -2419,8 +2435,7 @@ async fn a_role_in_another_account_refuses_the_plan() {
         "was not planned",
         "role `EbmanAgentDeploy`",
         "in account 111122223333",
-        "poly-batch is in account 123456789012",
-        "writes in account 123456789012 cannot use this mapping",
+        "poly-batch is in account 123456789012, where no role lists it",
     ] {
         assert!(text.contains(part), "{part}: {text}");
     }
@@ -2428,6 +2443,30 @@ async fn a_role_in_another_account_refuses_the_plan() {
         s.writes.lock().await.pending.is_none(),
         "nothing to confirm"
     );
+}
+
+/// With a role in each of two accounts, the plan takes the one in the
+/// env's account, names it, and the pending write carries it for
+/// confirm (and slice 3) to use.
+#[tokio::test]
+async fn a_plan_picks_the_role_in_the_env_s_account() {
+    let cfg = crate::config::parse(
+        "mcp.role.other.role_arn = \"arn:aws:iam::111122223333:role/Other\"\n\
+         mcp.role.other.verbs = \"restart\"\n\
+         mcp.role.here.role_arn = \"arn:aws:iam::123456789012:role/Here\"\n\
+         mcp.role.here.verbs = \"restart\"\n",
+    );
+    let s = Server::with_config(true, false, WriteScope::All, cfg);
+    let plan = s
+        .tool_write_plan(WriteVerb::Restart, &json!({"env": "poly-batch"}))
+        .await
+        .expect("a role is in the env's account");
+    let v: Value = serde_json::from_str(&plan).unwrap();
+    assert_eq!(v["plan"]["role"]["config"], "mcp.role.here", "{plan}");
+    assert_eq!(v["plan"]["role"]["account"], "123456789012", "{plan}");
+    let st = s.writes.lock().await;
+    let role = st.pending.as_ref().and_then(|p| p.role()).expect("carried");
+    assert_eq!(role.key, "here");
 }
 
 /// Every policy refusal is a `Refused`; nothing else is.
@@ -2735,6 +2774,7 @@ fn pending_for(verb: WriteVerb) -> PendingWrite {
         dlq_url: None,
         dlq_main_url: None,
         role_check: crate::config::RoleCheck::Unmapped { required: false },
+        role: None,
     }
 }
 

@@ -415,14 +415,14 @@ after the identity; for any other verb `role` is `null`. This build does
 not assume the role yet: `assumed` is `false` and the dialog says the
 write goes out as the identity above.
 
-The role is checked against the environment's account, read from the
-environment's ARN, or failing that from the identity, before anything
-else about the write is read. A role in another account refuses the
-plan with both accounts named (`rule=role_wrong_account`): a verb's role
-is in one account, so writes in any other account cannot use that
-mapping. With neither the ARN nor the identity saying which account the
-environment is in, the plan refuses (`rule=role_account_unknown`) rather
-than go ahead unchecked.
+A verb may have a role in each account; the plan takes the one in the
+environment's account, read from the environment's ARN, or failing that
+from the identity, before anything else about the write is read. With
+no role for the verb in that account, the plan refuses, naming the
+roles and the environment's account (`rule=role_wrong_account`). With
+neither the ARN nor the identity saying which account the environment
+is in, the plan refuses (`rule=role_account_unknown`) rather than go
+ahead unchecked. The role the plan picked is the one confirm uses.
 
 The confirmation **enumerates** them — task and id per line — rather
 than saying "2 messages". A count is something to agree with; a list is

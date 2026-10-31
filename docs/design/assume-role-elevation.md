@@ -78,10 +78,19 @@ mcp.role.dlq.verbs = "dlq_resend,dlq_delete,dlq_purge"
 The keys follow `accounts.NAME.*`, and they reuse `AccountSpec` for
 `role_arn`, `external_id` and `source_profile`. A verb in no role's
 list goes out under the base credentials, as today, unless D6's strict
-mode is on. A verb in two roles' lists is a config error, and it fails
-closed: every MCP write refuses until it is fixed, as an unreadable
-`safety.` line does. Choosing one silently would be the fail-open the
-safety parser was rewritten to stop.
+mode is on. A verb in two roles' lists **in one account** is a config
+error, and it fails closed: every MCP write refuses until it is fixed,
+as an unreadable `safety.` line does. Choosing one silently would be the
+fail-open the safety parser was rewritten to stop.
+
+*Amended 2026-10-31 (ruled):* roles in **different** accounts may list
+the same verb, and the plan takes the one in the environment's account.
+`profile` is per call, so an agent reaching several accounts is the
+normal case, and one role per verb made every other account's writes
+refuse (the only remedy, dropping the verb from the role, removed the
+ceiling everywhere). An environment in an account no role for the verb
+is in still refuses (`role_wrong_account`); the plan stores the role it
+picked, and confirm and slice 3 use that one.
 
 `terminate` is deliberately absent from the example, not from the
 design. It can be mapped like any other verb.

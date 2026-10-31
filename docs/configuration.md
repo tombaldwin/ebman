@@ -270,10 +270,11 @@ safety.accounts.prod.read_only = true
 # array. `source_profile` and `external_id` mean what they do for
 # `accounts.NAME.*`.
 #
-# A verb has one role, so with a role mapped, that verb's MCP writes are
-# for the role's account: a plan for an environment in another account
-# refuses (`rule=role_wrong_account`), as does one whose account ebman
-# cannot tell (`rule=role_account_unknown`).
+# A verb may have one role per account: the plan takes the role in the
+# environment's account. With roles mapped for a verb, a plan for an
+# environment in an account none of them is in refuses
+# (`rule=role_wrong_account`), as does one whose account ebman cannot
+# tell (`rule=role_account_unknown`).
 #
 # NOT YET A CEILING. This build reads and checks the mapping, names the
 # role in the plan and the confirmation, and checks it against the
@@ -282,7 +283,8 @@ safety.accounts.prod.read_only = true
 # confirmation says so: the AssumeRole call comes in a later slice. Do
 # not rely on a role's policy limiting anything yet.
 #
-# Fails closed: a verb two roles list, a verb that is no MCP tool, or a
+# Fails closed: a verb two roles in one account list, a verb that is no
+# MCP tool, or a
 # role with no role_arn, or one that is not an IAM role ARN
 # (arn:PARTITION:iam::ACCOUNT:role/[PATH/]NAME, by IAM's own rules),
 # makes every MCP write refuse

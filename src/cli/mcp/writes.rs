@@ -473,7 +473,7 @@ pub(super) fn ask_summary(p: &PendingWrite) -> String {
         // before destroying something.
         sanitize(&p.caller.line(), Shown::ASK),
         // Its own slot: see `PlanRole::line`.
-        p.role().as_ref().map(PlanRole::line).unwrap_or_default(),
+        p.role().map(PlanRole::line).unwrap_or_default(),
         // `dlq_visible` is carried on the plan so a purge dialog can
         // say how much it destroys. Passing `None` here rendered
         // "every message in the queue" with no number, while the plan
@@ -1238,17 +1238,18 @@ pub(super) struct PendingWrite {
     /// worker. The TUI always used the reported main queue.
     pub dlq_main_url: Option<String>,
     /// What the role config said of the verb at plan time. Confirm
-    /// re-gates on THIS, so plan and confirm agree by construction, and
-    /// the role the confirmation names ([`PendingWrite::role`]) is the
-    /// one slice 3 assumes.
+    /// re-gates on THIS, so plan and confirm agree by construction.
     pub role_check: crate::config::RoleCheck,
+    /// The role the plan picked for the env's account, of those listing
+    /// the verb: what the confirmation names and what slice 3 assumes,
+    /// never picked again at confirm. `None` for a verb no role lists.
+    pub role: Option<PlanRole>,
 }
 
 impl PendingWrite {
-    /// The role the verb maps to (`mcp.role.NAME.verbs`), as planned;
-    /// `None` for a verb no role lists.
-    pub(super) fn role(&self) -> Option<PlanRole> {
-        PlanRole::from_check(&self.role_check)
+    /// The role the plan picked (`mcp.role.NAME`), if the verb has one.
+    pub(super) fn role(&self) -> Option<&PlanRole> {
+        self.role.as_ref()
     }
 }
 
@@ -1921,24 +1922,30 @@ impl Server {
         // peeks the queue, which bumps each message's receive count,
         // and a refusal that depends only on config and the env must
         // not cost that.
-        let role = PlanRole::from_check(&role_check);
-        if let Some(r) = &role {
-            if let Some(refusal) = role_account_refusal(r, &env, &caller) {
-                let audit_profile = profile.clone().or_else(|| self.ambient_profile.clone());
-                let region = self
-                    .audit_region(&profile, arg_str(args, "region").as_deref())
-                    .await;
-                return Err(WriteError::Refused(Audited::record(
-                    audit_profile.as_deref(),
-                    &region,
-                    verb.label(),
-                    &env.name,
-                    refusal.rule(),
-                    &refusal.remedy(),
-                    refusal.message(verb, &env.name, r),
-                )));
+        let role = match &role_check {
+            crate::config::RoleCheck::Mapped { roles } => {
+                match role_for_env(roles, &env, &caller) {
+                    Ok(r) => Some(r),
+                    Err(refusal) => {
+                        let audit_profile =
+                            profile.clone().or_else(|| self.ambient_profile.clone());
+                        let region = self
+                            .audit_region(&profile, arg_str(args, "region").as_deref())
+                            .await;
+                        return Err(WriteError::Refused(Audited::record(
+                            audit_profile.as_deref(),
+                            &region,
+                            verb.label(),
+                            &env.name,
+                            refusal.rule(),
+                            &refusal.remedy(),
+                            refusal.message(verb, &env.name, roles),
+                        )));
+                    }
+                }
             }
-        }
+            _ => None,
+        };
 
         let PlanDetails {
             version,
@@ -2005,6 +2012,7 @@ impl Server {
                 dlq_url: dlq_url.clone(),
                 dlq_main_url: dlq_main_url.clone(),
                 role_check: role_check.clone(),
+                role: role.clone(),
             });
         }
 

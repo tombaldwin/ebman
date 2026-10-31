@@ -65,19 +65,15 @@ impl PlanRole {
 }
 
 impl PlanRole {
-    /// The role a [`RoleCheck::Mapped`](crate::config::RoleCheck) names;
-    /// `None` for any other answer, which the gate has already acted on.
-    pub(super) fn from_check(check: &crate::config::RoleCheck) -> Option<PlanRole> {
-        match check {
-            crate::config::RoleCheck::Mapped { role, arn, spec } => Some(PlanRole {
-                key: role.clone(),
-                arn: arn.arn.clone(),
-                account: arn.account.clone(),
-                name: arn.name.clone(),
-                source_profile: spec.source_profile.clone(),
-                external_id: spec.external_id.clone(),
-            }),
-            _ => None,
+    /// The plan's copy of one role that lists the verb.
+    pub(super) fn from_mapped(m: &crate::config::MappedRole) -> PlanRole {
+        PlanRole {
+            key: m.role.clone(),
+            arn: m.arn.arn.clone(),
+            account: m.arn.account.clone(),
+            name: m.arn.name.clone(),
+            source_profile: m.spec.source_profile.clone(),
+            external_id: m.spec.external_id.clone(),
         }
     }
 }
@@ -94,7 +90,7 @@ fn arn_account(arn: &str) -> Option<&str> {
 /// before anyone is asked.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum RoleAccountRefusal {
-    /// The role is in another account than the env.
+    /// No role that lists the verb is in the env's account.
     WrongAccount { env_account: String },
     /// Neither the env's ARN nor the identity says which account the
     /// env is in, so a role cannot be checked against it. Closed: with
@@ -113,12 +109,9 @@ impl RoleAccountRefusal {
 
     pub(super) fn remedy(&self) -> String {
         match self {
-            // A verb has one role, so a role in another account cannot
-            // be added beside it: writes in this account cannot use the
-            // mapping at all.
             Self::WrongAccount { env_account } => format!(
-                "remove the verb from mcp.role.NAME.verbs to write in account {env_account} as \
-                 the base identity (refused under mcp.require_role)"
+                "add a role in account {env_account} that lists the verb (mcp.role.NAME.role_arn \
+                 and .verbs)"
             ),
             Self::AccountUnknown => {
                 "allow sts:GetCallerIdentity, or remove the verb from mcp.role.NAME.verbs".into()
@@ -126,46 +119,58 @@ impl RoleAccountRefusal {
         }
     }
 
-    pub(super) fn message(&self, verb: WriteVerb, env: &str, role: &PlanRole) -> String {
+    pub(super) fn message(
+        &self,
+        verb: WriteVerb,
+        env: &str,
+        roles: &[crate::config::MappedRole],
+    ) -> String {
+        let mapped = roles
+            .iter()
+            .map(|r| {
+                format!(
+                    "`{}` ({}) in account {}",
+                    r.arn.name, r.arn.arn, r.arn.account
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
         match self {
             Self::WrongAccount { env_account } => format!(
-                "{} on {env} was not planned: it maps to role `{}` ({}) in account {}, but \
-                 {env} is in account {env_account}. A verb's role is in one account, so writes \
-                 in account {env_account} cannot use this mapping.",
+                "{} on {env} was not planned: it maps to role {mapped}, but {env} is in account \
+                 {env_account}, where no role lists it.",
                 verb.label(),
-                role.name,
-                role.arn,
-                role.account,
             ),
             Self::AccountUnknown => format!(
-                "{} on {env} was not planned: it maps to role `{}` ({}) in account {}, and \
-                 ebman cannot tell which account {env} is in (no account in its ARN, and \
-                 sts:GetCallerIdentity failed), so it cannot check the role against it.",
+                "{} on {env} was not planned: it maps to role {mapped}, and ebman cannot tell \
+                 which account {env} is in (no account in its ARN, and sts:GetCallerIdentity \
+                 failed), so it cannot pick the role for it.",
                 verb.label(),
-                role.name,
-                role.arn,
-                role.account,
             ),
         }
     }
 }
 
-/// The env's account, from its ARN, or else the identity's; then
-/// whether `role` can carry the write.
-pub(super) fn role_account_refusal(
-    role: &PlanRole,
+/// The role among `roles` in the env's account: the env's account from
+/// its ARN, or else the identity's. Refused when neither says, or when no
+/// role is in that account.
+pub(super) fn role_for_env(
+    roles: &[crate::config::MappedRole],
     env: &crate::aws::Environment,
     caller: &CallerIdentity,
-) -> Option<RoleAccountRefusal> {
+) -> Result<PlanRole, RoleAccountRefusal> {
     let env_account = env.arn.as_deref().and_then(arn_account).or(match caller {
         CallerIdentity::Known { account, .. } => Some(account.as_str()),
         CallerIdentity::Unknown { .. } => None,
     });
-    match env_account {
-        None => Some(RoleAccountRefusal::AccountUnknown),
-        Some(a) if a != role.account => Some(RoleAccountRefusal::WrongAccount {
-            env_account: a.to_string(),
-        }),
-        Some(_) => None,
-    }
+    let Some(account) = env_account else {
+        return Err(RoleAccountRefusal::AccountUnknown);
+    };
+    roles
+        .iter()
+        .find(|r| r.arn.account == account)
+        .map(PlanRole::from_mapped)
+        .ok_or_else(|| RoleAccountRefusal::WrongAccount {
+            env_account: account.to_string(),
+        })
 }

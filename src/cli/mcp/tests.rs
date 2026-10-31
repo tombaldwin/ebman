@@ -3915,6 +3915,7 @@ async fn a_role_refusal_at_confirm_asks_no_one() {
             dlq_url: None,
             dlq_main_url: None,
             role_check: crate::config::RoleCheck::Unmapped { required: true },
+            role: None,
         });
     }
     let (err, out) = call(

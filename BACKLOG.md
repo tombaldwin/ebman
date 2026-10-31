@@ -189,21 +189,6 @@ Tier definitions:
   judges the macOS one (whose tests run there). The other four
   survivors of that run had tests missing and have them (65c8eec).
 
-- [ ] **MCP write roles are one account per verb.** A verb has one role
-  (two listing it make the role config unreadable), so with a role
-  mapped, that verb's MCP writes work only in the role's account: a plan
-  for an env elsewhere refuses `rule=role_wrong_account`. An operator who
-  reaches several accounts through the `profile` argument cannot map a
-  role per account. **Ruling needed** (from the slice 2 review,
-  2026-10-30): let a verb sit in several roles when their ARNs name
-  different accounts, and pick by the env's account; or keep one account
-  per verb, as documented now. The 2026-10-31 design review recommends
-  several roles per verb, chosen by account and failing closed when two
-  share one, BEFORE slice 3: `profile` is per call, so multi-account is
-  the normal case; today's remedy (drop the verb from the role) removes
-  the ceiling everywhere to write in a second account; and the change
-  reshapes `RoleCheck::Mapped`, which slice 3 reads.
-
 - [ ] **The pre-deploy lint still fetches its own way.** Since 0.45 it
   shares everything after the fetch with `:lint` / `:explain` (the
   snapshot, `lint::inputs::assemble`, `LintSnapshot::finish`), and a

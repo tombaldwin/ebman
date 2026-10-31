@@ -238,29 +238,35 @@ pub(crate) enum RoleCheck {
     /// The role config cannot be acted on: every MCP write refuses
     /// until it is fixed, as an unreadable `safety.` line does.
     Unreadable { problem: String },
-    /// The verb maps to the role `mcp.role.ROLE`: its ARN, read, and
-    /// the whole entry, so a plan carries what slice 3 assumes
-    /// (`source_profile`, `external_id`) rather than looking it up again
-    /// at confirm.
-    Mapped {
-        role: String,
-        arn: RoleArn,
-        spec: McpRole,
-    },
+    /// The verb maps to these roles, one per account and at least one;
+    /// the plan takes the one in the env's account (ruled 2026-10-31: an
+    /// operator reaches several accounts through `profile`, and one role
+    /// per verb made every other account's writes refuse).
+    Mapped { roles: Vec<MappedRole> },
     /// No role lists the verb; `required` is `mcp.require_role`.
     Unmapped { required: bool },
+}
+
+/// A role that lists a verb: `mcp.role.ROLE`, its ARN read, and the
+/// whole entry, so a plan carries what slice 3 assumes (`source_profile`,
+/// `external_id`) rather than looking it up again at confirm.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MappedRole {
+    pub role: String,
+    pub arn: RoleArn,
+    pub spec: McpRole,
 }
 
 /// What the role config says about an MCP write of `verb`, given the
 /// MCP write verbs that exist (`known`).
 ///
-/// Fails closed, never by guessing: a verb two roles list, a verb no
-/// tool has (a typo, or a TOML array where a comma list belongs) and a
-/// role with no `role_arn` each make the whole config unreadable, since
-/// choosing would be the fail-open the safety parser was rewritten to
-/// stop.
+/// Fails closed, never by guessing: a verb two roles in ONE account list,
+/// a verb no tool has (a typo, or a TOML array where a comma list
+/// belongs) and a role with no `role_arn` each make the whole config
+/// unreadable, since choosing would be the fail-open the safety parser
+/// was rewritten to stop. Roles in different accounts may share a verb:
+/// the env's account picks between them.
 pub(crate) fn mcp_role_check(cfg: &Config, verb: &str, known: &[&str]) -> RoleCheck {
-    let mut owner: Option<&str> = None;
     for (name, role) in &cfg.mcp_roles {
         if role.role_arn.is_empty() {
             return RoleCheck::Unreadable {
@@ -293,46 +299,45 @@ pub(crate) fn mcp_role_check(cfg: &Config, verb: &str, known: &[&str]) -> RoleCh
             }
         }
     }
+    let mut mapped: Vec<MappedRole> = Vec::new();
     for name_v in known {
-        let owners: Vec<&str> = cfg
+        let owners: Vec<MappedRole> = cfg
             .mcp_roles
             .iter()
             .filter(|(_, r)| r.verbs.iter().any(|v| v == name_v))
-            .map(|(n, _)| n.as_str())
+            .filter_map(|(n, r)| {
+                parse_role_arn(&r.role_arn).map(|arn| MappedRole {
+                    role: n.clone(),
+                    arn,
+                    spec: r.clone(),
+                })
+            })
             .collect();
-        if owners.len() > 1 {
-            return RoleCheck::Unreadable {
-                problem: format!(
-                    "`{name_v}` is listed by more than one role ({}); a verb has one role",
-                    owners.join(", ")
-                ),
-            };
+        for (i, a) in owners.iter().enumerate() {
+            if let Some(b) = owners[i + 1..]
+                .iter()
+                .find(|b| b.arn.account == a.arn.account)
+            {
+                return RoleCheck::Unreadable {
+                    problem: format!(
+                        "`{name_v}` is listed by two roles in account {} ({}, {}); a verb has \
+                         one role per account",
+                        a.arn.account, a.role, b.role
+                    ),
+                };
+            }
         }
         if *name_v == verb {
-            owner = owners.first().copied();
+            mapped = owners;
         }
     }
-    // Parsed above for every role, so this cannot be `None`; were the
-    // two ever to drift, unreadable is the closed answer, never
-    // "unmapped".
-    match owner {
-        Some(role) => match cfg
-            .mcp_roles
-            .get(role)
-            .and_then(|r| parse_role_arn(&r.role_arn).map(|arn| (arn, r.clone())))
-        {
-            Some((arn, spec)) => RoleCheck::Mapped {
-                role: role.to_string(),
-                arn,
-                spec,
-            },
-            None => RoleCheck::Unreadable {
-                problem: format!("mcp.role.{role} could not be read"),
-            },
-        },
-        None => RoleCheck::Unmapped {
+    // Every role's ARN parsed above, so none was dropped here.
+    if mapped.is_empty() {
+        RoleCheck::Unmapped {
             required: cfg.mcp_require_role,
-        },
+        }
+    } else {
+        RoleCheck::Mapped { roles: mapped }
     }
 }
 
@@ -1470,15 +1475,34 @@ mod tests {
         assert_eq!(
             mcp_role_check(&cfg, "deploy", VERBS),
             RoleCheck::Mapped {
-                role: "deploys".into(),
-                arn: RoleArn {
-                    arn: "arn:aws:iam::111122223333:role/R".into(),
-                    account: "111122223333".into(),
-                    name: "R".into(),
-                },
-                spec: cfg.mcp_roles["deploys"].clone(),
+                roles: vec![MappedRole {
+                    role: "deploys".into(),
+                    arn: RoleArn {
+                        arn: "arn:aws:iam::111122223333:role/R".into(),
+                        account: "111122223333".into(),
+                        name: "R".into(),
+                    },
+                    spec: cfg.mcp_roles["deploys"].clone(),
+                }],
             }
         );
+        // Roles in two accounts may list the same verb: both are offered,
+        // and the plan picks by the env's account.
+        let two = parse(
+            "mcp.role.prod.role_arn = \"arn:aws:iam::111122223333:role/P\"\n\
+             mcp.role.prod.verbs = \"deploy\"\n\
+             mcp.role.stage.role_arn = \"arn:aws:iam::444455556666:role/S\"\n\
+             mcp.role.stage.verbs = \"deploy,restart\"\n",
+        );
+        let RoleCheck::Mapped { roles } = mcp_role_check(&two, "deploy", VERBS) else {
+            panic!("mapped");
+        };
+        let accounts: Vec<&str> = roles.iter().map(|r| r.arn.account.as_str()).collect();
+        assert_eq!(accounts, ["111122223333", "444455556666"]);
+        let RoleCheck::Mapped { roles } = mcp_role_check(&two, "restart", VERBS) else {
+            panic!("mapped");
+        };
+        assert_eq!(roles.len(), 1);
         assert_eq!(
             mcp_role_check(&cfg, "terminate", VERBS),
             RoleCheck::Unmapped { required: false }
@@ -1518,7 +1542,7 @@ mod tests {
         unreadable(
             "mcp.role.a.role_arn = \"arn:aws:iam::111122223333:role/A\"\nmcp.role.a.verbs = \"deploy\"\n\
              mcp.role.b.role_arn = \"arn:aws:iam::111122223333:role/B\"\nmcp.role.b.verbs = \"deploy\"\n",
-            "more than one role (a, b)",
+            "two roles in account 111122223333 (a, b)",
         );
         unreadable(
             "mcp.role.a.role_arn = \"arn:aws:iam::111122223333:role/A\"\nmcp.role.a.verbs = \"deplo\"\n",
