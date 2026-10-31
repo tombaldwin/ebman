@@ -200,6 +200,19 @@ Tier definitions:
   purpose today (pin profile, call profile, none): settle that first.
   From the 2026-10-31 design review.
 
+- [ ] **Mutants the Linux runner can never kill.** The push of a83ec02
+  (the freeze split) judged `freeze/liveness.rs` whole and reported 11
+  survivors no test can reach on that runner: 10 in code compiled out on
+  Linux (`#[cfg(not(unix))] pid_alive`, the macOS and other-OS
+  `process_start_epoch`), and `main -> Ok(())`, since the job runs
+  `-- --lib` and never builds the binary. They come back whenever a push
+  touches those lines. **Ruling needed** (allowlists are the
+  maintainer's): the in-diff job takes `--exclude src/main.rs` as the
+  weekly sweep already does, for the reason its comment gives; and the
+  cfg'd platform functions get `exclude_re` entries, or a macOS shard
+  judges the macOS one (whose tests run there). The other four
+  survivors of that run had tests missing and have them (65c8eec).
+
 - [ ] **The freeze audit lines disagree on field names.** The TUI's
   `IncidentStart` / `IncidentEnd` record the headline as `headline=`;
   `ebman freeze --incident` and `freeze_fleet` record `reason=`, with
