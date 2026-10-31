@@ -94,11 +94,6 @@ Tier definitions:
   to the audit vocabulary. The structural fix: `append_action_*` takes
   `AuditLabel::{Shared(Verb), Local(&'static str)}` so the compiler
   enforces it (~40 call sites). *0.45 release review.*
-- [ ] **Move the lint-input tests next to `lint/inputs.rs`.**
-  `probe_outcome_tests`, `disabled_rule_probes` and `lost_coverage` in
-  `src/cli/lint.rs` test code that moved to `lint/inputs.rs` in 0.45.
-  Separately, `apply_fixes_for_env` is production code sitting after
-  ~1,100 lines of test modules in `cli/lint.rs`. *0.45 release review.*
 - [ ] **Coverage gaps are untyped strings.** `explain_verdict`
   identifies a warning by its first word; today one formatter,
   `ProbeOutcome::coverage_warning`, produces every warning it sees, so
@@ -133,22 +128,6 @@ Tier definitions:
   lint uses it. The 0.48.0 architecture review recommends (a): it says
   what each body uses and keeps lint's precedence tests on its own
   config. M. Needs the maintainer's ruling (two reasonable shapes).
-- [ ] **The CLI gate subsystem to `src/cli/write_env.rs`.**
-  `cli/mod.rs` grew 786 → 1016 lines and now holds `WriteEnv`,
-  `GateQuery`, `WriteGate`, `RealGate`, `write_refusal*`,
-  `freeze_refuses_run` and their guards; `audit_delta` (test-only)
-  belongs beside `audit::rotated_path` or in test support. Keep the
-  source guards' module paths in step. S. *0.48.0 architecture review.*
-- [ ] **`DlqState::open(..)` and `DlqState::viewed_url()`.** The struct
-  is built field by field in three places (0.48.0 added two fields to
-  each), and "the URL of the queue on screen" is spelled out four
-  times. S. *0.48.0 architecture review.*
-- [ ] **One `AppMsg::Preflight { key, ticket, answer }`.** Five
-  near-identical arms in `msg.rs` settle a pre-flight check by ticket,
-  and each is listed again in the generation-guard match. S–M. *0.48.0
-  architecture review.*
-
-
 - [ ] **Merged doc comments on `pub(crate)` items are still
   unguarded.** 0.42.0 closed this for the PUBLIC surface —
   `#![warn(missing_docs)]` in `lib.rs`, plus docs for the 18 public

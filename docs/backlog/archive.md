@@ -5670,3 +5670,19 @@ a `--read-only` server.
    stays put, killed by evidence:** of its three callers two are the CLI
    (`ebman thaw`, `ebman freeze --status`), and the sentence is for the
    operator; in the MCP tool the CLI would depend on `cli::mcp`.
+
+4. *(architecture)* **One test-seam shape.** `injected_client` by
+   constructor, `injected_identity` as a field, the `LINK_FAILS` /
+   `AFTER_LINK` / `TEST_HERMETIC` thread-locals: one `#[cfg(test)]
+   TestSeams` on `Server` before slice 3 adds a role-session factory,
+   and the link failure as a `FreezeStore` field beside `Liveness`, so it
+   cannot be silently off on a tokio worker thread.
+
+   Done 2026-10-31: the freeze link hooks are `FreezeStore::with_link`
+   (f6cd65e, both halves proven wired); `Server`'s three seams are one
+   `TestSeams` (5f9e567). Proving it found the identity seam load-bearing
+   in no test; 1d328e5 adds one where it decides (two mutations CAUGHT).
+   `audit`'s `TEST_HERMETIC` stays a thread-local: the audit writers are
+   free functions with no store to hold a field, and its blind spot
+   (a demo server's lines from a tokio worker thread, under test only)
+   is recorded here rather than built around.

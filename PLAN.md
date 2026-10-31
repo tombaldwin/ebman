@@ -165,16 +165,32 @@ it.*
 
 ### Next
 
-*Refilled 2026-10-31 from the design review's "later" list (moved out of
-BACKLOG.md whole; items 3 and 4 of the previous window are done and
-archived, "PLAN.md items done 2026-10-31"). Each its own change.*
+*Refilled twice on 2026-10-31: first from the design review's "later"
+list (all eight done and archived, "PLAN.md items done 2026-10-31"),
+then these four from BACKLOG.md. Each its own change.*
 
-4. *(architecture)* **One test-seam shape.** `injected_client` by
-   constructor, `injected_identity` as a field, the `LINK_FAILS` /
-   `AFTER_LINK` / `TEST_HERMETIC` thread-locals: one `#[cfg(test)]
-   TestSeams` on `Server` before slice 3 adds a role-session factory,
-   and the link failure as a `FreezeStore` field beside `Liveness`, so it
-   cannot be silently off on a tokio worker thread.
+3. *(architecture)* **The CLI gate subsystem to `src/cli/write_env.rs`.**
+   `cli/mod.rs` grew 786 → 1016 lines and now holds `WriteEnv`,
+   `GateQuery`, `WriteGate`, `RealGate`, `write_refusal*`,
+   `freeze_refuses_run` and their guards; `audit_delta` (test-only)
+   belongs beside `audit::rotated_path` or in test support. Keep the
+   source guards' module paths in step. S. *0.48.0 architecture review.*
+
+4. *(mechanical)* **`DlqState::open(..)` and `DlqState::viewed_url()`.** The struct
+   is built field by field in three places (0.48.0 added two fields to
+   each), and "the URL of the queue on screen" is spelled out four
+   times. S. *0.48.0 architecture review.*
+
+5. *(architecture)* **One `AppMsg::Preflight { key, ticket, answer }`.** Five
+   near-identical arms in `msg.rs` settle a pre-flight check by ticket,
+   and each is listed again in the generation-guard match. S–M. *0.48.0
+   architecture review.*
+
+6. *(mechanical)* **Move the lint-input tests next to `lint/inputs.rs`.**
+   `probe_outcome_tests`, `disabled_rule_probes` and `lost_coverage` in
+   `src/cli/lint.rs` test code that moved to `lint/inputs.rs` in 0.45.
+   Separately, `apply_fixes_for_env` is production code sitting after
+   ~1,100 lines of test modules in `cli/lint.rs`. *0.45 release review.*
 
 *Left in BACKLOG.md: `Server::refuse(..)` for the six `Audited::record`
 callers, whose profile choices differ on purpose and need settling
