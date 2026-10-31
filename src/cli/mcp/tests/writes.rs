@@ -1380,6 +1380,50 @@ async fn an_undo_claim_lapses_at_twice_the_tool_timeout() {
     );
 }
 
+/// At exactly the window's end a held message has expired, for every
+/// reader of the buffer: listing it, claiming it, and a failed restore
+/// handing it back. One second earlier it is still there.
+#[tokio::test(start_paused = true)]
+async fn a_held_message_expires_at_exactly_the_window() {
+    let window = std::time::Duration::from_secs(UNDO_WINDOW_SECS);
+    let second = std::time::Duration::from_secs(1);
+    let fresh = || async {
+        let s = Server::with_scope(true, false, crate::cli::mcp::WriteScope::All);
+        let p = deleted_from("poly-undo-edge", Some("https://q/edge-dlq".into()));
+        s.remember_deleted(&p, held_message("m-edge")).await;
+        s
+    };
+
+    let s = fresh().await;
+    tokio::time::advance(window - second).await;
+    assert_eq!(s.recoverable().await.len(), 1, "a second short: listed");
+    tokio::time::advance(second).await;
+    assert!(
+        s.recoverable().await.is_empty(),
+        "at the window: not listed"
+    );
+
+    let s = fresh().await;
+    tokio::time::advance(window).await;
+    assert!(
+        matches!(s.claim_for_restore("m-edge").await, Claim::NotHeld),
+        "at the window: not claimable"
+    );
+
+    // Claimed in time, restore failed exactly at the window: not held.
+    let s = fresh().await;
+    tokio::time::advance(window - second).await;
+    assert!(matches!(
+        s.claim_for_restore("m-edge").await,
+        Claim::Claimed(_)
+    ));
+    tokio::time::advance(second).await;
+    assert!(
+        !s.finish_restore("m-edge", false).await,
+        "a failed restore at the window does not hand it back"
+    );
+}
+
 /// A held message exactly a window old has expired when the next one
 /// is remembered: it must not count towards the cap and push out a
 /// message that is still recoverable. Seen with the old one claimed,
