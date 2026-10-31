@@ -1275,6 +1275,48 @@ async fn a_refusal_records_the_resolved_region_when_none_was_named() {
     }
 }
 
+/// A verb outside the write scope is refused with the region the write
+/// would have used, when the call named none, and with `-` (never
+/// `unknown`) when nothing names one.
+#[tokio::test]
+async fn a_scope_refusal_records_the_resolved_region() {
+    let env = "mcp-scope-region-probe-env";
+    let mut client = undo_client(true);
+    client.context.region = "poly-scope-1".into();
+    let s = Server::with_injected_client(
+        crate::cli::mcp::WriteScope::None,
+        crate::config::Config::default(),
+        client,
+    );
+    let before = crate::cli::audit_delta::mark();
+    let _ = s
+        .tool_write_plan(WriteVerb::Restart, &json!({"env": env}))
+        .await
+        .expect_err("not granted");
+    let bare = Server::with_config(
+        false,
+        false,
+        crate::cli::mcp::WriteScope::None,
+        crate::config::Config::default(),
+    );
+    let _ = bare
+        .tool_write_plan(WriteVerb::Restart, &json!({"env": env}))
+        .await
+        .expect_err("not granted");
+    let lines = audit_delta_for(&before, env);
+    assert_eq!(lines.len(), 2, "{lines:#?}");
+    assert!(
+        lines[0].contains("rule=not_granted") && lines[0].contains("region=poly-scope-1"),
+        "{}",
+        lines[0]
+    );
+    assert!(
+        lines[1].contains("region=-\t") || lines[1].contains("region=- "),
+        "{}",
+        lines[1]
+    );
+}
+
 /// An undo restores a message at most ONCE, and is audited.
 ///
 /// `recoverable()` hands back a copy, and the restore used to read

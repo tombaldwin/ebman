@@ -207,6 +207,30 @@ impl AwsClient {
         self.ssm.get_or_init(|| SsmClient::new(&self.config))
     }
 
+    /// The region a client for `profile` would resolve, read from the
+    /// environment and the profile file only: no SDK client, and no
+    /// instance-metadata probe, which on a host with no region
+    /// configured is seconds of timeout. `None` when neither names one.
+    /// For audit lines, which want the region a write would have gone
+    /// to without making one. Never reads the host under test.
+    pub(crate) async fn resolve_region(profile: Option<&str>) -> Option<String> {
+        if cfg!(test) {
+            return None;
+        }
+        use aws_config::meta::region::RegionProviderChain;
+        let mut file = aws_config::profile::ProfileFileRegionProvider::builder();
+        if let Some(p) = profile {
+            file = file.profile_name(p);
+        }
+        RegionProviderChain::first_try(
+            aws_config::environment::region::EnvironmentVariableRegionProvider::new(),
+        )
+        .or_else(file.build())
+        .region()
+        .await
+        .map(|r| r.to_string())
+    }
+
     /// Build the SDK client without making any network calls.
     ///
     /// Under `cfg(test)` it never reads `~/.aws` and builds no

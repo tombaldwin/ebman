@@ -206,13 +206,15 @@ impl Server {
     ///
     /// Demo writes nothing real, matching `gate_refusal`: the refusal
     /// is genuine, the fleet is not.
-    fn refused_out_of_scope(
+    async fn refused_out_of_scope(
         &self,
         verb: WriteVerb,
         env: Option<&str>,
         region: Option<&str>,
+        profile: &Option<String>,
     ) -> WriteError {
         let name = verb.tool_name();
+        let region = self.audit_region(profile, region).await;
         // On a `--read-only` server, "start it with --allow-writes" is
         // advice that produces a startup error: the two contradict and
         // are refused together. The control the operator actually has
@@ -226,7 +228,7 @@ impl Server {
             return WriteError::Refused(Audited::record(
                 matches!(self.backend, Backend::Demo),
                 None,
-                region.unwrap_or("-"),
+                &region,
                 verb.label(),
                 env.unwrap_or("-"),
                 "not_granted",
@@ -244,7 +246,7 @@ impl Server {
         WriteError::Refused(Audited::record(
             matches!(self.backend, Backend::Demo),
             None,
-            region.unwrap_or("-"),
+            &region,
             verb.label(),
             env.unwrap_or("-"),
             "not_granted",
@@ -308,12 +310,14 @@ impl Server {
         crate::config::mcp_role_check(&self.safety_cfg, verb.tool_name(), &known)
     }
 
-    /// The region a refusal line records: the one the write's client
-    /// would have resolved, as its dispatched and completed lines do.
-    /// `"-"` was written whenever the call named none, so a refusal and
-    /// a dispatch for the same default-region write disagreed. Building
-    /// the client reads the profile's config and sends nothing; a demo
-    /// server writes no line, so it builds none.
+    /// The region a refusal or ask line records: the one the write's
+    /// client would have resolved, as its dispatched and completed lines
+    /// do. `"-"` was written whenever the call named none, so a refusal
+    /// and a dispatch for the same default-region write disagreed; and
+    /// `"-"` still, never `unknown`, when nothing names one. Read from
+    /// the environment and the profile file (`aws::resolve_region`):
+    /// building a client to ask could probe instance metadata. A demo
+    /// server writes no line, so it reads nothing.
     async fn audit_region(&self, profile: &Option<String>, region: Option<&str>) -> String {
         if let Some(r) = region.filter(|r| !r.is_empty()) {
             return r.to_string();
@@ -321,14 +325,15 @@ impl Server {
         if matches!(self.backend, Backend::Demo) {
             return "-".to_string();
         }
-        let args = json!({
-            "profile": profile.clone().unwrap_or_default(),
-            "region": "",
-        });
-        self.client(&args)
+        // Under test the region comes from the injected client, as the
+        // write's own lines' does: `resolve_region` reads nothing then.
+        #[cfg(test)]
+        if let Some(c) = &self.injected_client {
+            return c.context.region.clone();
+        }
+        crate::aws::AwsClient::resolve_region(profile.as_deref())
             .await
-            .map(|c| c.context.region.clone())
-            .unwrap_or_else(|_| "-".to_string())
+            .unwrap_or_else(|| "-".to_string())
     }
 }
 
@@ -2007,11 +2012,14 @@ impl Server {
         // otherwise reach the body. Belt-and-braces, and the braces are
         // the ones that matter after a scope is narrowed.
         if !self.effective_scope().allows(verb.tool_name()) {
-            return Err(self.refused_out_of_scope(
-                verb,
-                arg_str(args, "env").as_deref(),
-                arg_str(args, "region").as_deref(),
-            ));
+            return Err(self
+                .refused_out_of_scope(
+                    verb,
+                    arg_str(args, "env").as_deref(),
+                    arg_str(args, "region").as_deref(),
+                    &arg_str(args, "profile"),
+                )
+                .await);
         }
         if self.dispatching.load(std::sync::atomic::Ordering::SeqCst) {
             return Err("another write is in flight — wait for it to complete".into());
@@ -2246,11 +2254,13 @@ impl Server {
             // a scope that held at plan time but not at confirm is a
             // bug worth failing on rather than dispatching through.
             if !self.effective_scope().allows(p.verb.tool_name()) {
-                let (verb, env, region) = (p.verb, p.env.clone(), p.region.clone());
+                let (verb, env, region, profile) =
+                    (p.verb, p.env.clone(), p.region.clone(), p.profile.clone());
                 st.pending = None;
                 drop(st);
                 return Err(self
-                    .refused_out_of_scope(verb, Some(&env), region.as_deref())
+                    .refused_out_of_scope(verb, Some(&env), region.as_deref(), &profile)
+                    .await
                     .with_context(|m| format!("{m} — plan dropped")));
             }
             if p.verb == WriteVerb::Terminate {
@@ -2358,10 +2368,13 @@ impl Server {
         let was_actually_asked =
             !matches!(outcome, AskOutcome::NotAsked | AskOutcome::Undeliverable);
         if was_actually_asked && !matches!(self.backend, Backend::Demo) {
+            let region = self
+                .audit_region(&pending.profile, pending.region.as_deref())
+                .await;
             crate::audit::append_action_asked(
                 None,
                 pending.profile.as_deref(),
-                pending.region.as_deref().unwrap_or("-"),
+                &region,
                 pending.verb.label(),
                 &pending.env,
                 outcome.answer_label(),
@@ -2389,10 +2402,13 @@ impl Server {
             // The remedy names no control, deliberately. The control
             // is a person who has just said no, and an agent that
             // retries a decline is the failure mode here.
+            let region = self
+                .audit_region(&pending.profile, pending.region.as_deref())
+                .await;
             return Err(WriteError::Refused(Audited::record(
                 matches!(self.backend, Backend::Demo),
                 pending.profile.as_deref(),
-                pending.region.as_deref().unwrap_or("-"),
+                &region,
                 pending.verb.label(),
                 &pending.env,
                 "not_approved",

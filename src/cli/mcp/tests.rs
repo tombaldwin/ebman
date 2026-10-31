@@ -3849,6 +3849,90 @@ fn demo_answering(
     (s, asked)
 }
 
+/// On the AWS backend, where the lines are written: a declined ask
+/// records `stage=asked` and the `not_approved` refusal in the region
+/// the write would have gone to, when the call named none. They wrote
+/// `region=-` while the same write's dispatched line had the region.
+#[tokio::test]
+async fn a_declined_ask_on_aws_records_the_resolved_region() {
+    use aws_sdk_elasticbeanstalk::operation::describe_environments::DescribeEnvironmentsOutput;
+    use aws_sdk_elasticbeanstalk::types::EnvironmentDescription;
+    let env = "poly-ask-region-probe";
+    let listing = aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::describe_environments)
+        .then_output(move || {
+            DescribeEnvironmentsOutput::builder()
+                .environments(
+                    EnvironmentDescription::builder()
+                        .environment_name(env)
+                        .application_name("poly")
+                        .status("Ready".into())
+                        .health("Green".into())
+                        .build(),
+                )
+                .build()
+        });
+    // The plan's recent events: context, so none is fine.
+    let events = aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::describe_events)
+        .then_output(|| {
+            aws_sdk_elasticbeanstalk::operation::describe_events::DescribeEventsOutput::builder()
+                .build()
+        });
+    let eb = aws_smithy_mocks::mock_client!(
+        aws_sdk_elasticbeanstalk,
+        aws_smithy_mocks::RuleMode::MatchAny,
+        [&listing, &events]
+    );
+    let cfg = aws_config::SdkConfig::builder()
+        .region(aws_config::Region::new("us-east-1"))
+        .behavior_version(aws_config::BehaviorVersion::latest())
+        .build();
+    let mut client = crate::aws::AwsClient::for_tests(
+        eb,
+        aws_sdk_sqs::Client::new(&cfg),
+        aws_sdk_cloudwatch::Client::new(&cfg),
+        aws_sdk_cloudwatchlogs::Client::new(&cfg),
+        aws_sdk_s3::Client::new(&cfg),
+        aws_sdk_ec2::Client::new(&cfg),
+    );
+    client.context.region = "poly-ask-1".into();
+    let mut server = Server::with_injected_client(WriteScope::All, Default::default(), client);
+    server.injected_identity = Some(writes::CallerIdentity::Known {
+        arn: "arn:aws:iam::123456789012:user/ops".into(),
+        account: "123456789012".into(),
+    });
+    let s = std::sync::Arc::new(server);
+    s.client_supports_elicitation
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(8);
+    if let Ok(mut slot) = s.outbound.lock() {
+        *slot = Some(tx);
+    }
+    let srv = std::sync::Arc::clone(&s);
+    tokio::spawn(async move {
+        while let Some(line) = rx.recv().await {
+            let frame: Value = serde_json::from_str(&line).expect("json");
+            let reply = json!({"jsonrpc": "2.0", "id": frame["id"].clone(), "result": {"action": "decline"}});
+            assert!(srv.take_ask_reply(&reply));
+        }
+    });
+    let before = crate::cli::audit_delta::mark();
+    let (err, plan) = call(&s, "restart", json!({"env": env})).await;
+    assert!(!err, "{plan}");
+    let token = plan["confirm_token"].as_str().expect("token").to_string();
+    let (err, out) = call(&s, "confirm_action", json!({"confirm_token": token})).await;
+    assert!(err, "declined: {out}");
+    let lines = crate::cli::audit_delta::lines_matching(&before, |l| l.contains(env));
+    let asked: Vec<&String> = lines.iter().filter(|l| l.contains("stage=asked")).collect();
+    let refused: Vec<&String> = lines
+        .iter()
+        .filter(|l| l.contains("rule=not_approved"))
+        .collect();
+    assert_eq!((asked.len(), refused.len()), (1, 1), "{lines:#?}");
+    for line in [asked[0], refused[0]] {
+        assert!(line.contains("region=poly-ask-1"), "{line}");
+    }
+}
+
 /// The gate is *wired*, not merely present.
 ///
 /// `ask_operator` having its own passing tests says nothing about
