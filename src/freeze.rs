@@ -296,6 +296,7 @@ impl FreezeStore {
             return Ok(AgentDeclare::Thawed(t));
         }
         let file = self.persistent_file();
+        sweep_stale_temps(&self.holders_dir());
         // What stands at `file` when the exclusive link finds one: a
         // freeze (kept), nothing any more (a thaw lifted it in between:
         // an error to retry, never a non-exclusive write), or bytes that
@@ -652,6 +653,33 @@ thread_local! {
     /// instant (a thaw landing mid-declare).
     pub(crate) static AFTER_LINK: std::cell::Cell<Option<fn(&Path)>> =
         const { std::cell::Cell::new(None) };
+}
+
+/// Temp files a write left behind when its process died between
+/// writing and renaming or linking them (`*.tmp.PID.N`, `*.excl.PID.N`).
+/// Nothing reads them, so they are harmless to enforcement, but nothing
+/// else removes them either. Only ones over a minute old: a younger one
+/// may be another process's write in flight.
+fn sweep_stale_temps(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let stale = std::time::Duration::from_secs(60);
+    for e in entries.flatten() {
+        let name = e.file_name();
+        let name = name.to_string_lossy();
+        let temp =
+            name.starts_with("persistent.") && (name.contains(".tmp.") || name.contains(".excl."));
+        let old = e
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|age| age > stale);
+        if temp && old {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
 }
 
 fn link_into_place(tmp: &Path, path: &Path) -> std::io::Result<()> {
@@ -1675,6 +1703,35 @@ mod tests {
         assert_eq!(m.holder(), "declared with `ebman freeze`");
         assert_eq!(m.short_holder(), "ebman freeze");
         assert_eq!(parse_file(&s.marker).and_then(|m| m.agent), None);
+    }
+
+    /// A temp file a dead writer left is swept by the next agent declare
+    /// once it is over a minute old, and a fresh one (a write in flight)
+    /// is left alone.
+    #[test]
+    fn stale_temp_files_are_swept_and_fresh_ones_kept() {
+        let s = store("sweep", Liveness::ALL_ALIVE);
+        std::fs::create_dir_all(s.holders_dir()).unwrap();
+        let old = s.holders_dir().join("persistent.excl.99999.0");
+        let tmp = s.holders_dir().join("persistent.tmp.99999.1");
+        let fresh = s.holders_dir().join("persistent.excl.99999.2");
+        for p in [&old, &tmp, &fresh] {
+            std::fs::write(p, "x").unwrap();
+        }
+        let hour_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        for p in [&old, &tmp] {
+            std::fs::File::options()
+                .write(true)
+                .open(p)
+                .unwrap()
+                .set_modified(hour_ago)
+                .unwrap();
+        }
+        s.declare_persistent_by_agent("bad deploy", false, "claude-code")
+            .unwrap();
+        assert!(!old.exists() && !tmp.exists(), "stale ones swept");
+        assert!(fresh.exists(), "a fresh one may be in flight");
+        done(&s);
     }
 
     /// The store holds an agent off after a thaw, not only the tool:

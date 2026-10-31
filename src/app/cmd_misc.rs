@@ -327,7 +327,7 @@ impl App {
             self.context.account_id.as_deref(),
             self.context.profile.as_deref(),
             &self.context.region,
-            "FreezeDeploys",
+            crate::freeze::declare_label(false),
             "",
             &[("reason", audit_reason.as_str())],
         );
@@ -511,7 +511,7 @@ impl App {
                     self.context.account_id.as_deref(),
                     self.context.profile.as_deref(),
                     &self.context.region,
-                    "IncidentStart",
+                    crate::freeze::declare_label(true),
                     "",
                     &[("headline", audit_headline.as_str())],
                 );
