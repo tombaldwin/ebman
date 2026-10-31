@@ -266,6 +266,11 @@ fn the_tui_lint_paths_use_the_shared_assembly() {
         body.contains("fetch_env_lint_inputs(") && body.contains("snap.finish(inputs"),
         "run_tui_lint must fetch through the shared assembly and finish from the snapshot"
     );
+    assert!(
+        body.contains("lint_inputs_cache_update(gen, &snap.key, &inputs)")
+            && body.contains("tx.send(msg)"),
+        "run_tui_lint must prime the lint-input cache with what it fetched"
+    );
     // All three TUI lint runs take the one snapshot, which is where the
     // cached inputs (platform list, worker DLQ) and their gaps come
     // from. The cached-input gaps first landed in `:lint` and `:explain`
@@ -839,4 +844,51 @@ fn assemble_carries_every_fetched_input_to_the_rules() {
             "{rule} did not fire: {fired:?}"
         );
     }
+}
+
+/// What `:lint` and `:explain` fetched primes the confirm modal's
+/// lint-input cache under the row's key: tags and healthy count when
+/// read, nothing for one that failed or was never read, and no message
+/// at all when neither was.
+#[tokio::test]
+async fn a_tui_lint_run_primes_the_lint_input_cache() {
+    use crate::app::tui_lint::lint_inputs_cache_update;
+    use crate::lint::inputs::EnvLintInputs;
+    let mut app = test_app();
+    let env = fake_env("api-prod", "Ready", "Green", "v1");
+    app.environments = vec![env.clone()];
+    let key = app.lint_snapshot(&env).key;
+    assert_eq!(key, app.env_key(&env), "the row's key");
+
+    let mut inputs = EnvLintInputs::bare(Vec::new());
+    assert!(
+        lint_inputs_cache_update(app.generation, &key, &inputs).is_none(),
+        "nothing read, nothing to cache"
+    );
+    inputs.env_tag_keys = Some(vec!["Owner".into()]);
+    inputs.healthy_count = Some(3);
+    let msg = lint_inputs_cache_update(app.generation, &key, &inputs).expect("a message");
+    app.handle_msg(msg);
+    assert_eq!(
+        app.caches.env_tag_cache.get(&key).map(|(t, _)| t.clone()),
+        Some(vec!["Owner".to_string()])
+    );
+    assert_eq!(
+        app.caches.env_health_cache.get(&key).map(|(h, _)| *h),
+        Some(3)
+    );
+
+    // A failed tag fetch leaves the cached tags alone.
+    inputs.env_tag_keys = None;
+    inputs.healthy_count = Some(5);
+    let msg = lint_inputs_cache_update(app.generation, &key, &inputs).expect("health was read");
+    app.handle_msg(msg);
+    assert_eq!(
+        app.caches.env_tag_cache.get(&key).map(|(t, _)| t.clone()),
+        Some(vec!["Owner".to_string()])
+    );
+    assert_eq!(
+        app.caches.env_health_cache.get(&key).map(|(h, _)| *h),
+        Some(5)
+    );
 }

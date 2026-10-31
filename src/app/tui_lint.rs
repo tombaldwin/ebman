@@ -14,7 +14,7 @@
 //! TUI has a platform cache or a queue poll, and the shared module stays
 //! neutral between surfaces.
 
-use super::App;
+use super::{App, AppMsg, EnvKey};
 use crate::aws::Environment;
 use crate::lint::inputs::{EnvLintInputs, Platforms, ProbeOutcome};
 
@@ -101,6 +101,8 @@ pub(crate) fn platforms_from_cache(
 /// Everything a lint run takes from App, captured before the spawn.
 pub(crate) struct LintSnapshot {
     pub(crate) env: Environment,
+    /// The row's key, for the lint-input cache the run primes.
+    pub(crate) key: EnvKey,
     user_disables: Vec<String>,
     pub(crate) required_tags: Vec<String>,
     pub(crate) platforms: Platforms,
@@ -111,6 +113,7 @@ impl App {
     pub(crate) fn lint_snapshot(&self, env: &Environment) -> LintSnapshot {
         LintSnapshot {
             env: env.clone(),
+            key: self.env_key(env),
             user_disables: self.cfg.lint_disable.clone(),
             required_tags: self.cfg.required_tags.clone(),
             platforms: platforms_from_cache(
@@ -193,9 +196,16 @@ pub(crate) struct LintRun {
 /// `:lint` and `:explain`: the shared assembly, finished from the
 /// snapshot. `Err` is the option-settings fetch, without which lint
 /// cannot run at all.
+///
+/// The tags and healthy count it fetched prime the lint-input cache, as
+/// the confirm modal's own run does, so a pre-deploy confirm opened
+/// next does not fetch them again. Moving to the shared assembly
+/// dropped that.
 pub(crate) async fn run_tui_lint(
     aws: &crate::aws::AwsClient,
     snap: &LintSnapshot,
+    tx: &tokio::sync::mpsc::UnboundedSender<AppMsg>,
+    gen: u64,
 ) -> Result<LintRun, String> {
     let disabled = snap.disabled();
     let inputs = crate::lint::inputs::fetch_env_lint_inputs(
@@ -207,5 +217,26 @@ pub(crate) async fn run_tui_lint(
         &snap.required_tags,
     )
     .await?;
+    if let Some(msg) = lint_inputs_cache_update(gen, &snap.key, &inputs) {
+        let _ = tx.send(msg);
+    }
     Ok(snap.finish(inputs, &disabled))
+}
+
+/// The cache update a lint run's fetched inputs make: what was read,
+/// and nothing for an input that failed or was never read (the cache
+/// must not learn "no tags" from a tag fetch that failed).
+pub(crate) fn lint_inputs_cache_update(
+    gen: u64,
+    key: &EnvKey,
+    inputs: &EnvLintInputs,
+) -> Option<AppMsg> {
+    let tags = inputs.env_tag_keys.clone();
+    let healthy = inputs.healthy_count;
+    (tags.is_some() || healthy.is_some()).then(|| AppMsg::LintInputsCached {
+        gen,
+        key: key.clone(),
+        tags,
+        healthy,
+    })
 }

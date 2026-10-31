@@ -338,7 +338,7 @@ impl App {
             // fired for every required tag on an env whose tags were
             // never read, and any other failed input read as "doesn't
             // fire". Now a check that could not run says so.
-            let body = match super::tui_lint::run_tui_lint(&aws, &snap).await {
+            let body = match super::tui_lint::run_tui_lint(&aws, &snap, &tx, gen).await {
                 Ok(run) => {
                     let (issues, gaps) = (run.issues, run.coverage_warnings);
                     use crate::lint::inputs::ExplainVerdict;

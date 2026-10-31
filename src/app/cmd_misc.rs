@@ -771,7 +771,7 @@ impl App {
             // its own fetches, dropped tag and health failures in
             // silence, and never ran the EBL020 / EBL018 probes — so
             // the same env linted differently here and in `ebman lint`.
-            let body = match super::tui_lint::run_tui_lint(&aws, &snap).await {
+            let body = match super::tui_lint::run_tui_lint(&aws, &snap, &tx, gen).await {
                 Ok(run) => render_lint_overlay(&env_name, &run.issues, &run.coverage_warnings),
                 Err(e) => {
                     format!("lint — failed to fetch option settings:\n  {e}\n\nesc / q to close")
