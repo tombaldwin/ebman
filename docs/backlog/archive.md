@@ -5756,3 +5756,28 @@ a `--read-only` server.
    `is_test_source` was exact; one exact rule now, with a test that has
    `contests.rs` (a mutation back to the loose form CAUGHT). Four
    converted guards proven to still fire, each on a planted probe.
+
+4. *(mechanical)* **Move the last 13 `include_str!` guards onto
+   `scan::production_source`.** Not a defect today — each crosses a
+   directory boundary explicitly. Two latent properties remain: they
+   re-point silently if the test file moves, and they read the target
+   RAW, so a "this appears nowhere" check also searches the target's
+   test module and can be satisfied by a fixture.
+
+   `src/app/tests/parsing.rs:377-382, 400`; `src/terraform.rs:1150-1152`;
+   `src/commands.rs:1063, 1129, 1198`. (The three in `app/tests/lint.rs`
+   went on 2026-09-25, when that guard moved to all production source.)
+
+   *Restored 2026-09-25:* feabbbc removed this from the backlog without
+   archiving it, and the guards were still unmigrated. Its own lesson,
+   demonstrated the same day: a list-based guard went blind when the code
+   it watched moved files (0a81d5e).
+
+   Done 2026-10-31. The positive checks (`saved_config.rs` uses the YAML
+   parser; the three drift surfaces call `redact_drift_fields`; the
+   dispatch arms) read `production_source`, so a fixture cannot satisfy
+   them. The YAML guard went the other way: its six-file list had gone
+   stale (it still named `cli/mod.rs` after the gate moved), and it
+   meant to cover test code, so it scans the whole tree, tests included,
+   with the two genuine YAML readers exempt as before. Probes CAUGHT in
+   `lint/tests.rs` and `cli/drift.rs`.

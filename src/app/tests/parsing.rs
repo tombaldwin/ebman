@@ -373,31 +373,33 @@ fn json_surfaces_are_parsed_by_a_json_parser() {
     // things JSON rejects, so they asserted less than they appeared
     // to. A guard scoped to the files I happened to be editing is the
     // same mistake as a backlog entry nobody re-checks.
-    for (name, src) in [
-        ("llm.rs", include_str!("../../llm.rs")),
-        ("terraform.rs", include_str!("../../terraform.rs")),
-        ("lint/mod.rs", include_str!("../../lint/mod.rs")),
-        ("lint/rules.rs", include_str!("../../lint/rules.rs")),
-        ("audit.rs", include_str!("../../audit.rs")),
-        ("cli/mod.rs", include_str!("../../cli/mod.rs")),
-    ] {
-        let code: String = src
-            .lines()
-            .map(super::scan::strip_line_comment)
-            .collect::<Vec<_>>()
-            .join("\n");
-        for yaml in ["noyalib", "serde_yml"] {
-            assert!(
-                !code.contains(yaml),
-                "{name} parses JSON with the YAML parser ({yaml}) again"
-            );
+    //
+    // The whole tree now, test code included (the round-trip tests were
+    // test code), rather than a list of six files, which went stale when
+    // the CLI gate moved out of `cli/mod.rs`. Built, so this file's own
+    // needles are not matches.
+    let needles = [concat!("noya", "lib"), concat!("serde", "_yml")];
+    let mut offenders = Vec::new();
+    for (path, src) in super::scan::source_files() {
+        // `saved_config.rs` and `eb_cli.rs` are exempt and stay exempt:
+        // EB saved configurations and `.elasticbeanstalk/config.yml`
+        // really are YAML, and the only two YAML parser consumers.
+        if path == "src/saved_config.rs" || path == "src/eb_cli.rs" {
+            continue;
+        }
+        for (n, line) in src.lines().enumerate() {
+            let code = super::scan::strip_line_comment(line);
+            if needles.iter().any(|y| code.contains(y)) {
+                offenders.push(format!("{path}:{}", n + 1));
+            }
         }
     }
-    // `saved_config.rs` and `eb_cli.rs` are exempt and stay exempt:
-    // EB saved configurations and `.elasticbeanstalk/config.yml`
-    // really are YAML, and the only two YAML parser consumers.
     assert!(
-        include_str!("../../saved_config.rs").contains("noyalib::"),
+        offenders.is_empty(),
+        "JSON parsed with the YAML parser again: {offenders:?}"
+    );
+    assert!(
+        super::scan::production_source("saved_config.rs").contains(&format!("{}::", needles[0])),
         "saved configs are genuinely YAML — if this flipped, check why"
     );
 }

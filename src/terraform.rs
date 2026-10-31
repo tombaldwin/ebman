@@ -1179,14 +1179,11 @@ mod tests {
         // Redaction started MCP-only, and the gap meant a drifted
         // env-var secret landed in CI logs verbatim. This pins the
         // call sites so a fourth consumer can't quietly skip it.
-        let sources = [
-            ("cli/drift.rs", include_str!("cli/drift.rs")),
-            ("cli/mcp/tools.rs", include_str!("cli/mcp/tools.rs")),
-            ("app/cmd_misc.rs", include_str!("app/cmd_misc.rs")),
-        ];
-        for (name, src) in sources {
+        // Their production code: a test fixture naming the function
+        // must not satisfy this.
+        for name in ["cli/drift.rs", "cli/mcp/tools.rs", "app/cmd_misc.rs"] {
             assert!(
-                src.contains("redact_drift_fields"),
+                crate::app::tests::scan::production_source(name).contains("redact_drift_fields"),
                 "{name} renders drift without redacting it"
             );
         }

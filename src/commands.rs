@@ -1060,7 +1060,8 @@ mod tests {
     ///   - A typo in a registry name that doesn't match a real arm.
     #[test]
     fn registry_covers_every_dispatch_arm() {
-        let src = include_str!("app/dispatch.rs");
+        let src = crate::app::tests::scan::production_source("app/dispatch.rs");
+        let src = src.as_str();
         // Locate `fn execute_command`'s body. The match starts at
         // `match cmd {` and ends at the `other =>` fallthrough — we
         // bound the scan there so we don't pick up arms from any
@@ -1126,7 +1127,8 @@ mod tests {
     /// command` branch when the operator selected them.
     #[test]
     fn every_registry_name_has_a_dispatch_arm() {
-        let src = include_str!("app/dispatch.rs");
+        let src = crate::app::tests::scan::production_source("app/dispatch.rs");
+        let src = src.as_str();
         let fn_start = src
             .find("fn execute_command")
             .expect("execute_command not found in app/dispatch.rs");
@@ -1195,7 +1197,7 @@ mod tests {
         // doc gets checked now, discovered at run time so a new page
         // is covered the day it lands.
         let mut sources: Vec<String> = vec![
-            include_str!("config.rs").to_string(),
+            crate::app::tests::scan::production_source("src/config.rs"),
             std::fs::read_to_string("README.md").expect("README.md"),
         ];
         let mut docs: Vec<std::path::PathBuf> = std::fs::read_dir("docs")
