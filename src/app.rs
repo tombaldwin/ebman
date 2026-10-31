@@ -1415,13 +1415,6 @@ impl App {
         Ok(app)
     }
 
-    /// Runtime constructor for `--demo` mode. Wraps `for_tests` with a
-    /// stub `AwsClient` and an explicit `demo_mode = true` so the
-    /// refresh / update-check spawns become no-ops. Then asks the
-    /// hand-crafted fixture to populate `environments` / events /
-    /// instance counts / cost data so the main table renders with
-    /// believable content. Synchronous — no AWS calls, no disk I/O
-    /// (state.load is skipped via the for_tests path).
     /// Mark the session read-only. Set by `main` from `--deny-write`
     /// once argv is parsed, which is after `App` is built.
     ///
