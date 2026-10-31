@@ -2456,39 +2456,56 @@ fn the_app_uses_no_global_freeze_path() {
 }
 
 /// `App::fresh` is the one App literal, and what every test App and the
-/// `--demo` App are built from: it must read nothing about this machine.
-/// Anything `new` wants from the machine is set after it, in `new`. A
-/// field added to the literal as `state::load().x` would have every test
-/// read the developer's real state.
+/// `--demo` App are built from: it must read nothing about this machine,
+/// and neither may `MachineSeed::none`, which those Apps are given.
+/// Anything from the machine is a `MachineSeed` field that `new` fills.
+/// A field added to the literal as `state::load().x` would have every
+/// test read the developer's real state.
 #[test]
 fn the_fresh_app_reads_nothing_from_the_machine() {
     let src = super::scan::production_source("app.rs");
-    let body = src
-        .split("    fn fresh(aws: Arc<crate::aws::AwsClient>, config: Config) -> Self {")
-        .nth(1)
-        .and_then(|rest| rest.split("\n    }\n").next())
-        .expect("App::fresh is here");
-    assert!(body.contains("Self {"), "the body was found: {body}");
-    let code: String = body
-        .lines()
-        .map(super::scan::strip_line_comment)
-        .collect::<Vec<_>>()
-        .join("\n");
-    for reads in [
-        "state::load",
-        "state::file_exists",
-        "load_from_cwd",
-        "std::env::var",
-        "FreezeStore::real",
-        "latest_session_expiry",
-        "stamp_of",
-        "plugins::load",
-        "config_path",
-        "config_dir",
-        "cache_dir",
-    ] {
-        assert!(!code.contains(reads), "App::fresh reads `{reads}`");
+    let body_of = |signature: &str| {
+        src.split(signature)
+            .nth(1)
+            .and_then(|rest| rest.split("\n    }\n").next())
+            .unwrap_or_else(|| panic!("`{signature}` is here"))
+            .lines()
+            .map(super::scan::strip_line_comment)
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let fresh = body_of(
+        "    fn fresh(aws: Arc<crate::aws::AwsClient>, config: Config, seed: MachineSeed) -> Self {",
+    );
+    assert!(fresh.contains("Self {"), "the body was found: {fresh}");
+    let none = body_of("    pub(crate) fn none() -> Self {");
+    assert!(
+        none.contains("FreezeStore::isolated"),
+        "the body was found: {none}"
+    );
+    for (name, code) in [("App::fresh", &fresh), ("MachineSeed::none", &none)] {
+        for reads in [
+            "state::load",
+            "state::file_exists",
+            "load_from_cwd",
+            "std::env::var",
+            "FreezeStore::real",
+            "latest_session_expiry",
+            "stamp_of",
+            "plugins::load",
+            "config_path",
+            "config_dir",
+            "cache_dir",
+        ] {
+            assert!(!code.contains(reads), "{name} reads `{reads}`");
+        }
     }
+    // Only `new` hands `fresh` a seed it read; every other App gets none.
+    let seeded: Vec<&str> = src
+        .lines()
+        .filter(|l| l.contains("Self::fresh(") && !l.contains("MachineSeed::none()"))
+        .collect();
+    assert_eq!(seeded.len(), 1, "{seeded:#?}");
 }
 
 /// The chip follows the marker on idle ticks, at most every two seconds:

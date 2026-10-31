@@ -1222,6 +1222,47 @@ pub(crate) fn safety_config_warning(errors: &[String]) -> Option<String> {
     ))
 }
 
+/// Everything an App reads from this machine: persisted state, the cwd's
+/// terraform state, plugins, `RUST_LOG`, the SSO cache, the config
+/// file's stamp and the shared freeze store. `App::new` reads it all and
+/// hands it to `App::fresh`; every test App and the `--demo` App get
+/// [`MachineSeed::none`]. A literal, so a new machine read is a field
+/// `new` must fill and `none` must default, rather than a line `new`
+/// could forget after the fact.
+pub(crate) struct MachineSeed {
+    persisted: state::PersistedState,
+    override_profile: Option<String>,
+    override_region: Option<String>,
+    first_run_hint: bool,
+    tf_state: Option<crate::terraform::TfState>,
+    log_directive: String,
+    plugins: BTreeMap<String, crate::plugins::Plugin>,
+    sso_expiry: Option<chrono::DateTime<chrono::Utc>>,
+    config_seen: Option<crate::config::ConfigStamp>,
+    config_file: Option<std::path::PathBuf>,
+    freeze: crate::freeze::FreezeStore,
+}
+
+impl MachineSeed {
+    /// Nothing read from this machine, and a freeze store nothing else
+    /// shares.
+    pub(crate) fn none() -> Self {
+        Self {
+            persisted: state::PersistedState::default(),
+            override_profile: None,
+            override_region: None,
+            first_run_hint: false,
+            tf_state: None,
+            log_directive: "info".to_string(),
+            plugins: BTreeMap::new(),
+            sso_expiry: None,
+            config_seen: None,
+            config_file: None,
+            freeze: crate::freeze::FreezeStore::isolated(),
+        }
+    }
+}
+
 impl App {
     /// Build against real AWS credentials, resolving the caller
     /// identity so an invalid persisted profile fails here rather than
@@ -1281,15 +1322,6 @@ impl App {
             "init_client returned"
         );
 
-        let (sort_key, sort_desc) = parse_sort(persisted.sort.as_deref());
-        let redact = persisted.redact.or(config.redact_default).unwrap_or(false);
-        let grouped = persisted
-            .grouped
-            .or(config.grouped_default)
-            .unwrap_or(false);
-        let events_visible = persisted.events_visible.unwrap_or(false);
-        let event_time_format = persisted.event_time_format.unwrap_or_default();
-
         let names = builtin_commands();
         let plugins_loaded = crate::plugins::load(&names);
         for w in &plugins_loaded.warnings {
@@ -1301,60 +1333,29 @@ impl App {
             Some(format!("plugins: {}", plugins_loaded.warnings.join("; ")))
         };
 
-        let mut app = Self::fresh(aws, config);
-        // What a fresh App does not read: this machine's state.
-        app.view = ViewState::new(
-            persisted.filter.unwrap_or_default().into(),
-            grouped,
-            sort_key,
-            sort_desc,
-            redact,
-            persisted.hidden_cols,
+        let config_seen = crate::config::stamp_of(&config_file);
+        let mut app = Self::fresh(
+            aws,
+            config,
+            MachineSeed {
+                persisted,
+                override_profile,
+                override_region,
+                first_run_hint: !crate::state::file_exists(),
+                // Failure is silent (`None`): operators not using
+                // terraform see no UI surface; one with a discoverable
+                // tfstate gets the badge and drift overlay at once.
+                // Re-loaded on context switch and on `:drift refresh`.
+                tf_state: crate::terraform::load_from_cwd(),
+                log_directive: std::env::var("RUST_LOG")
+                    .unwrap_or_else(|_| "info,aws=warn,hyper=warn".to_string()),
+                plugins: plugins_loaded.plugins,
+                sso_expiry: crate::sso::latest_session_expiry(),
+                config_seen,
+                config_file: Some(config_file),
+                freeze: crate::freeze::FreezeStore::real(),
+            },
         );
-        app.override_profile = override_profile;
-        app.override_region = override_region;
-        app.event_panel = EventPanel {
-            events: Vec::new(),
-            visible: events_visible,
-            time_format: event_time_format,
-            for_env: None,
-            scroll: 0,
-            area: None,
-            drag_origin: None,
-            cursor: None,
-            height: 10,
-        };
-        // Restore persisted snapshots so a cross-session `:rollback`
-        // / auto-rollback still has a target. Malformed lines are
-        // silently skipped — better to drop one stale entry than
-        // abort the App-init path.
-        app.deploy_snapshots = restore_deploy_snapshots(&persisted.deploy_snapshots);
-        // Load tfstate from cwd at construction time. Failure
-        // is silent (`None`) — operators not using terraform
-        // shouldn't see any UI surface; operators with a
-        // discoverable tfstate get the badge + drift overlay
-        // immediately. Re-loaded on context switch (account /
-        // region change) and on `:drift refresh`.
-        app.tf_state = crate::terraform::load_from_cwd();
-        app.costs = {
-            let mut c = Costs::default();
-            c.set_enabled(persisted.cost_enabled.unwrap_or(false));
-            c
-        };
-        app.first_run_hint = !crate::state::file_exists();
-        app.pinned = persisted.pinned;
-        app.pinned_apps = persisted.pinned_apps;
-        app.aliases = persisted.aliases;
-        app.saved_views = persisted.saved_views;
-        app.custom_metrics = persisted.custom_metrics;
-        app.log_directive =
-            std::env::var("RUST_LOG").unwrap_or_else(|_| "info,aws=warn,hyper=warn".to_string());
-        app.plugins = plugins_loaded.plugins;
-        app.sso_expiry = crate::sso::latest_session_expiry();
-        app.config_seen = crate::config::stamp_of(&config_file);
-        app.freeze = crate::freeze::FreezeStore::real();
-        app.config_file = Some(config_file);
-        app.pending_select = persisted.selected_env;
         app.rebuild_view();
         // Plugin warnings take priority over identity warnings — they're a user
         // misconfiguration the user can act on now (red error banner).
@@ -1462,14 +1463,26 @@ impl App {
         app
     }
 
-    /// The one App literal: a fresh App, before anything about this
-    /// machine is read (persisted state, the cwd's terraform state,
-    /// plugins, `RUST_LOG`, the SSO cache) and with a freeze store
-    /// nothing else shares. `for_tests` is exactly this; `new` builds it
-    /// and then sets what it reads from the machine. There were two
+    /// The one App literal. What it knows of this machine is `seed`
+    /// alone: `for_tests` (and so `--demo`) passes
+    /// [`MachineSeed::none`], `new` the one it read. There were two
     /// hand-written literals of the ~100 fields, and nothing checked
     /// that the two agreed on a default: every new field was two edits.
-    fn fresh(aws: Arc<crate::aws::AwsClient>, config: Config) -> Self {
+    fn fresh(aws: Arc<crate::aws::AwsClient>, config: Config, seed: MachineSeed) -> Self {
+        let MachineSeed {
+            persisted,
+            override_profile,
+            override_region,
+            first_run_hint,
+            tf_state,
+            log_directive,
+            plugins,
+            sso_expiry,
+            config_seen,
+            config_file,
+            freeze,
+        } = seed;
+        let (sort_key, sort_desc) = parse_sort(persisted.sort.as_deref());
         let context = aws.context.clone();
         let (msg_tx, msg_rx) = mpsc::unbounded_channel();
         let explain_settings = crate::llm::Settings::from_config(&config);
@@ -1487,12 +1500,15 @@ impl App {
             table_area: Rect::default(),
             mode: Mode::Normal,
             view: ViewState::new(
-                TextInput::new(),
-                config.grouped_default.unwrap_or(false),
-                SortKey::App,
-                false,
-                config.redact_default.unwrap_or(false),
-                BTreeSet::new(),
+                persisted.filter.unwrap_or_default().into(),
+                persisted
+                    .grouped
+                    .or(config.grouped_default)
+                    .unwrap_or(false),
+                sort_key,
+                sort_desc,
+                persisted.redact.or(config.redact_default).unwrap_or(false),
+                persisted.hidden_cols,
             ),
             load_state: LoadState::Idle,
             loading_since: None,
@@ -1502,16 +1518,16 @@ impl App {
             status_message: None,
             error_message: None,
             picker: None,
-            override_profile: None,
-            override_region: None,
+            override_profile,
+            override_region,
             command_input: TextInput::new(),
             completion: CompletionState::default(),
             quickjump_input: TextInput::new(),
             extra_regions: config.extra_regions.clone(),
             event_panel: EventPanel {
                 events: Vec::new(),
-                visible: false,
-                time_format: EventTimeFormat::default(),
+                visible: persisted.events_visible.unwrap_or(false),
+                time_format: persisted.event_time_format.unwrap_or_default(),
                 for_env: None,
                 scroll: 0,
                 area: None,
@@ -1551,7 +1567,9 @@ impl App {
             fanout_epoch: 0,
             aws_built_at: Instant::now(),
             aws_refresh_in_flight: false,
-            deploy_snapshots: std::collections::BTreeMap::new(),
+            // Persisted, so a cross-session `:rollback` / auto-rollback
+            // still has a target. Malformed lines are skipped.
+            deploy_snapshots: restore_deploy_snapshots(&persisted.deploy_snapshots),
             armed_watchdogs: std::collections::BTreeMap::new(),
             watching_deploys: std::collections::BTreeMap::new(),
             deploy_freeze: None,
@@ -1561,14 +1579,18 @@ impl App {
             // prevents demo screencasts from leaking real fleet
             // detail. Tests that exercise drift behavior set
             // `app.tf_state` explicitly.
-            tf_state: None,
+            tf_state,
             undo_history: std::collections::VecDeque::new(),
             promotion_history: Vec::new(),
             demo_mode: false,
-            costs: Costs::default(),
+            costs: {
+                let mut c = Costs::default();
+                c.set_enabled(persisted.cost_enabled.unwrap_or(false));
+                c
+            },
             last_yanked_cli: None,
             frozen: false,
-            first_run_hint: false,
+            first_run_hint,
             current_overlay: None,
             message_log: VecDeque::with_capacity(MESSAGE_LOG_CAP),
             toasts: VecDeque::with_capacity(TOAST_CAP),
@@ -1577,19 +1599,19 @@ impl App {
             palette_filtered: Vec::new(),
             palette_state: ListState::default(),
             read_only: false,
-            pinned: BTreeSet::new(),
-            pinned_apps: BTreeSet::new(),
-            aliases: std::collections::BTreeMap::new(),
-            saved_views: std::collections::BTreeMap::new(),
-            custom_metrics: std::collections::BTreeMap::new(),
+            pinned: persisted.pinned,
+            pinned_apps: persisted.pinned_apps,
+            aliases: persisted.aliases,
+            saved_views: persisted.saved_views,
+            custom_metrics: persisted.custom_metrics,
             log_reload: None,
-            log_directive: "info".to_string(),
-            plugins: std::collections::BTreeMap::new(),
+            log_directive,
+            plugins,
             status_snapshot_at_refresh: None,
             status_message_pinned: false,
             throttle_until: None,
             consecutive_throttles: 0,
-            sso_expiry: None,
+            sso_expiry,
             pending_actions: std::collections::VecDeque::with_capacity(PENDING_CAP),
             pending_dispatch: None,
             form: None,
@@ -1608,9 +1630,9 @@ impl App {
             shell_return_mode: Mode::Normal,
             last_rendered_buffer: None,
             notify_bell: config.notify_bell,
-            config_seen: None,
-            config_file: None,
-            freeze: crate::freeze::FreezeStore::isolated(),
+            config_seen,
+            config_file,
+            freeze,
             foreign_freeze: None,
             foreign_freeze_checked: None,
             cfg: ResolvedConfig {
@@ -1636,7 +1658,7 @@ impl App {
                 accounts: config.accounts.clone(),
                 base_theme_name: config.theme.clone(),
             },
-            pending_select: None,
+            pending_select: persisted.selected_env,
             aws,
             generation: 0,
             msg_tx,
@@ -1659,7 +1681,7 @@ impl App {
     /// which builds on top of this + a hand-crafted fixture). Kept
     /// `pub(crate)` — both callers are in this crate.
     pub(crate) fn for_tests(aws: crate::aws::AwsClient, config: Config) -> Self {
-        let mut app = Self::fresh(Arc::new(aws), config);
+        let mut app = Self::fresh(Arc::new(aws), config, MachineSeed::none());
         app.rebuild_view();
         app
     }

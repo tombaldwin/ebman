@@ -189,10 +189,6 @@ archived, "PLAN.md items done 2026-10-31"). Each its own change.*
    it; a behavioural test replacing the whitespace-exact source pin;
    then the per-site `demo` parameters retired.
 
-6. *(mechanical)* **`App::fresh(aws, config, seed: MachineSeed)`** with
-   `MachineSeed::none()` for tests and demo, rather than `new`
-   overwriting 20 fields; the guard then checks the seed type.
-
 *Left in BACKLOG.md: `Server::refuse(..)` for the six `Audited::record`
 callers, whose profile choices differ on purpose and need settling
 first.*

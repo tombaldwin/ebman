@@ -5630,3 +5630,14 @@ a `--read-only` server.
    `surface_notes`, each a slice of the old body moved whole, in the
    order it had, so the output is unchanged. `tool_doctor` is the
    facts and the JSON.
+
+6. *(mechanical)* **`App::fresh(aws, config, seed: MachineSeed)`** with
+   `MachineSeed::none()` for tests and demo, rather than `new`
+   overwriting 20 fields; the guard then checks the seed type.
+
+   Done 2026-10-31: `MachineSeed` (the persisted state whole, plus the
+   ten other machine reads); `new` fills it, `for_tests` passes
+   `none()`, and `fresh` no longer has a value `new` throws away. The
+   guard scans `none()` as well, and pins that only `new` seeds; four
+   mutations, three CAUGHT and one inconclusive by design (did not
+   compile), re-run as a compiling one and CAUGHT.
