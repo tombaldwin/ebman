@@ -651,9 +651,13 @@ fn a_thaw_landing_mid_declare_takes_the_agent_s_freeze_back() {
         let lifted = parse_marker(r#"{"pid":1,"reason":"earlier","persistent":true}"#).unwrap();
         write_thawed_at(&record, &lifted, chrono::Utc::now());
     }
-    AFTER_LINK.with(|f| f.set(Some(thaw_now)));
-    let r = s.declare_persistent_by_agent("bad deploy", false, "claude-code");
-    AFTER_LINK.with(|f| f.set(None));
+    let after = |f: fn(&Path)| {
+        s.with_link(LinkSeam {
+            after: Some(f),
+            ..LinkSeam::default()
+        })
+    };
+    let r = after(thaw_now).declare_persistent_by_agent("bad deploy", false, "claude-code");
     assert!(matches!(r, Ok(AgentDeclare::Thawed(_))), "{r:?}");
     assert!(s.active().is_none(), "the agent's marker was taken back");
 
@@ -673,9 +677,11 @@ fn a_thaw_landing_mid_declare_takes_the_agent_s_freeze_back() {
         )
         .unwrap();
     }
-    AFTER_LINK.with(|f| f.set(Some(thaw_then_operator_freezes)));
-    let r = s.declare_persistent_by_agent("bad deploy", false, "claude-code");
-    AFTER_LINK.with(|f| f.set(None));
+    let r = after(thaw_then_operator_freezes).declare_persistent_by_agent(
+        "bad deploy",
+        false,
+        "claude-code",
+    );
     assert!(matches!(r, Ok(AgentDeclare::Thawed(_))), "{r:?}");
     let kept = s.active().expect("the operator's freeze stands");
     assert_eq!(kept.agent, None);
@@ -764,10 +770,11 @@ fn an_agent_s_declare_keeps_a_standing_freeze() {
     let _ = s.thaw();
     s.expire_thaw_for_test();
     let fail = |kind| {
-        LINK_FAILS.with(|f| f.set(Some(kind)));
-        let r = s.declare_persistent_by_agent("disk full", false, "claude-code");
-        LINK_FAILS.with(|f| f.set(None));
-        r
+        s.with_link(LinkSeam {
+            fails: Some(kind),
+            ..LinkSeam::default()
+        })
+        .declare_persistent_by_agent("disk full", false, "claude-code")
     };
     let err = fail(std::io::ErrorKind::PermissionDenied).expect_err("the link failed");
     assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied, "{err}");

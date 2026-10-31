@@ -75,20 +75,19 @@ impl FreezeMarker {
 /// still honours it, and repairs the mirror when it next reads.
 pub(super) const PERSISTENT_PID: u32 = 1;
 
+/// What an exclusive link does under test: fail with `fails`, as a
+/// full or read-only disk would, or as a marker a thaw then lifted would
+/// (`AlreadyExists` with nothing there); or run `after` right after a
+/// successful link, with the marker's path, as another process would in
+/// that instant (a thaw landing mid-declare). Nothing else can reach
+/// those paths, since the temp file is written into the same directory
+/// first. A field of the store, not a thread-local: a thread-local set
+/// on the test's thread was silently off on any other.
 #[cfg(test)]
-thread_local! {
-    /// Under test, make exclusive links fail with this error: as a
-    /// full or read-only disk would, or as a marker a thaw then lifted
-    /// would (`AlreadyExists` with nothing there). Nothing else can
-    /// reach those paths, since the temp file is written into the same
-    /// directory first.
-    pub(crate) static LINK_FAILS: std::cell::Cell<Option<std::io::ErrorKind>> =
-        const { std::cell::Cell::new(None) };
-    /// Under test, run this right after a successful exclusive link,
-    /// with the marker's path: what another process does in that
-    /// instant (a thaw landing mid-declare).
-    pub(crate) static AFTER_LINK: std::cell::Cell<Option<fn(&Path)>> =
-        const { std::cell::Cell::new(None) };
+#[derive(Clone, Copy, Default)]
+pub(crate) struct LinkSeam {
+    pub(crate) fails: Option<std::io::ErrorKind>,
+    pub(crate) after: Option<fn(&Path)>,
 }
 
 /// Temp files a write left behind when its process died between
@@ -114,58 +113,6 @@ pub(super) fn sweep_stale_temps(dir: &Path, now: std::time::SystemTime) {
             .is_some_and(|age| age > stale);
         if temp && old {
             let _ = std::fs::remove_file(e.path());
-        }
-    }
-}
-
-pub(super) fn link_into_place(tmp: &Path, path: &Path) -> std::io::Result<()> {
-    #[cfg(test)]
-    if let Some(kind) = LINK_FAILS.with(|f| f.get()) {
-        return Err(std::io::Error::from(kind));
-    }
-    std::fs::hard_link(tmp, path)?;
-    #[cfg(test)]
-    if let Some(after) = AFTER_LINK.with(|f| f.get()) {
-        after(path);
-    }
-    Ok(())
-}
-
-/// A persistent agent marker at `path`, only if none is there: the
-/// body goes to a temp file and is hard-linked into place, which is
-/// atomic and fails if `path` exists, so a reader never sees a partial
-/// marker and an existing one is never replaced. `Ok(false)` when one
-/// was there.
-pub(super) fn write_marker_exclusive(
-    path: &Path,
-    reason: &str,
-    incident: bool,
-    agent: &str,
-) -> std::io::Result<bool> {
-    // Unique per write, as `write_marker_full`'s temp is.
-    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let tmp = path.with_extension(format!(
-        "excl.{}.{}",
-        std::process::id(),
-        SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-    ));
-    write_marker_full(
-        &tmp,
-        PERSISTENT_PID,
-        reason,
-        incident,
-        true,
-        false,
-        Some(agent),
-    )?;
-    let linked = link_into_place(&tmp, path);
-    let _ = std::fs::remove_file(&tmp);
-    match linked {
-        Ok(()) => Ok(true),
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
-        Err(e) => {
-            tracing::warn!(error = %e, "could not persist freeze marker — cross-process enforcement inactive");
-            Err(e)
         }
     }
 }
@@ -253,4 +200,59 @@ pub(crate) fn parse_marker(text: &str) -> Option<FreezeMarker> {
             .unwrap_or(false),
         agent: v.get("agent").and_then(|a| a.as_str()).map(str::to_string),
     })
+}
+
+impl FreezeStore {
+    /// A persistent agent marker at `path`, only if none is there: the
+    /// body goes to a temp file and is hard-linked into place, which is
+    /// atomic and fails if `path` exists, so a reader never sees a partial
+    /// marker and an existing one is never replaced. `Ok(false)` when one
+    /// was there.
+    pub(super) fn write_marker_exclusive(
+        &self,
+        path: &Path,
+        reason: &str,
+        incident: bool,
+        agent: &str,
+    ) -> std::io::Result<bool> {
+        // Unique per write, as `write_marker_full`'s temp is.
+        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let tmp = path.with_extension(format!(
+            "excl.{}.{}",
+            std::process::id(),
+            SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        write_marker_full(
+            &tmp,
+            PERSISTENT_PID,
+            reason,
+            incident,
+            true,
+            false,
+            Some(agent),
+        )?;
+        let linked = self.link_into_place(&tmp, path);
+        let _ = std::fs::remove_file(&tmp);
+        match linked {
+            Ok(()) => Ok(true),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+            Err(e) => {
+                tracing::warn!(error = %e, "could not persist freeze marker — cross-process enforcement inactive");
+                Err(e)
+            }
+        }
+    }
+
+    fn link_into_place(&self, tmp: &Path, path: &Path) -> std::io::Result<()> {
+        #[cfg(test)]
+        if let Some(kind) = self.link.fails {
+            return Err(std::io::Error::from(kind));
+        }
+        std::fs::hard_link(tmp, path)?;
+        #[cfg(test)]
+        if let Some(after) = self.link.after {
+            after(path);
+        }
+        Ok(())
+    }
 }

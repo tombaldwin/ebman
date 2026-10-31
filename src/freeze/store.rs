@@ -26,6 +26,8 @@ pub(crate) struct FreezeStore {
     /// ended record are derived from it.
     pub(super) marker: PathBuf,
     pub(super) liveness: Liveness,
+    #[cfg(test)]
+    pub(super) link: LinkSeam,
 }
 
 impl std::fmt::Debug for FreezeStore {
@@ -48,6 +50,8 @@ impl FreezeStore {
         Self {
             marker,
             liveness: Liveness::REAL,
+            #[cfg(test)]
+            link: LinkSeam::default(),
         }
     }
 
@@ -81,7 +85,20 @@ impl FreezeStore {
     /// [`at`](Self::at), judged by `liveness`.
     #[cfg(test)]
     pub(crate) fn with_liveness(marker: PathBuf, liveness: Liveness) -> Self {
-        Self { marker, liveness }
+        Self {
+            marker,
+            liveness,
+            link: LinkSeam::default(),
+        }
+    }
+
+    /// This store, its exclusive links behaving as `link` says.
+    #[cfg(test)]
+    pub(crate) fn with_link(&self, link: LinkSeam) -> Self {
+        Self {
+            link,
+            ..self.clone()
+        }
     }
 
     /// The legacy marker's path.
@@ -178,7 +195,7 @@ impl FreezeStore {
                 Err(e) => Err(e),
             }
         };
-        if !write_marker_exclusive(&file, reason, incident, agent)? {
+        if !self.write_marker_exclusive(&file, reason, incident, agent)? {
             let corrupt = match standing()? {
                 Ok(m) => return Ok(AgentDeclare::Held(m)),
                 Err(bytes) => bytes,
@@ -190,7 +207,7 @@ impl FreezeStore {
             if std::fs::read(&file).ok().as_deref() == Some(corrupt.as_slice()) {
                 let _ = std::fs::remove_file(&file);
             }
-            if !write_marker_exclusive(&file, reason, incident, agent)? {
+            if !self.write_marker_exclusive(&file, reason, incident, agent)? {
                 return match standing()? {
                     Ok(m) => Ok(AgentDeclare::Held(m)),
                     Err(_) => Err(std::io::Error::other(
