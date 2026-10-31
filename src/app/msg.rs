@@ -1821,11 +1821,7 @@ impl App {
         }
         // Drop a peek that raced an `m`-toggle: the result belongs to
         // the queue that WAS loaded, not the one now viewed.
-        let current_url = match dlq.viewing {
-            QueueView::Dlq => &dlq.dlq_url,
-            QueueView::Main => &dlq.main_queue_url,
-        };
-        if &queue_url != current_url {
+        if queue_url != dlq.viewed_url() {
             return;
         }
         // An earlier peek of this queue, answering after a later one.
@@ -1880,11 +1876,7 @@ impl App {
                 Ok(DlqOp::Purged { queue_url }) => {
                     // Only while the purged queue is the one on screen:
                     // the main queue's list and peek were not purged.
-                    let viewed = match dlq.viewing {
-                        QueueView::Dlq => &dlq.dlq_url,
-                        QueueView::Main => &dlq.main_queue_url,
-                    };
-                    if *viewed == queue_url {
+                    if dlq.viewed_url() == queue_url {
                         dlq.messages.clear();
                         // Every message the peek in flight read is gone.
                         dlq.fetch.reset();

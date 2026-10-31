@@ -324,10 +324,6 @@ async fn the_dlq_viewer_renders_its_messages() {
     app.rebuild_view();
     app.table_state.select(Some(0));
     app.dlq = Some(crate::app::DlqState {
-        env_name: "wk-prod".into(),
-        region: "us-east-1".into(),
-        main_queue_url: "https://sqs.eu-west-2.amazonaws.com/1/awseb-main".into(),
-        dlq_url: "https://sqs.eu-west-2.amazonaws.com/1/awseb-main-dlq".into(),
         messages: vec![crate::aws::QueueMessage {
             id: "MSG-CANARY-1".into(),
             attributes: Vec::new(),
@@ -337,15 +333,13 @@ async fn the_dlq_viewer_renders_its_messages() {
             sent_at: None,
             task: None,
         }],
-        list_state: Default::default(),
-        fetch: Default::default(),
-        removed_since_peek: Default::default(),
-        error: None,
-        confirm_purge: false,
-        purge_typed: tui_common::TextInput::new(),
-        viewing: crate::app::QueueView::Dlq,
-        confirm_delete_id: None,
-        replay_input: None,
+        ..crate::app::DlqState::open(
+            "wk-prod".into(),
+            "us-east-1".into(),
+            "https://sqs.eu-west-2.amazonaws.com/1/awseb-main".into(),
+            "https://sqs.eu-west-2.amazonaws.com/1/awseb-main-dlq".into(),
+            crate::app::QueueView::Dlq,
+        )
     });
     app.mode = crate::app::Mode::Dlq;
 
@@ -1297,4 +1291,20 @@ async fn dlq_write_answers_carry_the_viewers_region() {
         };
         assert_eq!(key, EnvKey::new("eu-west-2", "api-prod"), "{which}");
     }
+}
+
+/// The queue on screen is the one `viewing` names, both ways round: what
+/// a peek, a delete, a purge and a stale answer are each judged against.
+#[test]
+fn the_viewed_url_follows_the_toggle() {
+    let mut dlq = crate::app::DlqState::open(
+        "wk".into(),
+        "us-east-1".into(),
+        "https://sqs/main".into(),
+        "https://sqs/dlq".into(),
+        crate::app::QueueView::Dlq,
+    );
+    assert_eq!(dlq.viewed_url(), "https://sqs/dlq");
+    dlq.viewing = crate::app::QueueView::Main;
+    assert_eq!(dlq.viewed_url(), "https://sqs/main");
 }

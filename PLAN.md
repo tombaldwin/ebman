@@ -176,11 +176,6 @@ then these four from BACKLOG.md. Each its own change.*
    belongs beside `audit::rotated_path` or in test support. Keep the
    source guards' module paths in step. S. *0.48.0 architecture review.*
 
-4. *(mechanical)* **`DlqState::open(..)` and `DlqState::viewed_url()`.** The struct
-   is built field by field in three places (0.48.0 added two fields to
-   each), and "the URL of the queue on screen" is spelled out four
-   times. S. *0.48.0 architecture review.*
-
 5. *(architecture)* **One `AppMsg::Preflight { key, ticket, answer }`.** Five
    near-identical arms in `msg.rs` settle a pre-flight check by ticket,
    and each is listed again in the generation-guard match. S–M. *0.48.0

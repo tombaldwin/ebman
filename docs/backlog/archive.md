@@ -5686,3 +5686,15 @@ a `--read-only` server.
    free functions with no store to hold a field, and its blind spot
    (a demo server's lines from a tokio worker thread, under test only)
    is recorded here rather than built around.
+
+4. *(mechanical)* **`DlqState::open(..)` and `DlqState::viewed_url()`.** The struct
+   is built field by field in three places (0.48.0 added two fields to
+   each), and "the URL of the queue on screen" is spelled out four
+   times. S. *0.48.0 architecture review.*
+
+   Done 2026-10-31: `DlqState::open` at the two remaining production
+   sites and both test literals (`..DlqState::open(..)`), `viewed_url` at
+   all four; `open_dlq` is `open_queue_viewer(QueueView::Dlq)`, which it
+   duplicated (one difference: a known-but-empty DLQ URL now says "no DLQ
+   for this env" rather than opening a viewer on nothing). Mutation
+   CAUGHT.

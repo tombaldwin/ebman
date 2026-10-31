@@ -9,36 +9,7 @@ use super::*;
 
 impl App {
     pub(super) fn open_dlq(&mut self) {
-        let Some(detail) = self.detail.as_ref() else {
-            return;
-        };
-        if detail.tab() != DetailTab::Queue {
-            return;
-        }
-        let Some(dlq_url) = detail.queues.dlq_url.clone() else {
-            self.status_message = Some("no DLQ for this env".into());
-            return;
-        };
-        let main_url = detail.queues.main_url.clone().unwrap_or_default();
-        let dlq = DlqState {
-            env_name: detail.env_name.clone(),
-            region: detail.key.region.clone(),
-            main_queue_url: main_url,
-            dlq_url,
-            messages: Vec::new(),
-            list_state: ListState::default(),
-            fetch: Default::default(),
-            removed_since_peek: Default::default(),
-            error: None,
-            confirm_purge: false,
-            purge_typed: TextInput::new(),
-            viewing: QueueView::Dlq,
-            confirm_delete_id: None,
-            replay_input: None,
-        };
-        self.dlq = Some(dlq);
-        self.mode = Mode::Dlq;
-        self.spawn_dlq_fetch();
+        self.open_queue_viewer(QueueView::Dlq);
     }
 
     /// Open the DLQ viewer for an env outside the Detail flow — used
@@ -52,22 +23,7 @@ impl App {
             main_queue_url,
             dlq_url,
         } = target;
-        let dlq = DlqState {
-            env_name,
-            region,
-            main_queue_url,
-            dlq_url,
-            messages: Vec::new(),
-            list_state: ListState::default(),
-            fetch: Default::default(),
-            removed_since_peek: Default::default(),
-            error: None,
-            confirm_purge: false,
-            purge_typed: TextInput::new(),
-            viewing: QueueView::Dlq,
-            confirm_delete_id: None,
-            replay_input: None,
-        };
+        let dlq = DlqState::open(env_name, region, main_queue_url, dlq_url, QueueView::Dlq);
         self.dlq = Some(dlq);
         self.mode = Mode::Dlq;
         self.spawn_dlq_fetch();

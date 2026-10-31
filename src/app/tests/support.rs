@@ -350,10 +350,6 @@ pub(super) fn open_dlq_state(env: &str) -> crate::app::DlqState {
     let mut list_state = ratatui::widgets::ListState::default();
     list_state.select(Some(0));
     crate::app::DlqState {
-        env_name: env.into(),
-        region: "us-east-1".into(),
-        main_queue_url: "https://sqs/q".into(),
-        dlq_url: "https://sqs/q-dlq".into(),
         messages: vec![crate::aws::QueueMessage {
             id: "m-1".into(),
             attributes: Vec::new(),
@@ -364,14 +360,13 @@ pub(super) fn open_dlq_state(env: &str) -> crate::app::DlqState {
             task: None,
         }],
         list_state,
-        fetch: Default::default(),
-        removed_since_peek: Default::default(),
-        error: None,
-        confirm_purge: false,
-        purge_typed: Default::default(),
-        viewing: crate::app::QueueView::Dlq,
-        confirm_delete_id: None,
-        replay_input: None,
+        ..crate::app::DlqState::open(
+            env.into(),
+            "us-east-1".into(),
+            "https://sqs/q".into(),
+            "https://sqs/q-dlq".into(),
+            crate::app::QueueView::Dlq,
+        )
     }
 }
 

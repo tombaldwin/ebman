@@ -62,6 +62,43 @@ pub(crate) struct DlqState {
     pub replay_input: Option<TextInput>,
 }
 
+impl DlqState {
+    /// A viewer opening on `viewing`, one of an env's two queues, before
+    /// its first peek.
+    pub(crate) fn open(
+        env_name: String,
+        region: String,
+        main_queue_url: String,
+        dlq_url: String,
+        viewing: QueueView,
+    ) -> Self {
+        Self {
+            env_name,
+            region,
+            main_queue_url,
+            dlq_url,
+            messages: Vec::new(),
+            list_state: ListState::default(),
+            fetch: Default::default(),
+            removed_since_peek: Default::default(),
+            error: None,
+            confirm_purge: false,
+            purge_typed: TextInput::new(),
+            viewing,
+            confirm_delete_id: None,
+            replay_input: None,
+        }
+    }
+
+    /// The URL of the queue on screen.
+    pub(crate) fn viewed_url(&self) -> &str {
+        match self.viewing {
+            QueueView::Dlq => &self.dlq_url,
+            QueueView::Main => &self.main_queue_url,
+        }
+    }
+}
+
 /// What subset of the loaded DLQ messages a replay should cover. Parsed
 /// from the replay prompt by [`parse_replay_spec`].
 #[derive(Debug, Clone, PartialEq, Eq)]

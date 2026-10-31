@@ -24,10 +24,7 @@ impl App {
         dlq.removed_since_peek.clear();
         dlq.error = None;
         let env_name = dlq.env_name.clone();
-        let queue_url = match dlq.viewing {
-            QueueView::Dlq => dlq.dlq_url.clone(),
-            QueueView::Main => dlq.main_queue_url.clone(),
-        };
+        let queue_url = dlq.viewed_url().to_string();
         let queue_for_msg = queue_url.clone();
         self.spawn_aws_in(
             self.dlq_client(),
@@ -71,10 +68,7 @@ impl App {
                 Some("delete: message no longer in the loaded list — refreshed away?".into());
             return;
         };
-        let queue_url = match dlq.viewing {
-            QueueView::Dlq => dlq.dlq_url.clone(),
-            QueueView::Main => dlq.main_queue_url.clone(),
-        };
+        let queue_url = dlq.viewed_url().to_string();
         if queue_url.is_empty() {
             self.error_message = Some("queue URL missing — cannot delete".into());
             return;

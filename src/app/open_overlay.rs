@@ -258,22 +258,13 @@ impl App {
             });
             return;
         }
-        let dlq = DlqState {
-            env_name: detail.env_name.clone(),
-            region: detail.key.region.clone(),
-            main_queue_url: main_url,
+        let dlq = DlqState::open(
+            detail.env_name.clone(),
+            detail.key.region.clone(),
+            main_url,
             dlq_url,
-            messages: Vec::new(),
-            list_state: ListState::default(),
-            fetch: Default::default(),
-            removed_since_peek: Default::default(),
-            error: None,
-            confirm_purge: false,
-            purge_typed: TextInput::new(),
             viewing,
-            confirm_delete_id: None,
-            replay_input: None,
-        };
+        );
         self.dlq = Some(dlq);
         self.mode = Mode::Dlq;
         self.spawn_dlq_fetch();
