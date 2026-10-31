@@ -35,6 +35,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   than that you ran `ebman freeze`, and `ebman thaw` names what it
   lifted. The name is the client's own claim: direction overrides and
   control characters are replaced and it is cut at 64 characters.
+- **Every freeze takes the same reason.** `ebman freeze`,
+  `:freeze-deploys` and `:incident START` now refuse a reason that is
+  not one line of at most 200 characters (control characters and
+  direction overrides included), as `freeze_fleet` always did: the
+  reason is shown wherever the freeze refuses a write. `ebman freeze`
+  exits `2` and the TUI says why; nothing is frozen.
 - **An agent cannot freeze again straight after you thaw.** For 30
   minutes after `ebman thaw` or `:thaw-deploys` lifts a persistent
   freeze, `freeze_fleet` refuses (an `incident` freeze too) and tells the

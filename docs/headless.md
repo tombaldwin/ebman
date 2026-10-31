@@ -144,7 +144,10 @@ session and holds until `ebman thaw` (or `:thaw-deploys` in a TUI).
 Every surface honours it: the TUI, `ebman action` / `audit replay` /
 `lint --fix`, and the MCP write tools. It writes no AWS and needs no
 credentials; the declaration and the lift are audit lines
-(`persistent=true via=cli`).
+(`persistent=true via=cli`). The reason is one line of at most 200
+characters, with no control characters or direction overrides, as for
+every way of declaring a freeze: it is shown wherever the freeze refuses
+a write. Anything else exits `2` with nothing frozen.
 
 Each holder has its own file, so a TUI's `:incident END` never lifts an
 `ebman freeze`, and `ebman thaw` never lifts a TUI session's freeze.
