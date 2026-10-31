@@ -2086,7 +2086,7 @@ fn a_role_is_checked_against_the_env_s_account() {
     let refusal = role_account_refusal(&role, &env(None), &unknown);
     assert_eq!(refusal, Some(RoleAccountRefusal::AccountUnknown));
     let refusal = refusal.unwrap();
-    assert_eq!(refusal.rule(), "role_account_unknown");
+    assert_eq!(refusal.rule().as_str(), "role_account_unknown");
     assert!(
         refusal
             .message(WriteVerb::Restart, "poly-api", &role)

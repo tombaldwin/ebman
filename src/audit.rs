@@ -826,7 +826,7 @@ pub(crate) fn append_action_refused(
     region: &str,
     action_label: &str,
     target: &str,
-    rule: &str,
+    rule: RefusalRule,
     remedy: &str,
 ) {
     append_refused(
@@ -843,11 +843,59 @@ pub(crate) fn append_action_refused(
     );
 }
 
+/// Declares [`RefusalRule`], its `ALL` and its `as_str` from one table,
+/// so the list a docs check walks cannot miss a variant.
+macro_rules! refusal_rules {
+    ($($(#[$doc:meta])* $variant:ident => $token:literal,)*) => {
+        /// Which rule refused a write: the `rule=` token of a
+        /// `stage=refused` line. One spelling per rule, here. They were
+        /// string literals at each refusing site, plus a `rule()` on two
+        /// different enums, so the list in `docs/safety-and-privacy.md`
+        /// was kept by hand and lagged: five tokens were missing from it
+        /// at once.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        pub(crate) enum RefusalRule {
+            $($(#[$doc])* $variant,)*
+        }
+
+        impl RefusalRule {
+            #[cfg(test)]
+            pub(crate) const ALL: &'static [RefusalRule] = &[$(Self::$variant,)*];
+
+            pub(crate) fn as_str(self) -> &'static str {
+                match self {
+                    $(Self::$variant => $token,)*
+                }
+            }
+        }
+    };
+}
+
+refusal_rules! {
+    SafetyConfigUnreadable => "safety_config_unreadable",
+    GlobalReadOnly => "global_read_only",
+    Frozen => "frozen",
+    EnvPinned => "env_pinned",
+    AccountPinned => "account_pinned",
+    RoleConfigUnreadable => "role_config_unreadable",
+    NoRole => "no_role",
+    /// MCP: the verb is not in this connection's write scope.
+    NotGranted => "not_granted",
+    /// MCP: the operator's answer to the ask was not an approval.
+    NotApproved => "not_approved",
+    /// MCP `freeze_fleet`: the operator's thaw holds it off.
+    ThawedRecently => "thawed_recently",
+    /// MCP: the verb's role is in another account than the env.
+    RoleWrongAccount => "role_wrong_account",
+    /// MCP: which account the env is in cannot be told.
+    RoleAccountUnknown => "role_account_unknown",
+}
+
 /// What a `stage=refused` line says, after its header.
 pub(crate) struct Refused<'a> {
     pub action_label: &'a str,
     pub target: &'a str,
-    pub rule: &'a str,
+    pub rule: RefusalRule,
     pub remedy: &'a str,
     /// Fields after the remedy: a rollout's id, so its refusals
     /// correlate with its dispatches.
@@ -880,7 +928,7 @@ pub(crate) fn append_refused(
         ("target", Field::Text(target)),
         // `rule` is a fixed vocabulary consumers filter on, so it
         // stays an unquoted token rather than becoming quoted text.
-        ("rule", Field::Token(rule)),
+        ("rule", Field::Token(rule.as_str())),
         ("remedy", Field::Quoted(remedy)),
     ];
     fields.extend(extras.iter().map(|(k, v)| (*k, Field::Text(v))));
@@ -1929,7 +1977,7 @@ mod tests {
             "eu-west-1",
             "Restart",
             ENV,
-            "deny_write",
+            super::RefusalRule::EnvPinned,
             "unset",
         );
         super::append_action_completed(
@@ -2053,7 +2101,8 @@ mod tests {
             FORGE,
             "Terminate",
             FORGE,
-            FORGE,
+            // The rule is typed now: it cannot carry a forge.
+            super::RefusalRule::EnvPinned,
             FORGE,
         );
         // `asked` and the red-transition event. The comment above says
@@ -2884,7 +2933,7 @@ mod drain_tests {
             "eu-west-2",
             "Rename X stage=completed err=\"looks fine\"",
             target,
-            "env_pinned",
+            crate::audit::RefusalRule::EnvPinned,
             "clear the pin",
         );
 

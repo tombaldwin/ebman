@@ -155,11 +155,9 @@ it.*
    `source_profile` set the role is assumed *from* that profile, so the
    confirmation's "from …" needs its identity; and `PlanRole::json`'s
    `assumed:false` and `line()`'s "does not assume yet" must change, with
-   a test that fails if either survives. The MCP refusal rule tokens
-   (`not_granted`, `not_approved`, `role_wrong_account`,
-   `role_account_unknown`, and slice 3's `role_unassumable`) are string
-   literals nothing pins against `docs/safety-and-privacy.md`: a typed
-   enum and a docs-drift check belong with slice 3, when the fifth joins.
+   a test that fails if either survives. Slice 3's `role_unassumable` is a new
+   `audit::RefusalRule` variant (the typed rule list, with its docs check,
+   landed 2026-10-31).
    It builds on the shipped ask
    (stage 5 was killed on 2026-09-25, so there is nothing to replace)
    and splits into five slices. Its three contestable calls are listed

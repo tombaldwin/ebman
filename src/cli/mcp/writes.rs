@@ -231,7 +231,7 @@ impl Server {
                 &region,
                 verb.label(),
                 env.unwrap_or("-"),
-                "not_granted",
+                crate::audit::RefusalRule::NotGranted,
                 "this server was started with --read-only; the operator must remove \
                  that flag and restart it",
                 format!(
@@ -249,7 +249,7 @@ impl Server {
             &region,
             verb.label(),
             env.unwrap_or("-"),
-            "not_granted",
+            crate::audit::RefusalRule::NotGranted,
             &format!("restart the MCP server with --allow-writes={name}"),
             format!(
                 "'{name}' is not in this server's write scope — start it with \
@@ -963,7 +963,7 @@ mod audited {
             region: &str,
             action: &str,
             env: &str,
-            rule: &str,
+            rule: crate::audit::RefusalRule,
             remedy: &str,
             message: String,
         ) -> Self {
@@ -1332,10 +1332,10 @@ pub(super) enum RoleAccountRefusal {
 }
 
 impl RoleAccountRefusal {
-    pub(super) fn rule(&self) -> &'static str {
+    pub(super) fn rule(&self) -> crate::audit::RefusalRule {
         match self {
-            Self::WrongAccount { .. } => "role_wrong_account",
-            Self::AccountUnknown => "role_account_unknown",
+            Self::WrongAccount { .. } => crate::audit::RefusalRule::RoleWrongAccount,
+            Self::AccountUnknown => crate::audit::RefusalRule::RoleAccountUnknown,
         }
     }
 
@@ -2223,7 +2223,7 @@ impl Server {
                 arg_str(args, "region").as_deref().unwrap_or("-"),
                 "confirm",
                 "-",
-                "not_granted",
+                crate::audit::RefusalRule::NotGranted,
                 "restart the MCP server with --allow-writes",
                 "writes are disabled — start the server with --allow-writes".to_string(),
             )));
@@ -2411,7 +2411,7 @@ impl Server {
                 &region,
                 pending.verb.label(),
                 &pending.env,
-                "not_approved",
+                crate::audit::RefusalRule::NotApproved,
                 reason,
                 format!("not dispatched — {reason}. {}", outcome.guidance()),
             )));

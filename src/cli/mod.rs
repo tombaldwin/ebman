@@ -917,7 +917,7 @@ mod write_gate_input_guard {
             &crate::config::RoleCheck::NotAsked,
         );
         let (rule, message, _) = refusal.expect("a standing read-only must refuse");
-        assert_eq!(rule.rule(), "global_read_only", "{message}");
+        assert_eq!(rule.rule().as_str(), "global_read_only", "{message}");
 
         // The control: without it, this env is writeable. Without this
         // the test would pass against a gate that refuses everything.

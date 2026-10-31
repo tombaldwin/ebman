@@ -99,7 +99,7 @@ impl Server {
                 &crate::audit::Refused {
                     action_label: crate::freeze::declare_label(incident),
                     target: "",
-                    rule: "thawed_recently",
+                    rule: crate::audit::RefusalRule::ThawedRecently,
                     remedy: "the operator declares it with `ebman freeze`",
                     extras: &[("via", "mcp"), ("client", client.as_str())],
                 },

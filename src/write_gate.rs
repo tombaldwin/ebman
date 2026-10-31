@@ -80,15 +80,16 @@ impl Refusal {
     /// surface by design (see the module docs), so anything that has to
     /// *aggregate* refusals — the audit log, and whatever reads it —
     /// needs a name that does not move when a toast is reworded.
-    pub(crate) fn rule(&self) -> &'static str {
+    pub(crate) fn rule(&self) -> crate::audit::RefusalRule {
+        use crate::audit::RefusalRule as R;
         match self {
-            Refusal::SafetyConfigUnreadable { .. } => "safety_config_unreadable",
-            Refusal::GlobalReadOnly => "global_read_only",
-            Refusal::Frozen => "frozen",
-            Refusal::EnvPinned { .. } => "env_pinned",
-            Refusal::AccountPinned { .. } => "account_pinned",
-            Refusal::RoleConfigUnreadable { .. } => "role_config_unreadable",
-            Refusal::NoRole => "no_role",
+            Refusal::SafetyConfigUnreadable { .. } => R::SafetyConfigUnreadable,
+            Refusal::GlobalReadOnly => R::GlobalReadOnly,
+            Refusal::Frozen => R::Frozen,
+            Refusal::EnvPinned { .. } => R::EnvPinned,
+            Refusal::AccountPinned { .. } => R::AccountPinned,
+            Refusal::RoleConfigUnreadable { .. } => R::RoleConfigUnreadable,
+            Refusal::NoRole => R::NoRole,
         }
     }
 
@@ -289,7 +290,7 @@ mod tests {
         let with = |role: &'static RoleCheck, env: &'static str, acct: Option<&'static str>| {
             let mut c = f.ctx(env, acct);
             c.role = role;
-            decide(&c).map(|r| r.rule())
+            decide(&c).map(|r| r.rule().as_str())
         };
         let leak = |r: RoleCheck| -> &'static RoleCheck { Box::leak(Box::new(r)) };
         let (broken, strict, lax, mapped) = (leak(broken), leak(strict), leak(lax), leak(mapped));
@@ -303,12 +304,15 @@ mod tests {
         c.role = broken;
         c.frozen = true;
         c.global_read_only = true;
-        assert_eq!(decide(&c).map(|r| r.rule()), Some("role_config_unreadable"));
+        assert_eq!(
+            decide(&c).map(|r| r.rule().as_str()),
+            Some("role_config_unreadable")
+        );
         // Below an unreadable safety config.
         let errs = vec!["safety.envs.x: bad".to_string()];
         c.safety_parse_errors = &errs;
         assert_eq!(
-            decide(&c).map(|r| r.rule()),
+            decide(&c).map(|r| r.rule().as_str()),
             Some("safety_config_unreadable")
         );
 
@@ -445,12 +449,13 @@ mod tests {
             },
         ];
 
-        let rules: std::collections::HashSet<&str> = all.iter().map(|r| r.rule()).collect();
+        let rules: std::collections::HashSet<&str> =
+            all.iter().map(|r| r.rule().as_str()).collect();
         assert_eq!(
             rules.len(),
             all.len(),
             "rule tokens collide: {:?}",
-            all.iter().map(|r| r.rule()).collect::<Vec<_>>()
+            all.iter().map(|r| r.rule().as_str()).collect::<Vec<_>>()
         );
 
         for r in &all {
@@ -493,7 +498,7 @@ mod tests {
         let mut ctx = f.ctx("open-env", Some("open-acct"));
         ctx.safety_parse_errors = &errors;
         let refusal = decide(&ctx).expect("an unreadable policy must refuse");
-        assert_eq!(refusal.rule(), "safety_config_unreadable");
+        assert_eq!(refusal.rule().as_str(), "safety_config_unreadable");
         assert!(
             refusal.remedy().contains("safety.envs.prod"),
             "the remedy must name the offending line: {}",
@@ -506,7 +511,7 @@ mod tests {
         ctx.frozen = true;
         ctx.global_read_only = true;
         assert_eq!(
-            decide(&ctx).map(|r| r.rule()),
+            decide(&ctx).map(|r| r.rule().as_str()),
             Some("safety_config_unreadable"),
             "a policy we cannot read outranks one we can"
         );

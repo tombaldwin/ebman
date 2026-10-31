@@ -1706,6 +1706,33 @@ mod docs_drift {
         );
     }
 
+    /// Every refusal rule an audit line can carry is in the list
+    /// `docs/safety-and-privacy.md` gives operators to filter on. It was
+    /// kept by hand, and five tokens were missing from it at once.
+    #[test]
+    fn every_refusal_rule_is_documented() {
+        let docs = std::fs::read_to_string("docs/safety-and-privacy.md")
+            .expect("read safety-and-privacy.md");
+        let missing: Vec<&str> = crate::audit::RefusalRule::ALL
+            .iter()
+            .map(|r| r.as_str())
+            .filter(|t| !docs.contains(&format!("`{t}`")) && !docs.contains(&format!("`rule={t}`")))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "not in safety-and-privacy.md: {missing:?}"
+        );
+        // And each spelling is its own: two rules sharing a token would
+        // read as one in every filter.
+        let mut tokens: Vec<&str> = crate::audit::RefusalRule::ALL
+            .iter()
+            .map(|r| r.as_str())
+            .collect();
+        tokens.sort_unstable();
+        tokens.dedup();
+        assert_eq!(tokens.len(), crate::audit::RefusalRule::ALL.len());
+    }
+
     /// Every key `config::parse` accepts must appear in
     /// `docs/configuration.md`. An operator cannot use a key they cannot
     /// find, and a key that silently exists is indistinguishable from a
