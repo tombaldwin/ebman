@@ -862,16 +862,7 @@ impl BadReason {
 }
 
 pub(crate) fn check_reason(reason: &str) -> Result<(), BadReason> {
-    let breaks_the_line = |c: char| {
-        c.is_control()
-            || matches!(
-                c,
-                '\u{2028}' | '\u{2029}' | '\u{200E}' | '\u{200F}' | '\u{061C}'
-            )
-            || ('\u{202A}'..='\u{202E}').contains(&c)
-            || ('\u{2066}'..='\u{2069}').contains(&c)
-    };
-    if reason.chars().any(breaks_the_line) {
+    if reason.chars().any(crate::util::rewrites_the_line) {
         return Err(BadReason::BreaksTheLine);
     }
     if reason.chars().count() > REASON_MAX {
@@ -1713,6 +1704,11 @@ mod tests {
             "a\u{202E}b",
             "a\u{2067}b",
             "a\u{200F}b",
+            // The dialog sanitiser's set: a zero-width joiner, a BOM and
+            // a TAG character passed here once, to be shown raw.
+            "a\u{200D}b",
+            "a\u{FEFF}b",
+            "a\u{E0041}b",
         ] {
             assert_eq!(check_reason(bad), Err(BadReason::BreaksTheLine), "{bad:?}");
         }

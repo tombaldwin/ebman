@@ -377,19 +377,9 @@ pub(super) fn sanitize_capped(raw: &str, max: usize) -> String {
             out.push('…');
             break;
         }
-        // Bidi overrides/embeddings, zero-width joiners and marks, and
-        // the line/paragraph separators — none of which a task name
-        // needs, all of which change what the sentence appears to say.
-        let formatting = matches!(c,
-            '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}'
-            | '\u{2066}'..='\u{2069}' | '\u{2028}' | '\u{2029}' | '\u{FEFF}'
-            // U+061C ARABIC LETTER MARK is a bidi control that
-            // `is_control()` does not report, and it reorders visibly.
-            | '\u{061C}'
-            // The TAG block is invisible by design — text that renders
-            // as nothing at all, beside text that does.
-            | '\u{E0000}'..='\u{E007F}');
-        if c.is_control() || formatting {
+        // None of these is something a task name needs, and each
+        // changes what the sentence appears to say.
+        if util::rewrites_the_line(c) {
             out.push('\u{FFFD}');
         } else {
             out.push(c);

@@ -288,6 +288,68 @@ pub fn write_secure(path: &std::path::Path, contents: &[u8]) -> std::io::Result<
     f.write_all(contents)
 }
 
+/// A character that can make one line of text show something other
+/// than what it holds: a control character, a line or paragraph
+/// separator, a bidi override, embedding, isolate or mark, a zero-width
+/// joiner or space, a BOM, or the TAG block (invisible by design).
+///
+/// The one set for both rules that use it: the MCP dialog's sanitiser
+/// replaces these with U+FFFD, and a freeze reason is refused if it
+/// holds one. They were two sets, and a reason with a zero-width joiner
+/// passed every declare to be shown raw in the status bar.
+pub(crate) fn rewrites_the_line(c: char) -> bool {
+    c.is_control()
+        || matches!(c,
+            '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}'
+            | '\u{2066}'..='\u{2069}' | '\u{2028}' | '\u{2029}' | '\u{FEFF}'
+            // U+061C ARABIC LETTER MARK is a bidi control that
+            // `is_control()` does not report, and it reorders visibly.
+            | '\u{061C}'
+            | '\u{E0000}'..='\u{E007F}')
+}
+
+#[cfg(test)]
+mod rewrites_the_line_tests {
+    use super::rewrites_the_line;
+
+    #[test]
+    fn every_class_is_caught_and_ordinary_text_is_not() {
+        for c in [
+            '\n',
+            '\t',
+            '\u{7f}',
+            '\u{200B}',
+            '\u{200D}',
+            '\u{200F}',
+            '\u{202A}',
+            '\u{202E}',
+            '\u{2066}',
+            '\u{2069}',
+            '\u{2028}',
+            '\u{2029}',
+            '\u{FEFF}',
+            '\u{061C}',
+            '\u{E0000}',
+            '\u{E007F}',
+        ] {
+            assert!(rewrites_the_line(c), "{c:?}");
+        }
+        for c in [
+            'a',
+            'é',
+            ' ',
+            '—',
+            '…',
+            '漢',
+            '\u{2010}',
+            '\u{2070}',
+            '\u{E0080}',
+        ] {
+            assert!(!rewrites_the_line(c), "{c:?}");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{json_escape, json_string, rotate_log};
