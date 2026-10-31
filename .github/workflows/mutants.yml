@@ -86,8 +86,11 @@ jobs:
           # to diff against, which must not read as a clean pass.
           if [ -z "${base}" ] || ! git cat-file -e "${base}^{commit}" 2>/dev/null \
              || [ "${base}" = "0000000000000000000000000000000000000000" ]; then
-            echo "no base commit to diff against (${base:-none}); skipping" | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "no base commit to diff against (${base:-none}); nothing judged" | tee -a "$GITHUB_STEP_SUMMARY"
             : > pr.diff
+            # Said to the verdict, which fails on it: an empty diff here
+            # is "not judged", and reading it as clean is the hole.
+            mkdir -p mutants.out && echo "${base:-none}" > mutants.out/no-base
             exit 0
           fi
           # `:(glob)`, or `**/` needs a directory: a plain pathspec

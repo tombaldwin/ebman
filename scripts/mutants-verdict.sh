@@ -11,6 +11,8 @@
 #     read as clean. That is how 2026-10-29's 47- and 70-mutant pushes
 #     judged nothing.
 #   * any mutant survived or timed out on the changed lines.
+#   * the push had no base to diff against (`no-base`), so nothing was
+#     judged.
 #
 # One job decides, on push and pull request alike. Survivors on a push
 # used to be a `::warning::` on a green run, and a run's status is what
@@ -26,6 +28,14 @@ DIR=${1:?usage: mutants-verdict.sh <dir> <shard-count>}
 SHARDS=${2:?usage: mutants-verdict.sh <dir> <shard-count>}
 
 fail=0
+# A push with no usable base (a force push, a new branch) had nothing to
+# diff against, so nothing was judged: that is not a clean pass, and a
+# green run saying "no mutant survived" over it was the hole. The next
+# push with a base judges its own lines.
+if ls "$DIR"/mutants-in-diff-*/no-base >/dev/null 2>&1; then
+  echo "::error::this push had no base commit to diff against (a force push?), so its changed lines were not judged"
+  fail=1
+fi
 for ((s = 0; s < SHARDS; s++)); do
   if [ ! -f "$DIR/mutants-in-diff-$s/complete" ]; then
     echo "::error::shard $s/$SHARDS did not finish, so its mutants were not judged"
@@ -66,5 +76,8 @@ fi
 
 if [ "$fail" = 0 ]; then
   echo "every shard finished; no mutant survived on the changed lines"
+fi
+if [ -n "${GITHUB_STEP_SUMMARY:-}" ] && ls "$DIR"/mutants-in-diff-*/no-base >/dev/null 2>&1; then
+  echo "**Not judged:** no base commit to diff against." >> "$GITHUB_STEP_SUMMARY"
 fi
 exit "$fail"

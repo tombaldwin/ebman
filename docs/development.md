@@ -34,7 +34,8 @@ same tests locally. Also in CI, all non-gating:
 the run when a mutant survives on the changed lines. A mutant no test can tell
 apart from the original is excused by an `exclude_re` entry in
 `.cargo/mutants.toml`, added by the maintainer; an entry that stops matching
-any mutant fails the run too.
+any mutant fails the run too. So does a push with no base commit to diff
+against (a force push), whose changed lines were not judged.
 
 Rendered screens are snapshot-tested with `insta` (`src/app/tests/snapshots/`):
 review an intended change with `cargo insta review`. `scripts/install-hooks.sh`
