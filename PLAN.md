@@ -167,7 +167,35 @@ it.*
 
 *Refilled twice on 2026-10-31: first from the design review's "later"
 list (all eight done and archived, "PLAN.md items done 2026-10-31"),
-then these four from BACKLOG.md. Each its own change.*
+then four from BACKLOG.md (done), then these three. Each its own
+change.*
+
+3. *(mechanical)* **Eleven hand-rolled `read_dir` walks in guards bypass
+   `scan::source_files`** (`app/tests/dispatch.rs` ×7, `refresh.rs`,
+   `aws/tests/core.rs`, `cli/mod.rs`). None is wrong today — each uses
+   `strip_line_comment` — so this is consolidation, not a fix, but it is
+   the house rule. S.
+
+4. *(mechanical)* **Move the last 13 `include_str!` guards onto
+   `scan::production_source`.** Not a defect today — each crosses a
+   directory boundary explicitly. Two latent properties remain: they
+   re-point silently if the test file moves, and they read the target
+   RAW, so a "this appears nowhere" check also searches the target's
+   test module and can be satisfied by a fixture.
+
+   `src/app/tests/parsing.rs:377-382, 400`; `src/terraform.rs:1150-1152`;
+   `src/commands.rs:1063, 1129, 1198`. (The three in `app/tests/lint.rs`
+   went on 2026-09-25, when that guard moved to all production source.)
+
+   *Restored 2026-09-25:* feabbbc removed this from the backlog without
+   archiving it, and the guards were still unmigrated. Its own lesson,
+   demonstrated the same day: a list-based guard went blind when the code
+   it watched moved files (0a81d5e).
+
+5. *(mechanical)* **The MCP side of "a disabled EBL008 does not degrade" is
+   unpinned.** e15d62b pins it for the CLI; the MCP tool reads
+   `lint.disable` from the config file, which the orchestration harness
+   cannot inject.
 
 *Left in BACKLOG.md: `Server::refuse(..)` for the six `Audited::record`
 callers, whose profile choices differ on purpose and need settling

@@ -156,22 +156,6 @@ Tier definitions:
   anywhere. The scan cannot become a guard at a 100% false-positive
   rate, exactly as the old entry predicted.
 
-- [ ] **Move the last 13 `include_str!` guards onto
-  `scan::production_source`.** Not a defect today — each crosses a
-  directory boundary explicitly. Two latent properties remain: they
-  re-point silently if the test file moves, and they read the target
-  RAW, so a "this appears nowhere" check also searches the target's
-  test module and can be satisfied by a fixture.
-
-  `src/app/tests/parsing.rs:377-382, 400`; `src/terraform.rs:1150-1152`;
-  `src/commands.rs:1063, 1129, 1198`. (The three in `app/tests/lint.rs`
-  went on 2026-09-25, when that guard moved to all production source.)
-
-  *Restored 2026-09-25:* feabbbc removed this from the backlog without
-  archiving it, and the guards were still unmigrated. Its own lesson,
-  demonstrated the same day: a list-based guard went blind when the code
-  it watched moved files (0a81d5e).
-
 - [ ] **Split `cli::write_refusal`'s rendering from its decision**, the
   way `app/safety.rs` is split (`refusal_for` / `render_refusal` /
   `audit_refusal`). The CLI's rendering is still inline in the pure half
@@ -180,12 +164,6 @@ Tier definitions:
   on 2026-09-25, so that trigger will never fire. Do it on its own
   merits or drop it. *Re-opened 2026-09-25: archived as absorbed by the
   verb vocabulary, which did not in fact do it.*
-
-- [ ] **Eleven hand-rolled `read_dir` walks in guards bypass
-  `scan::source_files`** (`app/tests/dispatch.rs` ×7, `refresh.rs`,
-  `aws/tests/core.rs`, `cli/mod.rs`). None is wrong today — each uses
-  `strip_line_comment` — so this is consolidation, not a fix, but it is
-  the house rule. S.
 
 - [ ] **Shared test fixtures and module placement** *(0.47.0 release
   architecture review)*. A `#[cfg(test)] aws::test_support` with
@@ -260,11 +238,6 @@ Tier definitions:
   (`env_tag_cache` / `env_health_cache`) fits the shared fetch, and
   whether a confirm modal should pay for the IAM/WAF probes (if not, it
   should at least list them as not run).
-
-- [ ] **The MCP side of "a disabled EBL008 does not degrade" is
-  unpinned.** e15d62b pins it for the CLI; the MCP tool reads
-  `lint.disable` from the config file, which the orchestration harness
-  cannot inject.
 
 #### Product, from the 2026-09-25 review
 
