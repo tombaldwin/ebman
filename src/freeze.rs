@@ -296,7 +296,7 @@ impl FreezeStore {
             return Ok(AgentDeclare::Thawed(t));
         }
         let file = self.persistent_file();
-        sweep_stale_temps(&self.holders_dir());
+        sweep_stale_temps(&self.holders_dir(), std::time::SystemTime::now());
         // What stands at `file` when the exclusive link finds one: a
         // freeze (kept), nothing any more (a thaw lifted it in between:
         // an error to retry, never a non-exclusive write), or bytes that
@@ -660,7 +660,7 @@ thread_local! {
 /// Nothing reads them, so they are harmless to enforcement, but nothing
 /// else removes them either. Only ones over a minute old: a younger one
 /// may be another process's write in flight.
-fn sweep_stale_temps(dir: &Path) {
+fn sweep_stale_temps(dir: &Path, now: std::time::SystemTime) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
@@ -674,7 +674,7 @@ fn sweep_stale_temps(dir: &Path) {
             .metadata()
             .and_then(|m| m.modified())
             .ok()
-            .and_then(|t| t.elapsed().ok())
+            .and_then(|t| now.duration_since(t).ok())
             .is_some_and(|age| age > stale);
         if temp && old {
             let _ = std::fs::remove_file(e.path());
@@ -1731,6 +1731,51 @@ mod tests {
             .unwrap();
         assert!(!old.exists() && !tmp.exists(), "stale ones swept");
         assert!(fresh.exists(), "a fresh one may be in flight");
+
+        // A minute old exactly is not yet stale.
+        let edge = s.holders_dir().join("persistent.excl.99999.3");
+        std::fs::write(&edge, "x").unwrap();
+        let written = std::fs::metadata(&edge).unwrap().modified().unwrap();
+        sweep_stale_temps(
+            &s.holders_dir(),
+            written + std::time::Duration::from_secs(60),
+        );
+        assert!(edge.exists(), "60s is the limit, not past it");
+        sweep_stale_temps(
+            &s.holders_dir(),
+            written + std::time::Duration::from_secs(61),
+        );
+        assert!(!edge.exists());
+
+        // The marker itself is never a temp file, however old.
+        let _ = s.thaw();
+        s.expire_thaw_for_test();
+        s.declare_persistent("release window", false).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(s.persistent_file())
+            .unwrap()
+            .set_modified(hour_ago)
+            .unwrap();
+        assert!(matches!(
+            s.declare_persistent_by_agent("bad deploy", false, "claude-code")
+                .unwrap(),
+            AgentDeclare::Held(_)
+        ));
+        assert_eq!(s.active().expect("kept").reason, "release window");
+        done(&s);
+    }
+
+    /// A marker that cannot be read for any reason but "gone" is that
+    /// failure, not "lifted while declaring".
+    #[test]
+    fn an_unreadable_marker_path_is_its_own_error() {
+        let s = store("marker-dir", Liveness::ALL_ALIVE);
+        std::fs::create_dir_all(s.persistent_file()).unwrap();
+        let err = s
+            .declare_persistent_by_agent("bad deploy", false, "claude-code")
+            .expect_err("a directory is no marker");
+        assert!(!err.to_string().contains("lifted while"), "{err}");
         done(&s);
     }
 
@@ -1770,6 +1815,29 @@ mod tests {
         AFTER_LINK.with(|f| f.set(None));
         assert!(matches!(r, Ok(AgentDeclare::Thawed(_))), "{r:?}");
         assert!(s.active().is_none(), "the agent's marker was taken back");
+
+        // Only the agent's own: an operator's freeze with the same reason,
+        // there by then, is kept.
+        s.expire_thaw_for_test();
+        fn thaw_then_operator_freezes(marker: &Path) {
+            thaw_now(marker);
+            write_marker_full(
+                marker,
+                PERSISTENT_PID,
+                "bad deploy",
+                false,
+                true,
+                false,
+                None,
+            )
+            .unwrap();
+        }
+        AFTER_LINK.with(|f| f.set(Some(thaw_then_operator_freezes)));
+        let r = s.declare_persistent_by_agent("bad deploy", false, "claude-code");
+        AFTER_LINK.with(|f| f.set(None));
+        assert!(matches!(r, Ok(AgentDeclare::Thawed(_))), "{r:?}");
+        let kept = s.active().expect("the operator's freeze stands");
+        assert_eq!(kept.agent, None);
         done(&s);
     }
 
