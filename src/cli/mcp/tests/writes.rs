@@ -2309,6 +2309,74 @@ async fn a_role_in_another_account_is_audited_once_on_the_aws_backend() {
     }
 }
 
+/// An env whose ARN is not known takes its account from the identity
+/// the plan resolves: in the role's account the plan stands, in another
+/// it is refused, naming that account.
+#[tokio::test]
+async fn an_env_with_no_arn_is_judged_by_the_identity_s_account() {
+    use aws_sdk_elasticbeanstalk::operation::describe_environments::DescribeEnvironmentsOutput;
+    use aws_sdk_elasticbeanstalk::types::EnvironmentDescription;
+    let env = "poly-role-no-arn";
+    let listing = aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::describe_environments)
+        .then_output(move || {
+            DescribeEnvironmentsOutput::builder()
+                .environments(
+                    EnvironmentDescription::builder()
+                        .environment_name(env)
+                        .application_name("poly")
+                        .status("Ready".into())
+                        .health("Green".into())
+                        .build(),
+                )
+                .build()
+        });
+    // The standing plan reads the env's recent events.
+    let events = aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::describe_events)
+        .then_output(|| {
+            aws_sdk_elasticbeanstalk::operation::describe_events::DescribeEventsOutput::builder()
+                .build()
+        });
+    let eb = aws_smithy_mocks::mock_client!(
+        aws_sdk_elasticbeanstalk,
+        aws_smithy_mocks::RuleMode::MatchAny,
+        [&listing, &events]
+    );
+    let cfg = aws_config::SdkConfig::builder()
+        .region(aws_config::Region::new("us-east-1"))
+        .behavior_version(aws_config::BehaviorVersion::latest())
+        .build();
+    let client = crate::aws::AwsClient::for_tests(
+        eb,
+        aws_sdk_sqs::Client::new(&cfg),
+        aws_sdk_cloudwatch::Client::new(&cfg),
+        aws_sdk_cloudwatchlogs::Client::new(&cfg),
+        aws_sdk_s3::Client::new(&cfg),
+        aws_sdk_ec2::Client::new(&cfg),
+    );
+    let mut s = Server::with_injected_client(WriteScope::All, role_cfg("111122223333"), client);
+    s.seams.identity = Some(CallerIdentity::Known {
+        arn: "arn:aws:iam::444455556666:user/ops".into(),
+        account: "444455556666".into(),
+    });
+    let err = s
+        .tool_write_plan(WriteVerb::Restart, &json!({"env": env}))
+        .await
+        .expect_err("the identity is in another account");
+    assert!(
+        err.to_string().contains("is in account 444455556666"),
+        "{err}"
+    );
+    s.seams.identity = Some(CallerIdentity::Known {
+        arn: "arn:aws:iam::111122223333:user/ops".into(),
+        account: "111122223333".into(),
+    });
+    let plan = s
+        .tool_write_plan(WriteVerb::Restart, &json!({"env": env}))
+        .await
+        .expect("the identity is in the role's account");
+    assert!(plan.contains("EbmanAgentDeploy"), "{plan}");
+}
+
 /// However long the identity line, the role sentence is whole: capped
 /// with it as one field, the cut fell on "does not assume yet".
 #[test]
