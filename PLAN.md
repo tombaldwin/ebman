@@ -170,11 +170,6 @@ list (all eight done and archived, "PLAN.md items done 2026-10-31"),
 then four from BACKLOG.md (done), then these three. Each its own
 change.*
 
-5. *(mechanical)* **The MCP side of "a disabled EBL008 does not degrade" is
-   unpinned.** e15d62b pins it for the CLI; the MCP tool reads
-   `lint.disable` from the config file, which the orchestration harness
-   cannot inject.
-
 *Left in BACKLOG.md: `Server::refuse(..)` for the six `Audited::record`
 callers, whose profile choices differ on purpose and need settling
 first.*

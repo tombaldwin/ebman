@@ -889,6 +889,23 @@ impl Server {
         }
     }
 
+    /// `lint.disable` and `required_tags` as `config.toml` has them on
+    /// this call, read as `config::load` reads it; the server's own copy
+    /// when it reads no file (a test's injected config). Through the
+    /// server so a test can say what is disabled: `config::load` reads
+    /// the one sandbox every test in the binary shares.
+    fn lint_config(&self) -> (Vec<String>, Vec<String>) {
+        let read;
+        let cfg = match &self.config_file {
+            Some(path) => {
+                read = crate::config::config_from_read(std::fs::read_to_string(path), path);
+                &read
+            }
+            None => &self.safety_cfg,
+        };
+        (cfg.lint_disable.clone(), cfg.required_tags.clone())
+    }
+
     async fn tool_lint(&self, args: &Value) -> Result<String, String> {
         let env_filter = arg_str(args, "env");
         let severity = match arg_str(args, "severity") {
@@ -902,19 +919,15 @@ impl Server {
             .map(|v| crate::util::split_csv(&v))
             .unwrap_or_default();
         // Hermetic in demo mode: no config-driven disables.
-        let disabled = match self.backend {
-            Backend::Demo => Vec::new(),
+        let (disabled, required_tags) = match self.backend {
+            Backend::Demo => (Vec::new(), Vec::new()),
             Backend::Aws => {
-                let mut disabled = crate::config::load_lint_disables();
+                let (mut disabled, required_tags) = self.lint_config();
                 disabled.extend(crate::project::load_lint_disables_from_cwd());
-                disabled
+                (disabled, required_tags)
             }
         };
         let rules = lint::default_rules(&disabled);
-        let required_tags = match self.backend {
-            Backend::Demo => Vec::new(),
-            Backend::Aws => crate::config::load().required_tags,
-        };
         let envs = self.fetch_envs(args).await?;
         let targets: Vec<&aws::Environment> = match env_filter.as_deref() {
             Some(name) => {

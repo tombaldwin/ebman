@@ -5781,3 +5781,14 @@ a `--read-only` server.
    meant to cover test code, so it scans the whole tree, tests included,
    with the two genuine YAML readers exempt as before. Probes CAUGHT in
    `lint/tests.rs` and `cli/drift.rs`.
+
+5. *(mechanical)* **The MCP side of "a disabled EBL008 does not degrade" is
+   unpinned.** e15d62b pins it for the CLI; the MCP tool reads
+   `lint.disable` from the config file, which the orchestration harness
+   cannot inject.
+
+   Done 2026-10-31: `tool_lint` reads `lint.disable` and `required_tags`
+   through `Server::lint_config` (the file per call, as `config::load`
+   reads it, or the injected copy), so the orchestration tests can
+   disable a rule. Two tests: the injected config, and a disable written
+   to the file the server reads. Three mutations CAUGHT.

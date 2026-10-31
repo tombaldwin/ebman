@@ -491,7 +491,7 @@ pub fn load() -> Config {
 /// Split from `load` so the failure arms are testable without writing
 /// to the shared test config path — the house rule keeps the I/O
 /// wrapper thin and the decision pure.
-fn config_from_read(read: std::io::Result<String>, path: &std::path::Path) -> Config {
+pub(crate) fn config_from_read(read: std::io::Result<String>, path: &std::path::Path) -> Config {
     match read {
         Ok(text) => parse(&text),
         // No config file at all is the ordinary case — no pins exist,

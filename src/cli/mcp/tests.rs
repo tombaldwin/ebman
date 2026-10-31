@@ -1538,6 +1538,8 @@ mod orchestration {
         /// The per-env option-settings fetch fails: lint cannot run for
         /// the env at all.
         settings: bool,
+        /// The server's config disables EBL008.
+        disable_ebl008: bool,
     }
 
     /// One Ready/Green web env, every lint input answering except the
@@ -1666,11 +1668,12 @@ mod orchestration {
         );
         let sqs =
             aws_smithy_mocks::mock_client!(aws_sdk_sqs, aws_smithy_mocks::RuleMode::MatchAny, []);
-        Server::with_injected_client(
-            WriteScope::None,
-            crate::config::Config::default(),
-            client_with(eb, sqs),
-        )
+        let cfg = if f.disable_ebl008 {
+            crate::config::parse("lint.disable = \"EBL008\"\n")
+        } else {
+            crate::config::Config::default()
+        };
+        Server::with_injected_client(WriteScope::None, cfg, client_with(eb, sqs))
     }
 
     async fn lint_skipped(f: LintFaults) -> Vec<String> {
@@ -1751,6 +1754,42 @@ mod orchestration {
         })
         .await;
         assert!(!skipped.iter().any(|s| s.contains("EBL008")), "{skipped:?}");
+    }
+
+    /// ...nor when the operator disabled EBL008: a check switched off
+    /// lost nothing, and must not cost the agent a skipped entry.
+    #[tokio::test]
+    async fn a_failed_stack_listing_costs_nothing_when_ebl008_is_disabled() {
+        let skipped = lint_skipped(LintFaults {
+            stacks: true,
+            disable_ebl008: true,
+            ..LintFaults::default()
+        })
+        .await;
+        assert!(!skipped.iter().any(|s| s.contains("EBL008")), "{skipped:?}");
+    }
+
+    /// ...read from the config file on each call, as a real server reads
+    /// it: a disable the operator adds while the server runs applies.
+    #[tokio::test]
+    async fn a_disable_in_the_config_file_reaches_the_lint() {
+        let dir = std::env::temp_dir().join(format!("ebman-mcp-lint-cfg-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "lint.disable = \"EBL008\"\n").unwrap();
+        let server = lint_server(LintFaults {
+            stacks: true,
+            ..LintFaults::default()
+        })
+        .reading_config_from(&path);
+        let out = server
+            .call_tool("lint", &json!({}))
+            .await
+            .expect("lint answers");
+        let _ = std::fs::remove_dir_all(&dir);
+        let v: Value = serde_json::from_str(&out).expect("valid JSON");
+        let skipped = v["skipped_envs"].to_string();
+        assert!(!skipped.contains("EBL008"), "{skipped}");
     }
 
     /// An expired session reaches the agent as the fix, in every kind
