@@ -169,14 +169,6 @@ it.*
 BACKLOG.md whole; items 3 and 4 of the previous window are done and
 archived, "PLAN.md items done 2026-10-31"). Each its own change.*
 
-3. *(architecture)* **`freeze.rs` split.** ~2000 lines and five concerns
-   (marker model, store and holders, pid liveness, two sidecar records,
-   policy) → `src/freeze/{marker,store,liveness,record,policy}.rs`, with
-   one `write_record` / `read_record` for the ended and thawed records,
-   which are near-copies (one hand-formats JSON, one uses `json!`), and
-   `ThawedFreeze::message` naming an MCP tool from the core module moved
-   to the tool.
-
 4. *(architecture)* **One test-seam shape.** `injected_client` by
    constructor, `injected_identity` as a field, the `LINK_FAILS` /
    `AFTER_LINK` / `TEST_HERMETIC` thread-locals: one `#[cfg(test)]

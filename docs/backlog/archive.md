@@ -5653,3 +5653,20 @@ a `--read-only` server.
    `too_many_arguments` allow; `a_demo_server_refuses_without_writing_an_audit_line`
    still holds through the constructor. The TUI's inline
    `!self.demo_mode` checks are conditions, not parameters, and stay.
+
+3. *(architecture)* **`freeze.rs` split.** ~2000 lines and five concerns
+   (marker model, store and holders, pid liveness, two sidecar records,
+   policy) → `src/freeze/{marker,store,liveness,record,policy}.rs`, with
+   one `write_record` / `read_record` for the ended and thawed records,
+   which are near-copies (one hand-formats JSON, one uses `json!`), and
+   `ThawedFreeze::message` naming an MCP tool from the core module moved
+   to the tool.
+
+   Done 2026-10-31: `src/freeze/{marker,liveness,store,record,policy}.rs`
+   and `tests.rs`, a move (464522b), with `write_marker_full`'s detached
+   doc put back on it; then one `write_record` / `read_record` (85a8735),
+   which made the ended record atomic and gave it the thaw's bound below
+   (four edge asserts, three mutations CAUGHT). **`ThawedFreeze::message`
+   stays put, killed by evidence:** of its three callers two are the CLI
+   (`ebman thaw`, `ebman freeze --status`), and the sentence is for the
+   operator; in the MCP tool the CLI would depend on `cli::mcp`.
