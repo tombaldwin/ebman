@@ -1487,15 +1487,13 @@ mod tests {
                 None,
             );
         };
-        let before = crate::cli::audit_delta::mark();
+        let before = crate::audit::delta::mark();
         make_hermetic();
         probe("poly-hermetic-off");
         clear_hermetic_for_test();
         probe("poly-hermetic-on");
-        let off =
-            crate::cli::audit_delta::lines_matching(&before, |l| l.contains("poly-hermetic-off"));
-        let on =
-            crate::cli::audit_delta::lines_matching(&before, |l| l.contains("poly-hermetic-on"));
+        let off = crate::audit::delta::lines_matching(&before, |l| l.contains("poly-hermetic-off"));
+        let on = crate::audit::delta::lines_matching(&before, |l| l.contains("poly-hermetic-on"));
         assert!(off.is_empty(), "{off:#?}");
         assert_eq!(on.len(), 2, "{on:#?}");
     }
@@ -1506,7 +1504,7 @@ mod tests {
     /// switch is per thread under test.
     #[test]
     fn the_demo_constructors_make_the_process_hermetic() {
-        let before = crate::cli::audit_delta::mark();
+        let before = crate::audit::delta::mark();
         let probe = |tag: &'static str| {
             append_rollout("r-1", None, tag, "deploy", "v1", "dispatched", None);
         };
@@ -1538,7 +1536,7 @@ mod tests {
             );
         });
         let lines =
-            |tag: &str| crate::cli::audit_delta::lines_matching(&before, |l| l.contains(tag)).len();
+            |tag: &str| crate::audit::delta::lines_matching(&before, |l| l.contains(tag)).len();
         assert_eq!(lines("poly-demo-app"), 0, "a --demo App audited");
         assert_eq!(lines("poly-demo-mcp"), 0, "a demo MCP server audited");
         assert_eq!(lines("poly-real-mcp"), 1, "the probe writes a line");
@@ -2962,7 +2960,7 @@ mod drain_tests {
             "clear the pin",
         );
 
-        let delta = crate::cli::audit_delta::since(&before);
+        let delta = crate::audit::delta::since(&before);
         let line = delta
             .lines()
             .find(|l| l.contains(target))
@@ -3017,5 +3015,98 @@ mod drain_tests {
         ] {
             assert_eq!(super::sanitise_token(k), k, "{k} must not be rewritten");
         }
+    }
+}
+
+/// What a CLI write body wrote to the (test-sandboxed) audit log.
+#[cfg(test)]
+pub(crate) mod delta {
+    fn path() -> std::path::PathBuf {
+        crate::util::cache_dir().join("audit.log")
+    }
+
+    fn read(path: &std::path::Path) -> String {
+        std::fs::read_to_string(path).unwrap_or_default()
+    }
+
+    /// The log as it stands, to compare against after a run.
+    pub(crate) fn mark() -> String {
+        read(&path())
+    }
+
+    /// Everything appended to the log since `before` (a [`mark`]).
+    ///
+    /// Tests share one sandboxed log and write to it at once, so it
+    /// crosses the 1 MiB rotation during a run. Read as append-only, a
+    /// test whose mark straddled it panicked "rotated mid-test" for
+    /// nothing it did. Its lines are then in `audit.log.1` after the
+    /// mark, and in the fresh `audit.log`.
+    ///
+    /// The live log is read first, and the backup only if the live log
+    /// no longer starts with the mark: read the other way round, a
+    /// rotation between the two reads left neither starting with it.
+    /// An empty mark (no log yet) cannot tell a rotation since from an
+    /// older backup, so it reads the live log alone; under test the log
+    /// starts empty in a fresh directory, and a mark that early would
+    /// need a whole 1 MiB written before its test reads.
+    pub(crate) fn since(before: &str) -> String {
+        let current = read(&path());
+        if let Some(delta) = current.strip_prefix(before) {
+            return delta.to_string();
+        }
+        let rotated = read(&crate::audit::rotated_path(&path()));
+        appended(before, &rotated, &read(&path())).unwrap_or_else(|| {
+            panic!(
+                "the audit log no longer starts with the mark, and neither does \
+                 its rotation: it rotated twice in one test"
+            )
+        })
+    }
+
+    /// What `current` gained since `before`, following one rotation
+    /// into `rotated`; `None` if neither starts with `before`.
+    pub(crate) fn appended(before: &str, rotated: &str, current: &str) -> Option<String> {
+        if let Some(delta) = current.strip_prefix(before) {
+            return Some(delta.to_string());
+        }
+        rotated
+            .strip_prefix(before)
+            .map(|tail| format!("{tail}{current}"))
+    }
+
+    /// The lines written since `before` that `keep` accepts, for a line
+    /// with no target of its own to filter on.
+    pub(crate) fn lines_matching(before: &str, keep: impl Fn(&str) -> bool) -> Vec<String> {
+        since(before)
+            .lines()
+            .filter(|l| keep(l))
+            .map(String::from)
+            .collect()
+    }
+
+    /// The lines written since `before` whose target is `target`: give
+    /// each test a target no other test writes, as tests run at once.
+    pub(crate) fn lines_for(before: &str, target: &str) -> Vec<String> {
+        let needle = format!("target={target}");
+        since(before)
+            .lines()
+            .filter(|l| l.split_whitespace().any(|w| w == needle))
+            .map(String::from)
+            .collect()
+    }
+
+    #[test]
+    fn a_rotation_after_the_mark_keeps_the_lines_on_both_sides() {
+        assert_eq!(appended("a\n", "old\n", "a\nb\n").as_deref(), Some("b\n"));
+        // Rotated after the mark: `b` went to the backup, `c` to the
+        // fresh file, and both are this test's.
+        assert_eq!(appended("a\n", "a\nb\n", "c\n").as_deref(), Some("b\nc\n"));
+        // The backup is checked only when the live log has moved on: an
+        // old backup that happens to start with the mark is not read.
+        assert_eq!(
+            appended("a\n", "a\nstale\n", "a\nb\n").as_deref(),
+            Some("b\n")
+        );
+        assert_eq!(appended("a\n", "x\n", "y\n"), None, "rotated twice");
     }
 }

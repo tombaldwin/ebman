@@ -169,13 +169,6 @@ it.*
 list (all eight done and archived, "PLAN.md items done 2026-10-31"),
 then these four from BACKLOG.md. Each its own change.*
 
-3. *(architecture)* **The CLI gate subsystem to `src/cli/write_env.rs`.**
-   `cli/mod.rs` grew 786 → 1016 lines and now holds `WriteEnv`,
-   `GateQuery`, `WriteGate`, `RealGate`, `write_refusal*`,
-   `freeze_refuses_run` and their guards; `audit_delta` (test-only)
-   belongs beside `audit::rotated_path` or in test support. Keep the
-   source guards' module paths in step. S. *0.48.0 architecture review.*
-
 *Left in BACKLOG.md: `Server::refuse(..)` for the six `Audited::record`
 callers, whose profile choices differ on purpose and need settling
 first.*

@@ -3250,7 +3250,7 @@ pub(crate) mod cycle_wiring {
             |_| async { Ok(client_with_failing_update(vec![env.into()])) },
         )
         .await;
-        let delta = crate::cli::audit_delta::since(&before);
+        let delta = crate::audit::delta::since(&before);
         let lines: Vec<&str> = delta.lines().filter(|l| l.contains(env)).collect();
         assert!(!lines.is_empty(), "the fix attempt is audited");
         // The client's own resolved region, whatever the fixture sets.
@@ -3774,7 +3774,7 @@ mod body {
             .await;
             (code, String::from_utf8(err).unwrap())
         }
-        let before = crate::cli::audit_delta::mark();
+        let before = crate::audit::delta::mark();
         let (code, err) = fix("poly-manual-only", MockFaults::default()).await;
         assert_eq!(
             code, 0,
@@ -3782,7 +3782,7 @@ mod body {
         );
         assert!(!err.contains("refusing"), "{err}");
         assert!(
-            crate::cli::audit_delta::lines_for(&before, "poly-manual-only").is_empty(),
+            crate::audit::delta::lines_for(&before, "poly-manual-only").is_empty(),
             "no refusal of a write that would not happen"
         );
 
@@ -3807,7 +3807,7 @@ mod body {
 
     #[tokio::test]
     async fn a_freeze_stops_a_fix_but_not_a_read() {
-        let before = crate::cli::audit_delta::mark();
+        let before = crate::audit::delta::mark();
         let r = lint(&["--fix", "--yes"], findings(), Some("incident #4321")).await;
         assert_eq!(r.code, 3, "{}", r.err);
         assert_eq!(r.clients, 0, "refused before any client: it needs no AWS");
@@ -3818,7 +3818,7 @@ mod body {
             r.err
         );
         // Audited under the label the fix dispatch logs.
-        let refused = crate::cli::audit_delta::lines_matching(&before, |l| {
+        let refused = crate::audit::delta::lines_matching(&before, |l| {
             l.contains("stage=refused")
                 && l.contains("action=SetOption")
                 && l.contains("target=-")
@@ -3884,7 +3884,7 @@ mod body {
                 .declare_persistent("incident #77", true)
                 .expect("declared");
         });
-        let before = crate::cli::audit_delta::mark();
+        let before = crate::audit::delta::mark();
         let (mut out, mut err) = (Vec::new(), Vec::new());
         let code = lint_body(
             &["lint".to_string(), "--fix".to_string(), "--yes".to_string()],
@@ -3921,7 +3921,7 @@ mod body {
             )),
             "{err}"
         );
-        let refused = crate::cli::audit_delta::lines_for(&before, second);
+        let refused = crate::audit::delta::lines_for(&before, second);
         assert!(
             refused
                 .iter()
@@ -3929,7 +3929,7 @@ mod body {
             "{refused:?}"
         );
         assert!(
-            crate::cli::audit_delta::lines_for(&before, first)
+            crate::audit::delta::lines_for(&before, first)
                 .iter()
                 .all(|l| !l.contains("stage=refused")),
             "the env fixed before the freeze was not refused"

@@ -1281,7 +1281,11 @@ mod write_gate_convergence {
     /// their own comment stripper and all eight shared a blind spot.
     /// The two gates, plus the module itself. Anything else touching
     /// the shared decision is re-diverging.
-    const ALLOWED: &[&str] = &["src/write_gate.rs", "src/app/safety.rs", "src/cli/mod.rs"];
+    const ALLOWED: &[&str] = &[
+        "src/write_gate.rs",
+        "src/app/safety.rs",
+        "src/cli/write_env.rs",
+    ];
 
     /// Extracted so the FILTER can be exercised directly. Inlined, the
     /// guard passed with the filter neutered — because a clean tree
@@ -1366,8 +1370,9 @@ mod write_gate_convergence {
 /// scanners taught it once and it was not generalised. So: one
 /// implementation, here, with its own accuracy test.
 ///
-/// Not a prefix. `cli/mod.rs` has production code BETWEEN two test
-/// modules, so anything that stops at the first one loses the rest.
+/// Not a prefix. A file can have production code BETWEEN two test
+/// modules (`cli/mod.rs` did), so anything that stops at the first one
+/// loses the rest.
 /// Test modules are excised wherever they appear and the remainder is
 /// joined.
 pub(crate) fn production_half(src: &str) -> String {
@@ -1611,7 +1616,7 @@ mod production_half_tests {
         );
         assert!(
             prod.contains("fn b()"),
-            "production code AFTER a test module survives — `cli/mod.rs` has some, \
+            "production code AFTER a test module survives — `cli/mod.rs` had some, \
              so anything treating this as a prefix loses it: {prod}"
         );
     }

@@ -5723,3 +5723,19 @@ a `--read-only` server.
    by a brace-matching script and checked for dropped comments (none).
    The generation match is exhaustive, so dropping the variant from it
    does not compile; `region.rs`'s per-check test still drives all six.
+
+3. *(architecture)* **The CLI gate subsystem to `src/cli/write_env.rs`.**
+   `cli/mod.rs` grew 786 → 1016 lines and now holds `WriteEnv`,
+   `GateQuery`, `WriteGate`, `RealGate`, `write_refusal*`,
+   `freeze_refuses_run` and their guards; `audit_delta` (test-only)
+   belongs beside `audit::rotated_path` or in test support. Keep the
+   source guards' module paths in step. S. *0.48.0 architecture review.*
+
+   Done 2026-10-31: `cli/write_env.rs` (868 lines, the gate and its four
+   guard modules), re-exported from `cli/mod.rs` (now 148), so callers
+   are unchanged; `audit_delta` is `audit::delta` (60 sites). Six guards
+   named `src/cli/mod.rs` as the gate's home and now name
+   `write_env.rs`; two proven to depend on the path (CAUGHT). One
+   exemption narrowed on the way: `write_refusal_paths_are_audited`
+   skipped every `mod.rs`, `cli/mcp/mod.rs` included, and now skips the
+   one file that declares the function.

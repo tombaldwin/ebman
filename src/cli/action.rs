@@ -1478,7 +1478,7 @@ mod body {
     /// the auto-rollback's included.
     #[tokio::test(start_paused = true)]
     async fn every_dispatch_is_audited_as_a_pair() {
-        use crate::cli::audit_delta::{lines_for, mark};
+        use crate::audit::delta::{lines_for, mark};
         let before = mark();
         let f = fleet_named("audited-restart", "build-1", STUCK);
         let r = action(
@@ -2476,7 +2476,7 @@ mod rollout {
     /// Each region's write is a pair under the run's one rollout id.
     #[tokio::test]
     async fn every_region_is_audited_under_one_rollout_id() {
-        use crate::cli::audit_delta::{lines_for, mark};
+        use crate::audit::delta::{lines_for, mark};
         let before = mark();
         let args = [
             "--env",
@@ -2516,7 +2516,7 @@ mod rollout {
     /// its own region, so the log and the webhook see what never ran.
     #[tokio::test]
     async fn the_regions_a_freeze_stopped_are_audited_as_refused() {
-        use crate::cli::audit_delta::{lines_for, mark};
+        use crate::audit::delta::{lines_for, mark};
         let before = mark();
         let args = [
             "--env",

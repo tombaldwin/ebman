@@ -1424,7 +1424,7 @@ async fn a_refused_write_is_recorded_with_its_rule_and_remedy() {
         "must refuse"
     );
 
-    let delta = crate::cli::audit_delta::since(&before);
+    let delta = crate::audit::delta::since(&before);
     let lines: Vec<&str> = delta.lines().filter(|l| l.contains(env_name)).collect();
     assert_eq!(lines.len(), 1, "exactly one line for the refusal: {delta}");
     let line = lines[0];
@@ -1466,7 +1466,7 @@ async fn demo_mode_refuses_without_writing_an_audit_line() {
         "demo must refuse"
     );
 
-    let delta = crate::cli::audit_delta::since(&before);
+    let delta = crate::audit::delta::since(&before);
     // Matched on a WORD BOUNDARY, not as a bare substring and not as
     // one named field.
     //
@@ -1509,7 +1509,7 @@ async fn an_allowed_write_files_no_refusal() {
         "must allow"
     );
 
-    let delta = crate::cli::audit_delta::since(&before);
+    let delta = crate::audit::delta::since(&before);
     assert!(
         !delta.contains(env_name),
         "an allowed write is not a refusal: {delta}"
@@ -1584,7 +1584,7 @@ async fn a_batch_refusal_files_one_matchable_line_per_env() {
         "both envs are pinned"
     );
 
-    let delta = crate::cli::audit_delta::since(&before);
+    let delta = crate::audit::delta::since(&before);
 
     for (n, region) in [(a, "us-east-1"), (b, "ap-south-1")] {
         let lines: Vec<&str> = delta
@@ -1829,7 +1829,7 @@ async fn a_refusal_is_audited_under_the_label_its_dispatch_uses() {
     // "purge" is the toast verb; `spawn_dlq` dispatches it as `dlq-purge`.
     assert!(app.deny_write(&home_key(env_name), "purge"), "must refuse");
 
-    let delta = crate::cli::audit_delta::since(&before);
+    let delta = crate::audit::delta::since(&before);
     let line = delta
         .lines()
         .find(|l| l.contains(env_name))
@@ -1854,7 +1854,7 @@ async fn a_refusal_is_audited_under_the_label_its_dispatch_uses() {
         app.deny_write_batch(&[home_key(batch_env)], "purge"),
         "must refuse"
     );
-    let delta = crate::cli::audit_delta::since(&before);
+    let delta = crate::audit::delta::since(&before);
     let line = delta
         .lines()
         .find(|l| l.contains(batch_env))
@@ -1924,7 +1924,7 @@ fn audit_log() -> String {
 /// A refusal is not a write: its line also names the region, so one
 /// fails here rather than counting as where the write went.
 fn twin_audit_regions(before: &str) -> Vec<String> {
-    let delta = crate::cli::audit_delta::since(before);
+    let delta = crate::audit::delta::since(before);
     let lines: Vec<&str> = delta.lines().filter(|l| l.contains(&twin())).collect();
     assert!(
         !lines.iter().any(|l| l.contains("stage=refused")),
@@ -2059,7 +2059,7 @@ async fn a_pin_set_after_the_confirm_is_audited_when_it_stops_the_dispatch() {
     app.cfg.safety_envs.insert(twin(), true);
     let before = audit_log();
     app.spawn_action(modal);
-    let delta = crate::cli::audit_delta::since(&before);
+    let delta = crate::audit::delta::since(&before);
     let lines: Vec<&str> = delta.lines().filter(|l| l.contains(&twin())).collect();
     assert_eq!(lines.len(), 1, "{lines:#?}");
     assert!(
@@ -2255,7 +2255,7 @@ async fn a_refusal_for_one_of_two_same_named_envs_is_audited_in_its_region() {
     app.cfg.safety_envs.insert(twin(), true);
     let before = audit_log();
     assert!(app.deny_write(&crate::app::EnvKey::new("eu-west-2", twin()), "restart"));
-    let delta = crate::cli::audit_delta::since(&before);
+    let delta = crate::audit::delta::since(&before);
     let lines: Vec<&str> = delta.lines().filter(|l| l.contains(&twin())).collect();
     assert_eq!(lines.len(), 1, "{lines:#?}");
     assert!(
@@ -2370,13 +2370,13 @@ async fn thaw_deploys_lifts_an_ebman_freeze_but_not_another_sessions() {
     // same one concurrently.
     app.context.region = "poly-thaw-1".into();
     app.freeze.write_test_marker(0, "release window", true);
-    let before = crate::cli::audit_delta::mark();
+    let before = crate::audit::delta::mark();
     app.execute_command("thaw-deploys");
     assert!(app.foreign_freeze_now().is_none(), "lifted");
     assert!(!app.deny_write(&home_key("api-prod"), "restart"));
     // Audited as the lift of a persistent freeze, as `ebman thaw` is.
     // The only TUI path that lifts one; the CLI's lines say `via=cli`.
-    let lifted = crate::cli::audit_delta::lines_matching(&before, |l| {
+    let lifted = crate::audit::delta::lines_matching(&before, |l| {
         l.contains("region=poly-thaw-1")
             && l.contains("action=ThawDeploys")
             && l.contains("persistent=true")

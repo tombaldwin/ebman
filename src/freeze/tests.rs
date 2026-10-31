@@ -1079,7 +1079,7 @@ fn no_other_test_reads_the_shared_store() {
     // Each entry names why the call is not a read of the store.
     const ALLOWED: &[(&str, usize, &str)] = &[
         ("src/freeze/tests.rs", 1, "the round trip above"),
-        ("src/cli/mod.rs", 1, "a source guard's expected text"),
+        ("src/cli/write_env.rs", 1, "a source guard's expected text"),
         ("src/cli/mcp/tests.rs", 1, "a source guard's expected text"),
     ];
     // Built, so these lines are not matches of their own. A test

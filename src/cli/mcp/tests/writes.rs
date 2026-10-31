@@ -216,7 +216,7 @@ async fn a_refused_mcp_write_is_recorded_against_the_agent() {
         .expect_err("a pinned env must refuse");
     assert!(err.to_string().contains("safety.envs"), "{err}");
 
-    let delta = crate::cli::audit_delta::since(&before);
+    let delta = crate::audit::delta::since(&before);
     let lines: Vec<&str> = delta.lines().filter(|l| l.contains(env_name)).collect();
     assert_eq!(lines.len(), 1, "exactly one refusal line: {delta}");
     let line = lines[0];
@@ -251,7 +251,7 @@ async fn a_freeze_in_the_servers_store_refuses_its_writes() {
         .freeze_store()
         .declare_persistent("incident #88", true)
         .expect("declared");
-    let before = crate::cli::audit_delta::mark();
+    let before = crate::audit::delta::mark();
     let err = frozen
         .tool_write_plan(WriteVerb::Restart, &json!({"env": env_name}))
         .await
@@ -261,7 +261,7 @@ async fn a_freeze_in_the_servers_store_refuses_its_writes() {
             .contains("fleet freeze active (incident #88)"),
         "{err}"
     );
-    let lines = crate::cli::audit_delta::lines_matching(&before, |l| l.contains(env_name));
+    let lines = crate::audit::delta::lines_matching(&before, |l| l.contains(env_name));
     assert_eq!(lines.len(), 1, "{lines:#?}");
     assert!(lines[0].contains("stage=refused") && lines[0].contains("rule=frozen"));
 
@@ -326,13 +326,13 @@ async fn the_role_config_gates_mcp_writes() {
          mcp.role.deploys.verbs = \"deploy\"\n",
     );
     let server = Server::with_config(false, false, WriteScope::All, strict);
-    let before = crate::cli::audit_delta::mark();
+    let before = crate::audit::delta::mark();
     let err = server
         .tool_write_plan(WriteVerb::Restart, &json!({"env": env}))
         .await
         .expect_err("restart maps to no role");
     assert!(err.to_string().contains("mcp.require_role"), "{err}");
-    let lines = crate::cli::audit_delta::lines_for(&before, env);
+    let lines = crate::audit::delta::lines_for(&before, env);
     assert!(
         lines
             .iter()
@@ -357,13 +357,13 @@ async fn the_role_config_gates_mcp_writes() {
          mcp.role.b.role_arn = \"arn:aws:iam::111122223333:role/B\"\nmcp.role.b.verbs = \"deploy\"\n",
     );
     let server = Server::with_config(false, false, WriteScope::All, broken);
-    let before = crate::cli::audit_delta::mark();
+    let before = crate::audit::delta::mark();
     let err = server
         .tool_write_plan(WriteVerb::Restart, &json!({"env": env}))
         .await
         .expect_err("an unreadable role config refuses every write");
     assert!(err.to_string().contains("more than one role"), "{err}");
-    let lines = crate::cli::audit_delta::lines_for(&before, env);
+    let lines = crate::audit::delta::lines_for(&before, env);
     assert!(
         lines
             .iter()
@@ -394,7 +394,7 @@ async fn a_demo_server_refuses_without_writing_an_audit_line() {
         .await
         .expect_err("pinned env must refuse");
     assert!(
-        crate::cli::audit_delta::since(&before).contains(env_name),
+        crate::audit::delta::since(&before).contains(env_name),
         "a real refusal must still be recorded"
     );
 
@@ -407,7 +407,7 @@ async fn a_demo_server_refuses_without_writing_an_audit_line() {
         .expect_err("demo must still refuse — the verdict is real");
     assert!(err.to_string().contains("safety.envs"), "{err}");
     assert!(
-        !crate::cli::audit_delta::since(&before).contains(env_name),
+        !crate::audit::delta::since(&before).contains(env_name),
         "demo mode writes NO audit lines"
     );
 }
@@ -689,7 +689,7 @@ async fn an_out_of_scope_write_is_recorded_against_the_agent() {
         "{err}"
     );
 
-    let delta = crate::cli::audit_delta::since(&before);
+    let delta = crate::audit::delta::since(&before);
     let lines: Vec<&str> = delta.lines().filter(|l| l.contains(env_name)).collect();
     assert_eq!(lines.len(), 1, "exactly one refusal line: {delta}");
     let line = lines[0];
@@ -1235,7 +1235,7 @@ fn undo_client(send_ok: bool) -> crate::aws::AwsClient {
 }
 
 fn audit_delta_for(before: &str, env: &str) -> Vec<String> {
-    crate::cli::audit_delta::lines_matching(before, |l| l.contains(env))
+    crate::audit::delta::lines_matching(before, |l| l.contains(env))
 }
 
 /// A refusal records the region the write would have gone to, as its
@@ -1313,7 +1313,7 @@ async fn a_scope_refusal_records_the_resolved_region() {
         crate::config::Config::default(),
         client,
     );
-    let before = crate::cli::audit_delta::mark();
+    let before = crate::audit::delta::mark();
     let _ = s
         .tool_write_plan(WriteVerb::Restart, &json!({"env": env}))
         .await
@@ -2286,7 +2286,7 @@ async fn a_role_in_another_account_is_audited_once_on_the_aws_backend() {
             json!({"env": env, "message_id": "m-1"}),
         ),
     ] {
-        let before = crate::cli::audit_delta::mark();
+        let before = crate::audit::delta::mark();
         let err = s
             .tool_write_plan(verb, &args)
             .await

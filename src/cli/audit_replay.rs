@@ -637,7 +637,7 @@ mod tests {
             &[],
         );
 
-        let delta = crate::cli::audit_delta::since(&before);
+        let delta = crate::audit::delta::since(&before);
         let line = delta
             .lines()
             .find(|l| l.contains(env))
@@ -808,7 +808,7 @@ mod body {
     /// A replay is audited as a pair that names the line it replays.
     #[tokio::test]
     async fn a_replay_is_audited_with_the_line_it_replays() {
-        use crate::cli::audit_delta::{lines_for, mark};
+        use crate::audit::delta::{lines_for, mark};
         const LINE: &str = "2026-07-15T12:00:00+00:00\taccount=123\tprofile=-\tregion=eu-west-1\tstage=dispatched action=Restart target=audited-replay";
         let before = mark();
         let (aws, _) = client_named("audited-replay", false);

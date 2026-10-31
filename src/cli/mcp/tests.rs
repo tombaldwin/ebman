@@ -3957,13 +3957,13 @@ async fn a_declined_ask_on_aws_records_the_resolved_region() {
             assert!(srv.take_ask_reply(&reply));
         }
     });
-    let before = crate::cli::audit_delta::mark();
+    let before = crate::audit::delta::mark();
     let (err, plan) = call(&s, "restart", json!({"env": env})).await;
     assert!(!err, "{plan}");
     let token = plan["confirm_token"].as_str().expect("token").to_string();
     let (err, out) = call(&s, "confirm_action", json!({"confirm_token": token})).await;
     assert!(err, "declined: {out}");
-    let lines = crate::cli::audit_delta::lines_matching(&before, |l| l.contains(env));
+    let lines = crate::audit::delta::lines_matching(&before, |l| l.contains(env));
     let asked: Vec<&String> = lines.iter().filter(|l| l.contains("stage=asked")).collect();
     let refused: Vec<&String> = lines
         .iter()
@@ -5549,7 +5549,7 @@ fn granted_server() -> Server {
 #[tokio::test]
 async fn freeze_fleet_declares_a_freeze_that_refuses_writes() {
     let server = granted_server();
-    let before = crate::cli::audit_delta::mark();
+    let before = crate::audit::delta::mark();
     let (is_error, body) = call(
         &server,
         "freeze_fleet",
@@ -5567,8 +5567,7 @@ async fn freeze_fleet_declares_a_freeze_that_refuses_writes() {
     assert_eq!(m.reason, "poly-freeze-probe: bad deploy rolling out");
     assert!(!m.incident);
 
-    let lines =
-        crate::cli::audit_delta::lines_matching(&before, |l| l.contains("poly-freeze-probe"));
+    let lines = crate::audit::delta::lines_matching(&before, |l| l.contains("poly-freeze-probe"));
     assert_eq!(lines.len(), 1, "{lines:#?}");
     for part in [
         "action=FreezeDeploys",
@@ -5664,7 +5663,7 @@ async fn freeze_fleet_will_not_reverse_a_fresh_thaw() {
     assert!(!is_error, "{body}");
     assert!(matches!(store.thaw(), crate::freeze::Thaw::Lifted { .. }));
 
-    let before = crate::cli::audit_delta::mark();
+    let before = crate::audit::delta::mark();
     for incident in [false, true] {
         let (is_error, body) = call(
             &server,
@@ -5688,7 +5687,7 @@ async fn freeze_fleet_will_not_reverse_a_fresh_thaw() {
         );
     }
     let lines =
-        crate::cli::audit_delta::lines_matching(&before, |l| l.contains("client=poly-thaw-probe"));
+        crate::audit::delta::lines_matching(&before, |l| l.contains("client=poly-thaw-probe"));
     assert_eq!(lines.len(), 2, "{lines:#?}");
     for (line, action) in lines.iter().zip(["FreezeDeploys", "IncidentStart"]) {
         for part in [
@@ -5720,7 +5719,7 @@ async fn freeze_fleet_will_not_reverse_a_fresh_thaw() {
 #[tokio::test]
 async fn freeze_fleet_as_an_incident_is_audited_as_one() {
     let server = granted_server();
-    let before = crate::cli::audit_delta::mark();
+    let before = crate::audit::delta::mark();
     let (is_error, body) = call(
         &server,
         "freeze_fleet",
@@ -5729,8 +5728,7 @@ async fn freeze_fleet_as_an_incident_is_audited_as_one() {
     .await;
     assert!(!is_error, "{body}");
     assert!(server.freeze_store().active().expect("frozen").incident);
-    let lines =
-        crate::cli::audit_delta::lines_matching(&before, |l| l.contains("poly-incident-probe"));
+    let lines = crate::audit::delta::lines_matching(&before, |l| l.contains("poly-incident-probe"));
     assert_eq!(lines.len(), 1, "{lines:#?}");
     assert!(lines[0].contains("action=IncidentStart"), "{}", lines[0]);
 }
@@ -5777,7 +5775,7 @@ async fn freeze_fleet_leaves_a_standing_freeze_as_declared() {
         .freeze_store()
         .declare_persistent("INC-42 db failover", true)
         .expect("declared");
-    let before = crate::cli::audit_delta::mark();
+    let before = crate::audit::delta::mark();
     let (is_error, body) = call(
         &server,
         "freeze_fleet",
@@ -5791,7 +5789,7 @@ async fn freeze_fleet_leaves_a_standing_freeze_as_declared() {
     assert_eq!(m.reason, "INC-42 db failover");
     assert!(m.incident, "the operator's incident flag survives");
     assert!(
-        crate::cli::audit_delta::lines_matching(&before, |l| l.contains("poly-standing-probe"))
+        crate::audit::delta::lines_matching(&before, |l| l.contains("poly-standing-probe"))
             .is_empty(),
         "nothing was declared, so nothing is audited as declared"
     );

@@ -2050,7 +2050,7 @@ async fn a_red_transition_is_audited_under_the_rows_region() {
 
     app.apply_refresh(app.fanout_epoch, Ok(vec![red]), Vec::new());
 
-    let delta = crate::cli::audit_delta::since(&before);
+    let delta = crate::audit::delta::since(&before);
     let lines: Vec<&str> = delta.lines().filter(|l| l.contains(env)).collect();
     assert_eq!(lines.len(), 1, "{lines:#?}");
     assert!(lines[0].contains("region=eu-west-2"), "{}", lines[0]);
@@ -2070,7 +2070,7 @@ async fn a_red_transition_with_an_empty_region_is_audited_under_home() {
 
     app.apply_refresh(app.fanout_epoch, Ok(vec![red]), Vec::new());
 
-    let delta = crate::cli::audit_delta::since(&before);
+    let delta = crate::audit::delta::since(&before);
     let lines: Vec<&str> = delta.lines().filter(|l| l.contains(env)).collect();
     assert_eq!(lines.len(), 1, "{lines:#?}");
     let home = format!("region={}", app.context.region);

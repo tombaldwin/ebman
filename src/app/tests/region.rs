@@ -399,7 +399,7 @@ async fn a_dispatch_and_its_completion_agree_on_the_region() {
     app.generation += 1;
     app.handle_msg(msg);
 
-    let delta = crate::cli::audit_delta::since(&before);
+    let delta = crate::audit::delta::since(&before);
     let matching: Vec<&str> = delta.lines().filter(|l| l.contains(env_name)).collect();
     assert_eq!(
         matching.len(),

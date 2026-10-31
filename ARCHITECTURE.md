@@ -313,7 +313,7 @@ Each surface renders that `Refusal` in its own voice. In the TUI it is
 `App::deny_write` / `deny_write_batch`
 ([`src/app/safety.rs`](src/app/safety.rs)), which sets a toast carrying
 the freeze age and the `:incident END` hint. In the CLI and the MCP
-server it is `cli::write_refusal` ([`src/cli/mod.rs`](src/cli/mod.rs)),
+server it is `cli::write_refusal` ([`src/cli/write_env.rs`](src/cli/write_env.rs)),
 which returns the reason so the server can hand it to a client and a
 CLI write body (given it as `cli::real_refusal`) can print it and
 return 3 for its shell to exit with, draining webhooks first.
