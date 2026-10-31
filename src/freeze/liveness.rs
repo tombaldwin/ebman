@@ -97,19 +97,24 @@ pub(super) fn marker_owner_is_live(
     !matches!(start_epoch, Some(start) if start > marker_at.saturating_add(START_SLACK_SECS))
 }
 
-#[cfg(unix)]
+/// Is a process with `pid` running? One function with a block per
+/// platform, not one function per platform: a mutant of a function the
+/// runner never compiles survives every test (`mutants.yml`).
 pub(super) fn pid_alive(pid: u32) -> bool {
     // kill(pid, 0): signal 0 performs the permission/existence check
     // without delivering anything. EPERM still means "exists".
-    let r = unsafe { libc::kill(pid as libc::pid_t, 0) };
-    r == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
-}
-
-#[cfg(not(unix))]
-pub(super) fn pid_alive(_pid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        let r = unsafe { libc::kill(pid as libc::pid_t, 0) };
+        r == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+    }
     // No cheap portable probe — fail active (enforce) rather than
     // silently dropping a freeze.
-    true
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        true
+    }
 }
 
 /// Wall-clock epoch second at which the process holding `pid` started.
@@ -123,8 +128,30 @@ pub(super) fn pid_alive(_pid: u32) -> bool {
 ///
 /// `None` when the start time cannot be read, which the caller treats as
 /// "assume owner" — see `marker_owner_is_live`.
-#[cfg(target_os = "macos")]
+///
+/// One function with a block per platform, as [`pid_alive`] is. The
+/// macOS probe is its own function, and the one `.cargo/mutants.toml`
+/// excuses: the Linux runner never compiles it.
 pub(super) fn process_start_epoch(pid: u32) -> Option<i64> {
+    #[cfg(target_os = "macos")]
+    {
+        macos_start_epoch(pid)
+    }
+    #[cfg(target_os = "linux")]
+    {
+        linux_start_epoch(pid)
+    }
+    // No cheap probe: assume owner, which fails closed.
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
+/// The start time from `proc_pidinfo`.
+#[cfg(target_os = "macos")]
+fn macos_start_epoch(pid: u32) -> Option<i64> {
     // SAFETY: `proc_pidinfo` fills a `proc_bsdinfo` we own and sized;
     // it reports how many bytes it wrote, which we check.
     unsafe {
@@ -185,18 +212,13 @@ pub(crate) fn start_epoch_from(btime: i64, ticks: u64, hz: i64) -> Option<i64> {
     Some(btime + (ticks / hz as u64) as i64)
 }
 
+/// The start time from `/proc`.
 #[cfg(target_os = "linux")]
-pub(super) fn process_start_epoch(pid: u32) -> Option<i64> {
+fn linux_start_epoch(pid: u32) -> Option<i64> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     let ticks = start_ticks_from_stat(&stat)?;
     // SAFETY: `sysconf` takes a constant and returns a long.
     let hz = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
     let btime = btime_from_proc_stat(&std::fs::read_to_string("/proc/stat").ok()?)?;
     start_epoch_from(btime, ticks, hz)
-}
-
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-pub(super) fn process_start_epoch(_pid: u32) -> Option<i64> {
-    // No cheap probe: assume owner, which fails closed.
-    None
 }
