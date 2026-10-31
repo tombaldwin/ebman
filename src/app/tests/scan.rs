@@ -200,10 +200,15 @@ pub(crate) fn production_source(suffix: &str) -> String {
     production_half(&hits[0].1)
 }
 
-/// Is this path test-only source? Kept beside the scan so every guard
-/// agrees on the answer.
+/// Is this path test-only source: a `tests.rs`, or anything under a
+/// `tests/` directory? Kept beside the scan so every guard agrees on the
+/// answer. Exact on both counts: it was `ends_with("tests.rs")`, which
+/// also took a production `contests.rs`, while a second copy of the rule
+/// (`is_test_source`, now gone) had the exact form.
 pub(crate) fn is_test_path(path: &str) -> bool {
-    path.contains("/tests/") || path.ends_with("/tests.rs") || path.ends_with("tests.rs")
+    let path = std::path::Path::new(path);
+    path.file_name().and_then(|f| f.to_str()) == Some("tests.rs")
+        || path.components().any(|c| c.as_os_str() == "tests")
 }
 
 /// Every file git tracks — which is what `cargo package` publishes,
@@ -522,6 +527,31 @@ mod tests {
     use super::*;
 
     /// The exact shape that defeated eight guards.
+    /// Test code in both shapes this repo has, and nothing else:
+    /// over-excluding would switch every source guard off silently,
+    /// which is worse than the failures they catch.
+    #[test]
+    fn is_test_path_takes_test_trees_and_nothing_else() {
+        for test in [
+            "src/aws/tests/eb.rs",
+            "src/ui/tests.rs",
+            "src/app/tests/refresh.rs",
+            "src/freeze/tests.rs",
+        ] {
+            assert!(super::is_test_path(test), "{test}");
+        }
+        for prod in [
+            "src/app.rs",
+            "src/app/cmd_misc.rs",
+            "src/ui/detail.rs",
+            "src/app/latest_stacks.rs",
+            "src/app/contests.rs",
+            "src/attests/x.rs",
+        ] {
+            assert!(!super::is_test_path(prod), "{prod}");
+        }
+    }
+
     #[test]
     fn a_url_literal_does_not_truncate_the_line() {
         let line = r#"    Some(format!("https://{}", host)) "#;

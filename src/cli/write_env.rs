@@ -405,28 +405,16 @@ mod write_gate_guard {
         ];
 
         let mut found: Vec<(String, usize)> = Vec::new();
-        let mut stack = vec![std::path::PathBuf::from("src/cli")];
-        while let Some(dir) = stack.pop() {
-            for entry in std::fs::read_dir(&dir).expect("src/cli") {
-                let path = entry.expect("entry").path();
-                if path.is_dir() {
-                    stack.push(path);
-                    continue;
-                }
-                if path.extension().and_then(|e| e.to_str()) != Some("rs") {
-                    continue;
-                }
-                // `write_env.rs` declares it. Exactly that file: the
-                // exemption was any `mod.rs`, `cli/mcp/mod.rs` included.
-                if path == std::path::Path::new("src/cli/write_env.rs") {
-                    continue;
-                }
-                let text = std::fs::read_to_string(&path).expect("read");
-                let prod = crate::app::tests::scan::production_half(&text);
-                let n = prod.matches("write_refusal_unaudited(").count();
-                if n > 0 {
-                    found.push((path.display().to_string(), n));
-                }
+        for (path, text) in crate::app::tests::scan::source_files() {
+            // `write_env.rs` declares it. Exactly that file: the
+            // exemption was any `mod.rs`, `cli/mcp/mod.rs` included.
+            if !path.starts_with("src/cli/") || path == "src/cli/write_env.rs" {
+                continue;
+            }
+            let prod = crate::app::tests::scan::production_half(&text);
+            let n = prod.matches("write_refusal_unaudited(").count();
+            if n > 0 {
+                found.push((path, n));
             }
         }
         found.sort();

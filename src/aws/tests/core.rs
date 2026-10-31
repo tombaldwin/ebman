@@ -361,23 +361,10 @@ fn every_paginated_listing_declares_how_it_treats_truncation() {
     // the callers that actually have to make this choice live in
     // `app/` and `cli/`. Scoping the guard to the module that *defines*
     // the type let the first out-of-tree `.items()` land unlabelled.
-    let mut files: Vec<std::path::PathBuf> = Vec::new();
-    let mut stack = vec![std::path::PathBuf::from("src")];
-    while let Some(dir) = stack.pop() {
-        for entry in std::fs::read_dir(&dir).expect("src dir") {
-            let path = entry.expect("entry").path();
-            if path.is_dir() {
-                stack.push(path);
-            } else if path.extension().and_then(|e| e.to_str()) == Some("rs")
-                && path.file_name().and_then(|f| f.to_str()) != Some("tests.rs")
-                // Test trees too (`aws/tests/`, `app/tests/`): this guard
-                // is about production callers.
-                && !path.components().any(|c| c.as_os_str() == "tests")
-            {
-                files.push(path);
-            }
-        }
-    }
+    let files: Vec<(String, String)> = crate::app::tests::scan::source_files()
+        .into_iter()
+        .filter(|(p, _)| !crate::app::tests::scan::is_test_path(p))
+        .collect();
     assert!(
         files.len() > 20,
         "the walk found only {} files — it isn't reaching the tree",
@@ -385,17 +372,14 @@ fn every_paginated_listing_declares_how_it_treats_truncation() {
     );
 
     let mut offenders: Vec<String> = Vec::new();
-    for path in files {
-        let raw = std::fs::read_to_string(&path).expect("read");
+    for (path, raw) in files {
         // Comments discuss `.items()` by name, so strip them first —
         // otherwise the guard flags the very comment explaining why a
-        // site calls `.complete()` instead.
+        // site calls `.complete()` instead. Through the shared stripper:
+        // splitting at the first `//` cut a line at a URL literal.
         let text: String = raw
             .lines()
-            .map(|l| match l.find("//") {
-                Some(i) => &l[..i],
-                None => l,
-            })
+            .map(crate::app::tests::scan::strip_line_comment)
             .collect::<Vec<_>>()
             .join("\n");
         // Walk `.items()` call sites and name the enclosing fn.
@@ -425,10 +409,11 @@ fn every_paginated_listing_declares_how_it_treats_truncation() {
                 .iter()
                 .any(|(name, _)| *name == enclosing)
             {
-                offenders.push(format!(
-                    "{}::{enclosing}",
-                    path.file_name().unwrap().to_string_lossy()
-                ));
+                let file = std::path::Path::new(&path)
+                    .file_name()
+                    .map(|f| f.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                offenders.push(format!("{file}::{enclosing}"));
             }
             idx = at + ".items()".len();
         }

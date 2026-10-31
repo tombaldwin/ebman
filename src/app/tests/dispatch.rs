@@ -1092,10 +1092,14 @@ fn every_registry_command_is_covered_by_some_test() {
     // appears nowhere is a claim with nothing behind it, which is the
     // failure mode an honour-system list invites.
     let mut test_src = String::new();
-    for entry in std::fs::read_dir("src/app/tests").expect("tests dir") {
-        let path = entry.expect("entry").path();
-        if path.extension().and_then(|e| e.to_str()) == Some("rs") {
-            test_src.push_str(&std::fs::read_to_string(&path).expect("read"));
+    for (path, text) in super::scan::source_files() {
+        // The files directly in `src/app/tests/`, as the walk this
+        // replaced read them.
+        if path
+            .strip_prefix("src/app/tests/")
+            .is_some_and(|f| !f.contains('/'))
+        {
+            test_src.push_str(&text);
         }
     }
     // Cut the list's own declaration out before searching. Without this
@@ -1162,16 +1166,11 @@ fn every_render_surface_is_accounted_for() {
     // here, and whoever adds it has to either cover it and add the name,
     // or say why not.
     let mut found: Vec<String> = Vec::new();
-    let dir = std::path::Path::new("src/ui");
-    let mut files = vec![std::path::PathBuf::from("src/ui.rs")];
-    for entry in std::fs::read_dir(dir).expect("src/ui") {
-        let path = entry.expect("entry").path();
-        if path.extension().and_then(|e| e.to_str()) == Some("rs") && !is_test_source(&path) {
-            files.push(path);
+    for (path, text) in super::scan::source_files() {
+        let ui = path == "src/ui.rs" || path.starts_with("src/ui/");
+        if !ui || super::scan::is_test_path(&path) {
+            continue;
         }
-    }
-    for path in &files {
-        let text = std::fs::read_to_string(path).expect("read");
         for line in text.lines() {
             let t = line
                 .strip_prefix("pub(crate) ")
@@ -1449,21 +1448,12 @@ fn no_wrapped_string_literal_leaves_an_indentation_hole() {
     // caught the bug solely for messages someone remembered to route
     // through it.
     let mut offenders: Vec<String> = Vec::new();
-    let mut stack = vec![std::path::PathBuf::from("src")];
-    while let Some(dir) = stack.pop() {
-        for entry in std::fs::read_dir(&dir).expect("src dir") {
-            let path = entry.expect("entry").path();
-            if path.is_dir() {
-                stack.push(path);
-                continue;
-            }
-            if path.extension().and_then(|e| e.to_str()) != Some("rs") || is_test_source(&path) {
-                continue;
-            }
-            let text = std::fs::read_to_string(&path).expect("read");
-            for lit in literals_with_embedded_newlines(&text) {
-                offenders.push(format!("{}: {lit}", path.display()));
-            }
+    for (path, text) in super::scan::source_files() {
+        if super::scan::is_test_path(&path) {
+            continue;
+        }
+        for lit in literals_with_embedded_newlines(&text) {
+            offenders.push(format!("{path}: {lit}"));
         }
     }
     assert!(
@@ -1488,27 +1478,15 @@ fn terminal_restore_goes_through_the_best_effort_helper() {
     // never ran, leaving the operator on a dead alternate screen with
     // mouse capture on, typing `reset` blind.
     let mut offenders: Vec<String> = Vec::new();
-    let mut stack = vec![std::path::PathBuf::from("src")];
-    while let Some(dir) = stack.pop() {
-        for entry in std::fs::read_dir(&dir).expect("src dir") {
-            let path = entry.expect("entry").path();
-            if path.is_dir() {
-                stack.push(path);
-                continue;
-            }
-            if path.extension().and_then(|e| e.to_str()) != Some("rs") || is_test_source(&path) {
-                continue;
-            }
-            // `lib.rs` defines the helper; it is allowed to call it.
-            if path.file_name().and_then(|f| f.to_str()) == Some("lib.rs") {
-                continue;
-            }
-            let text = std::fs::read_to_string(&path).expect("read");
-            for (n, line) in text.lines().enumerate() {
-                let code = super::scan::strip_line_comment(line);
-                if code.contains("disable_raw_mode()?") {
-                    offenders.push(format!("{}:{}", path.display(), n + 1));
-                }
+    for (path, text) in super::scan::source_files() {
+        // `lib.rs` defines the helper; it is allowed to call it.
+        if super::scan::is_test_path(&path) || path == "src/lib.rs" {
+            continue;
+        }
+        for (n, line) in text.lines().enumerate() {
+            let code = super::scan::strip_line_comment(line);
+            if code.contains("disable_raw_mode()?") {
+                offenders.push(format!("{path}:{}", n + 1));
             }
         }
     }
@@ -1534,32 +1512,20 @@ fn every_cached_index_is_checked() {
     // indexes a `filtered` list it computed itself, in the same
     // function, so those indices cannot be stale.
     let mut offenders: Vec<String> = Vec::new();
-    let mut stack = vec![std::path::PathBuf::from("src")];
-    while let Some(dir) = stack.pop() {
-        for entry in std::fs::read_dir(&dir).expect("src dir") {
-            let path = entry.expect("entry").path();
-            if path.is_dir() {
-                stack.push(path);
-                continue;
-            }
-            if path.extension().and_then(|e| e.to_str()) != Some("rs") || is_test_source(&path) {
-                continue;
-            }
-            if path.ends_with("app/view.rs") {
-                continue;
-            }
-            let text = std::fs::read_to_string(&path).expect("read");
-            for (n, line) in text.lines().enumerate() {
-                let code = super::scan::strip_line_comment(line);
-                // `environments[…]` is always the fleet list. For the
-                // shorter `envs`, only a DERFERENCED index is a cached
-                // view index (`envs[*i]` from a `DisplayRow::Env(i)`) —
-                // `envs[0]` on a locally-built vector is unrelated, and
-                // matching it flagged six innocent sites in terraform
-                // and the MCP server.
-                if code.contains("environments[") || code.contains("envs[*") {
-                    offenders.push(format!("{}:{}", path.display(), n + 1));
-                }
+    for (path, text) in super::scan::source_files() {
+        if super::scan::is_test_path(&path) || path == "src/app/view.rs" {
+            continue;
+        }
+        for (n, line) in text.lines().enumerate() {
+            let code = super::scan::strip_line_comment(line);
+            // `environments[…]` is always the fleet list. For the
+            // shorter `envs`, only a DERFERENCED index is a cached
+            // view index (`envs[*i]` from a `DisplayRow::Env(i)`) —
+            // `envs[0]` on a locally-built vector is unrelated, and
+            // matching it flagged six innocent sites in terraform
+            // and the MCP server.
+            if code.contains("environments[") || code.contains("envs[*") {
+                offenders.push(format!("{path}:{}", n + 1));
             }
         }
     }
@@ -1588,28 +1554,16 @@ fn the_test_suite_does_not_mutate_the_environment() {
     // The fix each time was to split the pure half out and pass the
     // value in; this stops the pattern coming back.
     let mut offenders: Vec<String> = Vec::new();
-    let mut stack = vec![std::path::PathBuf::from("src")];
-    while let Some(dir) = stack.pop() {
-        for entry in std::fs::read_dir(&dir).expect("src dir") {
-            let path = entry.expect("entry").path();
-            if path.is_dir() {
-                stack.push(path);
-                continue;
-            }
-            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
-                continue;
-            }
-            let text = std::fs::read_to_string(&path).expect("read");
-            for (n, line) in text.lines().enumerate() {
-                let code = super::scan::strip_line_comment(line);
-                // Needles assembled at runtime so this detector does
-                // not match its own source — the first version flagged
-                // exactly one offender: itself.
-                let set = format!("env{}set_var", "::");
-                let remove = format!("env{}remove_var", "::");
-                if code.contains(&set) || code.contains(&remove) {
-                    offenders.push(format!("{}:{}", path.display(), n + 1));
-                }
+    for (path, text) in super::scan::source_files() {
+        for (n, line) in text.lines().enumerate() {
+            let code = super::scan::strip_line_comment(line);
+            // Needles assembled at runtime so this detector does
+            // not match its own source — the first version flagged
+            // exactly one offender: itself.
+            let set = format!("env{}set_var", "::");
+            let remove = format!("env{}remove_var", "::");
+            if code.contains(&set) || code.contains(&remove) {
+                offenders.push(format!("{path}:{}", n + 1));
             }
         }
     }
@@ -3495,21 +3449,12 @@ fn a_standing_read_only_cannot_be_lifted_in_session() {
 #[test]
 fn no_string_literal_collapses_its_continuation_into_a_run_of_spaces() {
     let mut offenders: Vec<String> = Vec::new();
-    let mut stack = vec![std::path::PathBuf::from("src")];
-    while let Some(dir) = stack.pop() {
-        for entry in std::fs::read_dir(&dir).expect("src dir") {
-            let path = entry.expect("entry").path();
-            if path.is_dir() {
-                stack.push(path);
-                continue;
-            }
-            if path.extension().and_then(|e| e.to_str()) != Some("rs") || is_test_source(&path) {
-                continue;
-            }
-            let text = std::fs::read_to_string(&path).expect("read");
-            for lit in literals_with_collapsed_indent_run(&text) {
-                offenders.push(format!("{}: {lit}", path.display()));
-            }
+    for (path, text) in super::scan::source_files() {
+        if super::scan::is_test_path(&path) {
+            continue;
+        }
+        for lit in literals_with_collapsed_indent_run(&text) {
+            offenders.push(format!("{path}: {lit}"));
         }
     }
     assert!(

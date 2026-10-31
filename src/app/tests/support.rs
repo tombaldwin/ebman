@@ -372,38 +372,6 @@ pub(super) fn open_dlq_state(env: &str) -> crate::app::DlqState {
 
 /// Is this path test code rather than production code?
 ///
-/// The two source-scanning guards below walk `src/` looking for a
-/// pattern in production code, and both name that pattern in their own
-/// assertions — so they have to skip themselves. This used to be
-/// `file_name() == "tests.rs"`, which stopped being true the moment
-/// `app/tests.rs` became `app/tests/*.rs`: both guards then found their
-/// own literals and failed. Matching the whole test subtree is what
-/// they meant all along, and it keeps holding as more test modules
-/// appear.
-pub(super) fn is_test_source(path: &std::path::Path) -> bool {
-    path.file_name().and_then(|f| f.to_str()) == Some("tests.rs")
-        || path.components().any(|c| c.as_os_str() == "tests")
-}
-
-#[test]
-fn is_test_source_excludes_test_trees_and_nothing_else() {
-    use std::path::Path;
-    // Test code, in both shapes that exist in this repo.
-    assert!(is_test_source(Path::new("src/aws/tests/eb.rs")));
-    assert!(is_test_source(Path::new("src/ui/tests.rs")));
-    assert!(is_test_source(Path::new("src/app/tests/refresh.rs")));
-    assert!(is_test_source(Path::new("src/app/tests/support.rs")));
-    // Production code — over-excluding here would silently switch the
-    // two source-scanning guards off, which is worse than the failure
-    // they were written to catch.
-    assert!(!is_test_source(Path::new("src/app.rs")));
-    assert!(!is_test_source(Path::new("src/app/cmd_misc.rs")));
-    assert!(!is_test_source(Path::new("src/app/spawn_refresh.rs")));
-    assert!(!is_test_source(Path::new("src/ui/detail.rs")));
-    // A production file whose name merely contains "test".
-    assert!(!is_test_source(Path::new("src/app/latest_stacks.rs")));
-}
-
 pub(super) const GATED_COMMANDS: &[&str] = &[
     "restart",
     "rebuild",

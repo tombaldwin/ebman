@@ -170,12 +170,6 @@ list (all eight done and archived, "PLAN.md items done 2026-10-31"),
 then four from BACKLOG.md (done), then these three. Each its own
 change.*
 
-3. *(mechanical)* **Eleven hand-rolled `read_dir` walks in guards bypass
-   `scan::source_files`** (`app/tests/dispatch.rs` ×7, `refresh.rs`,
-   `aws/tests/core.rs`, `cli/mod.rs`). None is wrong today — each uses
-   `strip_line_comment` — so this is consolidation, not a fix, but it is
-   the house rule. S.
-
 4. *(mechanical)* **Move the last 13 `include_str!` guards onto
    `scan::production_source`.** Not a defect today — each crosses a
    directory boundary explicitly. Two latent properties remain: they

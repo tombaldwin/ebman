@@ -1832,24 +1832,19 @@ fn every_spawn_declares_whether_it_is_per_env() {
     ];
 
     let mut offenders: Vec<String> = Vec::new();
-    let mut stack = vec![std::path::PathBuf::from("src/app")];
-    let mut files = vec![std::path::PathBuf::from("src/app.rs")];
-    while let Some(dir) = stack.pop() {
-        for entry in std::fs::read_dir(&dir).expect("app dir") {
-            let path = entry.expect("entry").path();
-            if path.is_dir() {
-                stack.push(path);
-            } else if path.extension().and_then(|e| e.to_str()) == Some("rs")
-                && !is_test_source(&path)
-            {
-                files.push(path);
-            }
-        }
-    }
+    let files: Vec<(String, String)> = super::scan::source_files()
+        .into_iter()
+        .filter(|(p, _)| {
+            (p == "src/app.rs" || p.starts_with("src/app/")) && !super::scan::is_test_path(p)
+        })
+        .collect();
     assert!(files.len() > 20, "the walk found only {}", files.len());
 
-    for path in files {
-        let raw = std::fs::read_to_string(&path).expect("read");
+    for (path, raw) in files {
+        let file = std::path::Path::new(&path)
+            .file_name()
+            .map(|f| f.to_string_lossy().into_owned())
+            .unwrap_or_default();
         let lines: Vec<&str> = raw.lines().collect();
         for (n, line) in lines.iter().enumerate() {
             // Comments discuss `self.aws` by name.
@@ -1859,9 +1854,7 @@ fn every_spawn_declares_whether_it_is_per_env() {
             }
             // `RegionClient` keeps the home client as its fallback —
             // that IS the per-region machinery, not a bypass of it.
-            if path.file_name().and_then(|f| f.to_str()) == Some("app.rs")
-                && code.contains("let home = self.aws.clone()")
-            {
+            if file == "app.rs" && code.contains("let home = self.aws.clone()") {
                 continue;
             }
             let enclosing = lines[..=n]
@@ -1884,10 +1877,7 @@ fn every_spawn_declares_whether_it_is_per_env() {
                 .iter()
                 .any(|(name, _)| *name == enclosing)
             {
-                offenders.push(format!(
-                    "{}::{enclosing}",
-                    path.file_name().unwrap().to_string_lossy()
-                ));
+                offenders.push(format!("{file}::{enclosing}"));
             }
         }
     }

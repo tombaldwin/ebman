@@ -5739,3 +5739,20 @@ a `--read-only` server.
    exemption narrowed on the way: `write_refusal_paths_are_audited`
    skipped every `mod.rs`, `cli/mcp/mod.rs` included, and now skips the
    one file that declares the function.
+
+3. *(mechanical)* **Eleven hand-rolled `read_dir` walks in guards bypass
+   `scan::source_files`** (`app/tests/dispatch.rs` ×7, `refresh.rs`,
+   `aws/tests/core.rs`, `cli/mod.rs`). None is wrong today — each uses
+   `strip_line_comment` — so this is consolidation, not a fix, but it is
+   the house rule. S.
+
+   Done 2026-10-31: ten walks over `.rs` files go through
+   `scan::source_files` (the eleventh reads `docs/`, which the scan does
+   not cover, and stays), each keeping its scope. The premise was not
+   quite true: `aws/tests/core.rs` split lines at the first `//`, the
+   hand-rolled stripper CLAUDE.md names, and now uses
+   `strip_line_comment`. And there were two test-path rules:
+   `scan::is_test_path` took any name ending `tests.rs`, `support`'s
+   `is_test_source` was exact; one exact rule now, with a test that has
+   `contests.rs` (a mutation back to the loose form CAUGHT). Four
+   converted guards proven to still fire, each on a planted probe.
