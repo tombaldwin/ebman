@@ -147,6 +147,19 @@ fn status_text(store: &crate::freeze::FreezeStore) -> String {
     lines.join("\n")
 }
 
+/// "; `freeze_fleet` is refused until HH:MM UTC" while a thaw holds.
+fn hold_note(store: &crate::freeze::FreezeStore) -> String {
+    store
+        .recently_thawed()
+        .map(|t| {
+            format!(
+                "; `freeze_fleet` is refused until {}",
+                t.holds_until().format("%H:%M UTC")
+            )
+        })
+        .unwrap_or_default()
+}
+
 /// `ebman thaw`'s whole behaviour against `write_env`'s store and
 /// profile, writers injected. Returns the exit code.
 pub(crate) fn thaw_body<G>(
@@ -199,23 +212,16 @@ pub(crate) fn thaw_body<G>(
                 // Who declared it, when it was not the operator: an
                 // agent's freeze lifted without a word looks like their
                 // own.
-                // And that it cannot simply freeze again: the thaw holds.
+                // And, on every lift, that an agent cannot simply freeze
+                // again: the thaw holds `freeze_fleet` off.
                 None if m.agent.is_some() => {
-                    let until = write_env
-                        .freeze
-                        .recently_thawed()
-                        .map(|t| {
-                            format!(
-                                "; `freeze_fleet` is refused until {}",
-                                t.holds_until().format("%H:%M UTC")
-                            )
-                        })
-                        .unwrap_or_default();
+                    let until = hold_note(&write_env.freeze);
                     let _ = writeln!(out, "fleet freeze lifted (it was {}){until}", m.holder());
                     0
                 }
                 None => {
-                    let _ = writeln!(out, "fleet freeze lifted");
+                    let until = hold_note(&write_env.freeze);
+                    let _ = writeln!(out, "fleet freeze lifted{until}");
                     0
                 }
             }
@@ -364,6 +370,7 @@ mod tests {
         );
 
         // Lifted while a session's still holds: it names what it lifted.
+        store.expire_thaw_for_test();
         store
             .declare_persistent_by_agent("bad deploy", false, "claude-code")
             .unwrap();
@@ -413,10 +420,16 @@ mod tests {
 
         let (code, text) = run(thaw_body, &store, &["thaw"]);
         assert_eq!(code, 0, "{text}");
+        let until = store
+            .recently_thawed()
+            .expect("the thaw holds")
+            .holds_until()
+            .format("%H:%M UTC")
+            .to_string();
         assert_eq!(
             text.trim(),
-            "fleet freeze lifted",
-            "the operator's own: no holder"
+            format!("fleet freeze lifted; `freeze_fleet` is refused until {until}"),
+            "the operator's own: no holder, and the hold"
         );
         assert!(store.active().is_none());
 
