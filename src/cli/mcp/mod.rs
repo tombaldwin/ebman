@@ -35,6 +35,7 @@ use crate::{audit as audit_log, aws, cost_cache, demo_fixture, lint, terraform, 
 /// frame test pins it so a bump is a conscious act.
 mod annotations;
 mod app_metrics;
+mod freeze;
 mod setup;
 mod tools;
 mod undo;

@@ -119,7 +119,7 @@ pub(super) fn tool_table(scope: &super::WriteScope, peek_bodies: bool) -> Value 
     let mut tools = read_tool_table();
     // On every server, writes or none: it only takes writes away.
     if let Some(arr) = tools.as_array_mut() {
-        arr.push(writes::freeze_tool_descriptor());
+        arr.push(freeze::freeze_tool_descriptor());
     }
     if !peek_bodies {
         // The agent must be told the policy is ON, or a withheld body
