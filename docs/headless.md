@@ -411,9 +411,16 @@ deny STS while Elastic Beanstalk works.
 When the verb is listed by an `mcp.role.NAME.verbs` (see
 `docs/configuration.md`), the plan carries a `role` object (`config`,
 `arn`, `account`, `name`, `assumed`) and the confirmation names the role
-after the identity; for any other verb `role` is `null`. This build does
-not assume the role yet: `assumed` is `false` and the dialog says the
-write goes out as the identity above.
+after the identity; for any other verb `role` is `null`. The role is
+assumed at confirm, after the operator approves and for that write
+alone (`assumed` is `true`), from its `source_profile` or the call's own
+credentials; the dialog names the role and where it is assumed from. A
+role that cannot be assumed, or whose session lands in another account,
+refuses the write (`rule=role_unassumable`): nothing is dispatched and
+it is never sent as the base identity. A declined ask assumes nothing.
+The write's audit lines carry `role=` and `session=`
+(`ebman-mcp-<client>-<plan>`, the plan as a digest of its token).
+`dlq_undo` is the exception for now: it re-sends as the base identity.
 
 A verb may have a role in each account; the plan takes the one in the
 environment's account, read from the environment's ARN, or failing that

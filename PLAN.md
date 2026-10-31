@@ -145,19 +145,15 @@ it.*
    or builds on it, so neither is designed twice. **Drafted
    2026-10-24, accepted 2026-10-29 with all three contested calls as
    written:** `docs/design/assume-role-elevation.md`. Next: its five
-   slices, in order. **Slices 1 and 2 done** (2026-10-29, 2026-10-30:
-   the config and gate; the plan and confirmation name the role, say it
-   is not assumed, and refuse a role in another account). Next is slice
-   3, the AssumeRole call at confirm. Carried from slice 2's review:
-   assume the role stored on the plan, never re-resolve it; check the
-   assumed session's account against the env's account recorded at plan
-   time (base credentials can change between plan and confirm); with
-   `source_profile` set the role is assumed *from* that profile, so the
-   confirmation's "from …" needs its identity; and `PlanRole::json`'s
-   `assumed:false` and `line()`'s "does not assume yet" must change, with
-   a test that fails if either survives. Slice 3's `role_unassumable` is a new
-   `audit::RefusalRule` variant (the typed rule list, with its docs check,
-   landed 2026-10-31).
+   slices, in order. **Slices 1–3 done** (2026-10-29, 2026-10-30,
+   2026-10-31: the config and gate; the plan names the role; the role is
+   assumed at confirm, after the yes, for that write alone). Multi-account
+   roles were ruled in on 2026-10-31 (one role per account for a verb,
+   picked by the env's account at plan time and carried to confirm).
+   Next is slice 4, `dlq_undo` under its delete's session (D4): until
+   then the undo re-sends as the base identity, and the docs say so.
+   Then slice 5, `doctor` and the operator docs' example policies, and
+   the live check against a real account.
    It builds on the shipped ask
    (stage 5 was killed on 2026-09-25, so there is nothing to replace)
    and splits into five slices. Its three contestable calls are listed

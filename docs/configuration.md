@@ -276,12 +276,16 @@ safety.accounts.prod.read_only = true
 # (`rule=role_wrong_account`), as does one whose account ebman cannot
 # tell (`rule=role_account_unknown`).
 #
-# NOT YET A CEILING. This build reads and checks the mapping, names the
-# role in the plan and the confirmation, and checks it against the
-# environment's account; `mcp.require_role` refuses an unmapped verb.
-# But a mapped verb still goes out under the base credentials, and the
-# confirmation says so: the AssumeRole call comes in a later slice. Do
-# not rely on a role's policy limiting anything yet.
+# A mapped verb's write goes out under its role: assumed at confirm,
+# after the operator's yes, for that write alone (a 900-second session
+# named `ebman-mcp-<client>-<plan>`), from `source_profile`, or from the
+# write's own credentials without one. A role that cannot be assumed
+# refuses the write (`rule=role_unassumable`); it is never sent as you
+# instead. The audit lines carry `role=` and `session=`, so CloudTrail
+# joins them on the session name. `mcp.require_role` refuses an
+# unmapped verb. NOT YET for `dlq_undo`: it re-sends under the base
+# credentials until it learns to use its delete's session, so a DLQ
+# role's ceiling does not cover the undo yet.
 #
 # Fails closed: a verb two roles in one account list, a verb that is no
 # MCP tool, or a

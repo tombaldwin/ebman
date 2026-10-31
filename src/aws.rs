@@ -367,6 +367,14 @@ impl AwsClient {
             req = req.external_id(eid.clone());
         }
         let resp = req.send().await.aws_ctx("sts:AssumeRole failed")?;
+        // Who the session is: `arn:aws:sts::ACCOUNT:assumed-role/NAME/SESSION`.
+        // Recorded so a caller can check the account it landed in.
+        let assumed_arn = resp.assumed_role_user.as_ref().map(|u| u.arn.clone());
+        let assumed_account = assumed_arn
+            .as_deref()
+            .and_then(|a| a.split(':').nth(4))
+            .filter(|a| crate::config::is_account_id(a))
+            .map(str::to_string);
         let creds = resp
             .credentials
             .ok_or_else(|| eyre!("sts:AssumeRole returned no credentials"))?;
@@ -415,8 +423,8 @@ impl AwsClient {
                 region,
                 // The launchpad; `assume_role` names the destination.
                 profile: spec.source_profile.clone(),
-                account_id: None,
-                caller_arn: None,
+                account_id: assumed_account,
+                caller_arn: assumed_arn,
             },
         })
     }

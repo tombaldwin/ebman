@@ -309,7 +309,11 @@ impl Server {
     /// the environment and the profile file (`aws::resolve_region`):
     /// building a client to ask could probe instance metadata. A demo
     /// server writes no line, so it reads nothing.
-    async fn audit_region(&self, profile: &Option<String>, region: Option<&str>) -> String {
+    pub(super) async fn audit_region(
+        &self,
+        profile: &Option<String>,
+        region: Option<&str>,
+    ) -> String {
         if let Some(r) = region.filter(|r| !r.is_empty()) {
             return r.to_string();
         }
@@ -954,7 +958,7 @@ mod audited {
         /// made the process hermetic (`audit::make_hermetic`), and a demo
         /// server reads the real cross-process freeze marker, so its
         /// verdict is genuine while its fleet is not.
-        pub(super) fn record(
+        pub(in crate::cli::mcp) fn record(
             profile: Option<&str>,
             region: &str,
             action: &str,
@@ -985,7 +989,7 @@ mod audited {
     }
 }
 
-use audited::Audited;
+pub(super) use audited::Audited;
 
 /// Why a write call failed.
 ///
@@ -2298,7 +2302,18 @@ impl Server {
             })));
         }
 
-        self.dispatch_write(&pending)
+        // The role, assumed now that the operator has said yes (D3):
+        // a failure refuses, and is never sent as the base identity.
+        let client_name = self
+            .client_name
+            .lock()
+            .map(|s| s.clone())
+            .unwrap_or_else(|_| "unknown".into());
+        let session = self
+            .assume_role_for(&pending, &client_name)
+            .await
+            .map_err(WriteError::Refused)?;
+        self.dispatch_write(&pending, session.as_ref())
             .await
             .map_err(WriteError::Invalid)
     }
@@ -2323,13 +2338,21 @@ impl Server {
         p: &PendingWrite,
         client_name: &str,
         audit_profile: Option<&str>,
+        session: Option<&RoleSession>,
     ) -> Result<String, String> {
         let verb_label = p.verb.label();
         let region = &client.context.region;
         let can_ask = self
             .client_supports_elicitation
             .load(std::sync::atomic::Ordering::Relaxed);
-        let lines = dlq_audit_lines(client_name, can_ask, &p.dlq_targets);
+        let with_session = |mut extras: Vec<(&'static str, String)>| {
+            extras.extend(session.map(RoleSession::extras).into_iter().flatten());
+            extras
+        };
+        let lines: Vec<_> = dlq_audit_lines(client_name, can_ask, &p.dlq_targets)
+            .into_iter()
+            .map(with_session)
+            .collect();
         // One line per message BEFORE acting: a dispatched line with no
         // completed line is how a crash mid-batch stays visible.
         for extras in &lines {
@@ -2380,7 +2403,7 @@ impl Server {
         // it belongs to; using it removes the coupling rather than
         // documenting it.
         for o in outcomes {
-            let extras = dlq_audit_line(client_name, can_ask, &o.target);
+            let extras = with_session(dlq_audit_line(client_name, can_ask, &o.target));
             let refs: Vec<(&str, &str)> = extras.iter().map(|(k, v)| (*k, v.as_str())).collect();
             crate::audit::append_action_completed(
                 None,
@@ -2445,7 +2468,11 @@ impl Server {
         Ok(format!("{{\"dispatched\":true,{report}{recoverable}}}"))
     }
 
-    async fn dispatch_write(&self, p: &PendingWrite) -> Result<String, String> {
+    async fn dispatch_write(
+        &self,
+        p: &PendingWrite,
+        session: Option<&RoleSession>,
+    ) -> Result<String, String> {
         let verb_label = p.verb.label();
         if matches!(self.backend, Backend::Demo) {
             // Synthetic success: no AWS, no audit, no webhook. But a
@@ -2497,7 +2524,10 @@ impl Server {
             "profile": p.profile.clone().unwrap_or_default(),
             "region": p.region.clone().unwrap_or_default(),
         });
-        let client = self.client(&args).await?;
+        let client = match session {
+            Some(s) => std::sync::Arc::clone(&s.client),
+            None => self.client(&args).await?,
+        };
         let client_name = self
             .client_name
             .lock()
@@ -2512,16 +2542,17 @@ impl Server {
         // exists to close, reopened by the plural.
         if matches!(p.verb, WriteVerb::DlqResend | WriteVerb::DlqDelete) {
             return self
-                .dispatch_dlq_and_audit(&client, p, &client_name, audit_profile.as_deref())
+                .dispatch_dlq_and_audit(&client, p, &client_name, audit_profile.as_deref(), session)
                 .await;
         }
-        let extras = self.write_extras(
+        let mut extras = self.write_extras(
             &client_name,
             p.version.as_deref(),
             p.settings.len(),
             None,
             None,
         );
+        extras.extend(session.map(RoleSession::extras).into_iter().flatten());
         let extras_ref: Vec<(&str, &str)> = extras.iter().map(|(k, v)| (*k, v.as_str())).collect();
         crate::audit::append_action_dispatched(
             None,

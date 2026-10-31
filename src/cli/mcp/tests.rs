@@ -2629,6 +2629,131 @@ mod orchestration {
         );
     }
 
+    /// A DLQ delete under a role is dispatched through the role's
+    /// session, and each message's two lines carry `role=` and
+    /// `session=`, as the generic path's do.
+    #[tokio::test]
+    async fn a_dlq_batch_under_a_role_names_the_session_per_message() {
+        use aws_sdk_elasticbeanstalk::operation::describe_environment_resources::DescribeEnvironmentResourcesOutput;
+        use aws_sdk_elasticbeanstalk::types::{EnvironmentResourceDescription, Queue};
+        use aws_sdk_sqs::operation::get_queue_attributes::GetQueueAttributesOutput;
+        use aws_sdk_sqs::operation::receive_message::ReceiveMessageOutput;
+        use aws_sdk_sqs::types::{Message, QueueAttributeName};
+
+        let resources = aws_smithy_mocks::mock!(EbClient::describe_environment_resources)
+            .then_output(|| {
+                DescribeEnvironmentResourcesOutput::builder()
+                    .environment_resources(
+                        EnvironmentResourceDescription::builder()
+                            .queues(
+                                Queue::builder()
+                                    .name("WorkerQueue")
+                                    .url("https://sqs/main")
+                                    .build(),
+                            )
+                            .queues(
+                                Queue::builder()
+                                    .name("WorkerDeadLetterQueue")
+                                    .url("https://sqs/main-dlq")
+                                    .build(),
+                            )
+                            .build(),
+                    )
+                    .build()
+            });
+        let attrs = aws_smithy_mocks::mock!(SqsClient::get_queue_attributes).then_output(|| {
+            GetQueueAttributesOutput::builder()
+                .attributes(QueueAttributeName::ApproximateNumberOfMessages, "1")
+                .build()
+        });
+        let peek = || {
+            aws_smithy_mocks::mock!(SqsClient::receive_message).then_output(|| {
+                ReceiveMessageOutput::builder()
+                    .messages(
+                        Message::builder()
+                            .message_id("m-role-1")
+                            .receipt_handle("rh-1")
+                            .body("a")
+                            .build(),
+                    )
+                    .build()
+            })
+        };
+        let events = aws_smithy_mocks::mock!(EbClient::describe_events).then_output(|| {
+            aws_sdk_elasticbeanstalk::operation::describe_events::DescribeEventsOutput::builder()
+                .build()
+        });
+        let eb = aws_smithy_mocks::mock_client!(
+            aws_sdk_elasticbeanstalk,
+            aws_smithy_mocks::RuleMode::MatchAny,
+            [&env_listing(), &resources, &events]
+        );
+        // The base client can read the queue but has no delete.
+        let base_peek = peek();
+        let sqs = aws_smithy_mocks::mock_client!(
+            aws_sdk_sqs,
+            aws_smithy_mocks::RuleMode::MatchAny,
+            [&attrs, &base_peek]
+        );
+        let cfg = crate::config::parse(
+            "mcp.role.dlq.role_arn = \"arn:aws:iam::123456789012:role/EbmanAgentDlq\"\n\
+             mcp.role.dlq.verbs = \"dlq_delete\"\n",
+        );
+        let mut s = Server::with_injected_client(WriteScope::All, cfg, client_with(eb, sqs));
+        s.seams.identity = Some(writes::CallerIdentity::Known {
+            arn: "arn:aws:iam::123456789012:user/ops".into(),
+            account: "123456789012".into(),
+        });
+        let session_peek = peek();
+        let del = aws_smithy_mocks::mock!(SqsClient::delete_message).then_output(|| {
+            aws_sdk_sqs::operation::delete_message::DeleteMessageOutput::builder().build()
+        });
+        let session_sqs = aws_smithy_mocks::mock_client!(
+            aws_sdk_sqs,
+            aws_smithy_mocks::RuleMode::MatchAny,
+            [&session_peek, &del]
+        );
+        let session_eb = aws_smithy_mocks::mock_client!(
+            aws_sdk_elasticbeanstalk,
+            aws_smithy_mocks::RuleMode::MatchAny,
+            []
+        );
+        let mut session = client_with(session_eb, session_sqs);
+        session.context.account_id = Some("123456789012".into());
+        s.seams.role_sessions.lock().unwrap().push_back(Ok(session));
+
+        let plan = s
+            .call_tool(
+                "dlq_delete",
+                &json!({"env": "poly-prod-wk", "message_ids": ["m-role-1"]}),
+            )
+            .await
+            .expect("plans");
+        let token = plan
+            .split("\"confirm_token\":\"")
+            .nth(1)
+            .and_then(|r| r.split('"').next())
+            .expect("a token")
+            .to_string();
+        let before = crate::audit::delta::mark();
+        let out = s
+            .call_tool("confirm_action", &json!({"confirm_token": token}))
+            .await
+            .expect("the delete goes out under the role");
+        assert!(out.contains("\"succeeded\":1"), "{out}");
+        let session = s.seams.assumed.lock().unwrap()[0].1.clone();
+        let lines =
+            crate::audit::delta::lines_matching(&before, |l| l.contains("message_id=m-role-1"));
+        assert_eq!(lines.len(), 2, "dispatched and completed: {lines:#?}");
+        for l in &lines {
+            assert!(
+                l.contains("role=arn:aws:iam::123456789012:role/EbmanAgentDlq"),
+                "{l}"
+            );
+            assert!(l.contains(&format!("session={session}")), "{l}");
+        }
+    }
+
     /// A resend whose delete half fails says a duplicate exists.
     ///
     /// Send-before-delete is deliberate: the other order can lose
@@ -6019,4 +6144,244 @@ fn fleet_cost_total_matches_its_entries() {
     let (entries, total) = super::tools::fleet_cost_entries(&costs);
     assert_eq!(entries.len(), 1);
     assert_eq!(total, 10.0);
+}
+
+// ── assume-role slice 3: the role assumed at confirm ──────────────────
+
+/// An AWS-backend server with one env in account 123456789012, a role
+/// for `restart` there, and a client that answers every ask `action`.
+/// The base client refuses `RestartAppServer`, so a write that went out
+/// as the base identity is seen to.
+fn role_confirm_server(env: &'static str, action: &'static str) -> std::sync::Arc<Server> {
+    use aws_sdk_elasticbeanstalk::operation::describe_environments::DescribeEnvironmentsOutput;
+    use aws_sdk_elasticbeanstalk::types::EnvironmentDescription;
+    let listing = aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::describe_environments)
+        .then_output(move || {
+            DescribeEnvironmentsOutput::builder()
+                .environments(
+                    EnvironmentDescription::builder()
+                        .environment_name(env)
+                        .application_name("poly")
+                        .environment_arn(format!(
+                            "arn:aws:elasticbeanstalk:us-east-1:123456789012:environment/poly/{env}"
+                        ))
+                        .status("Ready".into())
+                        .health("Green".into())
+                        .build(),
+                )
+                .build()
+        });
+    let events = aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::describe_events)
+        .then_output(|| {
+            aws_sdk_elasticbeanstalk::operation::describe_events::DescribeEventsOutput::builder()
+                .build()
+        });
+    let base_restart = aws_smithy_mocks::mock!(
+        aws_sdk_elasticbeanstalk::Client::restart_app_server
+    )
+    .then_error(|| {
+        aws_sdk_elasticbeanstalk::operation::restart_app_server::RestartAppServerError::generic(
+            aws_smithy_types::error::ErrorMetadata::builder()
+                .code("AccessDenied")
+                .message("the base identity may not restart")
+                .build(),
+        )
+    });
+    let eb = aws_smithy_mocks::mock_client!(
+        aws_sdk_elasticbeanstalk,
+        aws_smithy_mocks::RuleMode::MatchAny,
+        [&listing, &events, &base_restart]
+    );
+    let mut client = test_client(eb);
+    client.context.region = "poly-role-1".into();
+    let cfg = crate::config::parse(
+        "mcp.role.deploys.role_arn = \"arn:aws:iam::123456789012:role/EbmanAgentDeploy\"\n\
+         mcp.role.deploys.verbs = \"restart\"\n\
+         mcp.role.deploys.source_profile = \"ops\"\n\
+         mcp.role.deploys.external_id = \"x-1\"\n",
+    );
+    let mut server = Server::with_injected_client(WriteScope::All, cfg, client);
+    server.seams.identity = Some(writes::CallerIdentity::Known {
+        arn: "arn:aws:iam::123456789012:user/ops".into(),
+        account: "123456789012".into(),
+    });
+    let s = std::sync::Arc::new(server);
+    s.client_supports_elicitation
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    if let Ok(mut name) = s.client_name.lock() {
+        *name = "claude code".into();
+    }
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(8);
+    if let Ok(mut slot) = s.outbound.lock() {
+        *slot = Some(tx);
+    }
+    let srv = std::sync::Arc::clone(&s);
+    tokio::spawn(async move {
+        while let Some(line) = rx.recv().await {
+            let frame: Value = serde_json::from_str(&line).expect("json");
+            let reply =
+                json!({"jsonrpc": "2.0", "id": frame["id"].clone(), "result": {"action": action}});
+            assert!(srv.take_ask_reply(&reply));
+        }
+    });
+    s
+}
+
+/// A client built on `eb`, the other services unmocked.
+fn test_client(eb: aws_sdk_elasticbeanstalk::Client) -> crate::aws::AwsClient {
+    let cfg = aws_config::SdkConfig::builder()
+        .region(aws_config::Region::new("us-east-1"))
+        .behavior_version(aws_config::BehaviorVersion::latest())
+        .build();
+    crate::aws::AwsClient::for_tests(
+        eb,
+        aws_sdk_sqs::Client::new(&cfg),
+        aws_sdk_cloudwatch::Client::new(&cfg),
+        aws_sdk_cloudwatchlogs::Client::new(&cfg),
+        aws_sdk_s3::Client::new(&cfg),
+        aws_sdk_ec2::Client::new(&cfg),
+    )
+}
+
+/// The session a role assume would give: a client whose restart works,
+/// in `account`.
+fn role_session(account: &str) -> crate::aws::AwsClient {
+    let restart = aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::restart_app_server)
+        .then_output(|| {
+            aws_sdk_elasticbeanstalk::operation::restart_app_server::RestartAppServerOutput::builder()
+                .build()
+        });
+    let eb = aws_smithy_mocks::mock_client!(
+        aws_sdk_elasticbeanstalk,
+        aws_smithy_mocks::RuleMode::MatchAny,
+        [&restart]
+    );
+    let mut c = test_client(eb);
+    c.context.region = "poly-role-1".into();
+    c.context.account_id = Some(account.into());
+    c
+}
+
+/// Plan a restart of `env` and confirm it.
+async fn plan_and_confirm(s: &Server, env: &str) -> Result<String, String> {
+    let plan = s
+        .tool_write_plan(writes::WriteVerb::Restart, &json!({"env": env}))
+        .await
+        .map_err(|e| e.to_string())?;
+    let v: Value = serde_json::from_str(&plan).expect("json");
+    let token = v["confirm_token"].as_str().expect("a token").to_string();
+    s.tool_confirm_action(&json!({"confirm_token": token}))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// An approved write with a role goes out under the role's session,
+/// assumed once, from the role's source profile with its external id,
+/// named for the client and the plan; both of its lines say so.
+#[tokio::test]
+async fn an_approved_write_goes_out_under_its_role() {
+    let env = "poly-role-assume-probe";
+    let s = role_confirm_server(env, "accept");
+    s.seams
+        .role_sessions
+        .lock()
+        .unwrap()
+        .push_back(Ok(role_session("123456789012")));
+    let before = crate::audit::delta::mark();
+    let out = plan_and_confirm(&s, env).await.expect("dispatched");
+    assert!(out.contains("\"dispatched\":true"), "{out}");
+
+    let asked = s.seams.assumed.lock().unwrap().clone();
+    assert_eq!(asked.len(), 1, "{asked:?}");
+    let (spec, session) = &asked[0];
+    assert_eq!(
+        spec.role_arn,
+        "arn:aws:iam::123456789012:role/EbmanAgentDeploy"
+    );
+    assert_eq!(spec.source_profile.as_deref(), Some("ops"));
+    assert_eq!(spec.external_id.as_deref(), Some("x-1"));
+    assert!(session.starts_with("ebman-mcp-claude-code-"), "{session}");
+
+    let lines = crate::audit::delta::lines_for(&before, env);
+    for stage in ["stage=dispatched", "stage=completed"] {
+        let line = lines
+            .iter()
+            .find(|l| l.contains(stage))
+            .unwrap_or_else(|| panic!("{stage}: {lines:#?}"));
+        assert!(
+            line.contains("role=arn:aws:iam::123456789012:role/EbmanAgentDeploy"),
+            "{line}"
+        );
+        assert!(line.contains(&format!("session={session}")), "{line}");
+    }
+}
+
+/// A role that cannot be assumed refuses the approved write, audited
+/// `role_unassumable`, and never sends it as the base identity.
+#[tokio::test]
+async fn an_unassumable_role_refuses_and_dispatches_nothing() {
+    let env = "poly-role-unassumable-probe";
+    let s = role_confirm_server(env, "accept");
+    s.seams.role_sessions.lock().unwrap().push_back(Err(
+        "AccessDenied: not authorized to perform sts:AssumeRole".into(),
+    ));
+    let before = crate::audit::delta::mark();
+    let err = plan_and_confirm(&s, env).await.expect_err("refused");
+    assert!(err.contains("could not be assumed"), "{err}");
+    assert!(
+        err.contains("not authorized to perform sts:AssumeRole"),
+        "{err}"
+    );
+    assert!(err.contains("not sent as the base identity"), "{err}");
+    let lines = crate::audit::delta::lines_for(&before, env);
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("stage=refused") && l.contains("rule=role_unassumable")),
+        "{lines:#?}"
+    );
+    assert!(
+        !lines.iter().any(|l| l.contains("stage=dispatched")),
+        "nothing dispatched: {lines:#?}"
+    );
+}
+
+/// A session that lands in another account than the role's is refused
+/// the same way: the write would go to the wrong account.
+#[tokio::test]
+async fn a_role_session_in_another_account_refuses() {
+    let env = "poly-role-wrong-session-probe";
+    let s = role_confirm_server(env, "accept");
+    s.seams
+        .role_sessions
+        .lock()
+        .unwrap()
+        .push_back(Ok(role_session("444455556666")));
+    let before = crate::audit::delta::mark();
+    let err = plan_and_confirm(&s, env).await.expect_err("refused");
+    assert!(
+        err.contains("the session is in account 444455556666, not the role's 123456789012"),
+        "{err}"
+    );
+    let lines = crate::audit::delta::lines_for(&before, env);
+    assert!(
+        !lines.iter().any(|l| l.contains("stage=dispatched")),
+        "{lines:#?}"
+    );
+}
+
+/// A declined ask assumes nothing (D3): every AssumeRole with an ebman
+/// session name is an approved write.
+#[tokio::test]
+async fn a_declined_write_assumes_no_role() {
+    let env = "poly-role-declined-probe";
+    let s = role_confirm_server(env, "decline");
+    s.seams
+        .role_sessions
+        .lock()
+        .unwrap()
+        .push_back(Ok(role_session("123456789012")));
+    let err = plan_and_confirm(&s, env).await.expect_err("declined");
+    assert!(err.contains("not dispatched"), "{err}");
+    assert!(s.seams.assumed.lock().unwrap().is_empty());
 }

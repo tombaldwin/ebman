@@ -2190,11 +2190,12 @@ fn a_role_is_checked_against_the_env_s_account() {
     assert!(refusal.remedy().contains("sts:GetCallerIdentity"));
 }
 
-/// Slice 2 names the role in the plan and the confirmation, and says
-/// it is not assumed: until slice 3 the write goes out as the base
-/// identity, and the dialog must not name a credential it does not use.
+/// The plan and the confirmation name the role and say it is assumed
+/// for this write, from its source profile. Slice 2's "not assumed yet"
+/// must not survive slice 3 in either: the dialog would then name a
+/// credential the write does not use.
 #[tokio::test]
-async fn the_plan_and_the_ask_name_the_role_and_that_it_is_not_assumed() {
+async fn the_plan_and_the_ask_name_the_role_the_write_assumes() {
     // The demo identity is in 123456789012.
     let s = Server::with_config(true, false, WriteScope::All, role_cfg("123456789012"));
     let body = s
@@ -2209,7 +2210,7 @@ async fn the_plan_and_the_ask_name_the_role_and_that_it_is_not_assumed() {
             "arn": "arn:aws:iam::123456789012:role/team/EbmanAgentDeploy",
             "account": "123456789012",
             "name": "EbmanAgentDeploy",
-            "assumed": false,
+            "assumed": true,
         }),
         "{v}"
     );
@@ -2219,12 +2220,13 @@ async fn the_plan_and_the_ask_name_the_role_and_that_it_is_not_assumed() {
     };
     assert!(
         ask.contains(
-            "as arn:aws:iam::123456789012:user/demo; the verb maps to role `EbmanAgentDeploy` \
-             (arn:aws:iam::123456789012:role/team/EbmanAgentDeploy), which this ebman does not \
-             assume yet, so it goes out as that identity"
+            "as arn:aws:iam::123456789012:user/demo; it goes out as role `EbmanAgentDeploy` \
+             (arn:aws:iam::123456789012:role/team/EbmanAgentDeploy), assumed for this write \
+             alone from profile `ops`"
         ),
         "{ask}"
     );
+    assert!(!ask.contains("not assume"), "{ask}");
 
     // An unmapped verb: no role, and the ask is as it was.
     let body = s
@@ -2394,7 +2396,7 @@ async fn an_env_with_no_arn_is_judged_by_the_identity_s_account() {
 }
 
 /// However long the identity line, the role sentence is whole: capped
-/// with it as one field, the cut fell on "does not assume yet".
+/// with it as one field, the cut fell on which credential is used.
 #[test]
 fn a_long_identity_never_cuts_the_role_sentence() {
     let mut p = pending_for(WriteVerb::Restart);
@@ -2404,7 +2406,7 @@ fn a_long_identity_never_cuts_the_role_sentence() {
     p.role = plan_role(&role_cfg("123456789012"), WriteVerb::Restart);
     let ask = ask_summary(&p);
     assert!(
-        ask.contains("which this ebman does not assume yet, so it goes out as that identity"),
+        ask.contains("assumed for this write alone from profile `ops`"),
         "{ask}"
     );
 
@@ -2915,4 +2917,36 @@ async fn a_failed_restore_says_whether_the_window_is_still_open() {
             "not finish_restore's answer: {call}"
         );
     }
+}
+
+/// The session name is STS's alphabet and length, names the client, and
+/// carries a digest of the plan token, never the token.
+#[test]
+fn a_session_name_is_the_client_and_a_digest_of_the_plan() {
+    let token = "tok-0123456789abcdef";
+    let name = session_name("Claude Code / v2 (beta) with a very long name", token);
+    assert!(
+        name.starts_with("ebman-mcp-Claude-Code---v2--beta---") && !name.contains("with"),
+        "{name}"
+    );
+    let plan = name.rsplit('-').next().unwrap();
+    assert_eq!(plan.len(), 12, "{name}");
+    assert!(plan.chars().all(|c| c.is_ascii_hexdigit()), "{name}");
+    assert!(!name.contains(token), "{name}");
+    assert!((2..=64).contains(&name.len()), "{name}");
+    assert!(
+        name.chars()
+            .all(|c| c.is_ascii_alphanumeric() || "_+=,.@-".contains(c)),
+        "{name}"
+    );
+    // One plan, one name; another plan, another.
+    assert_eq!(
+        name,
+        session_name("Claude Code / v2 (beta) with a very long name", token)
+    );
+    assert_ne!(
+        name,
+        session_name("Claude Code / v2 (beta) with a very long name", "tok-other")
+    );
+    assert_eq!(session_name("", token).split('-').nth(2), Some("unknown"));
 }

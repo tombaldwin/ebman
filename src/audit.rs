@@ -946,10 +946,13 @@ refusal_rules! {
     NotApproved => "not_approved",
     /// MCP `freeze_fleet`: the operator's thaw holds it off.
     ThawedRecently => "thawed_recently",
-    /// MCP: the verb's role is in another account than the env.
+    /// MCP: no role for the verb is in the env's account.
     RoleWrongAccount => "role_wrong_account",
     /// MCP: which account the env is in cannot be told.
     RoleAccountUnknown => "role_account_unknown",
+    /// MCP: the approved write's role could not be assumed, or the
+    /// session landed in another account; nothing was dispatched.
+    RoleUnassumable => "role_unassumable",
 }
 
 /// What a `stage=refused` line says, after its header.

@@ -232,7 +232,7 @@ Each slice can ship on its own and is useful if the next never comes.
    with roles configured, strict mode already refuses unmapped verbs.
 2. **The plan names the role.** Resolve the role at plan time, check
    the account locally (D3), and render the confirmation line.
-3. **Assume at confirm.** Inject a role-client factory into `Server`,
+3. *(Done 2026-10-31.)* **Assume at confirm.** Inject a role-client factory into `Server`,
    since `AwsClient::assume_role` is unreachable under test by design
    and tests seed the factory. Add the session name (D5), the audit
    fields, and `role_unassumable` (D7).

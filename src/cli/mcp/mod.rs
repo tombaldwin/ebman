@@ -1036,6 +1036,11 @@ struct TestSeams {
     /// webhook: the effect `audit_wired` stands for, which a test can
     /// tell apart from the flag being set.
     audit_reads: std::sync::atomic::AtomicUsize,
+    /// What `Server::assume` answers, in order, in place of STS: a test
+    /// seeds the client a role session would be (or why it failed).
+    role_sessions: std::sync::Mutex<std::collections::VecDeque<Result<aws::AwsClient, String>>>,
+    /// Each role `Server::assume` was asked for, and the session name.
+    assumed: std::sync::Mutex<Vec<(crate::config::AccountSpec, String)>>,
 }
 
 impl Server {
