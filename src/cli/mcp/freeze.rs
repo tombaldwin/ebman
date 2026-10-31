@@ -87,8 +87,10 @@ impl Server {
         // their decision, and a freeze refuses their own writes too,
         // the rollback that fixes what the agent saw included. Refused
         // for an `incident` too: the agent sets that flag. Audited, so
-        // a loop shows in the log and the webhook channel.
-        if let Some(t) = self.freeze.recently_thawed() {
+        // a loop shows in the log and the webhook channel. The store
+        // decides (`AgentDeclare::Thawed`), so a thaw landing while this
+        // declares is caught as well as one before it.
+        let thawed = |t: crate::freeze::ThawedFreeze| {
             self.ensure_audit_wired();
             crate::audit::append_refused(
                 None,
@@ -103,7 +105,7 @@ impl Server {
                 },
             );
             let ago = (chrono::Utc::now() - t.thawed_at).num_minutes();
-            return Err(format!(
+            format!(
                 "{FREEZE_TOOL}: the operator lifted a fleet freeze ({}, {}) at {}, {ago} min \
                  ago; that decision holds until {} and this tool will not reverse it. If the \
                  fleet should be frozen, tell the operator now (`ebman freeze` is one step \
@@ -112,8 +114,8 @@ impl Server {
                 t.marker.holder(),
                 t.thawed_at.format("%H:%M UTC"),
                 t.holds_until().format("%H:%M UTC"),
-            ));
-        }
+            )
+        };
         // One persistent freeze, and declaring writes it whole: an
         // agent's call would replace the operator's reason, incident
         // flag and time. A freeze already standing is left as declared.
@@ -155,6 +157,7 @@ impl Server {
         {
             Ok(crate::freeze::AgentDeclare::Declared) => {}
             Ok(crate::freeze::AgentDeclare::Held(m)) => return Ok(already(m)),
+            Ok(crate::freeze::AgentDeclare::Thawed(t)) => return Err(thawed(t)),
             Err(e) => {
                 return Err(format!(
                     "{FREEZE_TOOL}: could not write the freeze marker ({e}) — the fleet is NOT \

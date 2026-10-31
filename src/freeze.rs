@@ -290,32 +290,60 @@ impl FreezeStore {
         incident: bool,
         agent: &str,
     ) -> std::io::Result<AgentDeclare> {
+        // The operator's thaw holds an agent off: enforced here, by the
+        // store, not only by the tool asking first.
+        if let Some(t) = self.recently_thawed() {
+            return Ok(AgentDeclare::Thawed(t));
+        }
         let file = self.persistent_file();
-        let created = write_marker_exclusive(&file, reason, incident, agent)?;
-        if !created {
-            match parse_file(&file) {
-                Some(m) => return Ok(AgentDeclare::Held(m)),
-                // Gone again between the link and this read: a thaw
-                // lifted it. Not written here, which would make this a
-                // declare that is not exclusive: say so, and let the
-                // caller try again.
-                None if !file.exists() => {
-                    return Err(std::io::Error::other(
-                        "a freeze was lifted while this one was declared; try again",
-                    ));
-                }
-                // A corrupt marker blocks nothing, so it must not stop
-                // a freeze either: replace it, as an operator's would.
-                None => write_marker_full(
-                    &file,
-                    PERSISTENT_PID,
-                    reason,
-                    incident,
-                    true,
-                    false,
-                    Some(agent),
-                )?,
+        // What stands at `file` when the exclusive link finds one: a
+        // freeze (kept), nothing any more (a thaw lifted it in between:
+        // an error to retry, never a non-exclusive write), or bytes that
+        // are no marker.
+        let standing = || -> std::io::Result<Result<FreezeMarker, Vec<u8>>> {
+            match std::fs::read(&file) {
+                Ok(bytes) => Ok(std::str::from_utf8(&bytes)
+                    .ok()
+                    .and_then(parse_marker)
+                    .ok_or(bytes)),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(std::io::Error::other(
+                    "a freeze was lifted while this one was declared; try again",
+                )),
+                Err(e) => Err(e),
             }
+        };
+        if !write_marker_exclusive(&file, reason, incident, agent)? {
+            let corrupt = match standing()? {
+                Ok(m) => return Ok(AgentDeclare::Held(m)),
+                Err(bytes) => bytes,
+            };
+            // A corrupt marker blocks nothing, so it must not stop a
+            // freeze either. Removed only if it is still the file just
+            // read, then linked again, exclusively: replacing it in place
+            // overwrote an `ebman freeze` landing in between.
+            if std::fs::read(&file).ok().as_deref() == Some(corrupt.as_slice()) {
+                let _ = std::fs::remove_file(&file);
+            }
+            if !write_marker_exclusive(&file, reason, incident, agent)? {
+                return match standing()? {
+                    Ok(m) => Ok(AgentDeclare::Held(m)),
+                    Err(_) => Err(std::io::Error::other(
+                        "the freeze marker is unreadable and could not be replaced",
+                    )),
+                };
+            }
+        }
+        // A thaw that landed while this was being written: it lifted
+        // what was there before, so the hold it records is about this
+        // very moment. Take this one back rather than stand over it.
+        if let Some(t) = self.recently_thawed() {
+            if parse_file(&file)
+                .is_some_and(|m| m.agent.as_deref() == Some(agent) && m.reason == reason)
+            {
+                let _ = std::fs::remove_file(&file);
+            }
+            self.sync_legacy(&self.holders());
+            return Ok(AgentDeclare::Thawed(t));
         }
         self.sync_legacy(&self.holders());
         self.clear_ended();
@@ -359,14 +387,20 @@ impl FreezeStore {
     /// deleting its file) may end.
     pub(crate) fn thaw(&self) -> Thaw {
         let file = self.persistent_file();
+        // The hold is recorded BEFORE the marker goes: removed first, there
+        // was an instant with neither, and an agent freezing in it stood
+        // over the operator's thaw. A thaw that then fails to remove the
+        // marker leaves a record that binds nothing while a freeze stands.
         // Lifted only if this call removed it: a thaw racing another must
         // not report, and audit, a lift it did not make.
-        let lifted = parse_file(&file).filter(|_| std::fs::remove_file(&file).is_ok());
+        let lifted = parse_file(&file).filter(|marker| {
+            write_thawed_at(&self.thawed_file(), marker, chrono::Utc::now());
+            std::fs::remove_file(&file).is_ok()
+        });
         let still_held = self.all().into_iter().next();
         match lifted {
             Some(marker) => {
                 self.clear_ended();
-                write_thawed_at(&self.thawed_file(), &marker, chrono::Utc::now());
                 Thaw::Lifted { marker, still_held }
             }
             None => match still_held {
@@ -418,6 +452,12 @@ impl FreezeStore {
     /// Forget a thaw: an operator's freeze since is a new ruling.
     fn clear_thawed(&self) {
         let _ = std::fs::remove_file(self.thawed_file());
+    }
+
+    /// End a thaw's hold now, as 30 minutes passing would.
+    #[cfg(test)]
+    pub(crate) fn expire_thaw_for_test(&self) {
+        self.clear_thawed();
     }
 
     /// Record a thaw at `thawed_at`, as [`thaw`](Self::thaw) does now.
@@ -593,6 +633,9 @@ pub(crate) enum AgentDeclare {
     Declared,
     /// A persistent freeze already stood, and stands unchanged.
     Held(FreezeMarker),
+    /// The operator lifted a freeze in the last [`THAW_HOLDS_MINS`]:
+    /// nothing was declared.
+    Thawed(ThawedFreeze),
 }
 
 #[cfg(test)]
@@ -604,6 +647,11 @@ thread_local! {
     /// directory first.
     pub(crate) static LINK_FAILS: std::cell::Cell<Option<std::io::ErrorKind>> =
         const { std::cell::Cell::new(None) };
+    /// Under test, run this right after a successful exclusive link,
+    /// with the marker's path: what another process does in that
+    /// instant (a thaw landing mid-declare).
+    pub(crate) static AFTER_LINK: std::cell::Cell<Option<fn(&Path)>> =
+        const { std::cell::Cell::new(None) };
 }
 
 fn link_into_place(tmp: &Path, path: &Path) -> std::io::Result<()> {
@@ -611,7 +659,12 @@ fn link_into_place(tmp: &Path, path: &Path) -> std::io::Result<()> {
     if let Some(kind) = LINK_FAILS.with(|f| f.get()) {
         return Err(std::io::Error::from(kind));
     }
-    std::fs::hard_link(tmp, path)
+    std::fs::hard_link(tmp, path)?;
+    #[cfg(test)]
+    if let Some(after) = AFTER_LINK.with(|f| f.get()) {
+        after(path);
+    }
+    Ok(())
 }
 
 /// A persistent agent marker at `path`, only if none is there: the
@@ -923,7 +976,18 @@ fn write_thawed_at(path: &Path, m: &FreezeMarker, thawed_at: chrono::DateTime<ch
     if let Some(agent) = &m.agent {
         v["agent"] = serde_json::Value::String(agent.clone());
     }
-    if let Err(e) = crate::util::write_secure(path, format!("{v}\n").as_bytes()) {
+    // Temp then rename, as the markers are: written in place, a reader
+    // between the truncate and the write saw an empty record, so no hold.
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let tmp = path.with_extension(format!(
+        "tmp.{}.{}",
+        std::process::id(),
+        SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    let written = crate::util::write_secure(&tmp, format!("{v}\n").as_bytes())
+        .and_then(|()| std::fs::rename(&tmp, path));
+    if let Err(e) = written {
+        let _ = std::fs::remove_file(&tmp);
         // Said, not swallowed: without the record an agent can freeze
         // again at once, which is the loop this exists to stop.
         tracing::warn!(error = %e, "could not record a thaw; freeze_fleet is not held off");
@@ -939,7 +1003,12 @@ fn read_thawed_at(path: &Path, now: chrono::DateTime<chrono::Utc>) -> Option<Tha
     let thawed_at = chrono::DateTime::parse_from_rfc3339(v.get("thawed_at")?.as_str()?)
         .ok()?
         .with_timezone(&chrono::Utc);
-    (now.signed_duration_since(thawed_at).num_seconds() < THAW_HOLDS_MINS * 60)
+    // Bounded below too: a record from the future (a clock stepped
+    // back, a record copied from another host) held until the clock
+    // passed it, however far that was.
+    let age = now.signed_duration_since(thawed_at).num_seconds();
+    (-START_SLACK_SECS..THAW_HOLDS_MINS * 60)
+        .contains(&age)
         .then_some(ThawedFreeze { marker, thawed_at })
 }
 
@@ -1608,7 +1677,69 @@ mod tests {
         assert_eq!(parse_file(&s.marker).and_then(|m| m.agent), None);
     }
 
-    /// An agent's declare never replaces a standing persistent freeze:
+    /// The store holds an agent off after a thaw, not only the tool:
+    /// nothing is written and the hold is the answer.
+    #[test]
+    fn the_store_refuses_an_agent_s_declare_while_a_thaw_holds() {
+        let s = store("agent-thawed", Liveness::ALL_ALIVE);
+        s.declare_persistent("release window", false).unwrap();
+        assert!(matches!(s.thaw(), Thaw::Lifted { .. }));
+        match s
+            .declare_persistent_by_agent("bad deploy", false, "claude-code")
+            .unwrap()
+        {
+            AgentDeclare::Thawed(t) => assert_eq!(t.marker.reason, "release window"),
+            other => panic!("{other:?}"),
+        }
+        assert!(s.active().is_none(), "nothing declared");
+        done(&s);
+    }
+
+    /// A thaw that lands while an agent declares: the declare takes its
+    /// marker back and answers with the hold, rather than stand over the
+    /// operator's thaw.
+    #[test]
+    fn a_thaw_landing_mid_declare_takes_the_agent_s_freeze_back() {
+        let s = store("thaw-mid", Liveness::ALL_ALIVE);
+        // `freeze.d/persistent.json` -> `freeze.thawed.json`, as a thaw
+        // in another process writes it.
+        fn thaw_now(marker: &Path) {
+            let record = marker.parent().unwrap().with_extension("thawed.json");
+            let lifted = parse_marker(r#"{"pid":1,"reason":"earlier","persistent":true}"#).unwrap();
+            write_thawed_at(&record, &lifted, chrono::Utc::now());
+        }
+        AFTER_LINK.with(|f| f.set(Some(thaw_now)));
+        let r = s.declare_persistent_by_agent("bad deploy", false, "claude-code");
+        AFTER_LINK.with(|f| f.set(None));
+        assert!(matches!(r, Ok(AgentDeclare::Thawed(_))), "{r:?}");
+        assert!(s.active().is_none(), "the agent's marker was taken back");
+        done(&s);
+    }
+
+    /// A thaw records its hold before it removes the marker, so there is
+    /// no instant with neither for an agent to freeze in. Seen through a
+    /// thaw whose remove fails: the record is already there.
+    #[cfg(unix)]
+    #[test]
+    fn a_thaw_records_its_hold_before_the_marker_goes() {
+        use std::os::unix::fs::PermissionsExt;
+        let s = store("thaw-order", Liveness::ALL_ALIVE);
+        s.declare_persistent("release window", false).unwrap();
+        let dir = s.holders_dir();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let thaw = s.thaw();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(
+            !matches!(thaw, Thaw::Lifted { .. }),
+            "the remove failed: {thaw:?}"
+        );
+        assert!(
+            s.recently_thawed().is_some(),
+            "the hold was recorded before the remove was tried"
+        );
+        done(&s);
+    }
+
     /// it answers with that freeze, which is left byte for byte. One it
     /// cannot read is replaced (a corrupt marker blocks nothing, so it
     /// must not stop a freeze), and no temp file is left behind.
@@ -1653,6 +1784,7 @@ mod tests {
         );
 
         let _ = s.thaw();
+        s.expire_thaw_for_test();
         assert_eq!(
             s.declare_persistent_by_agent("fresh", false, "claude-code")
                 .unwrap(),
@@ -1664,6 +1796,7 @@ mod tests {
         // A link that fails for any other reason is that failure: not
         // "one stood", and nothing is written another way.
         let _ = s.thaw();
+        s.expire_thaw_for_test();
         let fail = |kind| {
             LINK_FAILS.with(|f| f.set(Some(kind)));
             let r = s.declare_persistent_by_agent("disk full", false, "claude-code");
@@ -1736,6 +1869,15 @@ mod tests {
         let just_inside = at + chrono::Duration::seconds(30 * 60 - 1);
         let at_the_end = at + chrono::Duration::minutes(30);
         assert!(read_thawed_at(&path, just_inside).is_some(), "29:59 holds");
+        let slack = chrono::Duration::seconds(START_SLACK_SECS);
+        assert!(
+            read_thawed_at(&path, at - slack).is_some(),
+            "a clock a little behind still holds"
+        );
+        assert!(
+            read_thawed_at(&path, at - slack - chrono::Duration::seconds(1)).is_none(),
+            "a record from further in the future does not hold forever"
+        );
         assert!(
             read_thawed_at(&path, at_the_end).is_none(),
             "30:00 does not"
