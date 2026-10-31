@@ -1500,23 +1500,48 @@ mod tests {
         assert_eq!(on.len(), 2, "{on:#?}");
     }
 
-    /// A `--demo` TUI and `mcp serve --demo` throw the switch before
-    /// anything can audit. Both are process entry points no test runs,
-    /// so their source is what can be pinned.
+    /// A `--demo` App and a demo MCP server throw the switch as they are
+    /// built, so a demo process is hermetic whichever entry point made
+    /// it; a real server does not. Each on a thread of its own, as the
+    /// switch is per thread under test.
     #[test]
-    fn both_demo_entry_points_make_the_process_hermetic() {
-        let main = crate::app::tests::scan::production_source("main.rs");
-        assert!(
-            main.contains("ebman::audit::make_hermetic();\n        let app = App::new_demo(cfg);"),
-            "the --demo TUI, before its App exists"
-        );
-        let serve = crate::app::tests::scan::production_source("cli/mcp/mod.rs");
-        assert!(
-            serve.contains(
-                "if demo {\n        crate::audit::make_hermetic();\n    }\n    let server"
-            ),
-            "mcp serve --demo, before its server exists"
-        );
+    fn the_demo_constructors_make_the_process_hermetic() {
+        let before = crate::cli::audit_delta::mark();
+        let probe = |tag: &'static str| {
+            append_rollout("r-1", None, tag, "deploy", "v1", "dispatched", None);
+        };
+        let built = |tag: &'static str, build: fn()| {
+            std::thread::spawn(move || {
+                build();
+                probe(tag);
+            })
+            .join()
+            .unwrap();
+        };
+        built("poly-demo-app", || {
+            let _ = crate::app::App::new_demo(crate::config::Config::default());
+        });
+        built("poly-demo-mcp", || {
+            let _ = crate::cli::mcp::Server::with_config(
+                true,
+                false,
+                crate::cli::mcp::WriteScope::None,
+                crate::config::Config::default(),
+            );
+        });
+        built("poly-real-mcp", || {
+            let _ = crate::cli::mcp::Server::with_config(
+                false,
+                false,
+                crate::cli::mcp::WriteScope::None,
+                crate::config::Config::default(),
+            );
+        });
+        let lines =
+            |tag: &str| crate::cli::audit_delta::lines_matching(&before, |l| l.contains(tag)).len();
+        assert_eq!(lines("poly-demo-app"), 0, "a --demo App audited");
+        assert_eq!(lines("poly-demo-mcp"), 0, "a demo MCP server audited");
+        assert_eq!(lines("poly-real-mcp"), 1, "the probe writes a line");
     }
 
     #[test]

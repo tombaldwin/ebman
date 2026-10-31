@@ -1450,6 +1450,9 @@ impl App {
         // those log lines from ERROR to debug so a demo session doesn't
         // fill the log with expected failures.
         DEMO_QUIET_AWS_ERRORS.store(true, std::sync::atomic::Ordering::Relaxed);
+        // No audit line by any path, from before the App exists: see
+        // `audit::make_hermetic`.
+        crate::audit::make_hermetic();
         let mut app = Self::for_tests(crate::aws::AwsClient::stub(), config);
         app.demo_mode = true;
         crate::demo_fixture::install(&mut app);

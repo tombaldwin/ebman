@@ -190,8 +190,8 @@ async fn main() -> Result<()> {
         // splash animation for SPLASH_MIN_DURATION so VHS / asciinema
         // captures get the brand animation rather than jumping
         // straight to the table.
-        // No audit line by any path: see `audit::make_hermetic`.
-        ebman::audit::make_hermetic();
+        // No audit line by any path: `new_demo` makes the process
+        // hermetic (`audit::make_hermetic`).
         let app = App::new_demo(cfg);
         let splash_started = std::time::Instant::now();
         let mut splash_frame: u64 = 0;
