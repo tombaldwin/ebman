@@ -165,15 +165,57 @@ it.*
 
 ### Next
 
-3. *(architecture)* **The MCP undo buffer to its own file.** ~200 self-contained lines
-   of `src/cli/mcp/writes.rs` (`DeletedMessage`, `Claim`, the
-   remember / claim / finish / recoverable methods) → `mcp/undo.rs`.
-   Ahead of assume-role slice 4, which keeps the delete's session in
-   that buffer. *0.45 release review.*
+*Refilled 2026-10-31 from the design review's "later" list (moved out of
+BACKLOG.md whole; items 3 and 4 of the previous window are done and
+archived, "PLAN.md items done 2026-10-31"). Each its own change.*
 
-4. *(architecture)* **`freeze_fleet` to its own module** (`src/cli/mcp/freeze.rs`):
-   ~150 lines in the 3k-line `writes.rs`, which its own docs say it is
-   not part of. S. *0.48.0 architecture review.*
+3. *(architecture)* **`freeze.rs` split.** ~2000 lines and five concerns
+   (marker model, store and holders, pid liveness, two sidecar records,
+   policy) → `src/freeze/{marker,store,liveness,record,policy}.rs`, with
+   one `write_record` / `read_record` for the ended and thawed records,
+   which are near-copies (one hand-formats JSON, one uses `json!`), and
+   `ThawedFreeze::message` naming an MCP tool from the core module moved
+   to the tool.
+
+4. *(architecture)* **One test-seam shape.** `injected_client` by
+   constructor, `injected_identity` as a field, the `LINK_FAILS` /
+   `AFTER_LINK` / `TEST_HERMETIC` thread-locals: one `#[cfg(test)]
+   TestSeams` on `Server` before slice 3 adds a role-session factory,
+   and the link failure as a `FreezeStore` field beside `Liveness`, so it
+   cannot be silently off on a tokio worker thread.
+
+5. *(behaviour)* **`make_hermetic` in the demo constructors**
+   (`Server::with_config(demo)`, `App::new_demo`) so demo tests exercise
+   it; a behavioural test replacing the whitespace-exact source pin;
+   then the per-site `demo` parameters retired.
+
+6. *(mechanical)* **`App::fresh(aws, config, seed: MachineSeed)`** with
+   `MachineSeed::none()` for tests and demo, rather than `new`
+   overwriting 20 fields; the guard then checks the seed type.
+
+7. *(mechanical)* **One sanitiser** with an explicit
+   `Shown::{Capped(n), Whole}` in place of `sanitize_for_ask` /
+   `sanitize_whole` / `sanitize_capped(.., N)`.
+
+8. *(mechanical)* **`tool_doctor` as per-concern `doctor_notes()`**
+   (238 lines of pushed notes) before slice 5 adds the role section.
+
+9. *(mechanical)* **CI tweaks.** A pre-commit hook refusing a change to
+   `.cargo/mutants.toml` without `EBMAN_MAINTAINER=1` (the "maintainer
+   only" rule is CLAUDE.md text today); the `exclusions` job gated on
+   the list being non-empty (it installs cargo-mutants on every push to
+   check an empty list); a PR's commits run the shards on both `push`
+   and `pull_request` (a `concurrency` group without cancelling a
+   verdict).
+
+10. *(mechanical)* **Demo freeze stores leave records in the OS temp
+    dir.** `FreezeStore::isolated` writes `ebman-freeze-isolated-PID-N.*`
+    (`.ended.json`, `.thawed.json`) and nothing removes them after a
+    `--demo` session. From the 2026-10-31 correctness review.
+
+*Left in BACKLOG.md: `Server::refuse(..)` for the six `Audited::record`
+callers, whose profile choices differ on purpose and need settling
+first.*
 
 ### Released
 

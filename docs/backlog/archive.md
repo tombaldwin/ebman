@@ -5573,3 +5573,19 @@ a `--read-only` server.
    names are a BACKLOG ruling); `:lint` / `:explain` prime the lint-input
    cache (4f0392e).
 
+
+## PLAN.md items done 2026-10-31
+
+3. *(architecture)* **The MCP undo buffer to its own file.** ~200 self-contained lines
+   of `src/cli/mcp/writes.rs` (`DeletedMessage`, `Claim`, the
+   remember / claim / finish / recoverable methods) → `mcp/undo.rs`.
+   Ahead of assume-role slice 4, which keeps the delete's session in
+   that buffer. *0.45 release review.*
+
+4. *(architecture)* **`freeze_fleet` to its own module** (`src/cli/mcp/freeze.rs`):
+   ~150 lines in the 3k-line `writes.rs`, which its own docs say it is
+   not part of. S. *0.48.0 architecture review.*
+
+
+   Both done 2026-10-31: `mcp/undo.rs` (9bc8324) and `mcp/freeze.rs`
+   (86dd76d), moves only.

@@ -238,45 +238,10 @@ Tier definitions:
 
 #### Correctness and safety, from the 2026-09-25 reviews
 
-- [ ] **From the 2026-10-31 design review (Fable), "later" items.**
-  Each its own change when taken:
-  (1) `freeze.rs` is ~2000 lines and five concerns (marker model,
-  store and holders, pid liveness, two sidecar records, policy); split
-  to `src/freeze/{marker,store,liveness,record,policy}.rs`, with one
-  `write_record` / `read_record` for the ended and thawed records,
-  which are near-copies (one hand-formats JSON, one uses `json!`), and
-  `ThawedFreeze::message` naming an MCP tool from the core module moved
-  to the tool. (2) Test seams accrete one-off shapes (`injected_client`
-  by constructor, `injected_identity` as a field, the `LINK_FAILS` /
-  `AFTER_LINK` / `TEST_HERMETIC` thread-locals): one `#[cfg(test)]
-  TestSeams` on `Server` before slice 3 adds a role-session factory, and
-  the link failure as a `FreezeStore` field beside `Liveness`, so it
-  cannot be silently off on a tokio worker thread. (3) `make_hermetic`
-  thrown in the demo constructors (`Server::with_config(demo)`,
-  `App::new_demo`) so demo tests exercise it, a behavioural test
-  replacing the whitespace-exact source pin, then the per-site `demo`
-  parameters retired. (4) `App::fresh(aws, config, seed: MachineSeed)`
-  with `MachineSeed::none()` for tests and demo, rather than `new`
-  overwriting 20 fields; the guard then checks the seed type. (5) One
-  sanitiser with an explicit `Shown::{Capped(n), Whole}` in place of
-  `sanitize_for_ask` / `sanitize_whole` / `sanitize_capped(.., N)`.
-  (6) `Server::refuse(..)` resolving demo, profile and region once for
-  the six `Audited::record` callers (their profile choices differ on
-  purpose today: pin profile, call profile, none; settle that first).
-  (7) `tool_doctor` (238 lines of pushed notes) as per-concern
-  `doctor_notes()` before slice 5 adds the role section. (8) CI: a
-  pre-commit hook refusing a change to `.cargo/mutants.toml` without
-  `EBMAN_MAINTAINER=1` (the "maintainer only" rule is CLAUDE.md text
-  today); the `exclusions` job installs cargo-mutants on every push to
-  check an empty list (gate it on the list being non-empty); a PR's
-  commits run the shards on both `push` and `pull_request` (a
-  `concurrency` group without cancelling a verdict).
-
-- [ ] **Demo freeze stores leave records in the OS temp dir.**
-  `FreezeStore::isolated` writes `ebman-freeze-isolated-PID-N.*`
-  (`.ended.json`, and now `.thawed.json`) and nothing removes them after
-  a `--demo` session. One file per session, never read again. From the
-  2026-10-31 correctness review; the class predates the thaw record.
+- [ ] **`Server::refuse(..)`** resolving demo, profile and region once
+  for the six `Audited::record` callers. Their profile choices differ on
+  purpose today (pin profile, call profile, none): settle that first.
+  From the 2026-10-31 design review.
 
 - [ ] **The freeze audit lines disagree on field names.** The TUI's
   `IncidentStart` / `IncidentEnd` record the headline as `headline=`;
