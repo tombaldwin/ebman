@@ -1305,7 +1305,36 @@ impl Server {
         let unreadable = !self.safety_cfg.safety_parse_errors.is_empty();
         let all_refused = self.safety_cfg.safety_read_only || unreadable || frozen;
 
-        let mut notes: Vec<String> = Vec::new();
+        // One concern each, in the order an agent should read them. A
+        // new section (the role, at assume-role slice 5) is a method of
+        // its own, not more of this function.
+        let mut notes = self.trust_notes(elicits);
+        notes.extend(self.restriction_notes(unreadable, freeze.as_ref()));
+        notes.extend(self.reach_notes(elicits, unreadable));
+        notes.extend(self.surface_notes());
+
+        format!(
+            "{{\"ebman\":{},\"client\":{},\"client_declared\":{{\"elicitation\":{}}},\"writes\":{},\"writes_via\":{},\"standing_restrictions\":{{\"all_writes_refused\":{},\"pinned_targets\":{},\"config_unreadable\":{}}},\"redacting\":{},\"notes\":[{}]}}",
+            util::json_string(env!("CARGO_PKG_VERSION")),
+            util::json_string(&client),
+            elicits,
+            util::json_string(&writes),
+            util::json_string(&writes_via),
+            all_refused,
+            pinned,
+            !self.safety_cfg.safety_parse_errors.is_empty(),
+            self.redact,
+            notes
+                .iter()
+                .map(|n| util::json_string(n))
+                .collect::<Vec<_>>()
+                .join(",")
+        )
+    }
+
+    /// What an approval on this connection does and does not prove.
+    fn trust_notes(&self, elicits: bool) -> Vec<String> {
+        let mut notes = Vec::new();
         // The honest limit on the whole design, stated where an agent
         // reads it rather than left implicit.
         //
@@ -1329,6 +1358,18 @@ impl Server {
                  claim.",
             ));
         }
+        notes
+    }
+
+    /// The standing restrictions: a config that fails closed, a freeze
+    /// (standing, ended with its session, or just thawed), and
+    /// `safety.read_only`.
+    fn restriction_notes(
+        &self,
+        unreadable: bool,
+        freeze: Option<&crate::freeze::FreezeMarker>,
+    ) -> Vec<String> {
+        let mut notes = Vec::new();
         if unreadable {
             notes.push(
                 "The safety config could not be parsed, which fails CLOSED: every write is \
@@ -1337,7 +1378,7 @@ impl Server {
                     .into(),
             );
         }
-        if let Some(m) = freeze.as_ref() {
+        if let Some(m) = freeze {
             notes.push(format!(
                 "A deploy freeze is active ({}), so every write is refused while it \
                  stands. It is the one restriction here that can lift without anything \
@@ -1372,6 +1413,13 @@ impl Server {
                     .into(),
             );
         }
+        notes
+    }
+
+    /// What can reach the operator from here: the client's ask, and
+    /// the host's own permission layer ebman cannot see.
+    fn reach_notes(&self, elicits: bool, unreadable: bool) -> Vec<String> {
+        let mut notes = Vec::new();
         if !elicits {
             notes.push(
                 "Your client did not declare elicitation support, so this server cannot \
@@ -1406,6 +1454,13 @@ impl Server {
                 super::host_denial_body(can_ask)
             ));
         }
+        notes
+    }
+
+    /// How this server shows what it reads: redaction, message bodies,
+    /// and whether any of it is real.
+    fn surface_notes(&self) -> Vec<String> {
+        let mut notes = Vec::new();
         if !self.redact {
             notes.push(
                 "Redaction is OFF (--no-redact): `get_option_settings` and `why` return \
@@ -1431,24 +1486,7 @@ impl Server {
                     .into(),
             );
         }
-
-        format!(
-            "{{\"ebman\":{},\"client\":{},\"client_declared\":{{\"elicitation\":{}}},\"writes\":{},\"writes_via\":{},\"standing_restrictions\":{{\"all_writes_refused\":{},\"pinned_targets\":{},\"config_unreadable\":{}}},\"redacting\":{},\"notes\":[{}]}}",
-            util::json_string(env!("CARGO_PKG_VERSION")),
-            util::json_string(&client),
-            elicits,
-            util::json_string(&writes),
-            util::json_string(&writes_via),
-            all_refused,
-            pinned,
-            !self.safety_cfg.safety_parse_errors.is_empty(),
-            self.redact,
-            notes
-                .iter()
-                .map(|n| util::json_string(n))
-                .collect::<Vec<_>>()
-                .join(",")
-        )
+        notes
     }
 
     fn tool_audit_log(&self, args: &Value) -> Result<String, String> {

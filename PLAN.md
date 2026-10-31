@@ -193,9 +193,6 @@ archived, "PLAN.md items done 2026-10-31"). Each its own change.*
    `MachineSeed::none()` for tests and demo, rather than `new`
    overwriting 20 fields; the guard then checks the seed type.
 
-8. *(mechanical)* **`tool_doctor` as per-concern `doctor_notes()`**
-   (238 lines of pushed notes) before slice 5 adds the role section.
-
 *Left in BACKLOG.md: `Server::refuse(..)` for the six `Audited::record`
 callers, whose profile choices differ on purpose and need settling
 first.*

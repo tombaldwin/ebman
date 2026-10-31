@@ -5622,3 +5622,11 @@ a `--read-only` server.
 
    Done 2026-10-31: `sanitize(raw, Shown::{Capped(n), Whole})` with
    `Shown::ASK`, at all 21 sites; the per-character recount went too.
+
+8. *(mechanical)* **`tool_doctor` as per-concern `doctor_notes()`**
+   (238 lines of pushed notes) before slice 5 adds the role section.
+
+   Done 2026-10-31: `trust_notes`, `restriction_notes`, `reach_notes`,
+   `surface_notes`, each a slice of the old body moved whole, in the
+   order it had, so the output is unchanged. `tool_doctor` is the
+   facts and the JSON.
