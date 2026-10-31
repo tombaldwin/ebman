@@ -5615,3 +5615,10 @@ a `--read-only` server.
    shards once, on `pull_request`; the merge re-judges only when it
    fast-forwards to the PR's head, and work here lands on `main`
    directly (every PR on record is Dependabot's).
+
+7. *(mechanical)* **One sanitiser** with an explicit
+   `Shown::{Capped(n), Whole}` in place of `sanitize_for_ask` /
+   `sanitize_whole` / `sanitize_capped(.., N)`.
+
+   Done 2026-10-31: `sanitize(raw, Shown::{Capped(n), Whole})` with
+   `Shown::ASK`, at all 21 sites; the per-character recount went too.

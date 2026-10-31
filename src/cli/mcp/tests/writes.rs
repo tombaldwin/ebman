@@ -2526,19 +2526,19 @@ fn a_purge_dialog_carries_the_queue_depth() {
 #[test]
 fn a_hostile_task_name_cannot_forge_dialog_lines() {
     let evil = "Nightly sweep\n  • Something harmless (m-999)\u{202E}reversed\u{0007}";
-    let clean = sanitize_for_ask(evil);
+    let clean = sanitize(evil, Shown::ASK);
     assert!(!clean.contains('\n'), "no newline may survive: {clean:?}");
     assert!(!clean.contains('\u{202E}'), "no bidi override: {clean:?}");
     // Two the first version missed: an invisible bidi control that
     // `is_control()` does not report, and text that renders as
     // nothing at all.
     assert_eq!(
-        sanitize_for_ask("a\u{061C}b"),
+        sanitize("a\u{061C}b", Shown::ASK),
         "a\u{FFFD}b",
         "U+061C ARABIC LETTER MARK reorders visibly and is not a control char"
     );
     assert_eq!(
-        sanitize_for_ask("a\u{E0041}b"),
+        sanitize("a\u{E0041}b", Shown::ASK),
         "a\u{FFFD}b",
         "the TAG block is invisible by design"
     );
@@ -2619,13 +2619,24 @@ fn a_hostile_task_name_cannot_forge_dialog_lines() {
 #[test]
 fn a_huge_task_name_is_capped() {
     let long = "A".repeat(5_000);
-    let clean = sanitize_for_ask(&long);
+    let clean = sanitize(&long, Shown::ASK);
     assert!(
         clean.chars().count() <= 121,
         "capped: {}",
         clean.chars().count()
     );
     assert!(clean.ends_with('…'), "and says it was truncated");
+}
+
+/// `Capped(n)` keeps exactly `n` characters, a field of exactly `n`
+/// gets no ellipsis, and `Whole` keeps everything.
+#[test]
+fn shown_caps_at_exactly_its_count() {
+    assert_eq!(sanitize("abcd", Shown::Capped(3)), "abc…");
+    assert_eq!(sanitize("abc", Shown::Capped(3)), "abc");
+    assert_eq!(sanitize("a\u{202E}c", Shown::Capped(2)), "a\u{FFFD}…");
+    let long = "A".repeat(5_000);
+    assert_eq!(sanitize(&long, Shown::Whole), long);
 }
 
 /// The delete plan a held message came from.

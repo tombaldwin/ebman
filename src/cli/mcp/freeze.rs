@@ -144,7 +144,7 @@ impl Server {
         // The marker names the client, so a refusal and `ebman thaw` say
         // an agent declared it. The name is the client's own claim, and
         // lands in a one-line status bar: sanitised and capped.
-        let agent = match sanitize_capped(client.trim(), FREEZE_AGENT_MAX) {
+        let agent = match sanitize(client.trim(), Shown::Capped(FREEZE_AGENT_MAX)) {
             named if !named.is_empty() => named,
             _ => "an unnamed client".to_string(),
         };

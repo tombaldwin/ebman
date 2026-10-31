@@ -193,10 +193,6 @@ archived, "PLAN.md items done 2026-10-31"). Each its own change.*
    `MachineSeed::none()` for tests and demo, rather than `new`
    overwriting 20 fields; the guard then checks the seed type.
 
-7. *(mechanical)* **One sanitiser** with an explicit
-   `Shown::{Capped(n), Whole}` in place of `sanitize_for_ask` /
-   `sanitize_whole` / `sanitize_capped(.., N)`.
-
 8. *(mechanical)* **`tool_doctor` as per-concern `doctor_notes()`**
    (238 lines of pushed notes) before slice 5 adds the role section.
 

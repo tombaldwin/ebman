@@ -347,32 +347,16 @@ impl Server {
 /// it: these strings come from AWS, not from the agent.
 ///
 /// Control characters and bidi/zero-width formatting become U+FFFD so
-/// something visibly wrong is shown rather than nothing; length is
-/// capped so one field cannot push the rest of the sentence out of a
-/// dialog.
-pub(super) fn sanitize_for_ask(raw: &str) -> String {
-    sanitize_capped(raw, 120)
-}
-
-/// The same stripping with no truncation.
-///
-/// ONLY for fields whose length is refused at plan time. Truncating a
-/// value the operator is approving hides its operative end: a
-/// `set_option` value of
-/// `https://payments.example/callback/<90 filler>@evil.example/x`
-/// shows as a benign-looking prefix and an ellipsis, because the `@`
-/// that makes everything before it userinfo sits past the cut. The
-/// operator approves one destination and another is applied. So a
-/// value that cannot be shown whole is not shown at all — the plan is
-/// refused instead, and this renders what survives that check.
-pub(super) fn sanitize_whole(raw: &str) -> String {
-    sanitize_capped(raw, usize::MAX)
-}
-
-pub(super) fn sanitize_capped(raw: &str, max: usize) -> String {
+/// something visibly wrong is shown rather than nothing; how much of
+/// the field is shown is the caller's [`Shown`], said at every call.
+pub(super) fn sanitize(raw: &str, shown: Shown) -> String {
+    let max = match shown {
+        Shown::Capped(n) => n,
+        Shown::Whole => usize::MAX,
+    };
     let mut out = String::with_capacity(raw.len().min(max.min(4096)) + 1);
-    for c in raw.chars() {
-        if out.chars().count() >= max {
+    for (n, c) in raw.chars().enumerate() {
+        if n >= max {
             out.push('…');
             break;
         }
@@ -385,6 +369,29 @@ pub(super) fn sanitize_capped(raw: &str, max: usize) -> String {
         }
     }
     out
+}
+
+/// How much of an untrusted field [`sanitize`] shows.
+#[derive(Clone, Copy)]
+pub(super) enum Shown {
+    /// The first `n` characters and an ellipsis: so one field cannot
+    /// push the rest of the sentence out of a dialog.
+    Capped(usize),
+    /// All of it. ONLY for fields whose length is refused at plan time.
+    /// Truncating a value the operator is approving hides its operative
+    /// end: a `set_option` value of
+    /// `https://payments.example/callback/<90 filler>@evil.example/x`
+    /// shows as a benign-looking prefix and an ellipsis, because the `@`
+    /// that makes everything before it userinfo sits past the cut. The
+    /// operator approves one destination and another is applied. So a
+    /// value that cannot be shown whole is not shown at all — the plan
+    /// is refused instead, and this renders what survives that check.
+    Whole,
+}
+
+impl Shown {
+    /// A field of the approval dialog.
+    pub(super) const ASK: Shown = Shown::Capped(120);
 }
 
 /// The one sentence an operator is asked to approve.
@@ -400,14 +407,14 @@ pub(super) fn sanitize_capped(raw: &str, max: usize) -> String {
 pub(super) fn ask_summary(p: &PendingWrite) -> String {
     let what = match p.dlq_targets.as_slice() {
         [] => match p.version.as_deref() {
-            Some(v) => format!("{} to {}", p.verb.label(), sanitize_for_ask(v)),
+            Some(v) => format!("{} to {}", p.verb.label(), sanitize(v, Shown::ASK)),
             None => p.verb.label().to_string(),
         },
         [one] => format!(
             "{} — {} ({})",
             p.verb.label(),
-            sanitize_for_ask(&one.task),
-            sanitize_for_ask(&one.id)
+            sanitize(&one.task, Shown::ASK),
+            sanitize(&one.id, Shown::ASK)
         ),
         // Enumerated, never summarised. "5 messages" is a number to
         // agree with; a list is something to read. `DLQ_BATCH_CAP`
@@ -419,8 +426,8 @@ pub(super) fn ask_summary(p: &PendingWrite) -> String {
             many.iter()
                 .map(|t| format!(
                     "  • {} ({})",
-                    sanitize_for_ask(&t.task),
-                    sanitize_for_ask(&t.id)
+                    sanitize(&t.task, Shown::ASK),
+                    sanitize(&t.id, Shown::ASK)
                 ))
                 .collect::<Vec<_>>()
                 .join("\n")
@@ -446,11 +453,11 @@ pub(super) fn ask_summary(p: &PendingWrite) -> String {
                 .iter()
                 .map(|(ns, name, value)| format!(
                     "  • {}:{} = {}",
-                    sanitize_whole(ns),
-                    sanitize_whole(name),
-                    // WHOLE, never truncated — see `sanitize_whole`.
+                    sanitize(ns, Shown::Whole),
+                    sanitize(name, Shown::Whole),
+                    // WHOLE, never truncated — see `Shown::Whole`.
                     // Bounded by `SET_OPTION_FIELD_MAX` at plan time.
-                    sanitize_whole(value)
+                    sanitize(value, Shown::Whole)
                 ))
                 .collect::<Vec<_>>()
                 .join("\n")
@@ -458,7 +465,7 @@ pub(super) fn ask_summary(p: &PendingWrite) -> String {
     };
     format!(
         "{what}{detail} on {}, {}{}.\n\n{}",
-        sanitize_for_ask(&p.env),
+        sanitize(&p.env, Shown::ASK),
         // Sanitised like every other foreign field. `line()` carries
         // an ARN from STS, and on the `Unknown` arm a raw SDK error
         // chain — remote prose that can contain newlines, and in one
@@ -467,7 +474,7 @@ pub(super) fn ask_summary(p: &PendingWrite) -> String {
         // file states is "every foreign field"; this was the one slot
         // that was not, and it sits in the sentence a human reads
         // before destroying something.
-        sanitize_for_ask(&p.caller.line()),
+        sanitize(&p.caller.line(), Shown::ASK),
         // Its own slot: see `PlanRole::line`.
         p.role().as_ref().map(PlanRole::line).unwrap_or_default(),
         // `dlq_visible` is carried on the plan so a purge dialog can
@@ -1146,7 +1153,7 @@ struct PlanDetails {
 ///
 /// Not a limit on what Elastic Beanstalk accepts — a limit on what an
 /// operator can be asked about. The dialog shows setting values WHOLE
-/// (see `sanitize_whole`), because truncating one hides its operative
+/// (see `Shown::Whole`), because truncating one hides its operative
 /// end: `https://payments.example/callback/<filler>@evil.example/x`
 /// reads as a benign host and applies another, the `@` sitting past
 /// the ellipsis. Refusing above a readable size is the same rule

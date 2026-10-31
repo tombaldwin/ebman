@@ -45,10 +45,10 @@ impl PlanRole {
         format!(
             "; the verb maps to role `{}` ({}), which this ebman does not assume yet, so \
              it goes out as that identity",
-            sanitize_for_ask(&self.name),
+            sanitize(&self.name, Shown::ASK),
             // Whole: `parse_role_arn` bounds it by IAM's limits, and a
             // value the operator approves is shown whole or refused.
-            sanitize_whole(&self.arn)
+            sanitize(&self.arn, Shown::Whole)
         )
     }
 
