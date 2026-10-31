@@ -36,6 +36,7 @@ use crate::{audit as audit_log, aws, cost_cache, demo_fixture, lint, terraform, 
 mod annotations;
 mod app_metrics;
 mod freeze;
+mod role;
 mod setup;
 mod tools;
 mod undo;

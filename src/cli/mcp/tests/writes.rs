@@ -1985,7 +1985,9 @@ fn the_ask_says_whose_credentials_it_would_use() {
 fn role_cfg(account: &str) -> crate::config::Config {
     crate::config::parse(&format!(
         "mcp.role.deploys.role_arn = \"arn:aws:iam::{account}:role/team/EbmanAgentDeploy\"\n\
-         mcp.role.deploys.verbs = \"restart,deploy\"\n"
+         mcp.role.deploys.verbs = \"restart,deploy\"\n\
+         mcp.role.deploys.source_profile = \"ops\"\n\
+         mcp.role.deploys.external_id = \"x-1\"\n"
     ))
 }
 
@@ -2008,6 +2010,8 @@ fn a_plan_resolves_the_role_its_verb_maps_to() {
             arn: "arn:aws:iam::123456789012:role/team/EbmanAgentDeploy".into(),
             account: "123456789012".into(),
             name: "EbmanAgentDeploy".into(),
+            source_profile: Some("ops".into()),
+            external_id: Some("x-1".into()),
         })
     );
     assert_eq!(plan_role(&cfg, WriteVerb::Terminate), None, "unmapped");

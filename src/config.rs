@@ -238,8 +238,15 @@ pub(crate) enum RoleCheck {
     /// The role config cannot be acted on: every MCP write refuses
     /// until it is fixed, as an unreadable `safety.` line does.
     Unreadable { problem: String },
-    /// The verb maps to the role `mcp.role.ROLE`, whose ARN says this.
-    Mapped { role: String, arn: RoleArn },
+    /// The verb maps to the role `mcp.role.ROLE`: its ARN, read, and
+    /// the whole entry, so a plan carries what slice 3 assumes
+    /// (`source_profile`, `external_id`) rather than looking it up again
+    /// at confirm.
+    Mapped {
+        role: String,
+        arn: RoleArn,
+        spec: McpRole,
+    },
     /// No role lists the verb; `required` is `mcp.require_role`.
     Unmapped { required: bool },
 }
@@ -312,11 +319,12 @@ pub(crate) fn mcp_role_check(cfg: &Config, verb: &str, known: &[&str]) -> RoleCh
         Some(role) => match cfg
             .mcp_roles
             .get(role)
-            .and_then(|r| parse_role_arn(&r.role_arn))
+            .and_then(|r| parse_role_arn(&r.role_arn).map(|arn| (arn, r.clone())))
         {
-            Some(arn) => RoleCheck::Mapped {
+            Some((arn, spec)) => RoleCheck::Mapped {
                 role: role.to_string(),
                 arn,
+                spec,
             },
             None => RoleCheck::Unreadable {
                 problem: format!("mcp.role.{role} could not be read"),
@@ -326,6 +334,11 @@ pub(crate) fn mcp_role_check(cfg: &Config, verb: &str, known: &[&str]) -> RoleCh
             required: cfg.mcp_require_role,
         },
     }
+}
+
+/// Twelve digits: an AWS account id.
+pub(crate) fn is_account_id(s: &str) -> bool {
+    s.len() == 12 && s.bytes().all(|b| b.is_ascii_digit())
 }
 
 /// What an IAM role ARN says: the account it is in and the role's name
@@ -363,8 +376,7 @@ pub(crate) fn parse_role_arn(arn: &str) -> Option<RoleArn> {
             || partition.starts_with("aws-iso"))
         && service == "iam"
         && region.is_empty()
-        && account.len() == 12
-        && account.bytes().all(|b| b.is_ascii_digit())
+        && is_account_id(account)
         // IAM counts the path's leading and trailing slash.
         && (path.is_empty() || path.len() + 2 <= 512)
         // `role//D` and `role/a//D`: IAM's path has no empty segment.
@@ -1464,6 +1476,7 @@ mod tests {
                     account: "111122223333".into(),
                     name: "R".into(),
                 },
+                spec: cfg.mcp_roles["deploys"].clone(),
             }
         );
         assert_eq!(
