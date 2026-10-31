@@ -1377,6 +1377,230 @@ where
     )
 }
 
+/// Plan and dispatch `--fix` for one environment. Returns whether a
+/// dispatch failed or a `--yes` run was refused, which is what decides
+/// `lint`'s exit code.
+///
+/// Extracted from `run_cycle` in 0.45. It was ~170 lines inline and
+/// the seam's tests could not reach any of it: `run_with` hardcoded
+/// `fix = false`, so the refusal accounting and the dispatch-failure
+/// flag were exactly as untested after the extraction that was
+/// supposed to expose them as before it. `fix_dispatch_failed` was
+/// asserted once, as `false`.
+async fn apply_fixes_for_env(
+    aws: &aws::AwsClient,
+    env: &aws::Environment,
+    inputs: &EnvLintInputs,
+    issues: &[lint::Issue],
+    rules: &[Box<dyn lint::Rule>],
+    policy: FixPolicy<'_>,
+    notes: &mut Vec<CycleNote>,
+) -> FixOutcome {
+    let FixPolicy {
+        yes,
+        fix_disabled,
+        safety_cfg,
+        profile: active_profile_for_safety,
+        active_freeze,
+    } = policy;
+    // The client's resolved region, not the `--regions` label: without
+    // `--regions` the label was `None`, so every single-region fix was
+    // audited as `region=default` — a region that does not exist.
+    let region_label = aws.context.region.clone();
+    // Rebuild the (cheap, borrowing) context for the
+    // fix pass — `run_rules_for_env` consumed its own.
+    let ctx = build_lint_context(env, inputs, &safety_cfg.required_tags);
+    let mut to_set: Vec<(String, String, String)> = Vec::new();
+    let mut planned: Vec<(String, lint::FixAction)> = Vec::new();
+    let mut planned_set_indices: Vec<usize> = Vec::new();
+    // Held until the gate has had its say: a refused env reports the
+    // refusal alone, as it did when the gate ran first.
+    let mut plan_notes: Vec<CycleNote> = Vec::new();
+    for issue in issues {
+        if fix_disabled.contains(&issue.rule_id) {
+            plan_notes.push(CycleNote::FixDisabled {
+                rule: issue.rule_id.clone(),
+                env: env.name.clone(),
+            });
+            continue;
+        }
+        let Some(rule) = rules.iter().find(|r| r.id() == issue.rule_id) else {
+            continue;
+        };
+        let Some(action) = rule.fix(&ctx) else {
+            plan_notes.push(CycleNote::NoFix {
+                rule: issue.rule_id.clone(),
+                env: env.name.clone(),
+            });
+            continue;
+        };
+        if let lint::FixAction::SetOption {
+            namespace,
+            name,
+            value,
+            ..
+        } = &action
+        {
+            planned_set_indices.push(planned.len());
+            to_set.push((namespace.clone(), name.clone(), value.clone()));
+        }
+        planned.push((issue.rule_id.clone(), action));
+    }
+    // Asked only when something would be set: a pinned or frozen env
+    // whose findings are all manual, fix-disabled or fixless was refused
+    // and audited, and exited 3, every run, for a write that was never
+    // going to happen.
+    //
+    // Through the shared gate, freeze included. It was passed `None`
+    // here once, with the freeze checked only up front, so a freeze
+    // declared during a long run fixed every env after it. Each env the
+    // freeze stops is refused, audited and named, and the run goes on
+    // linting.
+    //
+    // A `--dry-run` preview goes through the pure half: it dispatched
+    // nothing, so filing `stage=refused` would fill the log with
+    // refusals of writes that were never going to happen. Same
+    // reasoning the exit-code branch below already applies.
+    let refusal = if to_set.is_empty() {
+        None
+    } else if yes {
+        crate::cli::write_refusal(
+            safety_cfg,
+            &env.name,
+            active_profile_for_safety,
+            active_freeze,
+            Some(aws.context.region.as_str()),
+            // The label the fix DISPATCH logs, so a
+            // refusal correlates with it under `ebman
+            // audit --action SetOption`.
+            crate::verb::Verb::SetOption.audit_label(),
+        )
+    } else {
+        crate::cli::write_refusal_unaudited(
+            safety_cfg,
+            &env.name,
+            active_profile_for_safety,
+            None,
+            &crate::config::RoleCheck::NotAsked,
+        )
+        .map(|(_, message, _)| message)
+    };
+    if let Some(reason) = refusal {
+        notes.push(CycleNote::FixRefused { reason });
+        // Only a real (--yes) run counts the refusal — a --dry-run
+        // preview dispatched nothing and must not exit 3. The extraction
+        // first returned the refusal unconditionally, which would have
+        // failed a refused preview. Caught by clippy noticing the
+        // assignment it made dead.
+        return if yes {
+            FixOutcome::Refused
+        } else {
+            FixOutcome::Done
+        };
+    }
+    notes.extend(plan_notes);
+    for (rule_id, action) in &planned {
+        notes.push(match action {
+            lint::FixAction::SetOption { description, .. } => CycleNote::FixPlanned {
+                rule: rule_id.clone(),
+                env: env.name.clone(),
+                description: description.clone(),
+            },
+            lint::FixAction::Manual { instructions } => CycleNote::FixManual {
+                rule: rule_id.clone(),
+                env: env.name.clone(),
+                instructions: instructions.clone(),
+            },
+        });
+    }
+    if fix_may_dispatch(yes, to_set.len()) {
+        match aws
+            .update_env_option_settings(&env.name, &to_set, &[])
+            .await
+        {
+            Ok(()) => {
+                for &idx in &planned_set_indices {
+                    let (rule_id, action) = &planned[idx];
+                    if let lint::FixAction::SetOption {
+                        namespace,
+                        name,
+                        value,
+                        ..
+                    } = action
+                    {
+                        audit::append_lint_fix(
+                            &region_label,
+                            &env.name,
+                            rule_id,
+                            namespace,
+                            name,
+                            value,
+                            None,
+                        );
+                    }
+                }
+                notes.push(CycleNote::FixApplied {
+                    env: env.name.clone(),
+                    count: planned_set_indices.len(),
+                });
+            }
+            Err(e) => {
+                notes.push(CycleNote::FixFailed {
+                    env: env.name.clone(),
+                    region: region_label.clone(),
+                    error: e.to_string(),
+                });
+                let err_str = e.to_string();
+                for &idx in &planned_set_indices {
+                    let (rule_id, action) = &planned[idx];
+                    if let lint::FixAction::SetOption {
+                        namespace,
+                        name,
+                        value,
+                        ..
+                    } = action
+                    {
+                        audit::append_lint_fix(
+                            &region_label,
+                            &env.name,
+                            rule_id,
+                            namespace,
+                            name,
+                            value,
+                            Some(&err_str),
+                        );
+                    }
+                }
+                return FixOutcome::Failed;
+            }
+        }
+    }
+    FixOutcome::Done
+}
+
+/// What decides an env's fix pass: whether it is real (`--yes`) or a
+/// preview, the rules it may not fix, and the gate's inputs — the safety
+/// config, the profile the pins resolve against, and the freeze as it
+/// stood just before this env.
+struct FixPolicy<'a> {
+    yes: bool,
+    fix_disabled: &'a [String],
+    safety_cfg: &'a config::Config,
+    profile: &'a Option<String>,
+    active_freeze: Option<crate::freeze::FreezeMarker>,
+}
+
+/// How one env's fix pass ended, for the exit code.
+#[derive(Debug, PartialEq, Eq)]
+enum FixOutcome {
+    /// Dispatched, previewed, or nothing to do.
+    Done,
+    /// The dispatch failed: exit 1.
+    Failed,
+    /// A real run the gate refused: exit 3.
+    Refused,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1633,268 +1857,6 @@ mod tests {
         assert!(s.contains("EBL001 env-1: issue 1"), "got: {s}");
         assert!(s.contains("…and 2 more"), "got: {s}");
         assert!(!s.contains("issue 6"), "cap at 5, got: {s}");
-    }
-}
-
-#[cfg(test)]
-mod probe_outcome_tests {
-    use crate::lint::inputs::ProbeOutcome;
-
-    #[test]
-    fn a_failed_probe_is_not_a_clean_result() {
-        // The whole point. `Option<bool>` collapsed "the rule doesn't
-        // apply" and "IAM denied the probe" into the same `None`, so
-        // `ebman lint --json` — a CI gate — reported a clean bill of
-        // health for a check that never ran.
-        let denied = ProbeOutcome::Unknown("SimulatePrincipalPolicy failed: AccessDenied".into());
-        assert_eq!(denied.verdict(), None, "the rule still skips");
-        let warn = denied
-            .coverage_warning("EBL020", "api-prod")
-            .expect("an unrunnable check must say so");
-        assert!(
-            warn.contains("EBL020") && warn.contains("api-prod"),
-            "{warn}"
-        );
-        assert!(
-            warn.contains("NOT a clean result"),
-            "the wording has to leave no room for reading it as a pass: {warn}"
-        );
-    }
-
-    #[test]
-    fn not_applicable_stays_silent() {
-        // X-Ray off, no instance profile, not a prod ALB — a genuine
-        // skip. Warning on these would train the operator to ignore the
-        // warnings that matter.
-        let na = ProbeOutcome::NotApplicable;
-        assert_eq!(na.verdict(), None);
-        assert_eq!(na.coverage_warning("EBL020", "api-prod"), None);
-    }
-
-    #[test]
-    fn a_checked_probe_reports_its_verdict_and_warns_about_nothing() {
-        assert_eq!(ProbeOutcome::Checked(true).verdict(), Some(true));
-        assert_eq!(ProbeOutcome::Checked(false).verdict(), Some(false));
-        assert_eq!(
-            ProbeOutcome::Checked(false).coverage_warning("EBL018", "api-prod"),
-            None
-        );
-    }
-
-    #[test]
-    fn the_three_outcomes_are_distinguishable() {
-        // If two of them ever compared equal the distinction would be
-        // decorative — which is what `Option<bool>` was.
-        assert_ne!(ProbeOutcome::NotApplicable, ProbeOutcome::Checked(false));
-        assert_ne!(
-            ProbeOutcome::NotApplicable,
-            ProbeOutcome::Unknown("x".into())
-        );
-        assert_ne!(
-            ProbeOutcome::Checked(false),
-            ProbeOutcome::Unknown("x".into())
-        );
-    }
-}
-
-#[cfg(test)]
-mod disabled_rule_probes {
-    use crate::lint::inputs::ProbeOutcome;
-
-    /// A disabled rule must not produce a coverage warning.
-    ///
-    /// The panel's blocker: once a failed probe started marking the run
-    /// degraded (exit 1), a rule the operator had switched off via
-    /// `lint.disable` could still redden the pipeline — and the only
-    /// remedy was changing IAM, because the documented escape hatch
-    /// didn't reach the probe. `fetch_env_lint_inputs` takes the
-    /// disabled list now and skips the probe entirely, which also stops
-    /// paying for the IAM/WAF calls.
-    #[test]
-    fn a_disabled_rule_yields_no_coverage_warning() {
-        // What a skipped probe returns, and what that means downstream.
-        let skipped = ProbeOutcome::NotApplicable;
-        assert_eq!(skipped.coverage_warning("EBL018", "api-prod"), None);
-        assert_eq!(skipped.verdict(), None);
-
-        // Contrast: an ENABLED rule whose probe failed still warns, and
-        // still degrades the run. Collapsing these two would put the
-        // original false-green bug straight back.
-        let failed = ProbeOutcome::Unknown("GetWebACLForResource: AccessDenied".into());
-        assert!(failed.coverage_warning("EBL018", "api-prod").is_some());
-    }
-}
-
-#[cfg(test)]
-mod disabled_rule_wiring {
-    use crate::lint::inputs::ProbeOutcome;
-
-    fn env() -> crate::aws::Environment {
-        crate::aws::Environment {
-            name: "api-prod".into(),
-            application: "poly".into(),
-            status: "Ready".into(),
-            health: "Green".into(),
-            platform: "Java 17".into(),
-            solution_stack: "64bit Amazon Linux 2023 running Corretto 17".into(),
-            platform_version: String::new(),
-            tier: "Web".into(),
-            cname: String::new(),
-            version_label: "build-1".into(),
-            arn: None,
-            updated: None,
-            id: None,
-            region: None,
-        }
-    }
-
-    /// A disabled rule's probe returns before touching AWS.
-    ///
-    /// The panel's blocker: a rule switched off via `lint.disable`
-    /// could still redden CI, because the probe ran anyway and a failed
-    /// probe marks the run degraded (exit 1). The only remedy was
-    /// changing IAM — the documented escape hatch didn't reach here.
-    ///
-    /// Testable because the check lives INSIDE the probe. The earlier
-    /// version checked at the call site, which meant reaching it
-    /// required `fetch_env_lint_inputs` to get past
-    /// `DescribeConfigurationSettings` first — which a stub client
-    /// cannot — so that test was vacuous and said so in its own comment.
-    #[tokio::test]
-    async fn a_disabled_rules_probe_does_not_run() {
-        let aws = crate::aws::AwsClient::stub();
-        // Options that WOULD make the X-Ray probe fire: X-Ray on, with
-        // an instance profile to look up.
-        let options = vec![
-            (
-                "aws:elasticbeanstalk:xray".to_string(),
-                "XRayEnabled".to_string(),
-                "true".to_string(),
-            ),
-            (
-                "aws:autoscaling:launchconfiguration".to_string(),
-                "IamInstanceProfile".to_string(),
-                "eb-ec2-role".to_string(),
-            ),
-            // ...and what makes the WAF probe fire: an ALB. Without
-            // this the WAF probe returns NotApplicable for its OWN
-            // reason, so removing the opt-out changed nothing and the
-            // assertion below passed either way.
-            (
-                "aws:elasticbeanstalk:environment".to_string(),
-                "LoadBalancerType".to_string(),
-                "application".to_string(),
-            ),
-        ];
-
-        // Disabled: NotApplicable, without an AWS call.
-        assert_eq!(
-            crate::lint::inputs::probe_xray_trace_denied(&aws, &options, &["EBL020".to_string()])
-                .await,
-            ProbeOutcome::NotApplicable
-        );
-        assert_eq!(
-            crate::lint::inputs::probe_waf_missing(&aws, &env(), &options, &["EBL018".to_string()])
-                .await,
-            ProbeOutcome::NotApplicable
-        );
-
-        // Enabled: the probe runs and the stub fails it, which must
-        // report Unknown — NOT a clean skip. Collapsing these two puts
-        // the original false-green bug straight back.
-        let enabled = crate::lint::inputs::probe_xray_trace_denied(&aws, &options, &[]).await;
-        assert!(
-            matches!(enabled, ProbeOutcome::Unknown(_)),
-            "an enabled probe that cannot run must say so, got {enabled:?}"
-        );
-    }
-}
-
-/// When a failed EBL010/EBL012 input fetch is lost COVERAGE, and so
-/// must be reported, versus a check that could never have fired.
-#[cfg(test)]
-mod lost_coverage {
-    use crate::lint::inputs::{ebl010_could_fire, ebl012_could_fire};
-
-    fn env(status: &str, health: &str) -> crate::aws::Environment {
-        crate::aws::Environment {
-            name: "api-prod".into(),
-            application: "poly".into(),
-            status: status.into(),
-            health: health.into(),
-            platform: "Java 17".into(),
-            solution_stack: "64bit Amazon Linux 2023 running Corretto 17".into(),
-            platform_version: String::new(),
-            tier: "Web".into(),
-            cname: String::new(),
-            version_label: "build-1".into(),
-            arn: None,
-            updated: None,
-            id: None,
-            region: None,
-        }
-    }
-
-    fn system_type(v: &str) -> Vec<(String, String, String)> {
-        vec![(
-            "aws:elasticbeanstalk:healthreporting:system".into(),
-            "SystemType".into(),
-            v.into(),
-        )]
-    }
-
-    #[test]
-    fn ebl010_is_lost_only_when_enabled_with_required_tags() {
-        let tags = vec!["owner".to_string()];
-        assert!(ebl010_could_fire(&[], &tags));
-        assert!(!ebl010_could_fire(&["EBL010".into()], &tags), "disabled");
-        assert!(
-            !ebl010_could_fire(&[], &[]),
-            "no required tags: nothing to check"
-        );
-    }
-
-    #[test]
-    fn ebl012_is_lost_on_a_ready_green_enhanced_env() {
-        let enhanced = system_type("enhanced");
-        assert!(ebl012_could_fire(&[], &env("Ready", "Green"), &enhanced));
-        assert!(
-            ebl012_could_fire(&[], &env("Ready", "Ok"), &enhanced),
-            "Ok is Green"
-        );
-        // No SystemType reported at all: not known to be basic, so a
-        // failure still counts.
-        assert!(ebl012_could_fire(&[], &env("Ready", "Green"), &[]));
-    }
-
-    /// The false alarm this guards against: `DescribeEnvironmentHealth`
-    /// is unavailable on basic health by design, so every basic-health
-    /// env would otherwise degrade every run.
-    #[test]
-    fn ebl012_is_not_lost_on_basic_health() {
-        for v in ["basic", "Basic", "BASIC"] {
-            assert!(
-                !ebl012_could_fire(&[], &env("Ready", "Green"), &system_type(v)),
-                "{v}"
-            );
-        }
-    }
-
-    /// Outside the rule's own preconditions it could not have fired.
-    #[test]
-    fn ebl012_is_not_lost_when_the_rule_could_not_apply() {
-        let enhanced = system_type("enhanced");
-        assert!(!ebl012_could_fire(
-            &[],
-            &env("Updating", "Green"),
-            &enhanced
-        ));
-        assert!(!ebl012_could_fire(&[], &env("Ready", "Red"), &enhanced));
-        assert!(!ebl012_could_fire(
-            &["EBL012".into()],
-            &env("Ready", "Green"),
-            &enhanced
-        ));
     }
 }
 
@@ -2697,230 +2659,6 @@ mod webhook_gate_tests {
 }
 
 /// The seam exists to be driven. This drives it.
-/// Plan and dispatch `--fix` for one environment. Returns whether a
-/// dispatch failed or a `--yes` run was refused, which is what decides
-/// `lint`'s exit code.
-///
-/// Extracted from `run_cycle` in 0.45. It was ~170 lines inline and
-/// the seam's tests could not reach any of it: `run_with` hardcoded
-/// `fix = false`, so the refusal accounting and the dispatch-failure
-/// flag were exactly as untested after the extraction that was
-/// supposed to expose them as before it. `fix_dispatch_failed` was
-/// asserted once, as `false`.
-async fn apply_fixes_for_env(
-    aws: &aws::AwsClient,
-    env: &aws::Environment,
-    inputs: &EnvLintInputs,
-    issues: &[lint::Issue],
-    rules: &[Box<dyn lint::Rule>],
-    policy: FixPolicy<'_>,
-    notes: &mut Vec<CycleNote>,
-) -> FixOutcome {
-    let FixPolicy {
-        yes,
-        fix_disabled,
-        safety_cfg,
-        profile: active_profile_for_safety,
-        active_freeze,
-    } = policy;
-    // The client's resolved region, not the `--regions` label: without
-    // `--regions` the label was `None`, so every single-region fix was
-    // audited as `region=default` — a region that does not exist.
-    let region_label = aws.context.region.clone();
-    // Rebuild the (cheap, borrowing) context for the
-    // fix pass — `run_rules_for_env` consumed its own.
-    let ctx = build_lint_context(env, inputs, &safety_cfg.required_tags);
-    let mut to_set: Vec<(String, String, String)> = Vec::new();
-    let mut planned: Vec<(String, lint::FixAction)> = Vec::new();
-    let mut planned_set_indices: Vec<usize> = Vec::new();
-    // Held until the gate has had its say: a refused env reports the
-    // refusal alone, as it did when the gate ran first.
-    let mut plan_notes: Vec<CycleNote> = Vec::new();
-    for issue in issues {
-        if fix_disabled.contains(&issue.rule_id) {
-            plan_notes.push(CycleNote::FixDisabled {
-                rule: issue.rule_id.clone(),
-                env: env.name.clone(),
-            });
-            continue;
-        }
-        let Some(rule) = rules.iter().find(|r| r.id() == issue.rule_id) else {
-            continue;
-        };
-        let Some(action) = rule.fix(&ctx) else {
-            plan_notes.push(CycleNote::NoFix {
-                rule: issue.rule_id.clone(),
-                env: env.name.clone(),
-            });
-            continue;
-        };
-        if let lint::FixAction::SetOption {
-            namespace,
-            name,
-            value,
-            ..
-        } = &action
-        {
-            planned_set_indices.push(planned.len());
-            to_set.push((namespace.clone(), name.clone(), value.clone()));
-        }
-        planned.push((issue.rule_id.clone(), action));
-    }
-    // Asked only when something would be set: a pinned or frozen env
-    // whose findings are all manual, fix-disabled or fixless was refused
-    // and audited, and exited 3, every run, for a write that was never
-    // going to happen.
-    //
-    // Through the shared gate, freeze included. It was passed `None`
-    // here once, with the freeze checked only up front, so a freeze
-    // declared during a long run fixed every env after it. Each env the
-    // freeze stops is refused, audited and named, and the run goes on
-    // linting.
-    //
-    // A `--dry-run` preview goes through the pure half: it dispatched
-    // nothing, so filing `stage=refused` would fill the log with
-    // refusals of writes that were never going to happen. Same
-    // reasoning the exit-code branch below already applies.
-    let refusal = if to_set.is_empty() {
-        None
-    } else if yes {
-        crate::cli::write_refusal(
-            safety_cfg,
-            &env.name,
-            active_profile_for_safety,
-            active_freeze,
-            Some(aws.context.region.as_str()),
-            // The label the fix DISPATCH logs, so a
-            // refusal correlates with it under `ebman
-            // audit --action SetOption`.
-            crate::verb::Verb::SetOption.audit_label(),
-        )
-    } else {
-        crate::cli::write_refusal_unaudited(
-            safety_cfg,
-            &env.name,
-            active_profile_for_safety,
-            None,
-            &crate::config::RoleCheck::NotAsked,
-        )
-        .map(|(_, message, _)| message)
-    };
-    if let Some(reason) = refusal {
-        notes.push(CycleNote::FixRefused { reason });
-        // Only a real (--yes) run counts the refusal — a --dry-run
-        // preview dispatched nothing and must not exit 3. The extraction
-        // first returned the refusal unconditionally, which would have
-        // failed a refused preview. Caught by clippy noticing the
-        // assignment it made dead.
-        return if yes {
-            FixOutcome::Refused
-        } else {
-            FixOutcome::Done
-        };
-    }
-    notes.extend(plan_notes);
-    for (rule_id, action) in &planned {
-        notes.push(match action {
-            lint::FixAction::SetOption { description, .. } => CycleNote::FixPlanned {
-                rule: rule_id.clone(),
-                env: env.name.clone(),
-                description: description.clone(),
-            },
-            lint::FixAction::Manual { instructions } => CycleNote::FixManual {
-                rule: rule_id.clone(),
-                env: env.name.clone(),
-                instructions: instructions.clone(),
-            },
-        });
-    }
-    if fix_may_dispatch(yes, to_set.len()) {
-        match aws
-            .update_env_option_settings(&env.name, &to_set, &[])
-            .await
-        {
-            Ok(()) => {
-                for &idx in &planned_set_indices {
-                    let (rule_id, action) = &planned[idx];
-                    if let lint::FixAction::SetOption {
-                        namespace,
-                        name,
-                        value,
-                        ..
-                    } = action
-                    {
-                        audit::append_lint_fix(
-                            &region_label,
-                            &env.name,
-                            rule_id,
-                            namespace,
-                            name,
-                            value,
-                            None,
-                        );
-                    }
-                }
-                notes.push(CycleNote::FixApplied {
-                    env: env.name.clone(),
-                    count: planned_set_indices.len(),
-                });
-            }
-            Err(e) => {
-                notes.push(CycleNote::FixFailed {
-                    env: env.name.clone(),
-                    region: region_label.clone(),
-                    error: e.to_string(),
-                });
-                let err_str = e.to_string();
-                for &idx in &planned_set_indices {
-                    let (rule_id, action) = &planned[idx];
-                    if let lint::FixAction::SetOption {
-                        namespace,
-                        name,
-                        value,
-                        ..
-                    } = action
-                    {
-                        audit::append_lint_fix(
-                            &region_label,
-                            &env.name,
-                            rule_id,
-                            namespace,
-                            name,
-                            value,
-                            Some(&err_str),
-                        );
-                    }
-                }
-                return FixOutcome::Failed;
-            }
-        }
-    }
-    FixOutcome::Done
-}
-
-/// What decides an env's fix pass: whether it is real (`--yes`) or a
-/// preview, the rules it may not fix, and the gate's inputs — the safety
-/// config, the profile the pins resolve against, and the freeze as it
-/// stood just before this env.
-struct FixPolicy<'a> {
-    yes: bool,
-    fix_disabled: &'a [String],
-    safety_cfg: &'a config::Config,
-    profile: &'a Option<String>,
-    active_freeze: Option<crate::freeze::FreezeMarker>,
-}
-
-/// How one env's fix pass ended, for the exit code.
-#[derive(Debug, PartialEq, Eq)]
-enum FixOutcome {
-    /// Dispatched, previewed, or nothing to do.
-    Done,
-    /// The dispatch failed: exit 1.
-    Failed,
-    /// A real run the gate refused: exit 3.
-    Refused,
-}
-
 #[cfg(test)]
 pub(crate) mod cycle_wiring {
     use super::*;

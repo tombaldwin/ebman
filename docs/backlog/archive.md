@@ -5698,3 +5698,16 @@ a `--read-only` server.
    duplicated (one difference: a known-but-empty DLQ URL now says "no DLQ
    for this env" rather than opening a viewer on nothing). Mutation
    CAUGHT.
+
+6. *(mechanical)* **Move the lint-input tests next to `lint/inputs.rs`.**
+   `probe_outcome_tests`, `disabled_rule_probes` and `lost_coverage` in
+   `src/cli/lint.rs` test code that moved to `lint/inputs.rs` in 0.45.
+   Separately, `apply_fixes_for_env` is production code sitting after
+   ~1,100 lines of test modules in `cli/lint.rs`. *0.45 release review.*
+
+   Done 2026-10-31: the three named modules and `disabled_rule_wiring`
+   (which drives `lint::inputs`' probes too) are at the foot of
+   `lint/inputs.rs`; `apply_fixes_for_env` and its outcome enum sit
+   above `cli/lint.rs`'s first test module, and the doc line that had
+   merged into its doc ("The seam exists to be driven") is back on
+   `cycle_wiring`. A move: 2315 tests before and after.

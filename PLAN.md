@@ -181,12 +181,6 @@ then these four from BACKLOG.md. Each its own change.*
    and each is listed again in the generation-guard match. S–M. *0.48.0
    architecture review.*
 
-6. *(mechanical)* **Move the lint-input tests next to `lint/inputs.rs`.**
-   `probe_outcome_tests`, `disabled_rule_probes` and `lost_coverage` in
-   `src/cli/lint.rs` test code that moved to `lint/inputs.rs` in 0.45.
-   Separately, `apply_fixes_for_env` is production code sitting after
-   ~1,100 lines of test modules in `cli/lint.rs`. *0.45 release review.*
-
 *Left in BACKLOG.md: `Server::refuse(..)` for the six `Audited::record`
 callers, whose profile choices differ on purpose and need settling
 first.*

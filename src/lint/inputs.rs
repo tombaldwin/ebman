@@ -688,3 +688,265 @@ mod explain_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod probe_outcome_tests {
+    use crate::lint::inputs::ProbeOutcome;
+
+    #[test]
+    fn a_failed_probe_is_not_a_clean_result() {
+        // The whole point. `Option<bool>` collapsed "the rule doesn't
+        // apply" and "IAM denied the probe" into the same `None`, so
+        // `ebman lint --json` — a CI gate — reported a clean bill of
+        // health for a check that never ran.
+        let denied = ProbeOutcome::Unknown("SimulatePrincipalPolicy failed: AccessDenied".into());
+        assert_eq!(denied.verdict(), None, "the rule still skips");
+        let warn = denied
+            .coverage_warning("EBL020", "api-prod")
+            .expect("an unrunnable check must say so");
+        assert!(
+            warn.contains("EBL020") && warn.contains("api-prod"),
+            "{warn}"
+        );
+        assert!(
+            warn.contains("NOT a clean result"),
+            "the wording has to leave no room for reading it as a pass: {warn}"
+        );
+    }
+
+    #[test]
+    fn not_applicable_stays_silent() {
+        // X-Ray off, no instance profile, not a prod ALB — a genuine
+        // skip. Warning on these would train the operator to ignore the
+        // warnings that matter.
+        let na = ProbeOutcome::NotApplicable;
+        assert_eq!(na.verdict(), None);
+        assert_eq!(na.coverage_warning("EBL020", "api-prod"), None);
+    }
+
+    #[test]
+    fn a_checked_probe_reports_its_verdict_and_warns_about_nothing() {
+        assert_eq!(ProbeOutcome::Checked(true).verdict(), Some(true));
+        assert_eq!(ProbeOutcome::Checked(false).verdict(), Some(false));
+        assert_eq!(
+            ProbeOutcome::Checked(false).coverage_warning("EBL018", "api-prod"),
+            None
+        );
+    }
+
+    #[test]
+    fn the_three_outcomes_are_distinguishable() {
+        // If two of them ever compared equal the distinction would be
+        // decorative — which is what `Option<bool>` was.
+        assert_ne!(ProbeOutcome::NotApplicable, ProbeOutcome::Checked(false));
+        assert_ne!(
+            ProbeOutcome::NotApplicable,
+            ProbeOutcome::Unknown("x".into())
+        );
+        assert_ne!(
+            ProbeOutcome::Checked(false),
+            ProbeOutcome::Unknown("x".into())
+        );
+    }
+}
+
+#[cfg(test)]
+mod disabled_rule_probes {
+    use crate::lint::inputs::ProbeOutcome;
+
+    /// A disabled rule must not produce a coverage warning.
+    ///
+    /// The panel's blocker: once a failed probe started marking the run
+    /// degraded (exit 1), a rule the operator had switched off via
+    /// `lint.disable` could still redden the pipeline — and the only
+    /// remedy was changing IAM, because the documented escape hatch
+    /// didn't reach the probe. `fetch_env_lint_inputs` takes the
+    /// disabled list now and skips the probe entirely, which also stops
+    /// paying for the IAM/WAF calls.
+    #[test]
+    fn a_disabled_rule_yields_no_coverage_warning() {
+        // What a skipped probe returns, and what that means downstream.
+        let skipped = ProbeOutcome::NotApplicable;
+        assert_eq!(skipped.coverage_warning("EBL018", "api-prod"), None);
+        assert_eq!(skipped.verdict(), None);
+
+        // Contrast: an ENABLED rule whose probe failed still warns, and
+        // still degrades the run. Collapsing these two would put the
+        // original false-green bug straight back.
+        let failed = ProbeOutcome::Unknown("GetWebACLForResource: AccessDenied".into());
+        assert!(failed.coverage_warning("EBL018", "api-prod").is_some());
+    }
+}
+
+#[cfg(test)]
+mod disabled_rule_wiring {
+    use crate::lint::inputs::ProbeOutcome;
+
+    fn env() -> crate::aws::Environment {
+        crate::aws::Environment {
+            name: "api-prod".into(),
+            application: "poly".into(),
+            status: "Ready".into(),
+            health: "Green".into(),
+            platform: "Java 17".into(),
+            solution_stack: "64bit Amazon Linux 2023 running Corretto 17".into(),
+            platform_version: String::new(),
+            tier: "Web".into(),
+            cname: String::new(),
+            version_label: "build-1".into(),
+            arn: None,
+            updated: None,
+            id: None,
+            region: None,
+        }
+    }
+
+    /// A disabled rule's probe returns before touching AWS.
+    ///
+    /// The panel's blocker: a rule switched off via `lint.disable`
+    /// could still redden CI, because the probe ran anyway and a failed
+    /// probe marks the run degraded (exit 1). The only remedy was
+    /// changing IAM — the documented escape hatch didn't reach here.
+    ///
+    /// Testable because the check lives INSIDE the probe. The earlier
+    /// version checked at the call site, which meant reaching it
+    /// required `fetch_env_lint_inputs` to get past
+    /// `DescribeConfigurationSettings` first — which a stub client
+    /// cannot — so that test was vacuous and said so in its own comment.
+    #[tokio::test]
+    async fn a_disabled_rules_probe_does_not_run() {
+        let aws = crate::aws::AwsClient::stub();
+        // Options that WOULD make the X-Ray probe fire: X-Ray on, with
+        // an instance profile to look up.
+        let options = vec![
+            (
+                "aws:elasticbeanstalk:xray".to_string(),
+                "XRayEnabled".to_string(),
+                "true".to_string(),
+            ),
+            (
+                "aws:autoscaling:launchconfiguration".to_string(),
+                "IamInstanceProfile".to_string(),
+                "eb-ec2-role".to_string(),
+            ),
+            // ...and what makes the WAF probe fire: an ALB. Without
+            // this the WAF probe returns NotApplicable for its OWN
+            // reason, so removing the opt-out changed nothing and the
+            // assertion below passed either way.
+            (
+                "aws:elasticbeanstalk:environment".to_string(),
+                "LoadBalancerType".to_string(),
+                "application".to_string(),
+            ),
+        ];
+
+        // Disabled: NotApplicable, without an AWS call.
+        assert_eq!(
+            crate::lint::inputs::probe_xray_trace_denied(&aws, &options, &["EBL020".to_string()])
+                .await,
+            ProbeOutcome::NotApplicable
+        );
+        assert_eq!(
+            crate::lint::inputs::probe_waf_missing(&aws, &env(), &options, &["EBL018".to_string()])
+                .await,
+            ProbeOutcome::NotApplicable
+        );
+
+        // Enabled: the probe runs and the stub fails it, which must
+        // report Unknown — NOT a clean skip. Collapsing these two puts
+        // the original false-green bug straight back.
+        let enabled = crate::lint::inputs::probe_xray_trace_denied(&aws, &options, &[]).await;
+        assert!(
+            matches!(enabled, ProbeOutcome::Unknown(_)),
+            "an enabled probe that cannot run must say so, got {enabled:?}"
+        );
+    }
+}
+
+/// When a failed EBL010/EBL012 input fetch is lost COVERAGE, and so
+/// must be reported, versus a check that could never have fired.
+#[cfg(test)]
+mod lost_coverage {
+    use crate::lint::inputs::{ebl010_could_fire, ebl012_could_fire};
+
+    fn env(status: &str, health: &str) -> crate::aws::Environment {
+        crate::aws::Environment {
+            name: "api-prod".into(),
+            application: "poly".into(),
+            status: status.into(),
+            health: health.into(),
+            platform: "Java 17".into(),
+            solution_stack: "64bit Amazon Linux 2023 running Corretto 17".into(),
+            platform_version: String::new(),
+            tier: "Web".into(),
+            cname: String::new(),
+            version_label: "build-1".into(),
+            arn: None,
+            updated: None,
+            id: None,
+            region: None,
+        }
+    }
+
+    fn system_type(v: &str) -> Vec<(String, String, String)> {
+        vec![(
+            "aws:elasticbeanstalk:healthreporting:system".into(),
+            "SystemType".into(),
+            v.into(),
+        )]
+    }
+
+    #[test]
+    fn ebl010_is_lost_only_when_enabled_with_required_tags() {
+        let tags = vec!["owner".to_string()];
+        assert!(ebl010_could_fire(&[], &tags));
+        assert!(!ebl010_could_fire(&["EBL010".into()], &tags), "disabled");
+        assert!(
+            !ebl010_could_fire(&[], &[]),
+            "no required tags: nothing to check"
+        );
+    }
+
+    #[test]
+    fn ebl012_is_lost_on_a_ready_green_enhanced_env() {
+        let enhanced = system_type("enhanced");
+        assert!(ebl012_could_fire(&[], &env("Ready", "Green"), &enhanced));
+        assert!(
+            ebl012_could_fire(&[], &env("Ready", "Ok"), &enhanced),
+            "Ok is Green"
+        );
+        // No SystemType reported at all: not known to be basic, so a
+        // failure still counts.
+        assert!(ebl012_could_fire(&[], &env("Ready", "Green"), &[]));
+    }
+
+    /// The false alarm this guards against: `DescribeEnvironmentHealth`
+    /// is unavailable on basic health by design, so every basic-health
+    /// env would otherwise degrade every run.
+    #[test]
+    fn ebl012_is_not_lost_on_basic_health() {
+        for v in ["basic", "Basic", "BASIC"] {
+            assert!(
+                !ebl012_could_fire(&[], &env("Ready", "Green"), &system_type(v)),
+                "{v}"
+            );
+        }
+    }
+
+    /// Outside the rule's own preconditions it could not have fired.
+    #[test]
+    fn ebl012_is_not_lost_when_the_rule_could_not_apply() {
+        let enhanced = system_type("enhanced");
+        assert!(!ebl012_could_fire(
+            &[],
+            &env("Updating", "Green"),
+            &enhanced
+        ));
+        assert!(!ebl012_could_fire(&[], &env("Ready", "Red"), &enhanced));
+        assert!(!ebl012_could_fire(
+            &["EBL012".into()],
+            &env("Ready", "Green"),
+            &enhanced
+        ));
+    }
+}
