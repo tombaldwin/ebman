@@ -5589,3 +5589,13 @@ a `--read-only` server.
 
    Both done 2026-10-31: `mcp/undo.rs` (9bc8324) and `mcp/freeze.rs`
    (86dd76d), moves only.
+
+10. *(mechanical)* **Demo freeze stores leave records in the OS temp
+    dir.** `FreezeStore::isolated` writes `ebman-freeze-isolated-PID-N.*`
+    (`.ended.json`, `.thawed.json`) and nothing removes them after a
+    `--demo` session. From the 2026-10-31 correctness review.
+
+    Done 2026-10-31: one temp directory per process
+    (`ebman-freeze-isolated-PID/`), and the first isolated store a
+    process makes removes those of dead processes, the old file layout
+    included.

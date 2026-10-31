@@ -208,11 +208,6 @@ archived, "PLAN.md items done 2026-10-31"). Each its own change.*
    and `pull_request` (a `concurrency` group without cancelling a
    verdict).
 
-10. *(mechanical)* **Demo freeze stores leave records in the OS temp
-    dir.** `FreezeStore::isolated` writes `ebman-freeze-isolated-PID-N.*`
-    (`.ended.json`, `.thawed.json`) and nothing removes them after a
-    `--demo` session. From the 2026-10-31 correctness review.
-
 *Left in BACKLOG.md: `Server::refuse(..)` for the six `Audited::record`
 callers, whose profile choices differ on purpose and need settling
 first.*

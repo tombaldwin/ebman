@@ -206,11 +206,20 @@ impl FreezeStore {
     /// its `.d/` directory in `~/.cache/ebman` on thaw, and every file
     /// after a crash, one name per session, which nothing ever reads
     /// again or removes.
+    ///
+    /// One directory per process, and the first isolated store a
+    /// process makes removes those of processes no longer running: a
+    /// `--demo` session's records were left in the temp dir for good.
     pub(crate) fn isolated() -> Self {
         static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        static SWEPT: std::sync::Once = std::sync::Once::new();
+        let tmp = std::env::temp_dir();
         let pid = std::process::id();
-        Self::at(std::env::temp_dir().join(format!("ebman-freeze-isolated-{pid}-{n}.json")))
+        SWEPT.call_once(|| sweep_isolated(&tmp, pid, pid_alive));
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = tmp.join(format!("{ISOLATED_PREFIX}{pid}"));
+        let _ = std::fs::create_dir_all(&dir);
+        Self::at(dir.join(format!("{n}.json")))
     }
 
     /// [`at`](Self::at), judged by `liveness`.
@@ -731,6 +740,41 @@ fn write_marker_exclusive(
             tracing::warn!(error = %e, "could not persist freeze marker — cross-process enforcement inactive");
             Err(e)
         }
+    }
+}
+
+/// What every isolated store's files are named under the temp dir,
+/// followed by the pid of the process that made them.
+const ISOLATED_PREFIX: &str = "ebman-freeze-isolated-";
+
+/// Remove the isolated stores under `tmp` whose process is gone: a
+/// directory per process now, files named `…-PID-N.*` before. One whose
+/// pid is `me` or `alive` is kept; a pid reused by another process keeps
+/// its files until a later sweep, which costs a few bytes.
+fn sweep_isolated(tmp: &Path, me: u32, alive: fn(u32) -> bool) {
+    let Ok(entries) = std::fs::read_dir(tmp) else {
+        return;
+    };
+    for e in entries.flatten() {
+        let name = e.file_name();
+        let Some(rest) = name.to_str().and_then(|n| n.strip_prefix(ISOLATED_PREFIX)) else {
+            continue;
+        };
+        let digits = rest
+            .split(|c: char| !c.is_ascii_digit())
+            .next()
+            .unwrap_or("");
+        let Ok(pid) = digits.parse::<u32>() else {
+            continue;
+        };
+        if pid == me || alive(pid) {
+            continue;
+        }
+        let path = e.path();
+        let _ = match e.file_type() {
+            Ok(t) if t.is_dir() => std::fs::remove_dir_all(&path),
+            _ => std::fs::remove_file(&path),
+        };
     }
 }
 
@@ -2176,6 +2220,54 @@ mod tests {
             s.marker
         );
         assert!(s.marker.starts_with(std::env::temp_dir()), "{:?}", s.marker);
+    }
+
+    /// The sweep removes a dead process's isolated store, in either
+    /// layout, and nothing else: not a live one's, not this process's,
+    /// not a name that only starts the same way.
+    #[test]
+    fn the_isolated_sweep_removes_only_dead_processes_stores() {
+        let tmp = std::env::temp_dir().join(format!("ebman-freeze-sweep-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let mk_dir = |n: &str| {
+            std::fs::create_dir_all(tmp.join(n).join("0.d")).unwrap();
+            std::fs::write(tmp.join(n).join("0.thawed.json"), "{}").unwrap();
+        };
+        let mk_file = |n: &str| std::fs::write(tmp.join(n), "{}").unwrap();
+        mk_dir("ebman-freeze-isolated-41");
+        mk_file("ebman-freeze-isolated-41-3.ended.json");
+        mk_dir("ebman-freeze-isolated-41-3.d");
+        mk_dir("ebman-freeze-isolated-42");
+        mk_dir("ebman-freeze-isolated-7");
+        mk_file("ebman-freeze-isolated-x.json");
+        mk_file("ebman-freeze-41.json");
+        sweep_isolated(&tmp, 7, |pid| pid == 42);
+        let mut left: Vec<String> = std::fs::read_dir(&tmp)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        left.sort();
+        assert_eq!(
+            left,
+            [
+                "ebman-freeze-41.json",
+                "ebman-freeze-isolated-42",
+                "ebman-freeze-isolated-7",
+                "ebman-freeze-isolated-x.json",
+            ]
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Every isolated store a process makes is under its one directory,
+    /// the one the sweep judges by its pid.
+    #[test]
+    fn an_isolated_store_lives_under_its_process_s_directory() {
+        let s = FreezeStore::isolated();
+        let dir = std::env::temp_dir().join(format!("{ISOLATED_PREFIX}{}", std::process::id()));
+        assert_eq!(s.marker.parent(), Some(dir.as_path()), "{:?}", s.marker);
+        assert!(dir.is_dir());
     }
 
     #[test]
