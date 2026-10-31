@@ -3297,6 +3297,40 @@ pub(crate) mod cycle_wiring {
         );
     }
 
+    /// Each issue's fix comes from its own rule: the plan for EBL001
+    /// is EBL001's change, and EBL012 / EBL017 get their own manual
+    /// instructions, not another rule's.
+    #[tokio::test]
+    async fn each_fix_comes_from_the_issue_s_own_rule() {
+        let report = run_with_opts(
+            vec![None],
+            CycleOpts {
+                fix: true,
+                yes: false,
+                ..CycleOpts::default()
+            },
+            |_| async { Ok(client_with_failing_update(vec!["poly-prod-web".into()])) },
+        )
+        .await;
+        let mut seen = Vec::new();
+        for n in &report.notes {
+            match n {
+                CycleNote::FixPlanned {
+                    rule, description, ..
+                } => seen.push((rule.as_str(), description.as_str())),
+                CycleNote::FixManual {
+                    rule, instructions, ..
+                } => seen.push((rule.as_str(), instructions.as_str())),
+                _ => {}
+            }
+        }
+        let says =
+            |rule: &str, text: &str| seen.iter().any(|(r, t)| *r == rule && t.contains(text));
+        assert!(says("EBL001", "DeploymentPolicy"), "{seen:#?}");
+        assert!(says("EBL012", "no instances are healthy"), "{seen:#?}");
+        assert!(says("EBL017", "Managed Platform Updates"), "{seen:#?}");
+    }
+
     fn read_only_cfg(env: &str) -> config::Config {
         let mut cfg = config::Config::default();
         cfg.safety_envs.insert(env.to_string(), true);

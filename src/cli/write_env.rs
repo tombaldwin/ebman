@@ -803,6 +803,28 @@ impl<G> WriteEnv<G> {
 mod write_env_tests {
     use super::*;
 
+    /// Production's gate refuses under a standing freeze, with the
+    /// freeze's own sentence, and lets a write through with none (the
+    /// test config pins nothing). The real shells pass it, so this is
+    /// the one place it is called directly.
+    #[test]
+    fn the_real_gate_refuses_under_a_freeze() {
+        let q = GateQuery {
+            env: "poly-real-gate-probe",
+            profile: None,
+            region: Some("poly-gate-1"),
+            verb: "Restart",
+        };
+        let marker =
+            crate::freeze::parse_marker(r#"{"pid":1,"reason":"bad deploy","persistent":true}"#)
+                .unwrap();
+        let refused = real_refusal(&q, Some(marker)).expect("a freeze refuses");
+        assert!(
+            refused.contains("fleet freeze active (bad deploy)"),
+            "{refused}"
+        );
+    }
+
     /// A freeze declared *during* a rollout stops the regions that have
     /// not dispatched yet: both dispatch loops read `freeze_halt`
     /// between regions, and it reads the env's store each time.

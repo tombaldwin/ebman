@@ -2805,6 +2805,50 @@ async fn every_modal_preflight_answer_is_matched_by_region() {
     }
 }
 
+/// A dry run's answer counts the instances and the distinct, known AZs
+/// they sit in: two in one AZ, one in another, and one whose AZ is not
+/// reported are four instances in two AZs.
+#[tokio::test]
+async fn a_dry_run_counts_instances_and_known_azs() {
+    let mut app = same_named_in_two_regions();
+    let eu_row = app
+        .view
+        .filtered()
+        .iter()
+        .position(|&i| app.environments[i].region.is_some())
+        .unwrap();
+    app.table_state.select(Some(eu_row));
+    app.execute_command("deploy build-1");
+    let ticket = preflight_ticket(&app, |p| p.dryrun.ticket_in_flight());
+    let at = |az: &str| crate::aws::Instance {
+        id: format!("i-{az}"),
+        health: "Ok".into(),
+        color: "Green".into(),
+        causes: Vec::new(),
+        instance_type: "t3.small".into(),
+        availability_zone: az.into(),
+        launched_at: None,
+        app_stats: None,
+    };
+    app.handle_msg(AppMsg::Preflight {
+        gen: app.generation,
+        key: EnvKey::new("eu-west-2", "api-prod"),
+        ticket,
+        answer: PreflightAnswer::DryRun(Ok(vec![
+            at("eu-west-2a"),
+            at("eu-west-2a"),
+            at("eu-west-2b"),
+            at(""),
+        ])),
+    });
+    let info = preflight(&app)
+        .dryrun
+        .ready()
+        .cloned()
+        .expect("the answer landed");
+    assert_eq!((info.instance_count, info.az_count), (4, 2));
+}
+
 /// An answer to a modal the operator has closed does not land in the
 /// next modal on the same env.
 ///
