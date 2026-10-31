@@ -39,7 +39,9 @@ against (a force push), whose changed lines were not judged.
 
 Rendered screens are snapshot-tested with `insta` (`src/app/tests/snapshots/`):
 review an intended change with `cargo insta review`. `scripts/install-hooks.sh`
-installs the tracked git hooks (fmt, clippy, protected client names).
+installs the tracked git hooks (fmt, clippy, protected client names, and a
+change to the mutation allowlist, `.cargo/mutants.toml` or a `mutants::skip`,
+which the hook refuses unless committed with `EBMAN_MAINTAINER=1`).
 
 See [`ARCHITECTURE.md`](../ARCHITECTURE.md) for the module map and the invariants the compiler doesn't enforce, and [`CONTRIBUTING.md`](../CONTRIBUTING.md) for the pre-PR checklist. See `BACKLOG.md` for in-flight and planned work, and `CLAUDE.md` for the AI-assisted-contributor rules (the project has been developed heavily with Claude Code).
 

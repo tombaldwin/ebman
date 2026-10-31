@@ -4,6 +4,7 @@
 # to fire on every commit:
 #   1. no staged path or line names a protected client (see
 #      `.githooks/protected-names.sh`), before it is in history;
+#      nor widens the mutation allowlist, without the maintainer;
 #   2. `cargo fmt --all -- --check`  — ~1s;
 #   3. `cargo clippy --all-targets -- -D warnings` — ~5–15s warm,
 #      slower cold; catches doc-lint / dead-code / etc. that have
@@ -32,6 +33,25 @@ if check_protected_names "a staged path or line" "$staged"; then status=0; else 
 rm -f "$staged"
 [ "$status" = 0 ] || exit 1
 
+# 1b. The mutation allowlist is the maintainer's (CLAUDE.md, stop
+# conditions): an `exclude_re` entry in `.cargo/mutants.toml`, or a
+# `mutants::skip` attribute (not a mention of one in prose), hides a
+# surviving mutant from every run, and was a rule in prose only.
+# Refused unless the maintainer says so.
+if [ "${EBMAN_MAINTAINER:-}" != 1 ]; then
+  allow=""
+  if git diff --cached --name-only | grep -qxF '.cargo/mutants.toml'; then
+    allow=".cargo/mutants.toml"
+  elif git diff --cached -U0 --no-color -- '*.rs' | grep '^+' | grep -v '^+++' | grep -qE '#!?\[.*mutants::skip'; then
+    allow="a mutants::skip attribute"
+  fi
+  if [ -n "$allow" ]; then
+    echo "pre-commit: this commit changes $allow, the mutation allowlist." >&2
+    echo "Only the maintainer widens it: a surviving mutant gets a test (CLAUDE.md," >&2
+    echo "stop conditions). The maintainer commits with EBMAN_MAINTAINER=1." >&2
+    exit 1
+  fi
+fi
 
 if ! command -v cargo >/dev/null 2>&1; then
   echo "pre-commit: cargo not on PATH, skipping checks" >&2

@@ -821,6 +821,109 @@ mod protected_names {
         );
     }
 
+    /// pre-commit refuses a change to the mutation allowlist, the
+    /// config file or a `mutants::skip` in Rust, unless the maintainer
+    /// says so; any other staged change passes it.
+    #[test]
+    fn the_pre_commit_hook_keeps_the_mutation_allowlist_the_maintainer_s() {
+        if !std::path::Path::new(".githooks/pre-commit").exists()
+            || super::tracked_files().is_none()
+        {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("ebman-test-{}-allowlist", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        struct Cleanup(std::path::PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let _cleanup = Cleanup(dir.clone());
+        let isolated = |program: &str| {
+            let mut cmd = std::process::Command::new(program);
+            cmd.env_remove("GIT_DIR")
+                .env_remove("GIT_INDEX_FILE")
+                .env_remove("GIT_WORK_TREE")
+                .env_remove("EBMAN_MAINTAINER")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("EBMAN_PROTECTED_NAMES", "zorblax");
+            cmd
+        };
+        // Spelled apart, so this file's own diff is not an attribute.
+        let skip = format!("#[mutants::{}]", "skip");
+        let attr = format!("#[cfg_attr(test, mutants::{})]", "skip");
+        for (n, (path, body, maintainer, refused)) in [
+            (".cargo/mutants.toml", "exclude_re = [\"x\"]\n", false, true),
+            (".cargo/mutants.toml", "exclude_re = [\"x\"]\n", true, false),
+            (
+                "src/lib.rs",
+                &*format!("{skip}\nfn f() {{}}\n"),
+                false,
+                true,
+            ),
+            (
+                "src/lib.rs",
+                &*format!("{skip}\nfn f() {{}}\n"),
+                true,
+                false,
+            ),
+            (
+                "notes.md",
+                &*format!("{skip} is the maintainer's\n"),
+                false,
+                false,
+            ),
+            ("src/lib.rs", "fn f() {}\n", false, false),
+            (
+                "src/lib.rs",
+                "/// a mutants::skip is the maintainer's\nfn f() {}\n",
+                false,
+                false,
+            ),
+            (
+                "src/lib.rs",
+                &*format!("{attr}\nfn f() {{}}\n"),
+                false,
+                true,
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let repo = dir.join(n.to_string());
+            std::fs::create_dir_all(repo.join(".githooks")).unwrap();
+            for f in ["pre-commit", "protected-names.sh"] {
+                std::fs::copy(format!(".githooks/{f}"), repo.join(".githooks").join(f)).unwrap();
+            }
+            let git = |args: &[&str]| {
+                isolated("git")
+                    .args(args)
+                    .current_dir(&repo)
+                    .output()
+                    .expect("git")
+            };
+            assert!(git(&["init", "-q"]).status.success());
+            let file = repo.join(path);
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(&file, body).unwrap();
+            assert!(git(&["add", path]).status.success());
+            let mut hook = isolated("bash");
+            hook.arg(".githooks/pre-commit").current_dir(&repo);
+            if maintainer {
+                hook.env("EBMAN_MAINTAINER", "1");
+            }
+            let out = hook.output().expect("run the hook");
+            assert_eq!(
+                !out.status.success(),
+                refused,
+                "{path} (maintainer {maintainer}): {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+    }
+
     /// The commit-msg and pre-commit hooks check with their own shell
     /// copy of the list rules; they must find what this matcher finds,
     /// and say which entry without naming it.
