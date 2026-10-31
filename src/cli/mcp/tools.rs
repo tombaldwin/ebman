@@ -797,7 +797,7 @@ impl Server {
         // duplicate), and every call site binds it and calls methods,
         // so an `Arc` is transparent to all fourteen of them.
         #[cfg(test)]
-        if let Some(c) = &self.injected_client {
+        if let Some(c) = &self.seams.client {
             return Ok(std::sync::Arc::clone(c));
         }
         let profile = arg_str(args, "profile");

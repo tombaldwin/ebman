@@ -919,11 +919,6 @@ pub(crate) struct Server {
     /// one line it can write, so until then it never reads the config
     /// disk.
     audit_wired: std::sync::atomic::AtomicBool,
-    /// How many times this server actually read the config to wire the
-    /// webhook: the effect `audit_wired` stands for, which a test can
-    /// tell apart from the flag being set.
-    #[cfg(test)]
-    audit_reads: std::sync::atomic::AtomicUsize,
     /// Two-phase write state: the single pending-plan slot (spec:
     /// writes are serialized server-wide).
     writes: tokio::sync::Mutex<writes::WriteState>,
@@ -982,27 +977,11 @@ pub(crate) struct Server {
     /// against a stale binary for exactly this reason — the handshake
     /// carries the version, but the handshake already happened.
     exe: Option<ExeIdentity>,
-    /// Test seam: an injected client, used in place of building one per
-    /// call.
-    ///
-    /// Everything BELOW the tool bodies is now covered — renderers,
-    /// extracted decisions, the AWS-layer calls via `aws_smithy_mocks`
-    /// — but the orchestration itself was not, because `client()`
-    /// builds a real `AwsClient` from ambient credentials. That is the
-    /// layer the `tool_why` dead-letter peek bug lived in, and it
-    /// survived a full review there.
-    ///
-    /// `App::for_tests` takes its client the same way, for the same
-    /// reason.
+    /// What a test injects into this server and reads back from it: one
+    /// field, so a new seam (assume-role slice 3's role sessions) is a
+    /// field of [`TestSeams`] rather than another shape.
     #[cfg(test)]
-    injected_client: Option<std::sync::Arc<aws::AwsClient>>,
-    /// The identity a plan resolves, under test. `verify_identity`
-    /// builds its own STS client, so an injected `AwsClient` cannot
-    /// answer it, and a plan's identity-dependent paths (the role's
-    /// account check) were reachable only on the demo backend, which
-    /// writes no audit line.
-    #[cfg(test)]
-    injected_identity: Option<writes::CallerIdentity>,
+    seams: TestSeams,
 }
 
 /// The freeze a new server reads: the shared one, or under test a
@@ -1029,6 +1008,34 @@ fn own_ambient_profile() -> Option<String> {
     {
         None
     }
+}
+
+/// What a test injects into a [`Server`] and reads back from it.
+#[cfg(test)]
+#[derive(Default)]
+struct TestSeams {
+    /// An injected client, used in place of building one per call.
+    ///
+    /// Everything BELOW the tool bodies is now covered — renderers,
+    /// extracted decisions, the AWS-layer calls via `aws_smithy_mocks`
+    /// — but the orchestration itself was not, because `client()`
+    /// builds a real `AwsClient` from ambient credentials. That is the
+    /// layer the `tool_why` dead-letter peek bug lived in, and it
+    /// survived a full review there.
+    ///
+    /// `App::for_tests` takes its client the same way, for the same
+    /// reason.
+    client: Option<std::sync::Arc<aws::AwsClient>>,
+    /// The identity a plan resolves, under test. `verify_identity`
+    /// builds its own STS client, so an injected `AwsClient` cannot
+    /// answer it, and a plan's identity-dependent paths (the role's
+    /// account check) were reachable only on the demo backend, which
+    /// writes no audit line.
+    identity: Option<writes::CallerIdentity>,
+    /// How many times this server actually read the config to wire the
+    /// webhook: the effect `audit_wired` stands for, which a test can
+    /// tell apart from the flag being set.
+    audit_reads: std::sync::atomic::AtomicUsize,
 }
 
 impl Server {
@@ -1089,8 +1096,6 @@ impl Server {
             freeze: own_freeze_store(),
             ambient_profile: own_ambient_profile(),
             audit_wired: std::sync::atomic::AtomicBool::new(false),
-            #[cfg(test)]
-            audit_reads: std::sync::atomic::AtomicUsize::new(0),
             writes: tokio::sync::Mutex::new(writes::WriteState::default()),
             outbound: std::sync::Mutex::new(None),
             pending_asks: std::sync::Mutex::new(std::collections::HashMap::new()),
@@ -1105,9 +1110,7 @@ impl Server {
             mcp_read_only: std::sync::atomic::AtomicBool::new(false),
             exe: ExeIdentity::current(),
             #[cfg(test)]
-            injected_client: None,
-            #[cfg(test)]
-            injected_identity: None,
+            seams: TestSeams::default(),
         }
     }
 
@@ -1137,7 +1140,8 @@ impl Server {
         {
             crate::audit::init_from_config_disk();
             #[cfg(test)]
-            self.audit_reads
+            self.seams
+                .audit_reads
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
     }
@@ -1146,7 +1150,9 @@ impl Server {
     /// audit webhook: 0 before, and 1 ever after.
     #[cfg(test)]
     pub(crate) fn audit_reads(&self) -> usize {
-        self.audit_reads.load(std::sync::atomic::Ordering::Relaxed)
+        self.seams
+            .audit_reads
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Pin writes against `profile`, as a server started under
@@ -1170,7 +1176,7 @@ impl Server {
         client: aws::AwsClient,
     ) -> Self {
         let mut s = Self::with_config(false, false, scope, safety_cfg);
-        s.injected_client = Some(std::sync::Arc::new(client));
+        s.seams.client = Some(std::sync::Arc::new(client));
         s
     }
 

@@ -3938,7 +3938,7 @@ async fn a_declined_ask_on_aws_records_the_resolved_region() {
     );
     client.context.region = "poly-ask-1".into();
     let mut server = Server::with_injected_client(WriteScope::All, Default::default(), client);
-    server.injected_identity = Some(writes::CallerIdentity::Known {
+    server.seams.identity = Some(writes::CallerIdentity::Known {
         arn: "arn:aws:iam::123456789012:user/ops".into(),
         account: "123456789012".into(),
     });

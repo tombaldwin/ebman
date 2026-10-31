@@ -319,7 +319,7 @@ impl Server {
         // Under test the region comes from the injected client, as the
         // write's own lines' does: `resolve_region` reads nothing then.
         #[cfg(test)]
-        if let Some(c) = &self.injected_client {
+        if let Some(c) = &self.seams.client {
             return c.context.region.clone();
         }
         crate::aws::AwsClient::resolve_region(profile.as_deref())
@@ -1651,7 +1651,7 @@ impl Server {
             };
         }
         #[cfg(test)]
-        if let Some(id) = &self.injected_identity {
+        if let Some(id) = &self.seams.identity {
             return id.clone();
         }
         let client = match self.client(args).await {

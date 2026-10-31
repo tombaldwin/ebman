@@ -2272,7 +2272,7 @@ async fn a_role_in_another_account_is_audited_once_on_the_aws_backend() {
     let mut s = Server::with_injected_client(WriteScope::All, cfg, client)
         .with_ambient_profile("poly-role-ops");
     // The identity is in the role's account: the env's ARN must win.
-    s.injected_identity = Some(CallerIdentity::Known {
+    s.seams.identity = Some(CallerIdentity::Known {
         arn: "arn:aws:iam::111122223333:user/ops".into(),
         account: "111122223333".into(),
     });
