@@ -285,7 +285,8 @@ safety.accounts.prod.read_only = true
 # joins them on the session name. `mcp.require_role` refuses an
 # unmapped verb. `dlq_undo` re-sends under its delete's session, so a
 # role listing `dlq_delete` must allow `sqs:SendMessage` as well as
-# `sqs:DeleteMessage`.
+# `sqs:DeleteMessage`. MCP `doctor` names each role; `docs/headless.md`
+# ("Writes under a role") has example trust and role policies.
 #
 # Fails closed: a verb two roles in one account list, a verb that is no
 # MCP tool, or a

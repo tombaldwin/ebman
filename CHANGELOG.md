@@ -8,24 +8,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
-- **MCP write roles, slice 1 of 5: the config and the gate**
+- **MCP writes can go out under a narrower role**
   (`docs/design/assume-role-elevation.md`). `mcp.role.NAME.role_arn` /
   `.verbs` / `.source_profile` / `.external_id` map MCP write verbs to a
-  role, and `mcp.require_role = true` refuses a verb no role lists
-  (`rule=no_role`). A role config that cannot be acted on (a verb in two
-  roles, an unknown verb, a role with no ARN) refuses every MCP write
-  (`rule=role_config_unreadable`). **Not yet a ceiling:** nothing is
-  assumed yet, so a mapped verb still goes out under the base
-  credentials; the AssumeRole call is slice 3.
-- **MCP write roles, slice 2: the plan names the role.** A plan for a
-  mapped verb carries a `role` object and its confirmation names the
-  role, saying it is not assumed yet (`assumed: false`). The role is
-  checked against the environment's account (from its ARN, else the
-  identity's) before anything else is read: another account refuses the
-  plan with both named (`rule=role_wrong_account`), and an account ebman
-  cannot tell refuses too (`rule=role_account_unknown`). A verb's role is
-  in one account. A `role_arn` that is not an IAM role ARN makes the role
-  config unreadable.
+  role. The plan names the role and the confirmation says it; the role
+  is assumed at confirm, after the operator's yes, for that write alone,
+  as a 900-second session named `ebman-mcp-<client>-<plan>`, and the
+  write's audit lines carry `role=` and `session=` so CloudTrail joins
+  them. `dlq_undo` re-sends under its delete's session, so a role with
+  `dlq_delete` needs `sqs:SendMessage` too. A verb may have a role in
+  each account, and the plan takes the one in the environment's account
+  (from its ARN, else the identity's): none there refuses
+  (`rule=role_wrong_account`), as does an account ebman cannot tell
+  (`rule=role_account_unknown`). A role that cannot be assumed, or whose
+  session lands in another account, refuses the write
+  (`rule=role_unassumable`); it is never sent as the base identity.
+  `mcp.require_role = true` refuses a verb no role lists
+  (`rule=no_role`). A config that cannot be acted on (a verb two roles
+  in one account list, an unknown verb, a missing or malformed ARN)
+  refuses every MCP write (`rule=role_config_unreadable`). MCP `doctor`
+  names each role, what strict mode closes and what still goes out as
+  the base identity. `docs/headless.md` has example trust and role
+  policies. MCP only: the TUI and the CLI act as you.
 
 ### Changed
 
@@ -47,6 +51,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   agent to ask you; each try is audited `rule=thawed_recently`. `ebman
   thaw`, `ebman freeze --status` and MCP `doctor` say until when. Your
   own `ebman freeze` or `:freeze-deploys` ends the hold.
+
+- **Every freeze declare is audited the same way.** `ebman freeze`,
+  `:freeze-deploys`, `:incident START` and `freeze_fleet` each record
+  `via=`, then their own fields, then `reason=` and `persistent=`;
+  `:incident START` keeps `headline=` beside `reason=`.
 
 ### Fixed
 

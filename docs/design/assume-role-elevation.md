@@ -237,7 +237,7 @@ Each slice can ship on its own and is useful if the next never comes.
    and tests seed the factory. Add the session name (D5), the audit
    fields, and `role_unassumable` (D7).
 4. *(Done 2026-11-02.)* **Undo under the delete's session** (D4).
-5. **`doctor`** (D7), and the operator docs: `docs/headless.md`'s MCP
+5. *(Done 2026-11-02, but for doctor's AssumeRole probe, which waits on a ruling: MCP `doctor` is AWS-free by contract, so the role lines come from config alone.)* **`doctor`** (D7), and the operator docs: `docs/headless.md`'s MCP
    section, `docs/safety-and-privacy.md`, `docs/configuration.md`, and
    an example trust policy and role policy per mapped verb class. EB's
    own requirements (an `UpdateEnvironment` caller needs the

@@ -151,8 +151,11 @@ it.*
    `dlq_undo` re-sends under its delete's session). Multi-account
    roles were ruled in on 2026-10-31 (one role per account for a verb,
    picked by the env's account at plan time and carried to confirm).
-   Next is slice 5, `doctor` and the operator docs' example policies, and
-   the live check against a real account.
+   Slice 5 done 2026-11-02 but for one call: `doctor` names each role
+   from config and the operator docs carry example policies, but D7's
+   AssumeRole probe from `doctor` waits on the maintainer, because MCP
+   `doctor` is AWS-free by contract (its description says "Reads no
+   AWS"). Then the live check against a real account.
    It builds on the shipped ask
    (stage 5 was killed on 2026-09-25, so there is nothing to replace)
    and splits into five slices. Its three contestable calls are listed
