@@ -77,12 +77,25 @@ impl Server {
         p: &PendingWrite,
         client_name: &str,
     ) -> Result<Option<RoleSession>, Audited> {
-        let Some(role) = p.role() else {
-            return Ok(None);
-        };
         if matches!(self.backend, Backend::Demo) {
             return Ok(None);
         }
+        let region = self.audit_region(&p.profile, p.region.as_deref()).await;
+        let Some(role) = p.role() else {
+            // A verb that maps to a role never goes out without one: a
+            // plan that carried none for it is refused, not sent as the
+            // base identity. The plan refuses first today; this is the
+            // ceiling holding if that ever changes.
+            if matches!(p.role_check, crate::config::RoleCheck::Mapped { .. }) {
+                return Err(self.role_refusal(
+                    p,
+                    &region,
+                    "its verb maps to a role and the plan carried none",
+                    "plan the write again",
+                ));
+            }
+            return Ok(None);
+        };
         let name = session_name(client_name, &p.token);
         // The region the plan read the env in, which the base client
         // would have dispatched to. `p.region` alone is usually `None`,
@@ -90,7 +103,6 @@ impl Server {
         // `source_profile`: a write approved for an env in one region
         // went to another, where the same name can be another
         // environment, and the account check passed.
-        let region = self.audit_region(&p.profile, p.region.as_deref()).await;
         let spec = crate::config::AccountSpec {
             role_arn: role.arn.clone(),
             // With no source profile, from the write's own credentials.
@@ -98,19 +110,40 @@ impl Server {
             external_id: role.external_id.clone(),
             region: (region != "-").then(|| region.clone()),
         };
-        let why = if spec.region.is_none() {
-            "the region the plan read the environment in is unknown".to_string()
+        let role_is = format!("role `{}` ({})", role.name, role.arn);
+        // The remedy follows the failure. It never suggests dropping
+        // the verb from the role: that removes the ceiling.
+        let (why, remedy) = if spec.region.is_none() {
+            (
+                format!(
+                    "{role_is} was not assumed: the region the plan read the environment in \
+                     is unknown"
+                ),
+                "name the environment's region on the call (`region`)".to_string(),
+            )
         } else {
             match self.assume(&spec, &name).await {
                 Ok(client) => match client.context.account_id.as_deref() {
-                    Some(a) if a != role.account => format!(
-                        "the session is in account {a}, not the role's {}",
-                        role.account
+                    Some(a) if a != role.account => (
+                        format!(
+                            "the session of {role_is} is in account {a}, not the role's {}",
+                            role.account
+                        ),
+                        format!(
+                            "check mcp.role.{}.role_arn and the identity it is assumed from",
+                            role.key
+                        ),
                     ),
-                    None => "STS did not say which account the session is in".to_string(),
-                    Some(_) if client.context.region != region => format!(
-                        "the session is in region {}, not the plan's {region}",
-                        client.context.region
+                    None => (
+                        format!("STS did not say which account the session of {role_is} is in"),
+                        "retry the write".to_string(),
+                    ),
+                    Some(_) if client.context.region != region => (
+                        format!(
+                            "the session of {role_is} is in region {}, not the plan's {region}",
+                            client.context.region
+                        ),
+                        "name the environment's region on the call (`region`)".to_string(),
                     ),
                     Some(_) => {
                         return Ok(Some(RoleSession {
@@ -120,31 +153,37 @@ impl Server {
                         }));
                     }
                 },
-                Err(e) => e,
+                Err(e) => (
+                    format!("{role_is} could not be assumed: {e}"),
+                    format!(
+                        "let {} assume {} (the role's trust policy, and sts:AssumeRole for \
+                         the identity)",
+                        name_of_base(&spec),
+                        role.arn
+                    ),
+                ),
             }
         };
+        Err(self.role_refusal(p, &region, &why, &remedy))
+    }
+
+    /// The `role_unassumable` refusal of an approved write (D7), audited.
+    fn role_refusal(&self, p: &PendingWrite, region: &str, why: &str, remedy: &str) -> Audited {
         let audit_profile = p.profile.clone().or_else(|| self.ambient_profile.clone());
-        Err(Audited::record(
+        Audited::record(
             audit_profile.as_deref(),
-            &region,
+            region,
             p.verb.label(),
             &p.env,
             crate::audit::RefusalRule::RoleUnassumable,
-            &format!(
-                "let {} assume {}, or remove the verb from mcp.role.{}",
-                name_of_base(&spec),
-                role.arn,
-                role.key
-            ),
+            remedy,
             format!(
-                "{} on {} was approved but not dispatched: role `{}` ({}) could not be \
-                 assumed: {why}. Nothing ran, and it was not sent as the base identity.",
+                "{} on {} was approved but not dispatched: {why}. Nothing ran, and it was \
+                 not sent as the base identity.",
                 p.verb.label(),
                 p.env,
-                role.name,
-                role.arn,
             ),
-        ))
+        )
     }
 
     /// One AssumeRole for 900 seconds, STS's floor (D4). Under test, the

@@ -6537,9 +6537,18 @@ async fn a_role_session_in_another_account_refuses() {
     let before = crate::audit::delta::mark();
     let err = plan_and_confirm(&s, env).await.expect_err("refused");
     assert!(
-        err.contains("the session is in account 444455556666, not the role's 123456789012"),
+        err.contains("is in account 444455556666, not the role's 123456789012"),
         "{err}"
     );
+    // The remedy is for THIS failure: not the trust policy, and never
+    // "remove the verb", which removes the ceiling.
+    let refused = crate::audit::delta::lines_for(&before, env);
+    let line = refused
+        .iter()
+        .find(|l| l.contains("rule=role_unassumable"))
+        .unwrap_or_else(|| panic!("{refused:#?}"));
+    assert!(line.contains("mcp.role.deploys.role_arn"), "{line}");
+    assert!(!line.contains("remove the verb"), "{line}");
     let lines = crate::audit::delta::lines_for(&before, env);
     assert!(
         !lines.iter().any(|l| l.contains("stage=dispatched")),

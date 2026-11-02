@@ -2974,3 +2974,39 @@ fn a_session_name_is_the_client_and_a_digest_of_the_plan() {
     );
     assert_eq!(session_name("", token).split('-').nth(2), Some("unknown"));
 }
+
+/// A write whose verb maps to a role but whose plan carries none is
+/// refused at confirm, never dispatched as the base identity. The plan
+/// refuses first today; this pins the ceiling holding regardless.
+#[tokio::test]
+async fn a_mapped_verb_with_no_role_carried_is_refused() {
+    let s = Server::with_config(
+        false,
+        false,
+        WriteScope::All,
+        crate::config::Config::default(),
+    );
+    let mut p = pending_for(WriteVerb::Restart);
+    let arn = "arn:aws:iam::123456789012:role/EbmanAgentDeploy";
+    p.role_check = crate::config::RoleCheck::Mapped {
+        roles: vec![crate::config::MappedRole {
+            role: "deploys".into(),
+            arn: crate::config::parse_role_arn(arn).expect("an arn"),
+            spec: crate::config::McpRole {
+                role_arn: arn.into(),
+                verbs: vec!["restart".into()],
+                ..Default::default()
+            },
+        }],
+    };
+    assert!(p.role().is_none());
+    let refused = s
+        .assume_role_for(&p, "claude-code")
+        .await
+        .expect_err("no role, no dispatch");
+    assert!(
+        refused.message().contains("the plan carried none"),
+        "{}",
+        refused.message()
+    );
+}
