@@ -63,6 +63,45 @@ pub(super) struct DeletedMessage {
     pub restoring_since: Option<tokio::time::Instant>,
 }
 
+/// How long before its session's credentials expire a held message
+/// stops being restorable: a restore must finish inside them, and it
+/// runs under the tool timeout.
+pub(super) const SESSION_MARGIN_SECS: u64 = super::TOOL_TIMEOUT_SECS;
+
+impl DeletedMessage {
+    /// When the delete's role session can no longer carry a restore, if
+    /// the delete had one whose expiry STS gave.
+    fn session_ends(&self) -> Option<std::time::SystemTime> {
+        let expires = self
+            .session
+            .as_ref()?
+            .client
+            .context
+            .credentials_expire_at?;
+        Some(expires - std::time::Duration::from_secs(SESSION_MARGIN_SECS))
+    }
+
+    /// The delete's session cannot carry a restore any more. The window
+    /// runs on a monotonic clock that stops while the machine sleeps,
+    /// and STS's expiry does not, so this can come first.
+    pub(super) fn session_expired(&self) -> bool {
+        self.session_ends()
+            .is_some_and(|t| std::time::SystemTime::now() >= t)
+    }
+
+    /// Seconds left to restore it: the window, cut short by its session.
+    pub(super) fn restorable_for_secs(&self) -> u64 {
+        let window = UNDO_WINDOW_SECS.saturating_sub(self.at.elapsed().as_secs());
+        match self.session_ends() {
+            Some(t) => window.min(
+                t.duration_since(std::time::SystemTime::now())
+                    .map_or(0, |d| d.as_secs()),
+            ),
+            None => window,
+        }
+    }
+}
+
 /// The task label for a dead-lettered message that carries no
 /// `beanstalk.sqsd.task_name` — used by the plan, the delete's audit
 /// line and the undo's, which must agree to correlate.
@@ -100,6 +139,12 @@ pub(super) enum Claim {
     },
     /// Not held: never deleted here, already restored, or expired.
     NotHeld,
+    /// Held, but the role session its delete went out under has expired,
+    /// and the undo assumes no role of its own (D4). It is dropped: no
+    /// retry can restore it here.
+    SessionExpired {
+        session: String,
+    },
 }
 
 impl Server {
@@ -170,6 +215,14 @@ impl Server {
     pub(super) async fn claim_for_restore(&self, id: &str) -> Claim {
         let mut buf = self.deleted.lock().await;
         buf.retain(|d| d.at.elapsed().as_secs() < UNDO_WINDOW_SECS);
+        if let Some(at) = buf
+            .iter()
+            .position(|d| d.original_id == id && d.session_expired())
+        {
+            let d = buf.remove(at);
+            let session = d.session.map(|s| s.name).unwrap_or_default();
+            return Claim::SessionExpired { session };
+        }
         let Some(d) = buf.iter_mut().find(|d| d.original_id == id) else {
             return Claim::NotHeld;
         };
@@ -241,11 +294,12 @@ impl Server {
                 .iter()
                 .map(|d| {
                     format!(
-                        "{{\"message_id\":{},\"env\":{},\"task\":{},\"expires_in_secs\":{},\"restoring\":{}}}",
+                        "{{\"message_id\":{},\"env\":{},\"task\":{},\"expires_in_secs\":{},\"session_expired\":{},\"restoring\":{}}}",
                         util::json_string(&d.original_id),
                         util::json_string(&d.env),
                         util::json_string(d.task.as_deref().unwrap_or(NOT_A_WORKER_TASK)),
-                        UNDO_WINDOW_SECS.saturating_sub(d.at.elapsed().as_secs()),
+                        d.restorable_for_secs(),
+                        d.session_expired(),
                         d.restoring_since
                             .is_some_and(|t| t.elapsed().as_secs() < RESTORE_CLAIM_SECS),
                     )
@@ -269,6 +323,15 @@ impl Server {
                     "'{want}' is mid-restore — by a call still running, or by one that timed \
                      out. Nothing is lost either way: it can be retried in at most \
                      {retry_after_secs}s if it is still held then."
+                )));
+            }
+            Claim::SessionExpired { session } => {
+                return Err(WriteError::Invalid(format!(
+                    "'{want}' cannot be restored: the role session its delete went out under \
+                     ({session}) has expired. The {UNDO_WINDOW_SECS}s window counts time the \
+                     machine was awake, so a sleep can outlast the session. The undo assumes \
+                     no role of its own, by design, so ebman cannot put it back, and it is no \
+                     longer held. Tell your user it is lost from ebman's side."
                 )));
             }
             Claim::NotHeld => {
@@ -374,12 +437,12 @@ impl Server {
                 // likely means the policy allows the delete and not the
                 // `sqs:SendMessage` its undo needs.
                 let why = match &d.session {
-                    Some(s) => format!(
+                    Some(s) if e.contains("AccessDenied") => format!(
                         "{e} (sent as role {} under the delete's session {}; the role's \
                          policy must allow sqs:SendMessage as well as sqs:DeleteMessage)",
                         s.arn, s.name
                     ),
-                    None => e,
+                    _ => e,
                 };
                 return Err(restore_failed(&why, held).into());
             }

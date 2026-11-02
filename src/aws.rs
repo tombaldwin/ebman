@@ -108,6 +108,10 @@ pub(crate) struct AwsContext {
     pub profile: Option<String>,
     pub account_id: Option<String>,
     pub caller_arn: Option<String>,
+    /// When an assumed role's credentials stop working, from STS's own
+    /// `Expiration`; `None` for credentials ebman did not mint. Wall
+    /// clock, so it holds across a sleep that a monotonic timer skips.
+    pub credentials_expire_at: Option<std::time::SystemTime>,
 }
 
 #[derive(Clone, Debug)]
@@ -298,6 +302,7 @@ impl AwsClient {
                 profile,
                 account_id: None,
                 caller_arn: None,
+                credentials_expire_at: None,
             },
         })
     }
@@ -381,11 +386,12 @@ impl AwsClient {
         let access_key = creds.access_key_id;
         let secret_key = creds.secret_access_key;
         let session_token = creds.session_token;
+        let expires_at = sts_expiry_to_system_time(creds.expiration.secs())?;
         let aws_creds = aws_credential_types::Credentials::new(
             access_key,
             secret_key,
             Some(session_token),
-            Some(sts_expiry_to_system_time(creds.expiration.secs())?),
+            Some(expires_at),
             "ebman-assume-role",
         );
 
@@ -425,6 +431,7 @@ impl AwsClient {
                 profile: spec.source_profile.clone(),
                 account_id: assumed_account,
                 caller_arn: assumed_arn,
+                credentials_expire_at: Some(expires_at),
             },
         })
     }
@@ -524,6 +531,7 @@ impl AwsClient {
                 profile: None,
                 account_id: None,
                 caller_arn: None,
+                credentials_expire_at: None,
             },
         }
     }

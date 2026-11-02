@@ -2631,10 +2631,14 @@ mod orchestration {
 
     /// A one-message `dlq_delete` confirmed under the `dlq` role, whose
     /// session client alone can delete, and send for the undo (or is
-    /// denied the send, with `send_denied`). Returns the server, the
+    /// refused the send with AWS error code `send_error`; or whose credentials have
+    /// already expired, with `expired`). Returns the server, the
     /// confirm's answer, the session name and an audit mark from before
     /// the confirm.
-    async fn delete_under_a_dlq_role(send_denied: bool) -> (Server, String, String, String) {
+    async fn delete_under_a_dlq_role(
+        send_error: Option<&'static str>,
+        expired: bool,
+    ) -> (Server, String, String, String) {
         use aws_sdk_elasticbeanstalk::operation::describe_environment_resources::DescribeEnvironmentResourcesOutput;
         use aws_sdk_elasticbeanstalk::types::{EnvironmentResourceDescription, Queue};
         use aws_sdk_sqs::operation::get_queue_attributes::GetQueueAttributesOutput;
@@ -2711,12 +2715,12 @@ mod orchestration {
             aws_sdk_sqs::operation::delete_message::DeleteMessageOutput::builder().build()
         });
         // And the undo's send: only the session has one.
-        let send = if send_denied {
-            aws_smithy_mocks::mock!(SqsClient::send_message).then_error(|| {
+        let send = if let Some(code) = send_error {
+            aws_smithy_mocks::mock!(SqsClient::send_message).then_error(move || {
                 aws_sdk_sqs::operation::send_message::SendMessageError::generic(
                     aws_smithy_types::error::ErrorMetadata::builder()
-                        .code("AccessDenied")
-                        .message("not authorized to perform sqs:SendMessage")
+                        .code(code)
+                        .message("the send was refused")
                         .build(),
                 )
             })
@@ -2739,6 +2743,11 @@ mod orchestration {
         );
         let mut session = client_with(session_eb, session_sqs);
         session.context.account_id = Some("123456789012".into());
+        session.context.credentials_expire_at = Some(if expired {
+            std::time::SystemTime::now()
+        } else {
+            std::time::SystemTime::now() + std::time::Duration::from_secs(900)
+        });
         s.seams.role_sessions.lock().unwrap().push_back(Ok(session));
 
         let plan = s
@@ -2768,7 +2777,7 @@ mod orchestration {
     /// `session=`, as the generic path's do.
     #[tokio::test]
     async fn a_dlq_batch_under_a_role_names_the_session_per_message() {
-        let (_s, out, session, before) = delete_under_a_dlq_role(false).await;
+        let (_s, out, session, before) = delete_under_a_dlq_role(None, false).await;
         assert!(out.contains("\"succeeded\":1"), "{out}");
         // By session, which is unique to this plan: the undo test
         // deletes the same message id, in parallel.
@@ -2790,7 +2799,7 @@ mod orchestration {
     /// lines name the same role and session as the delete's.
     #[tokio::test]
     async fn an_undo_goes_out_under_its_delete_s_session() {
-        let (s, _out, session, before) = delete_under_a_dlq_role(false).await;
+        let (s, _out, session, before) = delete_under_a_dlq_role(None, false).await;
         let out = s
             .call_tool("dlq_undo", &json!({"message_id": "m-role-1"}))
             .await
@@ -2820,7 +2829,7 @@ mod orchestration {
     /// leaves AWS's own words alone in the audit line.
     #[tokio::test]
     async fn an_undo_the_role_may_not_send_names_the_role() {
-        let (s, _out, session, before) = delete_under_a_dlq_role(true).await;
+        let (s, _out, session, before) = delete_under_a_dlq_role(Some("AccessDenied"), false).await;
         let err = s
             .call_tool("dlq_undo", &json!({"message_id": "m-role-1"}))
             .await
@@ -2842,6 +2851,48 @@ mod orchestration {
         });
         assert_eq!(completed.len(), 1, "{completed:#?}");
         assert!(!completed[0].contains("must allow"), "{}", completed[0]);
+    }
+
+    /// The policy hint is for a denial: a throttled send is not a
+    /// missing permission, and saying so would send the operator to IAM.
+    #[tokio::test]
+    async fn an_undo_that_fails_otherwise_does_not_blame_the_policy() {
+        let (s, _out, _session, _before) =
+            delete_under_a_dlq_role(Some("ThrottlingException"), false).await;
+        let err = s
+            .call_tool("dlq_undo", &json!({"message_id": "m-role-1"}))
+            .await
+            .expect_err("throttled");
+        assert!(err.contains("still held and can be retried"), "{err}");
+        assert!(!err.contains("must allow sqs:SendMessage"), "{err}");
+    }
+
+    /// A held message whose delete's session has expired (a sleep the
+    /// window's monotonic clock skipped) is listed as such, and an undo
+    /// says why it cannot restore it, sends nothing, and drops it, rather
+    /// than blaming the role's policy on every retry.
+    #[tokio::test]
+    async fn an_undo_whose_session_expired_says_so_and_sends_nothing() {
+        let (s, _out, session, before) = delete_under_a_dlq_role(None, true).await;
+        let listed = s.call_tool("dlq_undo", &json!({})).await.expect("the list");
+        let v: Value = serde_json::from_str(&listed).expect("json");
+        assert_eq!(v["recoverable"][0]["session_expired"], json!(true), "{v}");
+        assert_eq!(v["recoverable"][0]["expires_in_secs"], json!(0), "{v}");
+        let err = s
+            .call_tool("dlq_undo", &json!({"message_id": "m-role-1"}))
+            .await
+            .expect_err("the session has expired");
+        assert!(err.contains(&format!("({session}) has expired")), "{err}");
+        assert!(!err.contains("sqs:SendMessage"), "{err}");
+        let sent = crate::audit::delta::lines_matching(&before, |l| {
+            l.contains("action=dlq-undo") && l.contains(&format!("session={session}"))
+        });
+        assert!(sent.is_empty(), "{sent:#?}");
+        let again = s
+            .call_tool("dlq_undo", &json!({"message_id": "m-role-1"}))
+            .await
+            .expect_err("dropped");
+        assert!(again.contains("is not recoverable"), "{again}");
     }
 
     /// A resend whose delete half fails says a duplicate exists.
