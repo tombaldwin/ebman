@@ -145,14 +145,13 @@ it.*
    or builds on it, so neither is designed twice. **Drafted
    2026-10-24, accepted 2026-10-29 with all three contested calls as
    written:** `docs/design/assume-role-elevation.md`. Next: its five
-   slices, in order. **Slices 1–3 done** (2026-10-29, 2026-10-30,
-   2026-10-31: the config and gate; the plan names the role; the role is
-   assumed at confirm, after the yes, for that write alone). Multi-account
+   slices, in order. **Slices 1–4 done** (2026-10-29, 2026-10-30,
+   2026-10-31, 2026-11-02: the config and gate; the plan names the role;
+   the role is assumed at confirm, after the yes, for that write alone;
+   `dlq_undo` re-sends under its delete's session). Multi-account
    roles were ruled in on 2026-10-31 (one role per account for a verb,
    picked by the env's account at plan time and carried to confirm).
-   Next is slice 4, `dlq_undo` under its delete's session (D4): until
-   then the undo re-sends as the base identity, and the docs say so.
-   Then slice 5, `doctor` and the operator docs' example policies, and
+   Next is slice 5, `doctor` and the operator docs' example policies, and
    the live check against a real account.
    It builds on the shipped ask
    (stage 5 was killed on 2026-09-25, so there is nothing to replace)

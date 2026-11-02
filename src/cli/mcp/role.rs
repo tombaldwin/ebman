@@ -8,11 +8,25 @@ use super::writes::*;
 use super::*;
 
 /// A role session for one approved write (D4): the client built from
-/// it, and the role and session name its audit lines carry.
+/// it, and the role and session name its audit lines carry. `Clone`
+/// because a `dlq_delete`'s undo buffer entry keeps it, and the undo
+/// goes out under the same session.
+#[derive(Clone)]
 pub(super) struct RoleSession {
     pub client: std::sync::Arc<crate::aws::AwsClient>,
     pub arn: String,
     pub name: String,
+}
+
+/// By hand: `AwsClient` has no `Debug`, and the role and session name
+/// are what identify it anyway.
+impl std::fmt::Debug for RoleSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RoleSession")
+            .field("arn", &self.arn)
+            .field("name", &self.name)
+            .finish_non_exhaustive()
+    }
 }
 
 impl RoleSession {

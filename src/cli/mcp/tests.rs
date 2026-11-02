@@ -2629,11 +2629,12 @@ mod orchestration {
         );
     }
 
-    /// A DLQ delete under a role is dispatched through the role's
-    /// session, and each message's two lines carry `role=` and
-    /// `session=`, as the generic path's do.
-    #[tokio::test]
-    async fn a_dlq_batch_under_a_role_names_the_session_per_message() {
+    /// A one-message `dlq_delete` confirmed under the `dlq` role, whose
+    /// session client alone can delete, and send for the undo (or is
+    /// denied the send, with `send_denied`). Returns the server, the
+    /// confirm's answer, the session name and an audit mark from before
+    /// the confirm.
+    async fn delete_under_a_dlq_role(send_denied: bool) -> (Server, String, String, String) {
         use aws_sdk_elasticbeanstalk::operation::describe_environment_resources::DescribeEnvironmentResourcesOutput;
         use aws_sdk_elasticbeanstalk::types::{EnvironmentResourceDescription, Queue};
         use aws_sdk_sqs::operation::get_queue_attributes::GetQueueAttributesOutput;
@@ -2688,7 +2689,8 @@ mod orchestration {
             aws_smithy_mocks::RuleMode::MatchAny,
             [&env_listing(), &resources, &events]
         );
-        // The base client can read the queue but has no delete.
+        // The base client can read the queue but has no delete, and no
+        // send for an undo.
         let base_peek = peek();
         let sqs = aws_smithy_mocks::mock_client!(
             aws_sdk_sqs,
@@ -2708,10 +2710,27 @@ mod orchestration {
         let del = aws_smithy_mocks::mock!(SqsClient::delete_message).then_output(|| {
             aws_sdk_sqs::operation::delete_message::DeleteMessageOutput::builder().build()
         });
+        // And the undo's send: only the session has one.
+        let send = if send_denied {
+            aws_smithy_mocks::mock!(SqsClient::send_message).then_error(|| {
+                aws_sdk_sqs::operation::send_message::SendMessageError::generic(
+                    aws_smithy_types::error::ErrorMetadata::builder()
+                        .code("AccessDenied")
+                        .message("not authorized to perform sqs:SendMessage")
+                        .build(),
+                )
+            })
+        } else {
+            aws_smithy_mocks::mock!(SqsClient::send_message).then_output(|| {
+                aws_sdk_sqs::operation::send_message::SendMessageOutput::builder()
+                    .message_id("m-role-1-again")
+                    .build()
+            })
+        };
         let session_sqs = aws_smithy_mocks::mock_client!(
             aws_sdk_sqs,
             aws_smithy_mocks::RuleMode::MatchAny,
-            [&session_peek, &del]
+            [&session_peek, &del, &send]
         );
         let session_eb = aws_smithy_mocks::mock_client!(
             aws_sdk_elasticbeanstalk,
@@ -2740,18 +2759,89 @@ mod orchestration {
             .call_tool("confirm_action", &json!({"confirm_token": token}))
             .await
             .expect("the delete goes out under the role");
-        assert!(out.contains("\"succeeded\":1"), "{out}");
         let session = s.seams.assumed.lock().unwrap()[0].1.clone();
-        let lines =
-            crate::audit::delta::lines_matching(&before, |l| l.contains("message_id=m-role-1"));
+        (s, out, session, before)
+    }
+
+    /// A DLQ delete under a role is dispatched through the role's
+    /// session, and each message's two lines carry `role=` and
+    /// `session=`, as the generic path's do.
+    #[tokio::test]
+    async fn a_dlq_batch_under_a_role_names_the_session_per_message() {
+        let (_s, out, session, before) = delete_under_a_dlq_role(false).await;
+        assert!(out.contains("\"succeeded\":1"), "{out}");
+        // By session, which is unique to this plan: the undo test
+        // deletes the same message id, in parallel.
+        let lines = crate::audit::delta::lines_matching(&before, |l| {
+            l.contains(&format!("session={session}")) && l.contains("action=sqs-delete")
+        });
         assert_eq!(lines.len(), 2, "dispatched and completed: {lines:#?}");
         for l in &lines {
             assert!(
                 l.contains("role=arn:aws:iam::123456789012:role/EbmanAgentDlq"),
                 "{l}"
             );
-            assert!(l.contains(&format!("session={session}")), "{l}");
         }
+    }
+
+    /// The undo of a delete made under a role goes out under the
+    /// delete's session (D4): sent by the session's client, as the base
+    /// client has no send, with no AssumeRole of its own, and its two
+    /// lines name the same role and session as the delete's.
+    #[tokio::test]
+    async fn an_undo_goes_out_under_its_delete_s_session() {
+        let (s, _out, session, before) = delete_under_a_dlq_role(false).await;
+        let out = s
+            .call_tool("dlq_undo", &json!({"message_id": "m-role-1"}))
+            .await
+            .expect("the restore goes out under the delete's session");
+        assert!(out.contains("\"restored\":true"), "{out}");
+        assert_eq!(
+            s.seams.assumed.lock().unwrap().len(),
+            1,
+            "the undo assumes nothing of its own"
+        );
+        let lines = crate::audit::delta::lines_matching(&before, |l| {
+            l.contains("message_id=m-role-1")
+                && l.contains("action=dlq-undo")
+                && l.contains(&format!("session={session}"))
+        });
+        assert_eq!(lines.len(), 2, "dispatched and completed: {lines:#?}");
+        for l in &lines {
+            assert!(
+                l.contains("role=arn:aws:iam::123456789012:role/EbmanAgentDlq"),
+                "{l}"
+            );
+        }
+    }
+
+    /// A restore the role may not send names the role, its session and
+    /// the permission it needs, keeps the message held for a retry, and
+    /// leaves AWS's own words alone in the audit line.
+    #[tokio::test]
+    async fn an_undo_the_role_may_not_send_names_the_role() {
+        let (s, _out, session, before) = delete_under_a_dlq_role(true).await;
+        let err = s
+            .call_tool("dlq_undo", &json!({"message_id": "m-role-1"}))
+            .await
+            .expect_err("the session has no sqs:SendMessage");
+        assert!(
+            err.contains("sent as role arn:aws:iam::123456789012:role/EbmanAgentDlq"),
+            "{err}"
+        );
+        assert!(err.contains(&format!("session {session}")), "{err}");
+        assert!(
+            err.contains("must allow sqs:SendMessage as well as sqs:DeleteMessage"),
+            "{err}"
+        );
+        assert!(err.contains("still held and can be retried"), "{err}");
+        let completed = crate::audit::delta::lines_matching(&before, |l| {
+            l.contains("action=dlq-undo")
+                && l.contains("stage=completed")
+                && l.contains(&format!("session={session}"))
+        });
+        assert_eq!(completed.len(), 1, "{completed:#?}");
+        assert!(!completed[0].contains("must allow"), "{}", completed[0]);
     }
 
     /// A resend whose delete half fails says a duplicate exists.

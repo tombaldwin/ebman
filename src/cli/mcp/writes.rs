@@ -1403,7 +1403,7 @@ pub(super) fn write_tool_descriptors() -> Vec<Value> {
         }),
         json!({
             "name": "dlq_undo",
-            "description": format!("Put back a dead-lettered message THIS server deleted, within {undo_mins} minutes. Call with no arguments to list what is still recoverable. Single-phase — no plan/confirm — because it is the least destructive action here and is reached for under time pressure. CAVEATS: held in memory by this server only, so a restart loses them and nothing deleted by another process is here; purges are never recoverable; and the restore is a re-send, so the message id changes, receive_count resets to 0 and the enqueue time becomes now. Body and attributes come back verbatim. Each message can be restored ONCE, to the region and profile it was deleted from; a failed or interrupted restore leaves it recoverable for the rest of its {undo_mins} minutes (the failure says if they have run out), and a second call while one is running is told so.", undo_mins = UNDO_WINDOW_SECS / 60),
+            "description": format!("Put back a dead-lettered message THIS server deleted, within {undo_mins} minutes. Call with no arguments to list what is still recoverable. Single-phase — no plan/confirm — because it is the least destructive action here and is reached for under time pressure. CAVEATS: held in memory by this server only, so a restart loses them and nothing deleted by another process is here; purges are never recoverable; and the restore is a re-send, so the message id changes, receive_count resets to 0 and the enqueue time becomes now. Body and attributes come back verbatim. Each message can be restored ONCE, to the region and profile it was deleted from, and under the same role session if the delete had one; a failed or interrupted restore leaves it recoverable for the rest of its {undo_mins} minutes (the failure says if they have run out), and a second call while one is running is told so.", undo_mins = UNDO_WINDOW_SECS / 60),
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -2421,7 +2421,7 @@ impl Server {
                 Ok(destroyed) => {
                     succeeded += 1;
                     if let Some(msg) = destroyed.clone() {
-                        if let Some(until) = self.remember_deleted(p, msg).await {
+                        if let Some(until) = self.remember_deleted(p, msg, session).await {
                             // The window is per message but they are
                             // captured within milliseconds of each
                             // other, so the shortest is the honest one
@@ -2493,7 +2493,9 @@ impl Server {
                             .into_iter()
                             .find(|m| m.id == t.id)
                         {
-                            if let Some(until) = self.remember_deleted(p, msg).await {
+                            // Demo assumes nothing (D8), so there is
+                            // no session to hold.
+                            if let Some(until) = self.remember_deleted(p, msg, None).await {
                                 // The SHORTEST window, as live does.
                                 // Overwriting per message would quote
                                 // the last one's, and a demo that
@@ -2624,7 +2626,7 @@ impl Server {
             Ok(destroyed) => {
                 let recoverable = match destroyed {
                     Some(msg) => self
-                        .remember_deleted(p, msg)
+                        .remember_deleted(p, msg, session)
                         .await
                         .map(|until| format!(",\"recoverable_for_secs\":{until}"))
                         .unwrap_or_default(),

@@ -236,7 +236,7 @@ Each slice can ship on its own and is useful if the next never comes.
    since `AwsClient::assume_role` is unreachable under test by design
    and tests seed the factory. Add the session name (D5), the audit
    fields, and `role_unassumable` (D7).
-4. **Undo under the delete's session** (D4).
+4. *(Done 2026-11-02.)* **Undo under the delete's session** (D4).
 5. **`doctor`** (D7), and the operator docs: `docs/headless.md`'s MCP
    section, `docs/safety-and-privacy.md`, `docs/configuration.md`, and
    an example trust policy and role policy per mapped verb class. EB's

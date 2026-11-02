@@ -3,6 +3,7 @@
 //! [`UNDO_WINDOW_SECS`] so "that was the wrong one" can put it back.
 //! Moved out of `writes.rs`, which it was self-contained inside of.
 
+use super::role::RoleSession;
 use super::writes::*;
 use super::*;
 
@@ -46,6 +47,12 @@ pub(super) struct DeletedMessage {
     /// non-default region was restored against the default one.
     pub profile: Option<String>,
     pub region: Option<String>,
+    /// The role session the delete went out under, if its verb mapped
+    /// to one. The undo goes out under the SAME session (D4): it is the
+    /// delete's reversal, so CloudTrail files both under one session
+    /// name, and an urgent undo needs no STS call of its own. The
+    /// session lasts 900s, past the window.
+    pub session: Option<RoleSession>,
     pub original_id: String,
     pub task: Option<String>,
     pub body: String,
@@ -105,6 +112,7 @@ impl Server {
         &self,
         p: &PendingWrite,
         msg: crate::aws::QueueMessage,
+        session: Option<&RoleSession>,
     ) -> Option<u64> {
         let env = p.env.as_str();
         let queue_url = p.dlq_url.clone();
@@ -132,6 +140,7 @@ impl Server {
             queue_url,
             profile: p.profile.clone(),
             region: p.region.clone(),
+            session: session.cloned(),
             original_id: msg.id,
             task: msg.task.as_ref().and_then(|t| t.name.clone()),
             body: msg.body,
@@ -289,16 +298,22 @@ impl Server {
         }
 
         if !matches!(self.backend, Backend::Demo) {
-            // The profile and region the DELETE used, not this call's.
-            let client_args = json!({
-                "profile": d.profile.clone().unwrap_or_default(),
-                "region": d.region.clone().unwrap_or_default(),
-            });
-            let client = match self.client(&client_args).await {
-                Ok(c) => c,
-                Err(e) => {
-                    let held = self.finish_restore(&d.original_id, false).await;
-                    return Err(restore_failed(&e.to_string(), held).into());
+            // The delete's session if it had one (D4), otherwise the
+            // profile and region the DELETE used, not this call's.
+            let client = match &d.session {
+                Some(s) => std::sync::Arc::clone(&s.client),
+                None => {
+                    let client_args = json!({
+                        "profile": d.profile.clone().unwrap_or_default(),
+                        "region": d.region.clone().unwrap_or_default(),
+                    });
+                    match self.client(&client_args).await {
+                        Ok(c) => c,
+                        Err(e) => {
+                            let held = self.finish_restore(&d.original_id, false).await;
+                            return Err(restore_failed(&e.to_string(), held).into());
+                        }
+                    }
                 }
             };
             // Audited like every other write. A restore is a real
@@ -320,7 +335,14 @@ impl Server {
                 id: d.original_id.clone(),
                 task: d.task.clone().unwrap_or_else(|| NOT_A_WORKER_TASK.into()),
             };
-            let extras = dlq_audit_line(&client_name, can_ask, &target);
+            let mut extras = dlq_audit_line(&client_name, can_ask, &target);
+            extras.extend(
+                d.session
+                    .as_ref()
+                    .map(RoleSession::extras)
+                    .into_iter()
+                    .flatten(),
+            );
             let refs: Vec<(&str, &str)> = extras.iter().map(|(k, v)| (*k, v.as_str())).collect();
             let audit_profile = d.profile.clone().or_else(|| self.ambient_profile.clone());
             let region = client.context.region.clone();
@@ -347,7 +369,19 @@ impl Server {
             );
             let held = self.finish_restore(&d.original_id, sent.is_ok()).await;
             if let Err(e) = sent {
-                return Err(restore_failed(&e, held).into());
+                // Under a role, name it, in the answer and not the audit
+                // line, which keeps AWS's own words: a denial here most
+                // likely means the policy allows the delete and not the
+                // `sqs:SendMessage` its undo needs.
+                let why = match &d.session {
+                    Some(s) => format!(
+                        "{e} (sent as role {} under the delete's session {}; the role's \
+                         policy must allow sqs:SendMessage as well as sqs:DeleteMessage)",
+                        s.arn, s.name
+                    ),
+                    None => e,
+                };
+                return Err(restore_failed(&why, held).into());
             }
         } else {
             let _ = self.finish_restore(&d.original_id, true).await;

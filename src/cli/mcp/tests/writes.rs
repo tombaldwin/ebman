@@ -1039,6 +1039,7 @@ async fn a_deleted_message_can_be_put_back_within_the_window() {
                 Some("https://sqs.eu-west-2.amazonaws.com/1/poly-batch-dlq".into()),
             ),
             msg,
+            None,
         )
         .await;
     assert_eq!(
@@ -1053,7 +1054,8 @@ async fn a_deleted_message_can_be_put_back_within_the_window() {
     assert_eq!(
         s.remember_deleted(
             &deleted_from("poly-batch", None),
-            crate::demo_fixture::dlq_messages_for_env("poly-batch")[1].clone()
+            crate::demo_fixture::dlq_messages_for_env("poly-batch")[1].clone(),
+            None
         )
         .await,
         None,
@@ -1180,6 +1182,7 @@ async fn the_undo_window_expires() {
     s.remember_deleted(
         &deleted_from("poly-batch", Some("https://q/poly-batch-dlq".into())),
         msg,
+        None,
     )
     .await;
     assert_eq!(s.recoverable().await.len(), 1, "held immediately after");
@@ -1259,8 +1262,12 @@ async fn a_refusal_records_the_resolved_region_when_none_was_named() {
         .next()
         .expect("fixture");
     let id = msg.id.clone();
-    s.remember_deleted(&deleted_from(env, Some("https://q/undo-dlq".into())), msg)
-        .await;
+    s.remember_deleted(
+        &deleted_from(env, Some("https://q/undo-dlq".into())),
+        msg,
+        None,
+    )
+    .await;
     s.freeze_store()
         .declare_persistent("poly-refusal-freeze", false)
         .unwrap();
@@ -1359,7 +1366,7 @@ fn held_message(id: &str) -> crate::aws::QueueMessage {
 async fn an_undo_claim_lapses_at_twice_the_tool_timeout() {
     let s = Server::with_scope(true, false, crate::cli::mcp::WriteScope::All);
     let p = deleted_from("poly-undo-claim", Some("https://q/claim-dlq".into()));
-    s.remember_deleted(&p, held_message("m-claim")).await;
+    s.remember_deleted(&p, held_message("m-claim"), None).await;
     assert!(matches!(
         s.claim_for_restore("m-claim").await,
         Claim::Claimed(_)
@@ -1392,7 +1399,7 @@ async fn a_held_message_expires_at_exactly_the_window() {
     let fresh = || async {
         let s = Server::with_scope(true, false, crate::cli::mcp::WriteScope::All);
         let p = deleted_from("poly-undo-edge", Some("https://q/edge-dlq".into()));
-        s.remember_deleted(&p, held_message("m-edge")).await;
+        s.remember_deleted(&p, held_message("m-edge"), None).await;
         s
     };
 
@@ -1434,14 +1441,14 @@ async fn a_held_message_expires_at_exactly_the_window() {
 async fn an_expired_message_never_evicts_a_live_one() {
     let s = Server::with_scope(true, false, crate::cli::mcp::WriteScope::All);
     let p = deleted_from("poly-undo-cap", Some("https://q/cap-dlq".into()));
-    s.remember_deleted(&p, held_message("m-old")).await;
+    s.remember_deleted(&p, held_message("m-old"), None).await;
     assert!(matches!(
         s.claim_for_restore("m-old").await,
         Claim::Claimed(_)
     ));
     tokio::time::advance(std::time::Duration::from_secs(UNDO_WINDOW_SECS)).await;
     for i in 0..UNDO_CAPACITY {
-        s.remember_deleted(&p, held_message(&format!("m-{i}")))
+        s.remember_deleted(&p, held_message(&format!("m-{i}")), None)
             .await;
     }
     let held: Vec<String> = s
@@ -1477,8 +1484,12 @@ async fn an_undo_restores_once_and_is_audited() {
         .next()
         .expect("fixture");
     let id = msg.id.clone();
-    s.remember_deleted(&deleted_from(env, Some("https://q/undo-dlq".into())), msg)
-        .await;
+    s.remember_deleted(
+        &deleted_from(env, Some("https://q/undo-dlq".into())),
+        msg,
+        None,
+    )
+    .await;
     let before =
         std::fs::read_to_string(crate::util::cache_dir().join("audit.log")).unwrap_or_default();
 
@@ -1526,8 +1537,12 @@ async fn an_undo_of_a_non_worker_message_audits_the_deletes_task_label() {
         .expect("fixture");
     msg.task = None;
     let id = msg.id.clone();
-    s.remember_deleted(&deleted_from(env, Some("https://q/undo-dlq".into())), msg)
-        .await;
+    s.remember_deleted(
+        &deleted_from(env, Some("https://q/undo-dlq".into())),
+        msg,
+        None,
+    )
+    .await;
     let before =
         std::fs::read_to_string(crate::util::cache_dir().join("audit.log")).unwrap_or_default();
     s.tool_dlq_undo(&json!({"message_id": id}))
@@ -1555,8 +1570,12 @@ async fn a_failed_undo_keeps_the_message_recoverable() {
         .next()
         .expect("fixture");
     let id = msg.id.clone();
-    s.remember_deleted(&deleted_from(env, Some("https://q/undo-dlq".into())), msg)
-        .await;
+    s.remember_deleted(
+        &deleted_from(env, Some("https://q/undo-dlq".into())),
+        msg,
+        None,
+    )
+    .await;
     let before =
         std::fs::read_to_string(crate::util::cache_dir().join("audit.log")).unwrap_or_default();
 
@@ -1599,7 +1618,7 @@ async fn a_held_message_remembers_its_profile_and_region() {
     let mut p = deleted_from("poly-batch", Some("https://q/dlq".into()));
     p.profile = Some("ops".into());
     p.region = Some("eu-west-2".into());
-    s.remember_deleted(&p, msg).await;
+    s.remember_deleted(&p, msg, None).await;
     let held = s.recoverable().await;
     assert_eq!(held[0].profile.as_deref(), Some("ops"));
     assert_eq!(held[0].region.as_deref(), Some("eu-west-2"));
@@ -1623,6 +1642,7 @@ async fn a_dropped_restore_does_not_lose_the_message() {
     s.remember_deleted(
         &deleted_from("poly-batch", Some("https://q/dlq".into())),
         msg,
+        None,
     )
     .await;
 
@@ -1676,14 +1696,14 @@ async fn capacity_eviction_spares_a_message_being_restored() {
         m
     };
     for n in 0..UNDO_CAPACITY {
-        s.remember_deleted(&plan, msg(n)).await;
+        s.remember_deleted(&plan, msg(n), None).await;
     }
     // The OLDEST is mid-restore when one more delete lands.
     assert!(matches!(
         s.claim_for_restore("m-0").await,
         Claim::Claimed(_)
     ));
-    s.remember_deleted(&plan, msg(UNDO_CAPACITY)).await;
+    s.remember_deleted(&plan, msg(UNDO_CAPACITY), None).await;
 
     let held: Vec<String> = s
         .recoverable()
@@ -1719,6 +1739,7 @@ async fn remembering_a_new_message_evicts_expired_ones() {
     s.remember_deleted(
         &deleted_from("poly-batch", Some("https://q/dlq".into())),
         msgs[0].clone(),
+        None,
     )
     .await;
     tokio::time::advance(std::time::Duration::from_secs(UNDO_WINDOW_SECS + 1)).await;
@@ -1727,6 +1748,7 @@ async fn remembering_a_new_message_evicts_expired_ones() {
     s.remember_deleted(
         &deleted_from("poly-batch", Some("https://q/dlq".into())),
         msgs[1].clone(),
+        None,
     )
     .await;
 
@@ -2855,6 +2877,7 @@ async fn a_failed_restore_says_whether_the_window_is_still_open() {
         s.remember_deleted(
             &deleted_from("poly-batch", Some("https://q/dlq".into())),
             m.clone(),
+            None,
         )
         .await;
     }
@@ -2883,6 +2906,7 @@ async fn a_failed_restore_says_whether_the_window_is_still_open() {
     s2.remember_deleted(
         &deleted_from("poly-batch", Some("https://q/dlq".into())),
         msgs[0].clone(),
+        None,
     )
     .await;
     assert!(!s2.finish_restore(&early, true).await);

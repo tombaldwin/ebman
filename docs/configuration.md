@@ -283,9 +283,9 @@ safety.accounts.prod.read_only = true
 # refuses the write (`rule=role_unassumable`); it is never sent as you
 # instead. The audit lines carry `role=` and `session=`, so CloudTrail
 # joins them on the session name. `mcp.require_role` refuses an
-# unmapped verb. NOT YET for `dlq_undo`: it re-sends under the base
-# credentials until it learns to use its delete's session, so a DLQ
-# role's ceiling does not cover the undo yet.
+# unmapped verb. `dlq_undo` re-sends under its delete's session, so a
+# role listing `dlq_delete` must allow `sqs:SendMessage` as well as
+# `sqs:DeleteMessage`.
 #
 # Fails closed: a verb two roles in one account list, a verb that is no
 # MCP tool, or a
