@@ -6390,6 +6390,11 @@ async fn an_approved_write_goes_out_under_its_role() {
     );
     assert_eq!(spec.source_profile.as_deref(), Some("ops"));
     assert_eq!(spec.external_id.as_deref(), Some("x-1"));
+    assert_eq!(
+        spec.region.as_deref(),
+        Some("poly-role-1"),
+        "the plan's region, never the source profile's"
+    );
     assert!(session.starts_with("ebman-mcp-claude-code-"), "{session}");
 
     let lines = crate::audit::delta::lines_for(&before, env);
@@ -6404,6 +6409,37 @@ async fn an_approved_write_goes_out_under_its_role() {
         );
         assert!(line.contains(&format!("session={session}")), "{line}");
     }
+}
+
+/// A session in another region than the plan's refuses: the same env
+/// name there can be another environment, and the account check alone
+/// passes it.
+#[tokio::test]
+async fn a_role_session_in_another_region_refuses() {
+    let env = "poly-role-region-probe";
+    let s = role_confirm_server(env, "accept");
+    let mut elsewhere = role_session("123456789012");
+    elsewhere.context.region = "poly-role-2".into();
+    s.seams
+        .role_sessions
+        .lock()
+        .unwrap()
+        .push_back(Ok(elsewhere));
+    let before = crate::audit::delta::mark();
+    let err = plan_and_confirm(&s, env).await.expect_err("refused");
+    assert!(
+        err.contains("in region poly-role-2, not the plan's poly-role-1"),
+        "{err}"
+    );
+    let lines = crate::audit::delta::lines_for(&before, env);
+    assert!(
+        !lines.iter().any(|l| l.contains("stage=dispatched")),
+        "{lines:#?}"
+    );
+    assert!(
+        lines.iter().any(|l| l.contains("rule=role_unassumable")),
+        "{lines:#?}"
+    );
 }
 
 /// A role that cannot be assumed refuses the approved write, audited

@@ -84,32 +84,46 @@ impl Server {
             return Ok(None);
         }
         let name = session_name(client_name, &p.token);
+        // The region the plan read the env in, which the base client
+        // would have dispatched to. `p.region` alone is usually `None`,
+        // and then the session took the region of the role's
+        // `source_profile`: a write approved for an env in one region
+        // went to another, where the same name can be another
+        // environment, and the account check passed.
+        let region = self.audit_region(&p.profile, p.region.as_deref()).await;
         let spec = crate::config::AccountSpec {
             role_arn: role.arn.clone(),
             // With no source profile, from the write's own credentials.
             source_profile: role.source_profile.clone().or_else(|| p.profile.clone()),
             external_id: role.external_id.clone(),
-            region: p.region.clone(),
+            region: (region != "-").then(|| region.clone()),
         };
-        let why = match self.assume(&spec, &name).await {
-            Ok(client) => match client.context.account_id.as_deref() {
-                Some(a) if a == role.account => {
-                    return Ok(Some(RoleSession {
-                        client: std::sync::Arc::new(client),
-                        arn: role.arn.clone(),
-                        name,
-                    }));
-                }
-                Some(a) => format!(
-                    "the session is in account {a}, not the role's {}",
-                    role.account
-                ),
-                None => "STS did not say which account the session is in".to_string(),
-            },
-            Err(e) => e,
+        let why = if spec.region.is_none() {
+            "the region the plan read the environment in is unknown".to_string()
+        } else {
+            match self.assume(&spec, &name).await {
+                Ok(client) => match client.context.account_id.as_deref() {
+                    Some(a) if a != role.account => format!(
+                        "the session is in account {a}, not the role's {}",
+                        role.account
+                    ),
+                    None => "STS did not say which account the session is in".to_string(),
+                    Some(_) if client.context.region != region => format!(
+                        "the session is in region {}, not the plan's {region}",
+                        client.context.region
+                    ),
+                    Some(_) => {
+                        return Ok(Some(RoleSession {
+                            client: std::sync::Arc::new(client),
+                            arn: role.arn.clone(),
+                            name,
+                        }));
+                    }
+                },
+                Err(e) => e,
+            }
         };
         let audit_profile = p.profile.clone().or_else(|| self.ambient_profile.clone());
-        let region = self.audit_region(&p.profile, p.region.as_deref()).await;
         Err(Audited::record(
             audit_profile.as_deref(),
             &region,
