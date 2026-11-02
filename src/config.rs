@@ -273,6 +273,14 @@ pub(crate) fn mcp_role_check(cfg: &Config, verb: &str, known: &[&str]) -> RoleCh
                 problem: format!("mcp.role.{name} has no role_arn"),
             };
         }
+        // A role meant for some verbs that names none is a config that
+        // does not say what it was for: the operator believes those
+        // writes have a ceiling they do not.
+        if role.verbs.is_empty() {
+            return RoleCheck::Unreadable {
+                problem: format!("mcp.role.{name} lists no verbs"),
+            };
+        }
         // The plan reads the role's account from its ARN to check it
         // against the env's: one it cannot read is a role it cannot
         // check, and AssumeRole would refuse it anyway.
@@ -1556,6 +1564,12 @@ mod tests {
         unreadable(
             "mcp.role.a.verbs = \"deploy\"\n",
             "mcp.role.a has no role_arn",
+        );
+        // A role that says nothing of what it is for: its verbs would
+        // have no ceiling while the operator believes they do.
+        unreadable(
+            "mcp.role.a.role_arn = \"arn:aws:iam::111122223333:role/A\"\n",
+            "mcp.role.a lists no verbs",
         );
         unreadable(
             "mcp.role.a.role_arn = \"arn:aws:iam::1:role/A\"\nmcp.role.a.verbs = \"deploy\"\n",

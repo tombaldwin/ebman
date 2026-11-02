@@ -25,7 +25,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   (`rule=role_unassumable`); it is never sent as the base identity.
   `mcp.require_role = true` refuses a verb no role lists
   (`rule=no_role`). A config that cannot be acted on (a verb two roles
-  in one account list, an unknown verb, a missing or malformed ARN)
+  in one account list, an unknown verb, a role with no verbs, a missing
+  or malformed ARN)
   refuses every MCP write (`rule=role_config_unreadable`). MCP `doctor`
   names each role, what strict mode closes and what still goes out as
   the base identity. `docs/headless.md` has example trust and role

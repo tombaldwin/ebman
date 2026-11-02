@@ -6636,6 +6636,37 @@ async fn doctor_names_each_role_and_what_it_has_not_checked() {
         n.iter().any(|n| n.contains("doctor reads no AWS")),
         "{n:#?}"
     );
+    // A demo server assumes nothing and says so.
+    assert!(
+        deploys.contains("on a live server each such write would be assumed"),
+        "{deploys}"
+    );
+    assert!(deploys.contains("This demo assumes nothing."), "{deploys}");
+}
+
+/// A live server's role line says the write IS assumed, and lists only
+/// the verbs this connection can write; a role for none of them is not
+/// listed.
+#[tokio::test]
+async fn doctor_lists_a_role_s_verbs_this_connection_can_write() {
+    let cfg = crate::config::parse(
+        "mcp.role.deploys.role_arn = \"arn:aws:iam::123456789012:role/EbmanAgentDeploy\"\n\
+         mcp.role.deploys.verbs = \"deploy,restart\"\n\
+         mcp.role.ends.role_arn = \"arn:aws:iam::123456789012:role/EbmanAgentEnd\"\n\
+         mcp.role.ends.verbs = \"terminate\"\n",
+    );
+    let scope = WriteScope::Only(vec!["restart".into()]);
+    let n = doctor_notes(&Server::with_config(false, false, scope, cfg)).await;
+    let deploys = n
+        .iter()
+        .find(|n| n.contains("Role `deploys`"))
+        .unwrap_or_else(|| panic!("{n:#?}"));
+    assert!(
+        deploys.contains("carries restart: each such write is assumed"),
+        "{deploys}"
+    );
+    assert!(!deploys.contains("demo"), "{deploys}");
+    assert!(!n.iter().any(|n| n.contains("Role `ends`")), "{n:#?}");
 }
 
 /// With no role and strict mode off, doctor says nothing about roles:

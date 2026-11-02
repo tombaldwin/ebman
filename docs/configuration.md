@@ -289,7 +289,7 @@ safety.accounts.prod.read_only = true
 # ("Writes under a role") has example trust and role policies.
 #
 # Fails closed: a verb two roles in one account list, a verb that is no
-# MCP tool, or a
+# MCP tool, a role that lists no verbs, or a
 # role with no role_arn, or one that is not an IAM role ARN
 # (arn:PARTITION:iam::ACCOUNT:role/[PATH/]NAME, by IAM's own rules),
 # makes every MCP write refuse

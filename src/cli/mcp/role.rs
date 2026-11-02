@@ -252,25 +252,45 @@ impl Server {
             )];
         }
         let mut notes = Vec::new();
+        let demo = matches!(self.backend, Backend::Demo);
         for (name, role) in &cfg.mcp_roles {
             // Parsed by the check above, which found every ARN readable.
             let Some(arn) = parse_role_arn(&role.role_arn) else {
                 continue;
+            };
+            // The verbs this connection can write, as the unmapped list
+            // below is: a role for verbs it cannot reach is not news here.
+            let verbs: Vec<&str> = role
+                .verbs
+                .iter()
+                .map(String::as_str)
+                .filter(|v| self.effective_scope().allows(v))
+                .collect();
+            if verbs.is_empty() {
+                continue;
+            }
+            let assumed = if demo {
+                "on a live server each such write would be assumed"
+            } else {
+                "each such write is assumed"
             };
             let from = match &role.source_profile {
                 Some(p) => format!("profile `{p}`"),
                 None => "the credentials of the write's own call".into(),
             };
             let mut note = format!(
-                "Role `{name}` ({}, account {}) carries {}: each such write is assumed at \
-                 confirm, after the approval, for that write alone, as a 900-second session \
-                 named `ebman-mcp-<client>-<plan>`, from {from}. CloudTrail names that \
-                 session, not the operator.",
+                "Role `{name}` ({}, account {}) carries {}: {assumed} at confirm, after the \
+                 approval, for that write alone, as a 900-second session named \
+                 `ebman-mcp-<client>-<plan>`, from {from}. CloudTrail names that session, \
+                 not the operator.",
                 arn.arn,
                 arn.account,
-                role.verbs.join(", "),
+                verbs.join(", "),
             );
-            if role.verbs.iter().any(|v| v == "dlq_delete") {
+            if demo {
+                note.push_str(" This demo assumes nothing.");
+            }
+            if verbs.contains(&"dlq_delete") {
                 note.push_str(
                     " `dlq_undo` re-sends under its delete's session, so this role's policy \
                      must allow sqs:SendMessage as well as sqs:DeleteMessage; doctor cannot \
