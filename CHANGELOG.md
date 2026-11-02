@@ -60,6 +60,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- **Security: redaction missed EB's second copy of every env var.**
+  `get_option_settings`, `drift`, `audit_log` and `set_option`'s plan
+  withheld the values in `aws:elasticbeanstalk:application:environment`
+  but served them in plain text in the `aws:cloudformation:template:parameter`
+  `EnvironmentVariables` option, where EB echoes them all as one
+  comma-joined `KEY=VALUE` string. That option is now redacted whole;
+  the keys stay visible in the env-var namespace. If an agent has read
+  option settings from an earlier version, treat the env-var values it
+  saw as disclosed.
 - `cargo test` no longer runs the deploy confirm's health-check probe,
   which sent a real `curl` to the test env's CNAME from the machine
   running the suite.

@@ -189,6 +189,12 @@ pub(crate) fn json_string(s: &str) -> String {
 /// environment` carries DB URLs, API keys); keys stay visible so
 /// config shape is inspectable. `DBPassword` matches the `:rds`
 /// precedent. Everything else passes through.
+///
+/// EB echoes every env var a second time, as one comma-joined
+/// `KEY=VALUE` string in `aws:cloudformation:template:parameter`
+/// `EnvironmentVariables`, so that option goes too, whole. The keys
+/// stay visible in the namespace above, and a value may itself hold a
+/// comma, so masking pair by pair could print a value's tail as a key.
 pub(crate) fn redact_option_value(
     namespace: &str,
     name: &str,
@@ -200,6 +206,7 @@ pub(crate) fn redact_option_value(
     }
     if namespace == "aws:elasticbeanstalk:application:environment"
         || name.eq_ignore_ascii_case("DBPassword")
+        || name.eq_ignore_ascii_case("EnvironmentVariables")
     {
         return "(redacted)".to_string();
     }

@@ -610,7 +610,8 @@ fn costs() -> HashMap<String, f64> {
 /// every env (the fixture's value is variety in health/status, not
 /// per-env config drift). Deliberately includes:
 /// - env vars with a fake secret so `mcp serve --demo` exercises
-///   `get_option_settings` redaction end-to-end;
+///   `get_option_settings` redaction end-to-end, including the copy
+///   EB echoes in the `EnvironmentVariables` template parameter;
 /// - `MeasureName=NetworkOut` on a scaling ASG so demo `lint` fires
 ///   EBL014 (and EBL017 fires via the absent managed-actions key) —
 ///   a demo lint that finds nothing demonstrates nothing.
@@ -639,6 +640,12 @@ pub(crate) fn option_settings_for(_env_name: &str) -> Vec<(String, String, Strin
             "aws:elasticbeanstalk:application:environment",
             "POLY_ENV",
             "production",
+        ),
+        // EB echoes the env vars here too, values and all.
+        o(
+            "aws:cloudformation:template:parameter",
+            "EnvironmentVariables",
+            "DATABASE_URL=postgres://poly:hunter2@db.internal:5432/poly,POLY_ENV=production",
         ),
     ]
 }

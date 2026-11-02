@@ -708,7 +708,7 @@ fn empty_cost_cache_total_formats_positive_zero() {
 }
 
 #[test]
-fn redaction_covers_env_vars_and_db_password_only() {
+fn redaction_covers_env_vars_their_template_echo_and_db_password_only() {
     let r = |ns, n, v| redact_option_value(ns, n, v, true);
     assert_eq!(
         r(
@@ -719,6 +719,23 @@ fn redaction_covers_env_vars_and_db_password_only() {
         "(redacted)"
     );
     assert_eq!(r("aws:rds:dbinstance", "DBPassword", "pw"), "(redacted)");
+    // EB's second copy of every env var, values and all.
+    assert_eq!(
+        r(
+            "aws:cloudformation:template:parameter",
+            "EnvironmentVariables",
+            "API_KEY=sk-123,POLY_ENV=production"
+        ),
+        "(redacted)"
+    );
+    assert_eq!(
+        r(
+            "aws:cloudformation:template:parameter",
+            "InstancePort",
+            "80"
+        ),
+        "80"
+    );
     assert_eq!(r("aws:autoscaling:asg", "MaxSize", "6"), "6");
     assert_eq!(
         redact_option_value(
