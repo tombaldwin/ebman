@@ -166,6 +166,100 @@ impl Server {
         let known: Vec<&str> = known.iter().map(String::as_str).collect();
         crate::config::mcp_role_check(&self.safety_cfg, verb.tool_name(), &known)
     }
+
+    /// `doctor`'s role section (D7), from the config alone: a line per
+    /// role, what `mcp.require_role` closes on this connection, and what
+    /// doctor has NOT checked. Nothing when no role is configured and
+    /// strict mode is off, which is every write going out as the base
+    /// identity, as it always has.
+    pub(super) fn role_notes(&self) -> Vec<String> {
+        use crate::config::{mcp_role_check, parse_role_arn, RoleCheck};
+        let cfg = &self.safety_cfg;
+        if cfg.mcp_roles.is_empty() && !cfg.mcp_require_role {
+            return Vec::new();
+        }
+        let known = write_verb_names();
+        let known: Vec<&str> = known.iter().map(String::as_str).collect();
+        // The verbs this connection can write, with what the config
+        // says of each: the same check a plan makes.
+        let checks: Vec<(&str, RoleCheck)> = known
+            .iter()
+            .filter(|v| self.effective_scope().allows(v))
+            .map(|v| (*v, mcp_role_check(cfg, v, &known)))
+            .collect();
+        // Any verb's check reports an unreadable config, so a
+        // connection with no writes still learns of it from the first.
+        if let Some(RoleCheck::Unreadable { problem }) =
+            known.first().map(|v| mcp_role_check(cfg, v, &known))
+        {
+            return vec![format!(
+                "The MCP role config cannot be acted on: {problem}. It fails CLOSED: every \
+                 MCP write refuses (`rule=role_config_unreadable`) until the operator fixes \
+                 it. Retrying will not clear it."
+            )];
+        }
+        let mut notes = Vec::new();
+        for (name, role) in &cfg.mcp_roles {
+            // Parsed by the check above, which found every ARN readable.
+            let Some(arn) = parse_role_arn(&role.role_arn) else {
+                continue;
+            };
+            let from = match &role.source_profile {
+                Some(p) => format!("profile `{p}`"),
+                None => "the credentials of the write's own call".into(),
+            };
+            let mut note = format!(
+                "Role `{name}` ({}, account {}) carries {}: each such write is assumed at \
+                 confirm, after the approval, for that write alone, as a 900-second session \
+                 named `ebman-mcp-<client>-<plan>`, from {from}. CloudTrail names that \
+                 session, not the operator.",
+                arn.arn,
+                arn.account,
+                role.verbs.join(", "),
+            );
+            if role.verbs.iter().any(|v| v == "dlq_delete") {
+                note.push_str(
+                    " `dlq_undo` re-sends under its delete's session, so this role's policy \
+                     must allow sqs:SendMessage as well as sqs:DeleteMessage; doctor cannot \
+                     check that, since only a real send would.",
+                );
+            }
+            notes.push(note);
+        }
+        let unmapped: Vec<&str> = checks
+            .iter()
+            .filter(|(_, c)| matches!(c, RoleCheck::Unmapped { .. }))
+            .map(|(v, _)| *v)
+            .collect();
+        if cfg.mcp_require_role {
+            let closes = if unmapped.is_empty() {
+                String::new()
+            } else {
+                format!(" On this connection that closes: {}.", unmapped.join(", "))
+            };
+            notes.push(format!(
+                "mcp.require_role is set: a write whose verb has no role refuses \
+                 (`rule=no_role`) rather than going out as the identity this server runs \
+                 as.{closes}"
+            ));
+        } else if !unmapped.is_empty() {
+            notes.push(format!(
+                "These verbs have no role and go out as the identity this server runs as: \
+                 {}.",
+                unmapped.join(", ")
+            ));
+        }
+        if !cfg.mcp_roles.is_empty() {
+            notes.push(
+                "doctor reads no AWS, so it has not checked that any role can be assumed or \
+                 which account an environment is in. A plan refuses an environment in an \
+                 account with no role for its verb; confirm refuses a role it cannot assume \
+                 (`rule=role_unassumable`). Neither falls back to the base identity."
+                    .into(),
+            );
+        }
+        notes
+    }
 }
 
 /// The role a plan's verb maps to (`docs/design/assume-role-elevation.md`,

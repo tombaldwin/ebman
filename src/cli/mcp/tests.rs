@@ -6475,3 +6475,125 @@ async fn a_declined_write_assumes_no_role() {
     assert!(err.contains("not dispatched"), "{err}");
     assert!(s.seams.assumed.lock().unwrap().is_empty());
 }
+
+/// doctor's notes, as strings.
+async fn doctor_notes(s: &Server) -> Vec<String> {
+    let d = call(s, "doctor", json!({})).await.1;
+    d["notes"]
+        .as_array()
+        .unwrap_or_else(|| panic!("no notes in {d}"))
+        .iter()
+        .filter_map(|n| n.as_str().map(str::to_string))
+        .collect()
+}
+
+/// doctor names each MCP role (D7): its ARN, account, verbs and where it
+/// is assumed from, the undo's `sqs:SendMessage` for a role that deletes,
+/// the verbs that still go out as the base identity, and that it has
+/// checked none of it against AWS.
+#[tokio::test]
+async fn doctor_names_each_role_and_what_it_has_not_checked() {
+    let cfg = crate::config::parse(
+        "mcp.role.deploys.role_arn = \"arn:aws:iam::123456789012:role/EbmanAgentDeploy\"\n\
+         mcp.role.deploys.verbs = \"deploy,restart\"\n\
+         mcp.role.deploys.source_profile = \"ops\"\n\
+         mcp.role.dlq.role_arn = \"arn:aws:iam::111122223333:role/EbmanAgentDlq\"\n\
+         mcp.role.dlq.verbs = \"dlq_delete\"\n",
+    );
+    let n = doctor_notes(&Server::with_config(true, false, WriteScope::All, cfg)).await;
+    let deploys = n
+        .iter()
+        .find(|n| n.contains("Role `deploys`"))
+        .unwrap_or_else(|| panic!("{n:#?}"));
+    for part in [
+        "arn:aws:iam::123456789012:role/EbmanAgentDeploy",
+        "account 123456789012",
+        "carries deploy, restart",
+        "from profile `ops`",
+    ] {
+        assert!(deploys.contains(part), "{part}: {deploys}");
+    }
+    assert!(!deploys.contains("SendMessage"), "{deploys}");
+    let dlq = n
+        .iter()
+        .find(|n| n.contains("Role `dlq`"))
+        .unwrap_or_else(|| panic!("{n:#?}"));
+    assert!(dlq.contains("account 111122223333"), "{dlq}");
+    assert!(
+        dlq.contains("the credentials of the write's own call"),
+        "{dlq}"
+    );
+    assert!(
+        dlq.contains("must allow sqs:SendMessage as well as sqs:DeleteMessage"),
+        "{dlq}"
+    );
+    let base = n
+        .iter()
+        .find(|n| n.contains("have no role"))
+        .unwrap_or_else(|| panic!("{n:#?}"));
+    assert!(base.contains("terminate"), "{base}");
+    assert!(
+        !base.contains("restart"),
+        "a mapped verb is not unmapped: {base}"
+    );
+    assert!(
+        n.iter().any(|n| n.contains("doctor reads no AWS")),
+        "{n:#?}"
+    );
+}
+
+/// With no role and strict mode off, doctor says nothing about roles:
+/// every write goes out as the base identity, as it always has.
+#[tokio::test]
+async fn doctor_says_nothing_of_roles_when_none_are_configured() {
+    let n = doctor_notes(&Server::with_config(
+        true,
+        false,
+        WriteScope::All,
+        crate::config::Config::default(),
+    ))
+    .await;
+    assert!(
+        !n.iter()
+            .any(|n| n.contains("role") || n.contains("doctor reads no AWS")),
+        "{n:#?}"
+    );
+}
+
+/// Strict mode names the verbs it closes on THIS connection: in its
+/// write surface and mapped to no role.
+#[tokio::test]
+async fn doctor_names_what_require_role_closes_here() {
+    let cfg = crate::config::parse(
+        "mcp.require_role = true\n\
+         mcp.role.deploys.role_arn = \"arn:aws:iam::123456789012:role/EbmanAgentDeploy\"\n\
+         mcp.role.deploys.verbs = \"deploy\"\n",
+    );
+    let scope = WriteScope::Only(vec!["deploy".into(), "restart".into()]);
+    let n = doctor_notes(&Server::with_config(true, false, scope, cfg)).await;
+    let strict = n
+        .iter()
+        .find(|n| n.contains("mcp.require_role is set"))
+        .unwrap_or_else(|| panic!("{n:#?}"));
+    assert!(strict.contains("closes: restart."), "{strict}");
+    assert!(
+        !strict.contains("terminate"),
+        "not in this surface: {strict}"
+    );
+    assert!(!n.iter().any(|n| n.contains("have no role")), "{n:#?}");
+}
+
+/// A role config that cannot be acted on is the one role note: every MCP
+/// write refuses until it is fixed.
+#[tokio::test]
+async fn doctor_says_an_unreadable_role_config_closes_every_write() {
+    let cfg = crate::config::parse(
+        "mcp.role.deploys.role_arn = \"not-an-arn\"\n\
+         mcp.role.deploys.verbs = \"deploy\"\n",
+    );
+    let n = doctor_notes(&Server::with_config(true, false, WriteScope::All, cfg)).await;
+    let bad: Vec<&String> = n.iter().filter(|n| n.contains("role")).collect();
+    assert_eq!(bad.len(), 1, "{n:#?}");
+    assert!(bad[0].contains("rule=role_config_unreadable"), "{}", bad[0]);
+    assert!(bad[0].contains("not-an-arn"), "{}", bad[0]);
+}

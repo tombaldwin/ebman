@@ -287,7 +287,7 @@ fn read_tool_table() -> Value {
         },
         {
             "name": "doctor",
-            "description": "What THIS connection can and cannot do, and why. Reports the ebman build, what your client declared at handshake, the write surface in force, and the standing restrictions the operator has set. Call this before reporting a capability as missing: most of what looks like a gap in ebman is a client that does not carry a feature, or an operator who has forbidden something deliberately. Reads no AWS and takes no arguments.",
+            "description": "What THIS connection can and cannot do, and why. Reports the ebman build, what your client declared at handshake, the write surface in force, the standing restrictions the operator has set, and the roles MCP writes go out under. Call this before reporting a capability as missing: most of what looks like a gap in ebman is a client that does not carry a feature, or an operator who has forbidden something deliberately. Reads no AWS and takes no arguments.",
             "inputSchema": {"type": "object", "properties": {}}
         },
         {
@@ -1319,11 +1319,11 @@ impl Server {
         let all_refused = self.safety_cfg.safety_read_only || unreadable || frozen;
 
         // One concern each, in the order an agent should read them. A
-        // new section (the role, at assume-role slice 5) is a method of
-        // its own, not more of this function.
+        // new section is a method of its own, not more of this function.
         let mut notes = self.trust_notes(elicits);
         notes.extend(self.restriction_notes(unreadable, freeze.as_ref()));
         notes.extend(self.reach_notes(elicits, unreadable));
+        notes.extend(self.role_notes());
         notes.extend(self.surface_notes());
 
         format!(
