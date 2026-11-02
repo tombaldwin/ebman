@@ -45,14 +45,82 @@ impl ProbeOutcome {
         }
     }
 
-    /// The warning to surface when coverage silently shrank.
-    pub(crate) fn coverage_warning(&self, rule: &str, env: &str) -> Option<String> {
+    /// The gap to surface when coverage silently shrank.
+    pub(crate) fn coverage_warning(&self, rule: &str, env: &str) -> Option<CoverageGap> {
         match self {
-            Self::Unknown(why) => Some(format!(
+            Self::Unknown(why) => Some(CoverageGap::for_env(rule, env, why)),
+            _ => None,
+        }
+    }
+}
+
+/// A lint check that could not run, and why. Never a clean result.
+///
+/// A type rather than the sentence it renders as, so a gap is found by
+/// its rule: `explain_verdict` used to take a warning's first word as
+/// the rule id, which held only while one formatter wrote every warning
+/// it saw (`docs/design/coverage-gaps.md`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CoverageGap {
+    /// The rule that did not run; `None` when the whole lint did not.
+    pub rule: Option<String>,
+    /// What it did not run against.
+    pub scope: GapScope,
+    pub why: String,
+}
+
+/// What a [`CoverageGap`] did not run against.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum GapScope {
+    Env(String),
+    /// A custom platform branch: EBL015 is account-level, and dates
+    /// each branch separately.
+    Branch(String),
+}
+
+impl CoverageGap {
+    /// A rule that could not be evaluated for one environment.
+    pub(crate) fn for_env(rule: &str, env: &str, why: &str) -> Self {
+        Self {
+            rule: Some(rule.to_string()),
+            scope: GapScope::Env(env.to_string()),
+            why: why.to_string(),
+        }
+    }
+
+    /// A rule that could not be evaluated for one platform branch.
+    pub(crate) fn for_branch(rule: &str, branch: &str, why: &str) -> Self {
+        Self {
+            rule: Some(rule.to_string()),
+            scope: GapScope::Branch(branch.to_string()),
+            why: why.to_string(),
+        }
+    }
+
+    /// The whole lint could not run for an environment.
+    pub(crate) fn whole_lint(env: &str, why: &str) -> Self {
+        Self {
+            rule: None,
+            scope: GapScope::Env(env.to_string()),
+            why: why.to_string(),
+        }
+    }
+}
+
+/// The sentences each surface has always shown, byte for byte.
+impl std::fmt::Display for CoverageGap {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let why = &self.why;
+        match (&self.rule, &self.scope) {
+            (None, _) => write!(f, "lint could not run: {why}"),
+            (Some(rule), GapScope::Env(env)) => write!(
+                f,
                 "{rule} could not be evaluated for {env}: {why} — this is \
                  NOT a clean result, the check did not run"
-            )),
-            _ => None,
+            ),
+            (Some(rule), GapScope::Branch(branch)) => {
+                write!(f, "{rule} skipped for '{branch}' — {why}")
+            }
         }
     }
 }
@@ -195,7 +263,7 @@ pub(crate) struct EnvLintInputs {
     /// is that the skip was silent, so `--json` reported the same thing
     /// for "checked, clean" and "IAM denied the probe". These carry the
     /// difference out to the operator.
-    pub coverage_warnings: Vec<String>,
+    pub coverage_warnings: Vec<CoverageGap>,
     /// EBL011's input: the worker DLQ depth. Not fetched here — the
     /// lint path does not poll queues — so it is `None` from
     /// `fetch_env_lint_inputs`, and the TUI fills it from the depth it
@@ -474,7 +542,7 @@ pub(crate) fn input_gaps(
     tags_err: Option<&str>,
     health_err: Option<&str>,
     options: &[(String, String, String)],
-) -> Vec<String> {
+) -> Vec<CoverageGap> {
     let mut gaps = Vec::new();
     if let Platforms::Unavailable(why) = platforms {
         if ebl008_could_fire(disabled, env) {
@@ -504,7 +572,7 @@ pub(crate) fn input_gaps(
 pub(crate) async fn fetch_stale_platform_issues(
     aws: &aws::AwsClient,
     now: chrono::DateTime<chrono::Utc>,
-) -> Result<(Vec<lint::Issue>, Vec<String>), String> {
+) -> Result<(Vec<lint::Issue>, Vec<CoverageGap>), String> {
     let platforms = aws
         .list_custom_platforms()
         .await
@@ -515,14 +583,16 @@ pub(crate) async fn fetch_stale_platform_issues(
         by_branch.entry(p.branch.clone()).or_default().push(p.arn);
     }
     let mut dated: Vec<(String, chrono::DateTime<chrono::Utc>)> = Vec::new();
-    let mut warnings: Vec<String> = Vec::new();
+    let mut warnings: Vec<CoverageGap> = Vec::new();
     for (branch, arns) in by_branch {
         match aws.latest_platform_version_date(&arns).await {
             Ok(Some(latest)) => dated.push((branch, latest)),
             // No version reported a date: skip, never false-fire.
             Ok(None) => {}
-            Err(e) => warnings.push(format!(
-                "EBL015 skipped for '{branch}' — DescribePlatformVersion: {e}"
+            Err(e) => warnings.push(CoverageGap::for_branch(
+                "EBL015",
+                &branch,
+                &format!("DescribePlatformVersion: {e}"),
             )),
         }
     }
@@ -571,7 +641,7 @@ pub(crate) enum ExplainVerdict<'a> {
     /// The rule could not be evaluated: its input fetch or probe
     /// failed. Saying "doesn't fire" here would be a clean bill of
     /// health for a check that never ran.
-    NotEvaluated(&'a str),
+    NotEvaluated(&'a CoverageGap),
     /// Evaluated, and it does not fire.
     DoesNotFire,
 }
@@ -581,19 +651,19 @@ pub(crate) enum ExplainVerdict<'a> {
 /// The TUI's own copy of the assembly flattened a failed tag fetch into
 /// "no tags", so EBL010 FIRED for every required tag on an env whose
 /// tags were never read — and a failed fetch of any other input read as
-/// "doesn't fire". Coverage warnings lead with the rule id (see
-/// `ProbeOutcome::coverage_warning`), which is how one is matched here.
+/// "doesn't fire". A gap is matched by its rule; a whole-lint gap names
+/// none, and the caller that has one has no issues to explain either.
 pub(crate) fn explain_verdict<'a>(
     rule_id: &str,
     issues: &'a [lint::Issue],
-    coverage_warnings: &'a [String],
+    coverage_warnings: &'a [CoverageGap],
 ) -> ExplainVerdict<'a> {
     if let Some(issue) = issues.iter().find(|i| i.rule_id == rule_id) {
         return ExplainVerdict::Fires(issue);
     }
     match coverage_warnings
         .iter()
-        .find(|w| w.split_whitespace().next() == Some(rule_id))
+        .find(|w| w.rule.as_deref() == Some(rule_id))
     {
         Some(w) => ExplainVerdict::NotEvaluated(w),
         None => ExplainVerdict::DoesNotFire,
@@ -615,7 +685,7 @@ pub(crate) fn run_rules_for_env(
 
 #[cfg(test)]
 mod explain_tests {
-    use super::{explain_verdict, ExplainVerdict};
+    use super::{explain_verdict, CoverageGap, ExplainVerdict};
     use crate::lint;
 
     fn issue(rule: &str) -> lint::Issue {
@@ -644,10 +714,11 @@ mod explain_tests {
     /// that never ran.
     #[test]
     fn a_rule_that_could_not_run_says_so() {
-        let warnings = vec![
-            "EBL010 could not be evaluated for api-prod: ListTagsForResource failed: AccessDenied"
-                .to_string(),
-        ];
+        let warnings = vec![CoverageGap::for_env(
+            "EBL010",
+            "api-prod",
+            "ListTagsForResource failed: AccessDenied",
+        )];
         assert_eq!(
             explain_verdict("EBL010", &[], &warnings),
             ExplainVerdict::NotEvaluated(&warnings[0])
@@ -659,7 +730,7 @@ mod explain_tests {
     #[test]
     fn a_finding_stands_beside_another_rules_lost_coverage() {
         let issues = vec![issue("EBL010")];
-        let warnings = vec!["EBL012 could not be evaluated for api-prod: throttled".to_string()];
+        let warnings = vec![CoverageGap::for_env("EBL012", "api-prod", "throttled")];
         assert_eq!(
             explain_verdict("EBL010", &issues, &warnings),
             ExplainVerdict::Fires(&issues[0])
@@ -674,17 +745,45 @@ mod explain_tests {
         );
     }
 
-    /// Matched on the rule id as a WORD: another rule's warning, or one
-    /// that merely mentions this id later on, is not this rule's.
+    /// Matched on the gap's rule: another rule's gap, one that merely
+    /// mentions this id in its reason, one whose id merely starts with
+    /// it, and a whole-lint gap are not this rule's.
     #[test]
     fn another_rules_lost_coverage_is_not_this_rules() {
         let warnings = vec![
-            "EBL012 could not be evaluated for api-prod: see EBL010 too".to_string(),
-            "EBL0100 could not be evaluated".to_string(),
+            CoverageGap::for_env("EBL012", "api-prod", "see EBL010 too"),
+            CoverageGap::for_env("EBL0100", "api-prod", "throttled"),
+            CoverageGap::whole_lint("api-prod", "EBL010 could not load"),
         ];
         assert_eq!(
             explain_verdict("EBL010", &[], &warnings),
             ExplainVerdict::DoesNotFire
+        );
+    }
+}
+
+#[cfg(test)]
+mod coverage_gap_tests {
+    use super::CoverageGap;
+
+    /// Each sentence as every surface showed it before the type: the
+    /// move from strings is byte-identical (CLI degrade lines, the TUI
+    /// overlay, the deploy modal, MCP `skipped_envs`).
+    #[test]
+    fn a_gap_renders_the_sentence_each_surface_always_showed() {
+        assert_eq!(
+            CoverageGap::for_env("EBL020", "api-prod", "AccessDenied").to_string(),
+            "EBL020 could not be evaluated for api-prod: AccessDenied — this is NOT a clean \
+             result, the check did not run"
+        );
+        assert_eq!(
+            CoverageGap::for_branch("EBL015", "custom-node", "DescribePlatformVersion: boom")
+                .to_string(),
+            "EBL015 skipped for 'custom-node' — DescribePlatformVersion: boom"
+        );
+        assert_eq!(
+            CoverageGap::whole_lint("api-prod", "DescribeConfigurationSettings failed").to_string(),
+            "lint could not run: DescribeConfigurationSettings failed"
         );
     }
 }
@@ -703,7 +802,8 @@ mod probe_outcome_tests {
         assert_eq!(denied.verdict(), None, "the rule still skips");
         let warn = denied
             .coverage_warning("EBL020", "api-prod")
-            .expect("an unrunnable check must say so");
+            .expect("an unrunnable check must say so")
+            .to_string();
         assert!(
             warn.contains("EBL020") && warn.contains("api-prod"),
             "{warn}"

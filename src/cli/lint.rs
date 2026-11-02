@@ -810,7 +810,7 @@ where
             // AccessDenied on iam:SimulatePrincipalPolicy look
             // identical to a passing check, in output that gates CI.
             for w in &inputs.coverage_warnings {
-                report.degrade(w.clone());
+                report.degrade(w.to_string());
             }
             let mut issues = run_rules_for_env(&rules, env, &inputs, &safety_cfg.required_tags);
             filter_issues(&mut issues, severity_filter, rule_filter);
@@ -884,7 +884,7 @@ where
                     // degrade use the helper, and is blind to a site
                     // that should and does not.
                     for w in warnings {
-                        report.degrade(w);
+                        report.degrade(w.to_string());
                     }
                     filter_issues(&mut issues, severity_filter, rule_filter);
                     if let Some(region) = region_opt {

@@ -1223,7 +1223,10 @@ async fn a_lint_that_could_not_run_is_shown_in_the_confirm_modal() {
         let mut modal = mk_modal(Action::Rebuild, "api-prod");
         modal.preflight.lint.settle_now(Ok(crate::app::ConfirmLint {
             issues: Vec::new(),
-            not_run: why.map(str::to_owned).into_iter().collect(),
+            not_run: why
+                .map(|w| crate::lint::inputs::CoverageGap::whole_lint("api-prod", w))
+                .into_iter()
+                .collect(),
         }));
         app.action_flow = Some(crate::app::ActionFlow::Confirm(modal));
         render(&mut app, 160, 40)

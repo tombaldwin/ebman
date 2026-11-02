@@ -22,7 +22,7 @@ use super::{
 pub(crate) fn render_lint_overlay(
     env_name: &str,
     issues: &[crate::lint::Issue],
-    coverage_warnings: &[String],
+    coverage_warnings: &[crate::lint::inputs::CoverageGap],
 ) -> String {
     use crate::lint::Severity;
     // Checks that could not run, listed — never folded into a ✓. A

@@ -175,18 +175,6 @@ evidence on 2026-11-02 (archived).*
    test-support module split into `scan` and `packaging`. *0.45 release
    review.*
 
-4. *(architecture, upgraded 2026-11-02: nine modules)* **Coverage gaps are untyped strings.**
-   Design note drafted: `docs/design/coverage-gaps.md` (output
-   byte-identical; `explain_verdict` matches by rule). `explain_verdict`
-   identifies a warning by its first word; today one formatter,
-   `ProbeOutcome::coverage_warning`, produces every warning it sees, so
-   that holds. The stronger case: the confirm modal's `not_run:
-   Vec<String>` mixes whole-lint failures ("lint could not run: …", no
-   rule id) with per-rule gaps, MCP's `rule_skipped` is another format,
-   and `fetch_stale_platform_issues`'s branch warnings a third. A typed
-   `CoverageGap { rule: Option<RuleId>, why }` rendered at each surface.
-   *0.45 release review.*
-
 *Left in BACKLOG.md: `Server::refuse(..)` for the six `Audited::record`
 callers, whose profile choices differ on purpose and need settling
 first.*

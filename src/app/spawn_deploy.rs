@@ -904,7 +904,10 @@ impl App {
                         ticket,
                         answer: PreflightAnswer::Lint {
                             issues: Vec::new(),
-                            not_run: vec![format!("lint could not run: {e}")],
+                            not_run: vec![crate::lint::inputs::CoverageGap::whole_lint(
+                                &env_name,
+                                &e.to_string(),
+                            )],
                         },
                     });
                     return;
@@ -980,7 +983,13 @@ impl App {
                 // Was `Err(_) => Vec::new()`: a failed option fetch
                 // produced an empty pane — the same thing a clean env
                 // produces — right before a deploy.
-                Err(e) => (Vec::new(), vec![format!("lint could not run: {e}")]),
+                Err(e) => (
+                    Vec::new(),
+                    vec![crate::lint::inputs::CoverageGap::whole_lint(
+                        &env_name,
+                        &e.to_string(),
+                    )],
+                ),
             };
             let _ = tx.send(AppMsg::Preflight {
                 gen,

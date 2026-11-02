@@ -454,7 +454,7 @@ pub(crate) struct ConfirmLint {
     /// or one rule's input. Kept apart from `issues` because an empty
     /// issue list is what a CLEAN env renders as — nothing — and "could
     /// not check" must not look like that immediately before a deploy.
-    pub not_run: Vec<String>,
+    pub not_run: Vec<crate::lint::inputs::CoverageGap>,
 }
 
 /// Helper carrying the optional parameters needed by the new parameterised

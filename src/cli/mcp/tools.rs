@@ -1007,7 +1007,7 @@ impl Server {
                                 inputs
                                     .coverage_warnings
                                     .iter()
-                                    .map(|w| with_credential_fix(&profile, w)),
+                                    .map(|w| with_credential_fix(&profile, &w.to_string())),
                             );
                             all_issues.extend(run_rules_for_env(
                                 &rules,
@@ -1043,7 +1043,7 @@ impl Server {
                             skipped.extend(
                                 branch_warnings
                                     .iter()
-                                    .map(|w| with_credential_fix(&profile, w)),
+                                    .map(|w| with_credential_fix(&profile, &w.to_string())),
                             );
                         }
                         Err(e) => skipped.push(rule_skipped(&profile, "EBL015", &e.to_string())),

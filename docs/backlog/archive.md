@@ -5851,3 +5851,21 @@ a `--read-only` server.
   refusal and the message, and `lint`'s dry run takes only the message.
   A split would add a seam no caller uses; the pure half is already
   testable through `write_refusal_unaudited`.
+
+- [x] *(architecture, upgraded 2026-11-02: nine modules)* **Coverage gaps are untyped strings.**
+   Design note drafted: `docs/design/coverage-gaps.md` (output
+   byte-identical; `explain_verdict` matches by rule). `explain_verdict`
+   identifies a warning by its first word; today one formatter,
+   `ProbeOutcome::coverage_warning`, produces every warning it sees, so
+   that holds. The stronger case: the confirm modal's `not_run:
+   Vec<String>` mixes whole-lint failures ("lint could not run: …", no
+   rule id) with per-rule gaps, MCP's `rule_skipped` is another format,
+   and `fetch_stale_platform_issues`'s branch warnings a third. A typed
+   `CoverageGap { rule: Option<RuleId>, why }` rendered at each surface.
+   *0.45 release review.*
+
+  Done 2026-11-02 as the note says: `lint::inputs::CoverageGap { rule,
+  scope, why }` with one `Display` (byte-identical, pinned per
+  sentence), `explain_verdict` matching `gap.rule`, every carrier typed
+  (`EnvLintInputs`, `LintRun`, the pre-flight `not_run`), renderers call
+  `to_string()` at the edge. Three mutations CAUGHT.

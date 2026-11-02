@@ -61,7 +61,7 @@ pub(crate) fn dlq_depth_gap(
     env: &Environment,
     disabled: &[String],
     dlq: &WorkerDlq,
-) -> Option<String> {
+) -> Option<crate::lint::inputs::CoverageGap> {
     let WorkerDlq::Unknown(why) = dlq else {
         return None;
     };
@@ -190,7 +190,7 @@ impl LintSnapshot {
 /// A finished run: what fired, and what could not be checked.
 pub(crate) struct LintRun {
     pub(crate) issues: Vec<crate::lint::Issue>,
-    pub(crate) coverage_warnings: Vec<String>,
+    pub(crate) coverage_warnings: Vec<crate::lint::inputs::CoverageGap>,
 }
 
 /// `:lint` and `:explain`: the shared assembly, finished from the

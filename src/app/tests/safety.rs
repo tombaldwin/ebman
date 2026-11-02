@@ -333,20 +333,18 @@ async fn a_lint_that_could_not_run_reaches_the_modal_as_a_reason() {
         ticket: preflight_ticket(&app, |p| p.lint.ticket_in_flight()),
         answer: PreflightAnswer::Lint {
             issues: vec![],
-            not_run: vec![
-                "lint could not run: DescribeConfigurationSettings failed: AccessDenied".into(),
-            ],
+            not_run: vec![crate::lint::inputs::CoverageGap::whole_lint(
+                "prod",
+                "DescribeConfigurationSettings failed: AccessDenied",
+            )],
         },
     });
     match &app.action_flow {
         Some(ActionFlow::Confirm(modal)) => {
             assert!(!modal.preflight.lint.in_flight());
             assert_eq!(
-                modal.preflight.lint.ready().unwrap().not_run,
-                vec![
-                    "lint could not run: DescribeConfigurationSettings failed: AccessDenied"
-                        .to_string()
-                ]
+                modal.preflight.lint.ready().unwrap().not_run[0].to_string(),
+                "lint could not run: DescribeConfigurationSettings failed: AccessDenied"
             );
         }
         _ => panic!("expected confirm modal open"),

@@ -545,7 +545,7 @@ pub(crate) enum PreflightAnswer {
         /// (client or option fetch failed) or one rule's input. Listed
         /// because an empty `issues` renders as nothing, which is also
         /// how a clean result renders.
-        not_run: Vec<String>,
+        not_run: Vec<crate::lint::inputs::CoverageGap>,
     },
 }
 

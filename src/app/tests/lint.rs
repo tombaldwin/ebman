@@ -213,10 +213,11 @@ fn no_lint_caller_flattens_a_failed_tag_fetch_into_an_empty_list() {
 /// started degrading on it.
 #[test]
 fn lint_overlay_never_shows_a_clean_result_over_checks_that_did_not_run() {
-    let warnings = vec![
-        "EBL012 could not be evaluated for prod-api: DescribeEnvironmentHealth failed: AccessDenied"
-            .to_string(),
-    ];
+    let warnings = vec![crate::lint::inputs::CoverageGap::for_env(
+        "EBL012",
+        "prod-api",
+        "DescribeEnvironmentHealth failed: AccessDenied",
+    )];
     let body = crate::app::cmd_misc::render_lint_overlay("prod-api", &[], &warnings);
     assert!(
         !body.contains('✓'),
@@ -238,7 +239,11 @@ fn lint_overlay_lists_lost_coverage_beside_findings() {
         suggestion: None,
         fields: Default::default(),
     };
-    let warnings = vec!["EBL010 could not be evaluated for prod-api: throttled".to_string()];
+    let warnings = vec![crate::lint::inputs::CoverageGap::for_env(
+        "EBL010",
+        "prod-api",
+        "throttled",
+    )];
     let body = crate::app::cmd_misc::render_lint_overlay("prod-api", &[issue], &warnings);
     assert!(body.contains("EBL001 fired"), "{body}");
     assert!(body.contains("EBL010 could not be evaluated"), "{body}");
@@ -337,10 +342,15 @@ fn a_cached_input_that_is_missing_is_reported_not_read_as_clean() {
     let gaps = input_gaps(&web, &[], &[], &waiting, None, None, &[]);
     assert_eq!(gaps.len(), 1, "{gaps:?}");
     assert!(
-        gaps[0].starts_with("EBL008 could not be evaluated for api"),
+        gaps[0]
+            .to_string()
+            .starts_with("EBL008 could not be evaluated for api"),
         "{gaps:?}"
     );
-    assert!(gaps[0].contains("has not loaded yet"), "{gaps:?}");
+    assert!(
+        gaps[0].to_string().contains("has not loaded yet"),
+        "{gaps:?}"
+    );
     // And `:explain EBL008` says so, rather than "doesn't fire".
     assert!(matches!(
         explain_verdict("EBL008", &[], &gaps),
@@ -354,10 +364,10 @@ fn a_cached_input_that_is_missing_is_reported_not_read_as_clean() {
     );
     let gaps = input_gaps(&web, &[], &[], &denied, None, None, &[]);
     assert!(
-        gaps[0].contains("AccessDenied"),
+        gaps[0].to_string().contains("AccessDenied"),
         "a failure names itself: {gaps:?}"
     );
-    assert!(!gaps[0].contains("not loaded"), "{gaps:?}");
+    assert!(!gaps[0].to_string().contains("not loaded"), "{gaps:?}");
     assert!(input_gaps(&web, &[], &[], &loaded, None, None, &[]).is_empty());
     let off = vec!["EBL008".to_string()];
     assert!(input_gaps(&web, &off, &[], &waiting, None, None, &[]).is_empty());
@@ -402,7 +412,8 @@ fn a_cached_input_that_is_missing_is_reported_not_read_as_clean() {
     let unknown = WorkerDlq::Unknown("the last worker-queue check failed".into());
     let gap = dlq_depth_gap(&worker, &[], &unknown).expect("a worker with no answer");
     assert!(
-        gap.starts_with("EBL011 could not be evaluated for jobs"),
+        gap.to_string()
+            .starts_with("EBL011 could not be evaluated for jobs"),
         "{gap}"
     );
     assert!(dlq_depth_gap(&worker, &[], &WorkerDlq::NoDlq).is_none());
@@ -434,7 +445,7 @@ fn the_pre_deploy_lint_reports_a_failed_run() {
         "a failed lint must not become an empty — i.e. clean — issue list"
     );
     assert!(
-        code.matches("lint could not run").count() >= 2,
+        code.matches("CoverageGap::whole_lint(").count() >= 2,
         "both whole-lint failure paths (client, option fetch) must carry a reason"
     );
     // And the per-rule inputs: a denied tag or health fetch was dropped
@@ -523,14 +534,18 @@ fn a_failed_tag_or_health_fetch_is_listed_as_not_run() {
         &[],
     );
     assert_eq!(gaps.len(), 2, "{gaps:?}");
-    assert!(gaps[0].starts_with("EBL010 could not be evaluated for api-prod"));
-    assert!(gaps[1].starts_with("EBL012 could not be evaluated for api-prod"));
+    assert!(gaps[0]
+        .to_string()
+        .starts_with("EBL010 could not be evaluated for api-prod"));
+    assert!(gaps[1]
+        .to_string()
+        .starts_with("EBL012 could not be evaluated for api-prod"));
     // The error already names its call: no op prefixed a second time.
     for (gap, op) in gaps
         .iter()
         .zip(["ListTagsForResource", "DescribeEnvironmentHealth"])
     {
-        assert_eq!(gap.matches(op).count(), 1, "{gap}");
+        assert_eq!(gap.to_string().matches(op).count(), 1, "{gap}");
     }
 }
 
@@ -657,7 +672,7 @@ async fn the_lint_snapshot_reads_the_caches_as_lint_may_use_them() {
     assert!(!run
         .coverage_warnings
         .iter()
-        .any(|w| w.starts_with("EBL011")));
+        .any(|w| w.rule.as_deref() == Some("EBL011")));
 
     // ...but not once the last check failed: no verdict, and a gap.
     app.caches.worker_dlq.reconcile(home_key("jobs"), Err(()));
@@ -671,7 +686,7 @@ async fn the_lint_snapshot_reads_the_caches_as_lint_may_use_them() {
     assert!(
         run.coverage_warnings
             .iter()
-            .any(|w| w.starts_with("EBL011")),
+            .any(|w| w.rule.as_deref() == Some("EBL011")),
         "{:?}",
         run.coverage_warnings
     );

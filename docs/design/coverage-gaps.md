@@ -1,6 +1,6 @@
 # Coverage gaps as a type
 
-**Status: drafted 2026-11-02, not yet built.** PLAN window item, from
+**Status: drafted and built 2026-11-02.** PLAN window item, from
 the 0.45 release review. It changes no output an operator or an agent
 reads; what changes is that a gap is matched by its rule, not by the
 first word of a sentence.
@@ -43,7 +43,7 @@ pub(crate) struct CoverageGap {
     pub why: String,
 }
 
-pub(crate) enum GapScope { Env(String), Account, Branch(String) }
+pub(crate) enum GapScope { Env(String), Branch(String) }
 ```
 
 - **One `Display`**, which renders today's `coverage_warning` sentence
@@ -57,8 +57,8 @@ pub(crate) enum GapScope { Env(String), Account, Branch(String) }
   The renderers (`cli/lint.rs`'s `report.degrade`, the TUI overlay, the
   deploy modal, MCP's `skipped_envs`) call `to_string()` at the edge.
 - **MCP's `rule_skipped` keeps its own wording** (`EBL008 skipped —
-  WHY` and the credential hint), built from a `CoverageGap` with
-  `GapScope::Account`. Its strings are a published result field; an
+  WHY` and the credential hint) and stays a string formatter: nothing
+  matches on it, and it never reaches `explain_verdict`. Its strings are a published result field; an
   agent may match on them, so changing them is a separate, announced
   change, not a side effect of this one.
 
