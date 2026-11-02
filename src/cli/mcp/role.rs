@@ -83,10 +83,7 @@ impl Server {
         // The region the plan's client found the env in, which the base
         // client would have dispatched to; the audit lines' resolution
         // only when the plan recorded none.
-        let region = match &p.plan_region {
-            Some(r) => r.clone(),
-            None => self.audit_region(&p.profile, p.region.as_deref()).await,
-        };
+        let region = self.pending_region(p).await;
         let Some(role) = p.role() else {
             // A verb that maps to a role never goes out without one: a
             // plan that carried none for it is refused, not sent as the

@@ -6618,6 +6618,80 @@ async fn a_role_session_is_assumed_in_the_plan_s_region() {
     assert_eq!(asked[0].0.region.as_deref(), Some("poly-role-3"));
 }
 
+/// The ask and the decline file under the plan's region, as the
+/// session's lines do, so `ebman audit` pairs a write's lines on an EC2
+/// host where only instance metadata names the region.
+#[tokio::test]
+async fn a_declined_write_files_under_the_plan_s_region() {
+    let env = "poly-role-decline-region-probe";
+    let s = role_confirm_server(env, "decline");
+    let plan = s
+        .tool_write_plan(writes::WriteVerb::Restart, &json!({"env": env}))
+        .await
+        .unwrap_or_else(|e| panic!("{e}"));
+    let token = serde_json::from_str::<Value>(&plan).expect("json")["confirm_token"]
+        .as_str()
+        .expect("a token")
+        .to_string();
+    s.writes
+        .lock()
+        .await
+        .pending
+        .as_mut()
+        .expect("installed")
+        .plan_region = Some("poly-role-3".into());
+    let before = crate::audit::delta::mark();
+    let _ = s
+        .tool_confirm_action(&json!({"confirm_token": token}))
+        .await
+        .expect_err("declined");
+    let lines = crate::audit::delta::lines_for(&before, env);
+    for stage in ["stage=asked", "rule=not_approved"] {
+        let line = lines
+            .iter()
+            .find(|l| l.contains(stage))
+            .unwrap_or_else(|| panic!("{stage}: {lines:#?}"));
+        assert!(line.contains("region=poly-role-3"), "{line}");
+    }
+}
+
+/// A freeze declared between plan and confirm refuses under the plan's
+/// region too.
+#[tokio::test]
+async fn a_write_frozen_at_confirm_files_under_the_plan_s_region() {
+    let env = "poly-role-frozen-region-probe";
+    let s = role_confirm_server(env, "accept");
+    let plan = s
+        .tool_write_plan(writes::WriteVerb::Restart, &json!({"env": env}))
+        .await
+        .unwrap_or_else(|e| panic!("{e}"));
+    let token = serde_json::from_str::<Value>(&plan).expect("json")["confirm_token"]
+        .as_str()
+        .expect("a token")
+        .to_string();
+    s.writes
+        .lock()
+        .await
+        .pending
+        .as_mut()
+        .expect("installed")
+        .plan_region = Some("poly-role-3".into());
+    s.freeze_store()
+        .declare_persistent("incident #91", true)
+        .expect("frozen");
+    let before = crate::audit::delta::mark();
+    let _ = s
+        .tool_confirm_action(&json!({"confirm_token": token}))
+        .await
+        .expect_err("frozen");
+    let lines = crate::audit::delta::lines_for(&before, env);
+    let line = lines
+        .iter()
+        .find(|l| l.contains("rule=frozen"))
+        .unwrap_or_else(|| panic!("{lines:#?}"));
+    assert!(line.contains("region=poly-role-3"), "{line}");
+}
+
 /// A session in another region than the plan's refuses: the same env
 /// name there can be another environment, and the account check alone
 /// passes it.

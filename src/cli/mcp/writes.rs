@@ -301,6 +301,19 @@ impl Server {
 }
 
 impl Server {
+    /// The region every line of a planned write files under: the one the
+    /// plan's client found the env in, so the ask, any refusal and the
+    /// session's dispatch agree, and `ebman audit` pairs them. Read by
+    /// the SDK, instance metadata included, which `audit_region` cannot
+    /// read: on an EC2 host it answered `-` while the dispatch named the
+    /// region. `audit_region` only when the plan recorded none (demo).
+    pub(super) async fn pending_region(&self, p: &PendingWrite) -> String {
+        match &p.plan_region {
+            Some(r) => r.clone(),
+            None => self.audit_region(&p.profile, p.region.as_deref()).await,
+        }
+    }
+
     /// The region a refusal or ask line records: the one the write's
     /// client would have resolved, as its dispatched and completed lines
     /// do. `"-"` was written whenever the call named none, so a refusal
@@ -2180,7 +2193,9 @@ impl Server {
                 .gate_refusal(
                     &p.env,
                     &p.profile,
-                    p.region.as_deref(),
+                    // The plan's region, so this line files with the
+                    // write's others.
+                    p.plan_region.as_deref().or(p.region.as_deref()),
                     p.verb.label(),
                     &p.role_check,
                 )
@@ -2261,9 +2276,7 @@ impl Server {
         let was_actually_asked =
             !matches!(outcome, AskOutcome::NotAsked | AskOutcome::Undeliverable);
         if was_actually_asked && !matches!(self.backend, Backend::Demo) {
-            let region = self
-                .audit_region(&pending.profile, pending.region.as_deref())
-                .await;
+            let region = self.pending_region(&pending).await;
             crate::audit::append_action_asked(
                 None,
                 pending.profile.as_deref(),
@@ -2295,9 +2308,7 @@ impl Server {
             // The remedy names no control, deliberately. The control
             // is a person who has just said no, and an agent that
             // retries a decline is the failure mode here.
-            let region = self
-                .audit_region(&pending.profile, pending.region.as_deref())
-                .await;
+            let region = self.pending_region(&pending).await;
             return Err(WriteError::Refused(Audited::record(
                 pending.profile.as_deref(),
                 &region,
@@ -2320,7 +2331,7 @@ impl Server {
             .gate_refusal(
                 &pending.env,
                 &pending.profile,
-                pending.region.as_deref(),
+                pending.plan_region.as_deref().or(pending.region.as_deref()),
                 pending.verb.label(),
                 &pending.role_check,
             )
