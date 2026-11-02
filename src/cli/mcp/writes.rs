@@ -1929,7 +1929,10 @@ impl Server {
         let role = match &role_check {
             crate::config::RoleCheck::Mapped { roles } => {
                 match role_for_env(roles, &env, &caller) {
-                    Ok(r) => Some(r),
+                    Ok(r) => Some(PlanRole {
+                        assumes: !matches!(self.backend, Backend::Demo),
+                        ..r
+                    }),
                     Err(refusal) => {
                         let audit_profile =
                             profile.clone().or_else(|| self.ambient_profile.clone());

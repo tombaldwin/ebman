@@ -2114,6 +2114,7 @@ fn a_plan_resolves_the_role_its_verb_maps_to() {
             name: "EbmanAgentDeploy".into(),
             source_profile: Some("ops".into()),
             external_id: Some("x-1".into()),
+            assumes: true,
         })
     );
     assert_eq!(plan_role(&cfg, WriteVerb::Terminate), None, "unmapped");
@@ -2232,7 +2233,8 @@ async fn the_plan_and_the_ask_name_the_role_the_write_assumes() {
             "arn": "arn:aws:iam::123456789012:role/team/EbmanAgentDeploy",
             "account": "123456789012",
             "name": "EbmanAgentDeploy",
-            "assumed": true,
+            // A demo server assumes nothing (D8).
+            "assumed": false,
         }),
         "{v}"
     );
@@ -2242,9 +2244,26 @@ async fn the_plan_and_the_ask_name_the_role_the_write_assumes() {
     };
     assert!(
         ask.contains(
+            "as arn:aws:iam::123456789012:user/demo; on a live server it would go out as role \
+             `EbmanAgentDeploy` (arn:aws:iam::123456789012:role/team/EbmanAgentDeploy), \
+             assumed for this write alone from profile `ops`, but this demo assumes nothing"
+        ),
+        "{ask}"
+    );
+    // And the same plan as a live server would hold it.
+    let ask = {
+        let mut st = s.writes.lock().await;
+        let p = st.pending.as_mut().expect("installed");
+        if let Some(r) = p.role.as_mut() {
+            r.assumes = true;
+        }
+        ask_summary(p)
+    };
+    assert!(
+        ask.contains(
             "as arn:aws:iam::123456789012:user/demo; it goes out as role `EbmanAgentDeploy` \
              (arn:aws:iam::123456789012:role/team/EbmanAgentDeploy), assumed for this write \
-             alone from profile `ops`"
+             alone from profile `ops`."
         ),
         "{ask}"
     );

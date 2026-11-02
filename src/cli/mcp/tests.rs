@@ -6693,3 +6693,32 @@ async fn doctor_says_an_unreadable_role_config_closes_every_write() {
     assert!(bad[0].contains("rule=role_config_unreadable"), "{}", bad[0]);
     assert!(bad[0].contains("not-an-arn"), "{}", bad[0]);
 }
+
+/// A demo server assumes nothing (D8), so its plan says `assumed: false`
+/// and its dialog says what a live server would do, rather than
+/// claiming a role this write will not go out under.
+#[tokio::test]
+async fn a_demo_plan_does_not_claim_the_role_is_assumed() {
+    let cfg = crate::config::parse(
+        "mcp.role.deploys.role_arn = \"arn:aws:iam::123456789012:role/EbmanAgentDeploy\"\n\
+         mcp.role.deploys.verbs = \"restart\"\n",
+    );
+    let s = Server::with_config(true, false, WriteScope::All, cfg);
+    let env = crate::demo_fixture::envs()[0].name.clone();
+    let plan = s
+        .tool_write_plan(writes::WriteVerb::Restart, &json!({"env": env}))
+        .await
+        .unwrap_or_else(|e| panic!("{e}"));
+    let v: Value = serde_json::from_str(&plan).expect("json");
+    assert_eq!(v["plan"]["role"]["assumed"], json!(false), "{v}");
+    let line = s
+        .writes
+        .lock()
+        .await
+        .pending
+        .as_ref()
+        .and_then(|p| p.role().map(super::role::PlanRole::line))
+        .expect("the plan's role");
+    assert!(line.contains("on a live server it would go out"), "{line}");
+    assert!(line.contains("this demo assumes nothing"), "{line}");
+}

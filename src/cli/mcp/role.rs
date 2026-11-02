@@ -331,6 +331,10 @@ pub(super) struct PlanRole {
     /// operator approved, never a lookup at confirm.
     pub source_profile: Option<String>,
     pub external_id: Option<String>,
+    /// Whether confirm will assume it: not on the demo backend, which
+    /// assumes nothing (D8), so the plan and the dialog must not say it
+    /// does.
+    pub assumes: bool,
 }
 
 impl PlanRole {
@@ -343,8 +347,16 @@ impl PlanRole {
             Some(p) => format!("profile `{}`", sanitize(p, Shown::ASK)),
             None => "that identity".to_string(),
         };
+        let (lead, tail) = if self.assumes {
+            ("it goes out", "")
+        } else {
+            (
+                "on a live server it would go out",
+                ", but this demo assumes nothing",
+            )
+        };
         format!(
-            "; it goes out as role `{}` ({}), assumed for this write alone from {from}",
+            "; {lead} as role `{}` ({}), assumed for this write alone from {from}{tail}",
             sanitize(&self.name, Shown::ASK),
             // Whole: `parse_role_arn` bounds it by IAM's limits, and a
             // value the operator approves is shown whole or refused.
@@ -355,11 +367,12 @@ impl PlanRole {
     /// The plan's `role` field.
     pub(super) fn json(&self) -> String {
         format!(
-            "{{\"config\":{},\"arn\":{},\"account\":{},\"name\":{},\"assumed\":true}}",
+            "{{\"config\":{},\"arn\":{},\"account\":{},\"name\":{},\"assumed\":{}}}",
             util::json_string(&format!("mcp.role.{}", self.key)),
             util::json_string(&self.arn),
             util::json_string(&self.account),
             util::json_string(&self.name),
+            self.assumes,
         )
     }
 }
@@ -374,6 +387,7 @@ impl PlanRole {
             name: m.arn.name.clone(),
             source_profile: m.spec.source_profile.clone(),
             external_id: m.spec.external_id.clone(),
+            assumes: true,
         }
     }
 }
