@@ -52,8 +52,9 @@
 - **An MCP write can go out under a narrower role** (`mcp.role.NAME.*`).
   The role is assumed at confirm, after the yes, for that write alone,
   as a 15-minute session named for the client and the plan, so
-  CloudTrail answers "what did the agent do" without ebman's log, and
-  the role's policy is the ceiling. A role that cannot be assumed
+  CloudTrail can answer "what did the agent do" without ebman's log
+  (for the dead-letter verbs only with an SQS data-event selector:
+  their calls are data events), and the role's policy is the ceiling. A role that cannot be assumed
   refuses the write; it is never sent as you instead.
   `mcp.require_role = true` refuses a verb with no role. It is **not**
   a boundary against an agent that can reach a shell while your own

@@ -470,8 +470,9 @@ ahead unchecked. The role the plan picked is the one confirm uses.
 `doctor` names each role: its ARN, account and verbs, where it is
 assumed from, what `mcp.require_role` closes on the connection, and the
 verbs that still go out as the identity the server runs as. It reads no
-AWS, so it does not say whether a role can be assumed; the plan and the
-confirm check that, and refuse rather than fall back.
+AWS, so it does not say whether a role can be assumed: the plan checks
+the environment's account, the confirm assumes the role, and each
+refuses rather than fall back.
 
 **What a role does not do.** It is not a boundary against an agent that
 can reach a shell while the base identity is admin: that agent can use
@@ -479,10 +480,23 @@ the base credentials without going through ebman. In that setup the
 role is a ceiling for every write that does go through ebman, plus
 attribution in CloudTrail, and nothing more.
 
-**Example policies.** The trust policy lets the identity ebman runs as
-(the role's `source_profile`, or the server's own credentials) assume
-the role, and only under a session name ebman gives it. Keep the
-`sts:ExternalId` condition only if you set `external_id`:
+**What CloudTrail records.** The AssumeRole, and every Elastic
+Beanstalk write and `sqs:PurgeQueue`, are management events, logged by
+default under the session name. `sqs:ReceiveMessage`, `DeleteMessage`
+and `SendMessage` are data events, which CloudTrail logs only for a
+trail with an SQS data-event selector (`resources.type` =
+`AWS::SQS::Queue`). Without one, CloudTrail shows that a `dlq_delete`,
+`dlq_resend` or `dlq_undo` session was assumed but not what it did, and
+ebman's audit log is the record of that.
+
+**Example policies.** Account 111122223333 is where ebman's own
+identity lives and 123456789012 is where the environments are; in a
+single-account setup they are the same account. The trust policy lets
+the identity the role is assumed from (its `source_profile`, or else
+the credentials of the write's own call: its `profile`, or the server's
+ambient ones) assume the role, and only under a session name ebman
+gives it. Keep the `sts:ExternalId` condition only if you set
+`external_id`:
 
 ```json
 {
@@ -499,12 +513,21 @@ the role, and only under a session name ebman gives it. Keep the
 }
 ```
 
-Each write makes one call under the session, so the role policy lists
-exactly those. For the dead-letter verbs, `dlq_delete` reads the queue
-again and then deletes, `dlq_resend` sends to the main queue and then
-deletes, `dlq_purge` purges, and `dlq_undo` sends back to the
-dead-letter queue under its delete's session, which is why a role with
-`dlq_delete` needs `sqs:SendMessage` too:
+The role policy lists exactly the calls ebman makes under the session.
+For the dead-letter verbs, on the dead-letter queue unless said
+otherwise:
+
+- `dlq_delete`: `sqs:ReceiveMessage` (it reads the queue again, since
+  the plan's receipt handles have expired), then `sqs:DeleteMessage`.
+- `dlq_resend`: `sqs:ReceiveMessage`, then `sqs:SendMessage` to the
+  worker queue, then `sqs:DeleteMessage`.
+- `dlq_purge`: `sqs:PurgeQueue`.
+- `dlq_undo`: `sqs:SendMessage`, under its delete's session, which is
+  why a role with `dlq_delete` needs it too.
+
+A queue encrypted with a customer-managed KMS key also needs
+`kms:Decrypt` for every receive and send, and `kms:GenerateDataKey`
+for every send, on that key.
 
 ```json
 {
@@ -517,11 +540,10 @@ dead-letter queue under its delete's session, which is why a role with
 }
 ```
 
-Narrow `Resource` to your worker queues and their dead-letter queues
-(`dlq_resend` sends to the worker queue); add `sqs:PurgeQueue` only to
-a role that lists `dlq_purge`.
+Narrow `Resource` to your worker queues and their dead-letter queues;
+add `sqs:PurgeQueue` only to a role that lists `dlq_purge`.
 
-For the Elastic Beanstalk verbs, ebman's own call is one each:
+For the Elastic Beanstalk verbs, ebman makes one call each:
 `restart` is `elasticbeanstalk:RestartAppServer`, `rebuild` is
 `RebuildEnvironment`, `terminate` is `TerminateEnvironment`, and
 `deploy` and `set_option` are `UpdateEnvironment`. That is not the
