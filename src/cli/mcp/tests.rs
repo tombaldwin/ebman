@@ -6495,6 +6495,25 @@ async fn a_failed_dispatch_under_a_role_names_the_session() {
     assert!(!err.contains("sso login"), "{err}");
 }
 
+/// A session whose account STS did not name refuses: its account cannot
+/// be checked against the role's, so it is not trusted to be it.
+#[tokio::test]
+async fn a_role_session_in_no_named_account_refuses() {
+    let env = "poly-role-no-account-probe";
+    let s = role_confirm_server(env, "accept");
+    let mut unnamed = role_session("123456789012");
+    unnamed.context.account_id = None;
+    s.seams.role_sessions.lock().unwrap().push_back(Ok(unnamed));
+    let before = crate::audit::delta::mark();
+    let err = plan_and_confirm(&s, env).await.expect_err("refused");
+    assert!(err.contains("STS did not say which account"), "{err}");
+    let lines = crate::audit::delta::lines_for(&before, env);
+    assert!(
+        !lines.iter().any(|l| l.contains("stage=dispatched")),
+        "{lines:#?}"
+    );
+}
+
 /// A session in another region than the plan's refuses: the same env
 /// name there can be another environment, and the account check alone
 /// passes it.
