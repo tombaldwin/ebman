@@ -4182,6 +4182,7 @@ async fn a_role_refusal_at_confirm_asks_no_one() {
             dlq_main_url: None,
             role_check: crate::config::RoleCheck::Unmapped { required: true },
             role: None,
+            plan_region: None,
         });
     }
     let (err, out) = call(
@@ -6512,6 +6513,40 @@ async fn a_role_session_in_no_named_account_refuses() {
         !lines.iter().any(|l| l.contains("stage=dispatched")),
         "{lines:#?}"
     );
+}
+
+/// The session is assumed in the region the PLAN's client resolved,
+/// which reads instance metadata, not the audit lines' resolution, which
+/// does not: on an EC2 host with neither `AWS_REGION` nor a profile
+/// region the latter is unknown, and every approved write with a role
+/// was refused.
+#[tokio::test]
+async fn a_role_session_is_assumed_in_the_plan_s_region() {
+    let env = "poly-role-plan-region-probe";
+    let s = role_confirm_server(env, "accept");
+    let mut there = role_session("123456789012");
+    there.context.region = "poly-role-3".into();
+    s.seams.role_sessions.lock().unwrap().push_back(Ok(there));
+    let plan = s
+        .tool_write_plan(writes::WriteVerb::Restart, &json!({"env": env}))
+        .await
+        .unwrap_or_else(|e| panic!("{e}"));
+    let token = serde_json::from_str::<Value>(&plan).expect("json")["confirm_token"]
+        .as_str()
+        .expect("a token")
+        .to_string();
+    {
+        let mut st = s.writes.lock().await;
+        let p = st.pending.as_mut().expect("installed");
+        assert_eq!(p.plan_region.as_deref(), Some("poly-role-1"), "recorded");
+        // As if instance metadata had named it and nothing else could.
+        p.plan_region = Some("poly-role-3".into());
+    }
+    s.tool_confirm_action(&json!({"confirm_token": token}))
+        .await
+        .unwrap_or_else(|e| panic!("{e}"));
+    let asked = s.seams.assumed.lock().unwrap().clone();
+    assert_eq!(asked[0].0.region.as_deref(), Some("poly-role-3"));
 }
 
 /// A session in another region than the plan's refuses: the same env

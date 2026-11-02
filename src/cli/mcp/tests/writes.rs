@@ -90,6 +90,7 @@ fn a_superseded_token_says_so_rather_than_unknown() {
         dlq_main_url: None,
         role_check: crate::config::RoleCheck::Unmapped { required: false },
         role: None,
+        plan_region: None,
     };
     st.install(plan("tok-a"));
     assert!(st.retired.is_empty(), "the first plan replaces nothing");
@@ -612,6 +613,7 @@ async fn the_confirm_gate_refuses_a_plan_outside_the_scope() {
             dlq_main_url: None,
             role_check: crate::config::RoleCheck::Unmapped { required: false },
             role: None,
+            plan_region: None,
         });
     }
 
@@ -1906,6 +1908,7 @@ fn a_batch_ask_enumerates_the_messages() {
         dlq_main_url: None,
         role_check: crate::config::RoleCheck::Unmapped { required: false },
         role: None,
+        plan_region: None,
     };
     let summary = ask_summary(&p);
     for i in 1..=3 {
@@ -2059,6 +2062,7 @@ fn the_ask_says_whose_credentials_it_would_use() {
         dlq_main_url: None,
         role_check: crate::config::RoleCheck::Unmapped { required: false },
         role: None,
+        plan_region: None,
     };
     let s = ask_summary(&p);
     assert!(
@@ -2818,6 +2822,7 @@ fn pending_for(verb: WriteVerb) -> PendingWrite {
         dlq_main_url: None,
         role_check: crate::config::RoleCheck::Unmapped { required: false },
         role: None,
+        plan_region: None,
     }
 }
 

@@ -1264,6 +1264,11 @@ pub(super) struct PendingWrite {
     /// the verb: what the confirmation names and what slice 3 assumes,
     /// never picked again at confirm. `None` for a verb no role lists.
     pub role: Option<PlanRole>,
+    /// The region the plan's client resolved, which found the env: a
+    /// role session is assumed in it. Resolved by the SDK, so instance
+    /// metadata included, which `audit_region` cannot read. `None` on
+    /// demo.
+    pub plan_region: Option<String>,
 }
 
 impl PendingWrite {
@@ -1982,12 +1987,15 @@ impl Server {
             .resolve_plan_details(verb, args, &env, &profile)
             .await?;
 
-        // Recent events give the plan operational context (3 max).
-        let events_json = match self.backend {
-            Backend::Demo => String::new(),
+        // Recent events give the plan operational context (3 max). The
+        // same client says which region the plan found the env in.
+        let (events_json, plan_region) = match self.backend {
+            Backend::Demo => (String::new(), None),
             Backend::Aws => {
                 let client = self.client(args).await?;
-                match client.list_events_for_env(&env.name, 3).await {
+                let region =
+                    Some(client.context.region.clone()).filter(|r| !r.is_empty() && r != "unknown");
+                let events = match client.list_events_for_env(&env.name, 3).await {
                     Ok(evs) => {
                         let rows: Vec<String> = evs
                             .iter()
@@ -2004,7 +2012,8 @@ impl Server {
                     // Context, not a gate — a failed event fetch
                     // doesn't block the plan.
                     Err(_) => String::new(),
-                }
+                };
+                (events, region)
             }
         };
 
@@ -2036,6 +2045,7 @@ impl Server {
                 dlq_main_url: dlq_main_url.clone(),
                 role_check: role_check.clone(),
                 role: role.clone(),
+                plan_region: plan_region.clone(),
             });
         }
 
