@@ -2901,6 +2901,20 @@ mod orchestration {
         assert!(!err.contains("must allow sqs:SendMessage"), "{err}");
     }
 
+    /// Any other KMS error (a disabled key) is not a permission: no hint
+    /// sends the operator to IAM for it.
+    #[tokio::test]
+    async fn an_undo_the_queue_s_key_fails_otherwise_blames_no_policy() {
+        let (s, _out, _session, _before) =
+            delete_under_a_dlq_role(Some("KMS.DisabledException"), false).await;
+        let err = s
+            .call_tool("dlq_undo", &json!({"message_id": "m-role-1"}))
+            .await
+            .expect_err("the key is disabled");
+        assert!(err.contains("still held"), "{err}");
+        assert!(!err.contains("must allow"), "{err}");
+    }
+
     /// The policy hint is for a denial: a throttled send is not a
     /// missing permission, and saying so would send the operator to IAM.
     #[tokio::test]

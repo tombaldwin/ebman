@@ -441,9 +441,11 @@ impl Server {
                 // likely means the policy allows the delete and not the
                 // `sqs:SendMessage` its undo needs.
                 // A KMS denial (`KMS.AccessDeniedException`) is the
-                // queue's key, not the role's SQS actions.
+                // queue's key, not the role's SQS actions. Any other KMS
+                // error (throttled, disabled key) is no permission, and
+                // keeps AWS's words alone.
                 let why = match &d.session {
-                    Some(s) if e.contains("KMS.") => format!(
+                    Some(s) if e.contains("KMS.AccessDenied") => format!(
                         "{e} (sent as role {} under the delete's session {}; the queue's \
                          KMS key must allow the role kms:GenerateDataKey and kms:Decrypt)",
                         s.arn, s.name
