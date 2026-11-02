@@ -6462,6 +6462,39 @@ async fn an_approved_write_goes_out_under_its_role() {
     }
 }
 
+/// A dispatch AWS refuses under a role session names the session, not
+/// an `aws sso login` for a profile that would not fix it.
+#[tokio::test]
+async fn a_failed_dispatch_under_a_role_names_the_session() {
+    let env = "poly-role-dispatch-fails-probe";
+    let s = role_confirm_server(env, "accept");
+    let expired = aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::restart_app_server)
+        .then_error(|| {
+            aws_sdk_elasticbeanstalk::operation::restart_app_server::RestartAppServerError::generic(
+                aws_smithy_types::error::ErrorMetadata::builder()
+                    .code("ExpiredToken")
+                    .message("The security token included in the request is expired")
+                    .build(),
+            )
+        });
+    let eb = aws_smithy_mocks::mock_client!(
+        aws_sdk_elasticbeanstalk,
+        aws_smithy_mocks::RuleMode::MatchAny,
+        [&expired]
+    );
+    let mut session = test_client(eb);
+    session.context.region = "poly-role-1".into();
+    session.context.account_id = Some("123456789012".into());
+    s.seams.role_sessions.lock().unwrap().push_back(Ok(session));
+    let err = plan_and_confirm(&s, env).await.expect_err("AWS refused");
+    let name = s.seams.assumed.lock().unwrap()[0].1.clone();
+    assert!(
+        err.contains(&format!("failed under role session {name}")),
+        "{err}"
+    );
+    assert!(!err.contains("sso login"), "{err}");
+}
+
 /// A session in another region than the plan's refuses: the same env
 /// name there can be another environment, and the account check alone
 /// passes it.

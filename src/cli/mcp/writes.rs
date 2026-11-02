@@ -559,6 +559,22 @@ async fn dispatch_dlq_batch(
     Ok(out)
 }
 
+/// A dispatch that AWS refused, as the agent reads it. Under a role
+/// session the credentials came from STS for this write alone, so the
+/// credential hint (`aws sso login --profile …`) names a profile that
+/// would not fix it: the session is named instead.
+fn dispatch_error(
+    profile: &Option<String>,
+    session: Option<&RoleSession>,
+    op: &str,
+    msg: &str,
+) -> String {
+    match session {
+        Some(s) => format!("{op} failed under role session {}: {msg}", s.name),
+        None => tool_error(profile, op, msg),
+    }
+}
+
 /// One message's line in the batch report.
 ///
 /// ARCHITECTURE.md rule 6: a result carries its own negative space.
@@ -2390,7 +2406,7 @@ impl Server {
                         &refs,
                     );
                 }
-                return Err(tool_error(&p.profile, verb_label, &e));
+                return Err(dispatch_error(&p.profile, session, verb_label, &e));
             }
         };
 
@@ -2641,7 +2657,7 @@ impl Server {
                 util::json_string(&p.env),
             ))
             }
-            Err(e) => Err(tool_error(&p.profile, verb_label, &e)),
+            Err(e) => Err(dispatch_error(&p.profile, session, verb_label, &e)),
         }
     }
 }
