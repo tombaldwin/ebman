@@ -38,6 +38,19 @@ Tier definitions:
 
 #### Refactors and test hygiene
 
+- [ ] **An undo whose delete's role session expired loses the message.**
+  *(Tier 5, ruling needed; from the 2026-11-02 slices 3-5 review.)* The
+  undo window runs on a monotonic clock that stops in sleep; the 900s
+  STS session does not. Since 2026-11-02 such an undo says why it
+  cannot restore and drops the entry (D4: the undo assumes no role of
+  its own), so the body is gone from ebman. Options: (a) leave it; (b)
+  on expiry only, a fresh AssumeRole of the delete's role for the undo,
+  which D4's ruling chose against for the STS-degraded case; (c) hand
+  the body back to the agent to re-send, only where `mcp.peek_bodies`
+  allows bodies at all. Recommendation: (b) for the expired case alone,
+  since the reason D4 gave (STS failing during an urgent undo) does not
+  apply to a session that simply ran out.
+
 - [ ] **The App tab editor cannot tell `;label=` inside a metric name
   from a new entry.** Its metrics field joins entries with `; `, so a
   metric named `a;b=c` reads back as two entries (`heap=a`, `b=c|…`) and
