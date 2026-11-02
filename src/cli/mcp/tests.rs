@@ -2886,6 +2886,21 @@ mod orchestration {
         assert!(!err.contains("has expired"), "{err}");
     }
 
+    /// A KMS denial names the queue's key, not `sqs:SendMessage`: on a
+    /// queue with a customer-managed key, the missing permission is the
+    /// key's.
+    #[tokio::test]
+    async fn an_undo_the_queue_s_key_denies_names_the_key() {
+        let (s, _out, _session, _before) =
+            delete_under_a_dlq_role(Some("KMS.AccessDeniedException"), false).await;
+        let err = s
+            .call_tool("dlq_undo", &json!({"message_id": "m-role-1"}))
+            .await
+            .expect_err("the key refused");
+        assert!(err.contains("kms:GenerateDataKey and kms:Decrypt"), "{err}");
+        assert!(!err.contains("must allow sqs:SendMessage"), "{err}");
+    }
+
     /// The policy hint is for a denial: a throttled send is not a
     /// missing permission, and saying so would send the operator to IAM.
     #[tokio::test]
