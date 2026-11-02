@@ -5832,3 +5832,22 @@ a `--read-only` server.
   picks at plan time, `PendingWrite.role` carries the pick. Tests: two
   accounts offered, same account unreadable, the plan picks and carries
   the env's role; four mutations CAUGHT. Design note amended.
+
+## PLAN.md items done 2026-11-02
+
+- [x] *(architecture)* **Split `cli::write_refusal`'s rendering from its decision**, the
+   way `app/safety.rs` is split (`refusal_for` / `render_refusal` /
+   `audit_refusal`). The CLI's rendering is still inline in the pure half
+   (`write_refusal_unaudited`). It was parked "until stage 5's `Decision`
+   lands, since that changes the return type anyway"; stage 5 was killed
+   on 2026-09-25, so that trigger will never fire. Do it on its own
+   merits or drop it. *Re-opened 2026-09-25: archived as absorbed by the
+   verb vocabulary, which did not in fact do it.*
+
+  **Killed by evidence 2026-11-02.** `app/safety.rs` splits because the
+  TUI has callers that need the decision without the message (the batch
+  summary asks `is_env_scoped()`, and each locked env is audited from
+  its `Refusal`). The CLI gate has none: MCP's `gate_refusal` takes the
+  refusal and the message, and `lint`'s dry run takes only the message.
+  A split would add a seam no caller uses; the pure half is already
+  testable through `write_refusal_unaudited`.

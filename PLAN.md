@@ -165,7 +165,8 @@ it.*
 
 *2026-10-31: the design review's eight "later" items and seven BACKLOG
 items were done in this window and archived ("PLAN.md items done
-2026-10-31"). These three are next.*
+2026-10-31"). These are next; the `write_refusal` split was killed by
+evidence on 2026-11-02 (archived).*
 
 3. *(architecture)* **`src/app/tests/scan.rs` has outgrown its name and location**
    (~1,100 lines): source-scan primitives, git/packaging checks (account
@@ -174,16 +175,7 @@ items were done in this window and archived ("PLAN.md items done
    test-support module split into `scan` and `packaging`. *0.45 release
    review.*
 
-4. *(architecture)* **Split `cli::write_refusal`'s rendering from its decision**, the
-   way `app/safety.rs` is split (`refusal_for` / `render_refusal` /
-   `audit_refusal`). The CLI's rendering is still inline in the pure half
-   (`write_refusal_unaudited`). It was parked "until stage 5's `Decision`
-   lands, since that changes the return type anyway"; stage 5 was killed
-   on 2026-09-25, so that trigger will never fire. Do it on its own
-   merits or drop it. *Re-opened 2026-09-25: archived as absorbed by the
-   verb vocabulary, which did not in fact do it.*
-
-5. *(behaviour)* **Coverage gaps are untyped strings.** `explain_verdict`
+4. *(behaviour)* **Coverage gaps are untyped strings.** `explain_verdict`
    identifies a warning by its first word; today one formatter,
    `ProbeOutcome::coverage_warning`, produces every warning it sees, so
    that holds. The stronger case: the confirm modal's `not_run:
