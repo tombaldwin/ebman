@@ -175,7 +175,9 @@ evidence on 2026-11-02 (archived).*
    test-support module split into `scan` and `packaging`. *0.45 release
    review.*
 
-4. *(behaviour)* **Coverage gaps are untyped strings.** `explain_verdict`
+4. *(architecture, upgraded 2026-11-02: nine modules)* **Coverage gaps are untyped strings.**
+   Design note drafted: `docs/design/coverage-gaps.md` (output
+   byte-identical; `explain_verdict` matches by rule). `explain_verdict`
    identifies a warning by its first word; today one formatter,
    `ProbeOutcome::coverage_warning`, produces every warning it sees, so
    that holds. The stronger case: the confirm modal's `not_run:
