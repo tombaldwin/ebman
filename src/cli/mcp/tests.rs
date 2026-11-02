@@ -2853,6 +2853,39 @@ mod orchestration {
         assert!(!completed[0].contains("must allow"), "{}", completed[0]);
     }
 
+    /// A restore still running is not contradicted: a second undo while
+    /// one holds the claim is told it is mid-restore, even once the
+    /// session has expired, not that the message cannot be restored.
+    #[tokio::test]
+    async fn an_undo_mid_restore_is_not_told_its_session_expired() {
+        let (s, _out, _session, _before) = delete_under_a_dlq_role(None, false).await;
+        {
+            let mut held = s.deleted.lock().await;
+            let d = held
+                .iter_mut()
+                .find(|d| d.original_id == "m-role-1")
+                .expect("held");
+            d.restoring_since = Some(tokio::time::Instant::now());
+            let old = d.session.clone().expect("a session");
+            let mut expired = test_client(aws_smithy_mocks::mock_client!(
+                aws_sdk_elasticbeanstalk,
+                aws_smithy_mocks::RuleMode::MatchAny,
+                []
+            ));
+            expired.context.credentials_expire_at = Some(std::time::SystemTime::now());
+            d.session = Some(super::role::RoleSession {
+                client: std::sync::Arc::new(expired),
+                ..old
+            });
+        }
+        let err = s
+            .call_tool("dlq_undo", &json!({"message_id": "m-role-1"}))
+            .await
+            .expect_err("mid-restore");
+        assert!(err.contains("is mid-restore"), "{err}");
+        assert!(!err.contains("has expired"), "{err}");
+    }
+
     /// The policy hint is for a denial: a throttled send is not a
     /// missing permission, and saying so would send the operator to IAM.
     #[tokio::test]
@@ -2869,8 +2902,9 @@ mod orchestration {
 
     /// A held message whose delete's session has expired (a sleep the
     /// window's monotonic clock skipped) is listed as such, and an undo
-    /// says why it cannot restore it, sends nothing, and drops it, rather
-    /// than blaming the role's policy on every retry.
+    /// says why it cannot restore it and sends nothing, rather than
+    /// blaming the role's policy on every retry. It stays listed until
+    /// its window closes: the judgement is this machine's clock.
     #[tokio::test]
     async fn an_undo_whose_session_expired_says_so_and_sends_nothing() {
         let (s, _out, session, before) = delete_under_a_dlq_role(None, true).await;
@@ -2891,8 +2925,14 @@ mod orchestration {
         let again = s
             .call_tool("dlq_undo", &json!({"message_id": "m-role-1"}))
             .await
-            .expect_err("dropped");
-        assert!(again.contains("is not recoverable"), "{again}");
+            .expect_err("still expired");
+        assert!(
+            again.contains("has expired"),
+            "kept, and said again: {again}"
+        );
+        // Not dropped on this machine's clock: still listed, marked.
+        let listed = s.call_tool("dlq_undo", &json!({})).await.expect("the list");
+        assert!(listed.contains("\"session_expired\":true"), "{listed}");
     }
 
     /// A resend whose delete half fails says a duplicate exists.

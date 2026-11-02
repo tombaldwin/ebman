@@ -455,8 +455,9 @@ as well as `sqs:DeleteMessage`; a restore it denies says so, names the
 role and session, and leaves the message held. The window counts time
 the machine is awake and the session does not, so after a sleep the
 session can expire first: the listing then marks the message
-`session_expired`, and an undo says it cannot restore it and drops it,
-since the undo assumes no role of its own.
+`session_expired`, and an undo says it cannot restore it, since the
+undo assumes no role of its own; it stays listed until its window
+closes.
 
 A verb may have a role in each account; the plan takes the one in the
 environment's account, read from the environment's ARN, or failing that

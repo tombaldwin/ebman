@@ -140,8 +140,8 @@ pub(super) enum Claim {
     /// Not held: never deleted here, already restored, or expired.
     NotHeld,
     /// Held, but the role session its delete went out under has expired,
-    /// and the undo assumes no role of its own (D4). It is dropped: no
-    /// retry can restore it here.
+    /// and the undo assumes no role of its own (D4), so no retry can
+    /// restore it here. It stays held until its window closes.
     SessionExpired {
         session: String,
     },
@@ -215,14 +215,6 @@ impl Server {
     pub(super) async fn claim_for_restore(&self, id: &str) -> Claim {
         let mut buf = self.deleted.lock().await;
         buf.retain(|d| d.at.elapsed().as_secs() < UNDO_WINDOW_SECS);
-        if let Some(at) = buf
-            .iter()
-            .position(|d| d.original_id == id && d.session_expired())
-        {
-            let d = buf.remove(at);
-            let session = d.session.map(|s| s.name).unwrap_or_default();
-            return Claim::SessionExpired { session };
-        }
         let Some(d) = buf.iter_mut().find(|d| d.original_id == id) else {
             return Claim::NotHeld;
         };
@@ -233,6 +225,18 @@ impl Server {
                     retry_after_secs: RESTORE_CLAIM_SECS - held_for,
                 };
             }
+        }
+        // After the claim check, so a restore still running is never
+        // contradicted; and not removed, since the judgement rests on
+        // this machine's clock against STS's: it stays listed, marked,
+        // until its window closes.
+        if d.session_expired() {
+            let session = d
+                .session
+                .as_ref()
+                .map(|s| s.name.clone())
+                .unwrap_or_default();
+            return Claim::SessionExpired { session };
         }
         d.restoring_since = Some(tokio::time::Instant::now());
         Claim::Claimed(Box::new(d.clone()))
@@ -330,8 +334,8 @@ impl Server {
                     "'{want}' cannot be restored: the role session its delete went out under \
                      ({session}) has expired. The {UNDO_WINDOW_SECS}s window counts time the \
                      machine was awake, so a sleep can outlast the session. The undo assumes \
-                     no role of its own, by design, so ebman cannot put it back, and it is no \
-                     longer held. Tell your user it is lost from ebman's side."
+                     no role of its own, by design, so ebman cannot put it back. Tell your \
+                     user it cannot be restored from ebman."
                 )));
             }
             Claim::NotHeld => {
