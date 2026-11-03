@@ -2850,6 +2850,12 @@ mod orchestration {
         let (s, _out, _session, before) = delete_under_a_dlq_role(None, false).await;
         for d in s.deleted.lock().await.iter_mut() {
             if d.original_id == "m-role-1" {
+                // Recorded by the delete, from its plan's client: the
+                // call named no region.
+                assert_eq!(d.region, None);
+                assert_eq!(d.plan_region.as_deref(), Some("us-east-1"));
+                // A region no client here reports, so the refusal below
+                // can only have taken it from the entry.
                 d.plan_region = Some("poly-undo-plan-region".into());
             }
         }

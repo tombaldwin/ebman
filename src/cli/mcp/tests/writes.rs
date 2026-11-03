@@ -3094,19 +3094,19 @@ async fn an_out_of_scope_refusal_names_the_server_s_profile() {
     }
 }
 
-/// A confirm on a server with no writes names the server's profile too.
+/// A confirm on a server with no writes names the server's profile too,
+/// and the region its client resolves when the call names none: it wrote
+/// `-` unresolved.
 #[tokio::test]
 async fn a_confirm_with_no_writes_names_the_server_s_profile() {
-    let s = Server::with_config(
-        false,
-        false,
-        WriteScope::None,
-        crate::config::Config::default(),
-    )
-    .with_ambient_profile("poly-confirm-ops");
+    let mut client = undo_client(true);
+    client.context.region = "poly-confirm-region".into();
+    let s =
+        Server::with_injected_client(WriteScope::None, crate::config::Config::default(), client)
+            .with_ambient_profile("poly-confirm-ops");
     let before = crate::audit::delta::mark();
     let err = s
-        .tool_confirm_action(&json!({"confirm_token": "t", "region": "poly-confirm-region"}))
+        .tool_confirm_action(&json!({"confirm_token": "t"}))
         .await
         .expect_err("writes are off");
     assert!(matches!(err, WriteError::Refused(_)), "{err}");
