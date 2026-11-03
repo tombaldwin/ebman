@@ -17,8 +17,10 @@
 //! data enters above the client) — this is the zero-AWS e2e harness.
 //! `--no-redact` disables the `get_option_settings` env-var redaction.
 //!
-//! v1 is reads-only. Writes (`--allow-writes`) are a spec'd v2 with
-//! their own safety review; nothing here dispatches.
+//! Writes are off unless granted (`--allow-writes`, or a client that
+//! can put the question to the operator). Each is two-phase: a plan,
+//! then `confirm_action`, gated and audited in `writes`; the role a
+//! write goes out under is `role`, and `dlq_undo`'s buffer is `undo`.
 
 use std::sync::Arc;
 
@@ -30,9 +32,6 @@ use crate::lint::inputs::{
 };
 use crate::{audit as audit_log, aws, cost_cache, demo_fixture, lint, terraform, util};
 
-/// The MCP protocol revision this server claims. Clients offering a
-/// different revision get this one back (echo-negotiate); the golden
-/// frame test pins it so a bump is a conscious act.
 mod annotations;
 mod app_metrics;
 mod freeze;
@@ -43,6 +42,9 @@ mod undo;
 mod writes;
 use tools::*;
 
+/// The MCP protocol revision this server claims. Clients offering a
+/// different revision get this one back (echo-negotiate); the golden
+/// frame test pins it so a bump is a conscious act.
 pub(crate) const PROTOCOL_VERSION: &str = "2025-06-18";
 
 /// Hard wall-clock bound on a single tool call so a hung AWS call

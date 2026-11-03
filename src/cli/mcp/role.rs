@@ -101,12 +101,10 @@ impl Server {
             return Ok(None);
         };
         let name = session_name(client_name, &p.token);
-        // The region the plan read the env in, which the base client
-        // would have dispatched to. `p.region` alone is usually `None`,
-        // and then the session took the region of the role's
-        // `source_profile`: a write approved for an env in one region
-        // went to another, where the same name can be another
-        // environment, and the account check passed.
+        // The session is assumed in `region`, never left to the role's
+        // `source_profile`: an env approved in one region could
+        // otherwise be written in another, where the same name can be
+        // another environment and the account check passes.
         let spec = crate::config::AccountSpec {
             role_arn: role.arn.clone(),
             // With no source profile, from the write's own credentials.

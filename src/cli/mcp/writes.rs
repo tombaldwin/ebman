@@ -90,9 +90,6 @@ fn mismatched_token_message(retired: &std::collections::VecDeque<String>, token:
     }
 }
 
-/// How many retired tokens to remember. An agent re-planning more than
-/// a handful of times inside one 60-second TTL is not a case worth
-/// spending memory on.
 /// Assemble the audit `extras` for an MCP-dispatched write.
 ///
 /// Pure half of `Server::write_extras`, split out so the shape is
@@ -705,6 +702,9 @@ async fn dispatch_one_dlq_message(
     Ok(captures_for_undo(verb).then_some(msg.clone()))
 }
 
+/// How many retired tokens to remember. An agent re-planning more than
+/// a handful of times inside one 60-second TTL is not a case worth
+/// spending memory on.
 const RETIRED_TOKEN_MEMORY: usize = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1170,6 +1170,20 @@ struct PlanDetails {
     dlq_visible: Option<i64>,
 }
 
+/// The longest `set_option` namespace, name or value a plan may carry.
+///
+/// Not a limit on what Elastic Beanstalk accepts — a limit on what an
+/// operator can be asked about. The dialog shows setting values WHOLE
+/// (see `Shown::Whole`), because truncating one hides its operative
+/// end: `https://payments.example/callback/<filler>@evil.example/x`
+/// reads as a benign host and applies another, the `@` sitting past
+/// the ellipsis. Refusing above a readable size is the same rule
+/// `DLQ_BATCH_CAP` applies to a list, pointed at a single field.
+///
+/// 256 is generous for the things that legitimately appear here —
+/// URLs, connection strings, ARNs — and still fits a dialog.
+pub(super) const SET_OPTION_FIELD_MAX: usize = 256;
+
 /// How many dead-lettered messages one plan may name.
 ///
 /// The number exists so the operator can *read* the list. Four
@@ -1188,20 +1202,6 @@ struct PlanDetails {
 /// were asked for. The refusal names the cap and points at
 /// `dlq_purge`, which is one deliberate action carrying one honest
 /// foreclosure line.
-/// The longest `set_option` namespace, name or value a plan may carry.
-///
-/// Not a limit on what Elastic Beanstalk accepts — a limit on what an
-/// operator can be asked about. The dialog shows setting values WHOLE
-/// (see `Shown::Whole`), because truncating one hides its operative
-/// end: `https://payments.example/callback/<filler>@evil.example/x`
-/// reads as a benign host and applies another, the `@` sitting past
-/// the ellipsis. Refusing above a readable size is the same rule
-/// `DLQ_BATCH_CAP` applies to a list, pointed at a single field.
-///
-/// 256 is generous for the things that legitimately appear here —
-/// URLs, connection strings, ARNs — and still fits a dialog.
-pub(super) const SET_OPTION_FIELD_MAX: usize = 256;
-
 pub(super) const DLQ_BATCH_CAP: usize = 10;
 
 /// One dead-lettered message a plan names.
@@ -1541,9 +1541,6 @@ impl Server {
             .map_err(WriteError::into_message)
     }
 
-    /// Phase 1 for every write verb: shared gates (verb in scope,
-    /// writes enabled, not mid-dispatch, freeze, pins, env exists),
-    /// verb-specific validation, then a pending plan + token.
     /// The dead-letter arm of a plan: resolve the queue, and for
     /// resend/delete the individual messages.
     ///
@@ -1909,6 +1906,9 @@ impl Server {
         })
     }
 
+    /// Phase 1 for every write verb: shared gates (verb in scope,
+    /// writes enabled, not mid-dispatch, freeze, pins, env exists),
+    /// verb-specific validation, then a pending plan + token.
     pub(super) async fn tool_write_plan(
         &self,
         verb: WriteVerb,
