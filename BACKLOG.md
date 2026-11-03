@@ -184,10 +184,48 @@ Tier definitions:
 
 #### Correctness and safety, from the 2026-09-25 reviews
 
-- [ ] **`Server::refuse(..)`** resolving demo, profile and region once
-  for the six `Audited::record` callers. Their profile choices differ on
-  purpose today (pin profile, call profile, none): settle that first.
-  From the 2026-10-31 design review.
+- [ ] **One `WriteAudit` per MCP write** (absorbs `Server::refuse(..)`):
+  resolve profile, region, label and env once, at plan time after
+  `fetch_envs`, store it on `PendingWrite` and copy it onto
+  `DeletedMessage`, and route asked / refused / dispatched / completed
+  through it, with `Option<String>` in place of the `"-"` / `"unknown"`
+  sentinels (`role.rs` makes a control decision on `region != "-"`).
+  The 0.49.0 review fixed every site that disagreed (788d432:
+  `Server::audit_profile`, the plan client built before the role check,
+  `DeletedMessage::plan_region`), which proves the sites agree today, not
+  that the next one will. `gate_refusal` still names the PIN profile on
+  purpose: settle that first. ~1 day, `writes.rs` / `role.rs` /
+  `undo.rs`. From the 2026-10-31 design review and the 0.49.0
+  architecture review.
+
+- [ ] **The MCP write family's glob-import cycle.** `role.rs`, `undo.rs`
+  and `mcp/freeze.rs` `use super::writes::*` to reach shared primitives,
+  and `writes.rs` globs `role` and `undo` back. Split `mcp/refusal.rs`
+  (`audited`, `WriteError`: file-level privacy for the one constructor)
+  and `mcp/dialog.rs` (`sanitize`, `Shown`, `ask_summary`, `forecloses`),
+  optionally `writes/dlq.rs` (~500 lines); `writes.rs` drops to ~1600.
+  The `#[path]` test children and `scan::production_source` guards move
+  with them. Half a day to a day. 0.49.0 architecture review.
+
+- [ ] **`role.rs` and `undo.rs` tests as `#[path]` children.**
+  `mcp/tests.rs` is ~7000 lines; the role tests sit at its end and the
+  undo tests inside `orchestration`. ARCHITECTURE.md's convention is one
+  child per module, as `writes.rs` and `tools.rs` have. Half a day.
+
+- [ ] **Session plumbing helpers.** `Server::dispatch_client(profile,
+  region, session)` for the session-or-base client (`writes.rs`
+  dispatch, `undo.rs` restore); one function for "extras plus the
+  session's `role=`/`session=`" and the `(&str, &str)` refs conversion
+  (three and five copies); `undo.rs` reads `can_ask` directly where
+  `write_extras` exists so callers don't. ~2 hours.
+
+- [ ] **`PlanRole` embeds `MappedRole`.** It copies six of its fields;
+  `PlanRole { mapped, assumes }` removes the copy. `PendingWrite::role()`
+  is an accessor over a `pub role`, so there are two ways to read it.
+  ~1 hour.
+
+- [ ] **`write_verb_names()` builds the whole JSON descriptor table** on
+  every `role_check`, so on every plan and every doctor. A static list.
 
 - [ ] **Mutants the Linux runner can never kill.** The push of a83ec02
   (the freeze split) judged `freeze/liveness.rs` whole and reported 11
