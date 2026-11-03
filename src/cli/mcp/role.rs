@@ -402,7 +402,7 @@ impl PlanRole {
 
 impl PlanRole {
     /// The plan's copy of one role that lists the verb.
-    pub(super) fn from_mapped(m: &crate::config::MappedRole) -> PlanRole {
+    pub(super) fn from_mapped(m: &crate::config::MappedRole, assumes: bool) -> PlanRole {
         PlanRole {
             key: m.role.clone(),
             arn: m.arn.arn.clone(),
@@ -410,7 +410,7 @@ impl PlanRole {
             name: m.arn.name.clone(),
             source_profile: m.spec.source_profile.clone(),
             external_id: m.spec.external_id.clone(),
-            assumes: true,
+            assumes,
         }
     }
 }
@@ -482,11 +482,13 @@ impl RoleAccountRefusal {
 
 /// The role among `roles` in the env's account: the env's account from
 /// its ARN, or else the identity's. Refused when neither says, or when no
-/// role is in that account.
+/// role is in that account. `assumes` is false on the demo backend
+/// (D8), and has no default: a demo plan once claimed its role.
 pub(super) fn role_for_env(
     roles: &[crate::config::MappedRole],
     env: &crate::aws::Environment,
     caller: &CallerIdentity,
+    assumes: bool,
 ) -> Result<PlanRole, RoleAccountRefusal> {
     let env_account = env
         .arn
@@ -502,7 +504,7 @@ pub(super) fn role_for_env(
     roles
         .iter()
         .find(|r| r.arn.account == account)
-        .map(PlanRole::from_mapped)
+        .map(|r| PlanRole::from_mapped(r, assumes))
         .ok_or_else(|| RoleAccountRefusal::WrongAccount {
             env_account: account.to_string(),
         })

@@ -2099,7 +2099,9 @@ fn role_check_for(cfg: &crate::config::Config, verb: WriteVerb) -> crate::config
 /// The role a server with `cfg` resolves for `verb`.
 fn plan_role(cfg: &crate::config::Config, verb: WriteVerb) -> Option<PlanRole> {
     match role_check_for(cfg, verb) {
-        crate::config::RoleCheck::Mapped { roles } => roles.first().map(PlanRole::from_mapped),
+        crate::config::RoleCheck::Mapped { roles } => {
+            roles.first().map(|r| PlanRole::from_mapped(r, true))
+        }
         _ => None,
     }
 }
@@ -2142,10 +2144,10 @@ fn a_role_is_checked_against_the_env_s_account() {
     else {
         panic!("mapped");
     };
-    let role = PlanRole::from_mapped(&roles[0]);
+    let role = PlanRole::from_mapped(&roles[0], true);
     let role_account_refusal =
         |_: &PlanRole, env: &crate::aws::Environment, caller: &CallerIdentity| {
-            role_for_env(&roles, env, caller).err()
+            role_for_env(&roles, env, caller, true).err()
         };
     let env = |arn: Option<&str>| crate::aws::Environment {
         arn: arn.map(String::from),
