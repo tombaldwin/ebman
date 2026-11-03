@@ -190,7 +190,7 @@ impl Server {
         remedy: &str,
         session: Option<&str>,
     ) -> Audited {
-        let audit_profile = p.profile.clone().or_else(|| self.ambient_profile.clone());
+        let audit_profile = self.audit_profile(&p.profile);
         let mut extras: Vec<(&str, &str)> = Vec::new();
         if let Some(role) = p.role() {
             extras.push(("role", role.arn.as_str()));

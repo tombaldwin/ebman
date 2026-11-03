@@ -216,6 +216,7 @@ impl Server {
     ) -> WriteError {
         let name = verb.tool_name();
         let region = self.audit_region(profile, region).await;
+        let audit_profile = self.audit_profile(profile);
         // On a `--read-only` server, "start it with --allow-writes" is
         // advice that produces a startup error: the two contradict and
         // are refused together. The control the operator actually has
@@ -227,7 +228,7 @@ impl Server {
             .load(std::sync::atomic::Ordering::Relaxed)
         {
             return WriteError::Refused(Audited::record(
-                None,
+                audit_profile.as_deref(),
                 &region,
                 &crate::audit::Refused {
                     action_label: verb.label(),
@@ -247,7 +248,7 @@ impl Server {
             ));
         }
         WriteError::Refused(Audited::record(
-            None,
+            audit_profile.as_deref(),
             &region,
             &crate::audit::Refused {
                 action_label: verb.label(),
@@ -290,7 +291,7 @@ impl Server {
         // there instead, and a `Refused` would then exist that this
         // module had not recorded — which is the whole property the
         // type carries.
-        let profile = profile.clone().or_else(|| self.ambient_profile.clone());
+        let profile = self.audit_profile(profile);
         let (refusal, message, pin_profile) =
             crate::cli::write_refusal_unaudited(&self.safety_cfg, env, &profile, freeze, role)?;
         let region = self.audit_region(&profile, region).await;
@@ -310,6 +311,14 @@ impl Server {
 }
 
 impl Server {
+    /// The profile a write's audit lines name: the call's, else the one
+    /// the server runs under (`AWS_PROFILE`). Every line of one write
+    /// names the same one; the ask and decline lines once wrote
+    /// `profile=-` beside a dispatch that named it.
+    pub(super) fn audit_profile(&self, profile: &Option<String>) -> Option<String> {
+        profile.clone().or_else(|| self.ambient_profile.clone())
+    }
+
     /// The region every line of a planned write files under: the one the
     /// plan's client found the env in, so the ask, any refusal and the
     /// session's dispatch agree, and `ebman audit` pairs them. Read by
@@ -1961,6 +1970,18 @@ impl Server {
         // act on it.
         let caller = self.caller_identity(args).await;
 
+        // The plan's client, and the region it found the env in, which
+        // every line of this write files under (`pending_region`): read
+        // by the SDK, instance metadata included.
+        let plan_client = match self.backend {
+            Backend::Demo => None,
+            Backend::Aws => Some(self.client(args).await?),
+        };
+        let plan_region = plan_client
+            .as_ref()
+            .map(|c| c.context.region.clone())
+            .filter(|r| !r.is_empty() && r != "unknown");
+
         // The role the verb maps to, and whether it is in the env's
         // account. Before anything verb-specific is read: a DLQ plan
         // peeks the queue, which bumps each message's receive count,
@@ -1971,11 +1992,14 @@ impl Server {
                 match role_for_env(roles, &env, &caller, !matches!(self.backend, Backend::Demo)) {
                     Ok(r) => Some(r),
                     Err(refusal) => {
-                        let audit_profile =
-                            profile.clone().or_else(|| self.ambient_profile.clone());
-                        let region = self
-                            .audit_region(&profile, arg_str(args, "region").as_deref())
-                            .await;
+                        let audit_profile = self.audit_profile(&profile);
+                        let region = match &plan_region {
+                            Some(r) => r.clone(),
+                            None => {
+                                self.audit_region(&profile, arg_str(args, "region").as_deref())
+                                    .await
+                            }
+                        };
                         return Err(WriteError::Refused(Audited::record(
                             audit_profile.as_deref(),
                             &region,
@@ -2006,15 +2030,11 @@ impl Server {
             .resolve_plan_details(verb, args, &env, &profile)
             .await?;
 
-        // Recent events give the plan operational context (3 max). The
-        // same client says which region the plan found the env in.
-        let (events_json, plan_region) = match self.backend {
-            Backend::Demo => (String::new(), None),
-            Backend::Aws => {
-                let client = self.client(args).await?;
-                let region =
-                    Some(client.context.region.clone()).filter(|r| !r.is_empty() && r != "unknown");
-                let events = match client.list_events_for_env(&env.name, 3).await {
+        // Recent events give the plan operational context (3 max).
+        let events_json = match &plan_client {
+            None => String::new(),
+            Some(client) => {
+                match client.list_events_for_env(&env.name, 3).await {
                     Ok(evs) => {
                         let rows: Vec<String> = evs
                             .iter()
@@ -2031,8 +2051,7 @@ impl Server {
                     // Context, not a gate — a failed event fetch
                     // doesn't block the plan.
                     Err(_) => String::new(),
-                };
-                (events, region)
+                }
             }
         };
 
@@ -2130,9 +2149,13 @@ impl Server {
             // probing, which is worth seeing and invisible any other
             // way. Reachable exactly as that one is — via a cached
             // tool list from a wider grant.
+            let profile = arg_str(args, "profile");
+            let region = self
+                .audit_region(&profile, arg_str(args, "region").as_deref())
+                .await;
             return Err(WriteError::Refused(Audited::record(
-                arg_str(args, "profile").as_deref(),
-                arg_str(args, "region").as_deref().unwrap_or("-"),
+                self.audit_profile(&profile).as_deref(),
+                &region,
                 &crate::audit::Refused {
                     action_label: "confirm",
                     target: "-",
@@ -2169,8 +2192,10 @@ impl Server {
             // a scope that held at plan time but not at confirm is a
             // bug worth failing on rather than dispatching through.
             if !self.effective_scope().allows(p.verb.tool_name()) {
-                let (verb, env, region, profile) =
-                    (p.verb, p.env.clone(), p.region.clone(), p.profile.clone());
+                // The plan's region, so this line files with the
+                // write's others.
+                let region = p.plan_region.clone().or_else(|| p.region.clone());
+                let (verb, env, profile) = (p.verb, p.env.clone(), p.profile.clone());
                 st.pending = None;
                 drop(st);
                 return Err(self
@@ -2288,7 +2313,7 @@ impl Server {
             let region = self.pending_region(&pending).await;
             crate::audit::append_action_asked(
                 None,
-                pending.profile.as_deref(),
+                self.audit_profile(&pending.profile).as_deref(),
                 &region,
                 pending.verb.label(),
                 &pending.env,
@@ -2319,7 +2344,7 @@ impl Server {
             // retries a decline is the failure mode here.
             let region = self.pending_region(&pending).await;
             return Err(WriteError::Refused(Audited::record(
-                pending.profile.as_deref(),
+                self.audit_profile(&pending.profile).as_deref(),
                 &region,
                 &crate::audit::Refused {
                     action_label: pending.verb.label(),
@@ -2587,7 +2612,7 @@ impl Server {
             .lock()
             .map(|s| s.clone())
             .unwrap_or_else(|_| "unknown".into());
-        let audit_profile = p.profile.clone().or_else(|| self.ambient_profile.clone());
+        let audit_profile = self.audit_profile(&p.profile);
         // Resend and delete take the batch path, which audits per
         // MESSAGE. The generic path below writes one dispatched line
         // and one completed line for the whole action, and for a batch

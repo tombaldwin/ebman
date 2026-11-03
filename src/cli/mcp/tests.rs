@@ -2841,6 +2841,37 @@ mod orchestration {
         }
     }
 
+    /// A refused undo files under its delete's plan region, so it pairs
+    /// with the delete's lines; the delete's `region` argument alone is
+    /// usually unset, and resolving without the plan's client answered
+    /// `-` on a host where only instance metadata names the region.
+    #[tokio::test]
+    async fn a_refused_undo_files_under_its_delete_s_plan_region() {
+        let (s, _out, _session, before) = delete_under_a_dlq_role(None, false).await;
+        for d in s.deleted.lock().await.iter_mut() {
+            if d.original_id == "m-role-1" {
+                d.plan_region = Some("poly-undo-plan-region".into());
+            }
+        }
+        s.freeze_store()
+            .declare_persistent("incident #92", true)
+            .expect("frozen");
+        let err = s
+            .call_tool("dlq_undo", &json!({"message_id": "m-role-1"}))
+            .await
+            .expect_err("frozen");
+        assert!(err.to_string().contains("freeze"), "{err}");
+        let lines = crate::audit::delta::lines_matching(&before, |l| {
+            l.contains("action=dlq-undo") && l.contains("rule=frozen")
+        });
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("region=poly-undo-plan-region")),
+            "{lines:#?}"
+        );
+    }
+
     /// A restore the role may not send names the role, its session and
     /// the permission it needs, keeps the message held for a retry, and
     /// leaves AWS's own words alone in the audit line.
@@ -6428,7 +6459,10 @@ fn role_confirm_server(env: &'static str, action: &'static str) -> std::sync::Ar
          mcp.role.deploys.source_profile = \"ops\"\n\
          mcp.role.deploys.external_id = \"x-1\"\n",
     );
-    let mut server = Server::with_injected_client(WriteScope::All, cfg, client);
+    // Started under a profile, as `AWS_PROFILE` would: every line of
+    // a write names it, whether the call named one or not.
+    let mut server = Server::with_injected_client(WriteScope::All, cfg, client)
+        .with_ambient_profile("poly-role-ops");
     server.seams.identity = Some(writes::CallerIdentity::Known {
         arn: "arn:aws:iam::123456789012:user/ops".into(),
         account: "123456789012".into(),
@@ -6669,6 +6703,9 @@ async fn a_declined_write_files_under_the_plan_s_region() {
             .find(|l| l.contains(stage))
             .unwrap_or_else(|| panic!("{stage}: {lines:#?}"));
         assert!(line.contains("region=poly-role-3"), "{line}");
+        // The server's profile, as the write's refused and dispatched
+        // lines name it; these two once said `profile=-`.
+        assert!(line.contains("profile=poly-role-ops"), "{line}");
     }
 }
 

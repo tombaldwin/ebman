@@ -2344,11 +2344,17 @@ async fn a_role_in_another_account_is_audited_once_on_the_aws_backend() {
     // A DLQ delete too, and refused before its plan peeks the queue:
     // the SQS client here is unmocked, so a peek would fail with an AWS
     // error, not this refusal.
+    // The call names a region the plan's client does not report: the
+    // refusal files under the client's, as the write's other lines do,
+    // not under one resolved without it.
     for (verb, args) in [
-        (WriteVerb::Restart, json!({"env": env})),
+        (
+            WriteVerb::Restart,
+            json!({"env": env, "region": "poly-unresolved"}),
+        ),
         (
             WriteVerb::DlqDelete,
-            json!({"env": env, "message_id": "m-1"}),
+            json!({"env": env, "message_id": "m-1", "region": "poly-unresolved"}),
         ),
     ] {
         let before = crate::audit::delta::mark();
@@ -3053,4 +3059,64 @@ fn a_role_account_remedy_keeps_the_ceiling() {
         "{wrong}"
     );
     assert!(!wrong.contains("remove"), "{wrong}");
+}
+
+/// An out-of-scope refusal names the server's profile, as every other
+/// line of a write does; it named none, so it could not be read against
+/// the profile's account pins. Both arms: the scope, and `--read-only`.
+#[tokio::test]
+async fn an_out_of_scope_refusal_names_the_server_s_profile() {
+    for (env, read_only) in [
+        ("poly-scope-profile-probe", false),
+        ("poly-read-only-profile-probe", true),
+    ] {
+        let s = Server::with_config(
+            false,
+            false,
+            WriteScope::Only(vec!["restart".into()]),
+            crate::config::Config::default(),
+        )
+        .with_ambient_profile("poly-scope-ops");
+        s.mcp_read_only
+            .store(read_only, std::sync::atomic::Ordering::Relaxed);
+        let before = crate::audit::delta::mark();
+        let err = s
+            .tool_write_plan(WriteVerb::Terminate, &json!({"env": env}))
+            .await
+            .expect_err("terminate is not granted");
+        assert!(matches!(err, WriteError::Refused(_)), "{err}");
+        let lines = crate::audit::delta::lines_for(&before, env);
+        let line = lines
+            .iter()
+            .find(|l| l.contains("rule=not_granted"))
+            .unwrap_or_else(|| panic!("{env}: {lines:#?}"));
+        assert!(line.contains("profile=poly-scope-ops"), "{line}");
+    }
+}
+
+/// A confirm on a server with no writes names the server's profile too.
+#[tokio::test]
+async fn a_confirm_with_no_writes_names_the_server_s_profile() {
+    let s = Server::with_config(
+        false,
+        false,
+        WriteScope::None,
+        crate::config::Config::default(),
+    )
+    .with_ambient_profile("poly-confirm-ops");
+    let before = crate::audit::delta::mark();
+    let err = s
+        .tool_confirm_action(&json!({"confirm_token": "t", "region": "poly-confirm-region"}))
+        .await
+        .expect_err("writes are off");
+    assert!(matches!(err, WriteError::Refused(_)), "{err}");
+    let lines = crate::audit::delta::lines_matching(&before, |l| {
+        l.contains("action=confirm") && l.contains("region=poly-confirm-region")
+    });
+    assert_eq!(lines.len(), 1, "{lines:#?}");
+    assert!(
+        lines[0].contains("profile=poly-confirm-ops"),
+        "{}",
+        lines[0]
+    );
 }

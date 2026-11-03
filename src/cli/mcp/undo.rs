@@ -47,6 +47,10 @@ pub(super) struct DeletedMessage {
     /// non-default region was restored against the default one.
     pub profile: Option<String>,
     pub region: Option<String>,
+    /// The region the delete's plan found the env in
+    /// (`PendingWrite::plan_region`), so a refusal of the undo files with
+    /// the delete's lines; `region` alone is usually `None`.
+    pub plan_region: Option<String>,
     /// The role session the delete went out under, if its verb mapped
     /// to one. The undo goes out under the SAME session (D4): it is the
     /// delete's reversal, so CloudTrail files both under one session
@@ -185,6 +189,7 @@ impl Server {
             queue_url,
             profile: p.profile.clone(),
             region: p.region.clone(),
+            plan_region: p.plan_region.clone(),
             session: session.cloned(),
             original_id: msg.id,
             task: msg.task.as_ref().and_then(|t| t.name.clone()),
@@ -352,7 +357,7 @@ impl Server {
             .gate_refusal(
                 &d.env,
                 &d.profile,
-                d.region.as_deref(),
+                d.plan_region.as_deref().or(d.region.as_deref()),
                 "dlq-undo",
                 &crate::config::RoleCheck::NotAsked,
             )
@@ -411,7 +416,7 @@ impl Server {
                     .flatten(),
             );
             let refs: Vec<(&str, &str)> = extras.iter().map(|(k, v)| (*k, v.as_str())).collect();
-            let audit_profile = d.profile.clone().or_else(|| self.ambient_profile.clone());
+            let audit_profile = self.audit_profile(&d.profile);
             let region = client.context.region.clone();
             crate::audit::append_action_dispatched(
                 None,

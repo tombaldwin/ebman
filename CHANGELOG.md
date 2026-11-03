@@ -69,6 +69,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   the keys stay visible in the env-var namespace. If an agent has read
   option settings from an earlier version, treat the env-var values it
   saw as disclosed.
+- Every audit line of one MCP write names the same profile and region,
+  so `ebman audit` pairs them. The ask and decline lines wrote
+  `profile=-` on a server started under `AWS_PROFILE` while its
+  dispatch named the profile; an out-of-scope refusal named no profile;
+  and a role-account refusal at plan time, a refusal of a `dlq_undo`,
+  and a scope refusal at confirm resolved their region without the
+  plan's client, which on an EC2 host answered `-`.
 - `cargo test` no longer runs the deploy confirm's health-check probe,
   which sent a real `curl` to the test env's CNAME from the machine
   running the suite.
