@@ -46,7 +46,15 @@ src/lib.rs       module list + the `Tui` / `LogReloadHandle` aliases
 │                module per service, so `aws/eb.rs` (the domain) is
 │                separable from the twelve generic ones; `discover.rs`
 │                composes several of them for the App tab's discovery
-├── cli/         headless subcommands (`ebman envs`, `action`, `ctl`, `mcp`)
+├── cli/         headless subcommands (`ebman envs`, `action`, `ctl`, `mcp`);
+│                `cli/mcp/` is the MCP server: `tools.rs` the reads,
+│                `writes.rs` the two-phase write path (plan, confirm,
+│                dispatch), `role.rs` the role a write goes out under,
+│                `undo.rs` `dlq_undo`'s buffer, `freeze.rs` `freeze_fleet`
+├── freeze/      the cross-process fleet freeze: `marker` (the file),
+│                `store` (holder files, declare / thaw), `liveness` (is
+│                a holder still alive), `record` (ended and thawed
+│                freezes), `policy` (what a declare must say)
 ├── lint/        the environment lint engine — `mod.rs` is the framework
 │                (Rule / Issue / LintContext / run_rules / baseline),
 │                `rules.rs` is one struct + impl per rule id
