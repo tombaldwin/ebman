@@ -391,11 +391,7 @@ impl Server {
             // Audited like every other write. A restore is a real
             // `SendMessage`, and it left no line at all — so the log
             // said a message was deleted and never that it came back.
-            let client_name = self
-                .client_name
-                .lock()
-                .map(|s| s.clone())
-                .unwrap_or_else(|_| "unknown".into());
+            let client_name = self.client_name();
             let can_ask = self
                 .client_supports_elicitation
                 .load(std::sync::atomic::Ordering::Relaxed);

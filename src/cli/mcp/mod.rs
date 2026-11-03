@@ -1160,6 +1160,16 @@ impl Server {
             .load(std::sync::atomic::Ordering::Relaxed)
     }
 
+    /// The client's name from `initialize` (`"unknown"` until then, and
+    /// if the lock was poisoned), for the audit lines and session names
+    /// that carry it.
+    pub(super) fn client_name(&self) -> String {
+        self.client_name
+            .lock()
+            .map(|c| c.clone())
+            .unwrap_or_else(|_| "unknown".into())
+    }
+
     /// Pin writes against `profile`, as a server started under
     /// `AWS_PROFILE=profile` does.
     #[cfg(test)]
@@ -1482,7 +1492,7 @@ impl Server {
                 }
                 tracing::info!(
                     target: "ebman::mcp",
-                    client = %self.client_name.lock().map(|c| c.clone()).unwrap_or_default(),
+                    client = %self.client_name(),
                     elicitation = elicits,
                     "MCP client connected"
                 );

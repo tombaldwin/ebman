@@ -78,11 +78,7 @@ impl Server {
             })
             .to_string());
         }
-        let client = self
-            .client_name
-            .lock()
-            .map(|c| c.clone())
-            .unwrap_or_default();
+        let client = self.client_name();
         // The operator just lifted a freeze: re-declaring it reverses
         // their decision, and a freeze refuses their own writes too,
         // the rollback that fixes what the agent saw included. Refused

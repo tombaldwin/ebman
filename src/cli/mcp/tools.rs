@@ -1229,11 +1229,7 @@ impl Server {
         let elicits = self
             .client_supports_elicitation
             .load(std::sync::atomic::Ordering::Relaxed);
-        let client = self
-            .client_name
-            .lock()
-            .map(|c| c.clone())
-            .unwrap_or_else(|_| "unknown".into());
+        let client = self.client_name();
 
         let writes = match &self.effective_scope() {
             super::WriteScope::None => {

@@ -2381,11 +2381,7 @@ impl Server {
 
         // The role, assumed now that the operator has said yes (D3):
         // a failure refuses, and is never sent as the base identity.
-        let client_name = self
-            .client_name
-            .lock()
-            .map(|s| s.clone())
-            .unwrap_or_else(|_| "unknown".into());
+        let client_name = self.client_name();
         let session = self
             .assume_role_for(&pending, &client_name)
             .await
@@ -2607,11 +2603,7 @@ impl Server {
             Some(s) => std::sync::Arc::clone(&s.client),
             None => self.client(&args).await?,
         };
-        let client_name = self
-            .client_name
-            .lock()
-            .map(|s| s.clone())
-            .unwrap_or_else(|_| "unknown".into());
+        let client_name = self.client_name();
         let audit_profile = self.audit_profile(&p.profile);
         // Resend and delete take the batch path, which audits per
         // MESSAGE. The generic path below writes one dispatched line
