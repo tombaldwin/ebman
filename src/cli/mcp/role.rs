@@ -497,8 +497,8 @@ impl RoleAccountRefusal {
             Self::AccountUnknown => {
                 // Not "remove the verb from the role": that removes the
                 // ceiling the role is there to set.
-                "allow sts:GetCallerIdentity for the identity ebman runs as, so it can tell \
-                 the environment's account"
+                "allow sts:GetCallerIdentity for the identity the write's call uses (its \
+                 `profile`, else the server's), so ebman can tell the environment's account"
                     .into()
             }
         }
