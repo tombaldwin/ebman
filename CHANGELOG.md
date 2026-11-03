@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.49.0] - 2026-11-03
+
 ### Added
 
 - **MCP writes can go out under a narrower role**
@@ -21,15 +23,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   (from its ARN, else the identity's): none there refuses
   (`rule=role_wrong_account`), as does an account ebman cannot tell
   (`rule=role_account_unknown`). A role that cannot be assumed, or whose
-  session lands in another account, refuses the write
-  (`rule=role_unassumable`); it is never sent as the base identity.
+  session lands in another account or region, refuses the write
+  (`rule=role_unassumable`, with `role=`, and `session=` once an
+  AssumeRole went out); it is never sent as the base identity.
   `mcp.require_role = true` refuses a verb no role lists
   (`rule=no_role`). A config that cannot be acted on (a verb two roles
   in one account list, an unknown verb, a role with no verbs, a missing
-  or malformed ARN)
-  refuses every MCP write (`rule=role_config_unreadable`). MCP `doctor`
-  names each role, what strict mode closes and what still goes out as
-  the base identity. `docs/headless.md` has example trust and role
+  or malformed ARN) refuses every MCP write
+  (`rule=role_config_unreadable`). MCP `doctor` names each role, what
+  strict mode closes and what still goes out as the base identity, and
+  its `standing_restrictions` count what the role config refuses. `docs/headless.md` has example trust and role
   policies. MCP only: the TUI and the CLI act as you.
 
 ### Changed
@@ -4618,7 +4621,7 @@ Initial public release. Headline surface:
 - Published to crates.io as `ebman`.
 - Homebrew tap at `tombaldwin/homebrew-tap`.
 
-[Unreleased]: https://github.com/tombaldwin/ebman/compare/v0.48.0...HEAD
+[Unreleased]: https://github.com/tombaldwin/ebman/compare/v0.49.0...HEAD
 [0.39.1]: https://github.com/tombaldwin/ebman/compare/v0.39.0...v0.39.1
 [0.39.0]: https://github.com/tombaldwin/ebman/compare/v0.38.0...v0.39.0
 [0.38.0]: https://github.com/tombaldwin/ebman/compare/v0.37.0...v0.38.0
