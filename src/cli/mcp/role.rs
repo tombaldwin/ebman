@@ -249,11 +249,6 @@ impl Server {
         crate::config::mcp_role_check(&self.safety_cfg, verb.tool_name(), &known)
     }
 
-    /// `doctor`'s role section (D7), from the config alone: a line per
-    /// role, what `mcp.require_role` closes on this connection, and what
-    /// doctor has NOT checked. Nothing when no role is configured and
-    /// strict mode is off, which is every write going out as the base
-    /// identity, as it always has.
     /// What the role config refuses on this connection, for doctor's
     /// `standing_restrictions`: `(unreadable, refuses_every_write)`. An
     /// unreadable config refuses every MCP write; so does
@@ -280,6 +275,11 @@ impl Server {
         (unreadable, unreadable || strict_closes_all)
     }
 
+    /// `doctor`'s role section (D7), from the config alone: a line per
+    /// role, what `mcp.require_role` closes on this connection, and what
+    /// doctor has NOT checked. Nothing when no role is configured and
+    /// strict mode is off, which is every write going out as the base
+    /// identity, as it always has.
     pub(super) fn role_notes(&self) -> Vec<String> {
         use crate::config::{mcp_role_check, parse_role_arn, RoleCheck};
         let cfg = &self.safety_cfg;
