@@ -6758,12 +6758,17 @@ async fn an_unassumable_role_refuses_and_dispatches_nothing() {
     );
     assert!(err.contains("not sent as the base identity"), "{err}");
     let lines = crate::audit::delta::lines_for(&before, env);
+    let refused = lines
+        .iter()
+        .find(|l| l.contains("stage=refused") && l.contains("rule=role_unassumable"))
+        .unwrap_or_else(|| panic!("{lines:#?}"));
+    // CloudTrail holds a failed AssumeRole under the session name, and
+    // this is the line it joins to (D5, D7).
     assert!(
-        lines
-            .iter()
-            .any(|l| l.contains("stage=refused") && l.contains("rule=role_unassumable")),
-        "{lines:#?}"
+        refused.contains("role=arn:aws:iam::123456789012:role/"),
+        "{refused}"
     );
+    assert!(refused.contains("session=ebman-mcp-"), "{refused}");
     assert!(
         !lines.iter().any(|l| l.contains("stage=dispatched")),
         "nothing dispatched: {lines:#?}"
@@ -6801,6 +6806,46 @@ async fn a_role_session_in_another_account_refuses() {
         !lines.iter().any(|l| l.contains("stage=dispatched")),
         "{lines:#?}"
     );
+}
+
+/// A role refused before any AssumeRole went out names the role but no
+/// session: CloudTrail holds no call by that name to join to.
+#[tokio::test]
+async fn a_role_refused_before_assuming_names_no_session() {
+    let env = "poly-role-no-region-probe";
+    let s = role_confirm_server(env, "accept");
+    let plan = s
+        .tool_write_plan(writes::WriteVerb::Restart, &json!({"env": env}))
+        .await
+        .unwrap_or_else(|e| panic!("{e}"));
+    let token = serde_json::from_str::<Value>(&plan).expect("json")["confirm_token"]
+        .as_str()
+        .expect("a token")
+        .to_string();
+    s.writes
+        .lock()
+        .await
+        .pending
+        .as_mut()
+        .expect("installed")
+        .plan_region = Some("-".into());
+    let before = crate::audit::delta::mark();
+    let err = s
+        .tool_confirm_action(&json!({"confirm_token": token}))
+        .await
+        .expect_err("refused");
+    assert!(err.to_string().contains("region the plan read"), "{err}");
+    assert!(
+        s.seams.assumed.lock().unwrap().is_empty(),
+        "nothing assumed"
+    );
+    let lines = crate::audit::delta::lines_for(&before, env);
+    let refused = lines
+        .iter()
+        .find(|l| l.contains("rule=role_unassumable"))
+        .unwrap_or_else(|| panic!("{lines:#?}"));
+    assert!(refused.contains("role=arn:aws:iam::"), "{refused}");
+    assert!(!refused.contains("session="), "{refused}");
 }
 
 /// A declined ask assumes nothing (D3): every AssumeRole with an ebman

@@ -2609,7 +2609,7 @@ fn a_refusal_cannot_be_constructed_without_recording_it() {
              this type exists to remove."
     );
     assert!(
-        module.contains("append_action_refused"),
+        module.contains("crate::audit::append_refused("),
         "record must audit"
     );
 

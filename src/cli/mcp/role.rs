@@ -95,6 +95,7 @@ impl Server {
                     &region,
                     "its verb maps to a role and the plan carried none",
                     "plan the write again",
+                    None,
                 ));
             }
             return Ok(None);
@@ -116,13 +117,17 @@ impl Server {
         let role_is = format!("role `{}` ({})", role.name, role.arn);
         // The remedy follows the failure. It never suggests dropping
         // the verb from the role: that removes the ceiling.
-        let (why, remedy) = if spec.region.is_none() {
+        // The session name goes on the refusal only once an AssumeRole
+        // went out under it: CloudTrail then holds a call by that name,
+        // and this line is what it joins to.
+        let (why, remedy, assumed) = if spec.region.is_none() {
             (
                 format!(
                     "{role_is} was not assumed: the region the plan read the environment in \
                      is unknown"
                 ),
                 "name the environment's region on the call (`region`)".to_string(),
+                false,
             )
         } else {
             match self.assume(&spec, &name).await {
@@ -136,10 +141,12 @@ impl Server {
                             "check mcp.role.{}.role_arn and the identity it is assumed from",
                             role.key
                         ),
+                        true,
                     ),
                     None => (
                         format!("STS did not say which account the session of {role_is} is in"),
                         "plan the write again".to_string(),
+                        true,
                     ),
                     Some(_) if client.context.region != region => (
                         format!(
@@ -147,6 +154,7 @@ impl Server {
                             client.context.region
                         ),
                         "name the environment's region on the call (`region`)".to_string(),
+                        true,
                     ),
                     Some(_) => {
                         return Ok(Some(RoleSession {
@@ -164,22 +172,42 @@ impl Server {
                         name_of_base(&spec),
                         role.arn
                     ),
+                    true,
                 ),
             }
         };
-        Err(self.role_refusal(p, &region, &why, &remedy))
+        Err(self.role_refusal(p, &region, &why, &remedy, assumed.then_some(name.as_str())))
     }
 
-    /// The `role_unassumable` refusal of an approved write (D7), audited.
-    fn role_refusal(&self, p: &PendingWrite, region: &str, why: &str, remedy: &str) -> Audited {
+    /// The `role_unassumable` refusal of an approved write (D7), audited
+    /// with the plan's `role=` and, once an AssumeRole went out, its
+    /// `session=`.
+    fn role_refusal(
+        &self,
+        p: &PendingWrite,
+        region: &str,
+        why: &str,
+        remedy: &str,
+        session: Option<&str>,
+    ) -> Audited {
         let audit_profile = p.profile.clone().or_else(|| self.ambient_profile.clone());
+        let mut extras: Vec<(&str, &str)> = Vec::new();
+        if let Some(role) = p.role() {
+            extras.push(("role", role.arn.as_str()));
+        }
+        if let Some(session) = session {
+            extras.push(("session", session));
+        }
         Audited::record(
             audit_profile.as_deref(),
             region,
-            p.verb.label(),
-            &p.env,
-            crate::audit::RefusalRule::RoleUnassumable,
-            remedy,
+            &crate::audit::Refused {
+                action_label: p.verb.label(),
+                target: &p.env,
+                rule: crate::audit::RefusalRule::RoleUnassumable,
+                remedy,
+                extras: &extras,
+            },
             format!(
                 "{} on {} was approved but not dispatched: {why}. Nothing ran, and it was \
                  not sent as the base identity.",

@@ -443,7 +443,9 @@ alone (`assumed` is `true`), from its `source_profile` or the call's own
 credentials; the dialog names the role and where it is assumed from. A
 role that cannot be assumed, or whose session lands in another account,
 refuses the write (`rule=role_unassumable`): nothing is dispatched and
-it is never sent as the base identity. A declined ask assumes nothing.
+it is never sent as the base identity; the refusal line carries `role=`,
+and `session=` once an AssumeRole went out under that name, so a failed
+call in CloudTrail joins to it. A declined ask assumes nothing.
 The write's audit lines carry `role=` and `session=`
 (`ebman-mcp-<client>-<plan>`, the plan as a digest of its token).
 `dlq_undo` assumes nothing of its own: it re-sends under the session

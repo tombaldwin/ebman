@@ -229,11 +229,14 @@ impl Server {
             return WriteError::Refused(Audited::record(
                 None,
                 &region,
-                verb.label(),
-                env.unwrap_or("-"),
-                crate::audit::RefusalRule::NotGranted,
-                "this server was started with --read-only; the operator must remove \
+                &crate::audit::Refused {
+                    action_label: verb.label(),
+                    target: env.unwrap_or("-"),
+                    rule: crate::audit::RefusalRule::NotGranted,
+                    remedy: "this server was started with --read-only; the operator must remove \
                  that flag and restart it",
+                    extras: &[],
+                },
                 format!(
                     "'{name}' is unavailable: this server was started with --read-only, \
                      which refuses every write regardless of what your client can do. \
@@ -246,10 +249,13 @@ impl Server {
         WriteError::Refused(Audited::record(
             None,
             &region,
-            verb.label(),
-            env.unwrap_or("-"),
-            crate::audit::RefusalRule::NotGranted,
-            &format!("restart the MCP server with --allow-writes={name}"),
+            &crate::audit::Refused {
+                action_label: verb.label(),
+                target: env.unwrap_or("-"),
+                rule: crate::audit::RefusalRule::NotGranted,
+                remedy: &format!("restart the MCP server with --allow-writes={name}"),
+                extras: &[],
+            },
             format!(
                 "'{name}' is not in this server's write scope — start it with \
                  --allow-writes, or --allow-writes={name} to grant just this one"
@@ -291,10 +297,13 @@ impl Server {
         Some(Audited::record(
             pin_profile.as_deref(),
             &region,
-            action_label,
-            env,
-            refusal.rule(),
-            &refusal.remedy(),
+            &crate::audit::Refused {
+                action_label,
+                target: env,
+                rule: refusal.rule(),
+                remedy: &refusal.remedy(),
+                extras: &[],
+            },
             message,
         ))
     }
@@ -990,13 +999,10 @@ mod audited {
         pub(in crate::cli::mcp) fn record(
             profile: Option<&str>,
             region: &str,
-            action: &str,
-            env: &str,
-            rule: crate::audit::RefusalRule,
-            remedy: &str,
+            refused: &crate::audit::Refused<'_>,
             message: String,
         ) -> Self {
-            crate::audit::append_action_refused(None, profile, region, action, env, rule, remedy);
+            crate::audit::append_refused(None, profile, region, refused);
             Audited(message)
         }
 
@@ -1973,10 +1979,13 @@ impl Server {
                         return Err(WriteError::Refused(Audited::record(
                             audit_profile.as_deref(),
                             &region,
-                            verb.label(),
-                            &env.name,
-                            refusal.rule(),
-                            &refusal.remedy(),
+                            &crate::audit::Refused {
+                                action_label: verb.label(),
+                                target: &env.name,
+                                rule: refusal.rule(),
+                                remedy: &refusal.remedy(),
+                                extras: &[],
+                            },
                             refusal.message(verb, &env.name, roles),
                         )));
                     }
@@ -2124,10 +2133,13 @@ impl Server {
             return Err(WriteError::Refused(Audited::record(
                 arg_str(args, "profile").as_deref(),
                 arg_str(args, "region").as_deref().unwrap_or("-"),
-                "confirm",
-                "-",
-                crate::audit::RefusalRule::NotGranted,
-                "restart the MCP server with --allow-writes",
+                &crate::audit::Refused {
+                    action_label: "confirm",
+                    target: "-",
+                    rule: crate::audit::RefusalRule::NotGranted,
+                    remedy: "restart the MCP server with --allow-writes",
+                    extras: &[],
+                },
                 "writes are disabled — start the server with --allow-writes".to_string(),
             )));
         }
@@ -2309,10 +2321,13 @@ impl Server {
             return Err(WriteError::Refused(Audited::record(
                 pending.profile.as_deref(),
                 &region,
-                pending.verb.label(),
-                &pending.env,
-                crate::audit::RefusalRule::NotApproved,
-                reason,
+                &crate::audit::Refused {
+                    action_label: pending.verb.label(),
+                    target: &pending.env,
+                    rule: crate::audit::RefusalRule::NotApproved,
+                    remedy: reason,
+                    extras: &[],
+                },
                 format!("not dispatched — {reason}. {}", outcome.guidance()),
             )));
         }
