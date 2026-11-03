@@ -1229,7 +1229,7 @@ thread_local! {
 
 /// Drop every audit line from now on, in this process (a test thread,
 /// under test). Called by a `--demo` process at startup.
-pub fn make_hermetic() {
+pub(crate) fn make_hermetic() {
     #[cfg(test)]
     TEST_HERMETIC.with(|c| c.set(true));
     #[cfg(not(test))]
