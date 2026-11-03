@@ -377,8 +377,7 @@ impl AwsClient {
         let assumed_arn = resp.assumed_role_user.as_ref().map(|u| u.arn.clone());
         let assumed_account = assumed_arn
             .as_deref()
-            .and_then(|a| a.split(':').nth(4))
-            .filter(|a| crate::config::is_account_id(a))
+            .and_then(crate::config::arn_account)
             .map(str::to_string);
         let creds = resp
             .credentials

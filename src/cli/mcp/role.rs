@@ -415,14 +415,6 @@ impl PlanRole {
     }
 }
 
-/// The account in an AWS ARN (`arn:PARTITION:SERVICE:REGION:ACCOUNT:…`),
-/// when it is twelve digits.
-fn arn_account(arn: &str) -> Option<&str> {
-    arn.split(':')
-        .nth(4)
-        .filter(|a| crate::config::is_account_id(a))
-}
-
 /// Why a mapped role cannot carry this write (D3), decided locally
 /// before anyone is asked.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -496,10 +488,14 @@ pub(super) fn role_for_env(
     env: &crate::aws::Environment,
     caller: &CallerIdentity,
 ) -> Result<PlanRole, RoleAccountRefusal> {
-    let env_account = env.arn.as_deref().and_then(arn_account).or(match caller {
-        CallerIdentity::Known { account, .. } => Some(account.as_str()),
-        CallerIdentity::Unknown { .. } => None,
-    });
+    let env_account = env
+        .arn
+        .as_deref()
+        .and_then(crate::config::arn_account)
+        .or(match caller {
+            CallerIdentity::Known { account, .. } => Some(account.as_str()),
+            CallerIdentity::Unknown { .. } => None,
+        });
     let Some(account) = env_account else {
         return Err(RoleAccountRefusal::AccountUnknown);
     };

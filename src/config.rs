@@ -354,6 +354,12 @@ pub(crate) fn is_account_id(s: &str) -> bool {
     s.len() == 12 && s.bytes().all(|b| b.is_ascii_digit())
 }
 
+/// The account in an AWS ARN (`arn:PARTITION:SERVICE:REGION:ACCOUNT:…`),
+/// when it is twelve digits.
+pub(crate) fn arn_account(arn: &str) -> Option<&str> {
+    arn.split(':').nth(4).filter(|a| is_account_id(a))
+}
+
 /// What an IAM role ARN says: the account it is in and the role's name
 /// (the last path segment, as IAM and the console name it).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1436,6 +1442,22 @@ mod tests {
     use super::*;
 
     const VERBS: &[&str] = &["deploy", "restart", "rebuild", "terminate"];
+
+    #[test]
+    fn arn_account_reads_the_fifth_field_when_it_is_an_account() {
+        assert_eq!(
+            arn_account("arn:aws:sts::111122223333:assumed-role/R/S"),
+            Some("111122223333")
+        );
+        assert_eq!(
+            arn_account("arn:aws:elasticbeanstalk:us-east-1:444455556666:environment/a/b"),
+            Some("444455556666")
+        );
+        // The region, not the account, is the fourth field.
+        assert_eq!(arn_account("arn:aws:s3:::bucket"), None);
+        assert_eq!(arn_account("arn:aws:iam::12345:role/R"), None);
+        assert_eq!(arn_account("not-an-arn"), None);
+    }
 
     #[test]
     fn mcp_roles_parse_and_write_back() {
