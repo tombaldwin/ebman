@@ -139,7 +139,7 @@ impl Server {
                     ),
                     None => (
                         format!("STS did not say which account the session of {role_is} is in"),
-                        "retry the write".to_string(),
+                        "plan the write again".to_string(),
                     ),
                     Some(_) if client.context.region != region => (
                         format!(
@@ -469,7 +469,11 @@ impl RoleAccountRefusal {
                  and .verbs)"
             ),
             Self::AccountUnknown => {
-                "allow sts:GetCallerIdentity, or remove the verb from mcp.role.NAME.verbs".into()
+                // Not "remove the verb from the role": that removes the
+                // ceiling the role is there to set.
+                "allow sts:GetCallerIdentity for the identity ebman runs as, so it can tell \
+                 the environment's account"
+                    .into()
             }
         }
     }

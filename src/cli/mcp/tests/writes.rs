@@ -3036,3 +3036,21 @@ async fn a_mapped_verb_with_no_role_carried_is_refused() {
         refused.message()
     );
 }
+
+/// A role-account refusal's remedy never suggests dropping the verb
+/// from the role: that removes the ceiling the role sets.
+#[test]
+fn a_role_account_remedy_keeps_the_ceiling() {
+    let unknown = super::role::RoleAccountRefusal::AccountUnknown.remedy();
+    assert!(unknown.contains("sts:GetCallerIdentity"), "{unknown}");
+    assert!(!unknown.contains("remove"), "{unknown}");
+    let wrong = super::role::RoleAccountRefusal::WrongAccount {
+        env_account: "444455556666".into(),
+    }
+    .remedy();
+    assert!(
+        wrong.contains("add a role in account 444455556666"),
+        "{wrong}"
+    );
+    assert!(!wrong.contains("remove"), "{wrong}");
+}
