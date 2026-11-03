@@ -36,13 +36,13 @@ pub(super) const UNDO_WINDOW_SECS: u64 = 600;
 /// delete many in a row and memory is not free.
 pub(super) const UNDO_CAPACITY: usize = 20;
 
-/// A message ebman destroyed and can still put back.
 /// The audit label of a restore. MCP alone writes it, so it is not in
 /// `crate::verb`'s shared vocabulary (scoped to verbs more than one
 /// surface writes); one spelling here, for the gate, dispatched and
 /// completed lines.
 const UNDO_LABEL: &str = "dlq-undo";
 
+/// A message ebman destroyed and can still put back.
 #[derive(Debug, Clone)]
 pub(super) struct DeletedMessage {
     pub env: String,
