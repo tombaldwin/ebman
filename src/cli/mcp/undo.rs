@@ -37,6 +37,12 @@ pub(super) const UNDO_WINDOW_SECS: u64 = 600;
 pub(super) const UNDO_CAPACITY: usize = 20;
 
 /// A message ebman destroyed and can still put back.
+/// The audit label of a restore. MCP alone writes it, so it is not in
+/// `crate::verb`'s shared vocabulary (scoped to verbs more than one
+/// surface writes); one spelling here, for the gate, dispatched and
+/// completed lines.
+const UNDO_LABEL: &str = "dlq-undo";
+
 #[derive(Debug, Clone)]
 pub(super) struct DeletedMessage {
     pub env: String,
@@ -358,7 +364,7 @@ impl Server {
                 &d.env,
                 &d.profile,
                 d.plan_region.as_deref().or(d.region.as_deref()),
-                "dlq-undo",
+                UNDO_LABEL,
                 &crate::config::RoleCheck::NotAsked,
             )
             .await
@@ -418,7 +424,7 @@ impl Server {
                 None,
                 audit_profile.as_deref(),
                 &region,
-                "dlq-undo",
+                UNDO_LABEL,
                 &d.env,
                 &refs,
             );
@@ -430,7 +436,7 @@ impl Server {
                 None,
                 audit_profile.as_deref(),
                 &region,
-                "dlq-undo",
+                UNDO_LABEL,
                 &d.env,
                 sent.as_ref().map(|_| ()).map_err(|e| e.as_str()),
                 &refs,
