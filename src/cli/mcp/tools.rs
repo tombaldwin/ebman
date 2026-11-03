@@ -1316,7 +1316,14 @@ impl Server {
         // `all_writes_refused: false` about a server refusing
         // everything.
         let unreadable = !self.safety_cfg.safety_parse_errors.is_empty();
-        let all_refused = self.safety_cfg.safety_read_only || unreadable || frozen;
+        // The role config's rungs refuse every MCP write too (an
+        // unreadable `mcp.role.` line, or `mcp.require_role` with no role
+        // for anything this connection can write), and only a note said
+        // so: an agent branching on the field planned writes that all
+        // refused.
+        let (role_unreadable, role_refuses_all) = self.role_standing();
+        let all_refused =
+            self.safety_cfg.safety_read_only || unreadable || frozen || role_refuses_all;
 
         // One concern each, in the order an agent should read them. A
         // new section is a method of its own, not more of this function.
@@ -1335,7 +1342,7 @@ impl Server {
             util::json_string(&writes_via),
             all_refused,
             pinned,
-            !self.safety_cfg.safety_parse_errors.is_empty(),
+            unreadable || role_unreadable,
             self.redact,
             notes
                 .iter()

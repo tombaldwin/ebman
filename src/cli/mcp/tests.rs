@@ -6972,6 +6972,38 @@ async fn doctor_says_an_unreadable_role_config_closes_every_write() {
     assert!(bad[0].contains("not-an-arn"), "{}", bad[0]);
 }
 
+/// The structured restrictions say what the role config refuses, not
+/// only a note: an agent branches on the field.
+#[tokio::test]
+async fn doctor_s_restrictions_count_what_the_role_config_refuses() {
+    let restrictions = |cfg: &str, scope: WriteScope| {
+        let s = Server::with_config(true, false, scope, crate::config::parse(cfg));
+        async move {
+            let d = call(&s, "doctor", json!({})).await.1;
+            let r = &d["standing_restrictions"];
+            (
+                r["all_writes_refused"].as_bool().unwrap(),
+                r["config_unreadable"].as_bool().unwrap(),
+            )
+        }
+    };
+    let broken = "mcp.role.deploys.role_arn = \"not-an-arn\"\n\
+                  mcp.role.deploys.verbs = \"deploy\"\n";
+    assert_eq!(restrictions(broken, WriteScope::All).await, (true, true));
+    // Strict mode with no role for any verb here closes every write.
+    let strict = "mcp.require_role = true\n";
+    assert_eq!(restrictions(strict, WriteScope::All).await, (true, false));
+    // A role for one verb this connection can write leaves that verb open.
+    let partial = "mcp.require_role = true\n\
+                   mcp.role.deploys.role_arn = \"arn:aws:iam::123456789012:role/D\"\n\
+                   mcp.role.deploys.verbs = \"restart\"\n";
+    assert_eq!(restrictions(partial, WriteScope::All).await, (false, false));
+    // ...and closes everything on a connection that can write only others.
+    let only_deploy = WriteScope::Only(vec!["deploy".into()]);
+    assert_eq!(restrictions(partial, only_deploy).await, (true, false));
+    assert_eq!(restrictions("", WriteScope::All).await, (false, false));
+}
+
 /// A demo server assumes nothing (D8), so its plan says `assumed: false`
 /// and its dialog says what a live server would do, rather than
 /// claiming a role this write will not go out under.

@@ -228,6 +228,32 @@ impl Server {
     /// doctor has NOT checked. Nothing when no role is configured and
     /// strict mode is off, which is every write going out as the base
     /// identity, as it always has.
+    /// What the role config refuses on this connection, for doctor's
+    /// `standing_restrictions`: `(unreadable, refuses_every_write)`. An
+    /// unreadable config refuses every MCP write; so does
+    /// `mcp.require_role` when no verb this connection can write has a
+    /// role. (`dlq_undo` is not a verb here: it asks no role of its own.)
+    pub(super) fn role_standing(&self) -> (bool, bool) {
+        use crate::config::{mcp_role_check, RoleCheck};
+        let cfg = &self.safety_cfg;
+        let known = write_verb_names();
+        let known: Vec<&str> = known.iter().map(String::as_str).collect();
+        let unreadable = matches!(
+            known.first().map(|v| mcp_role_check(cfg, v, &known)),
+            Some(RoleCheck::Unreadable { .. })
+        );
+        let checks: Vec<RoleCheck> = known
+            .iter()
+            .filter(|v| self.effective_scope().allows(v))
+            .map(|v| mcp_role_check(cfg, v, &known))
+            .collect();
+        let strict_closes_all = !checks.is_empty()
+            && checks
+                .iter()
+                .all(|c| matches!(c, RoleCheck::Unmapped { required: true }));
+        (unreadable, unreadable || strict_closes_all)
+    }
+
     pub(super) fn role_notes(&self) -> Vec<String> {
         use crate::config::{mcp_role_check, parse_role_arn, RoleCheck};
         let cfg = &self.safety_cfg;
