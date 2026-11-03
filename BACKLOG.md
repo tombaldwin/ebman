@@ -193,8 +193,9 @@ Tier definitions:
   The 0.49.0 review fixed every site that disagreed (788d432:
   `Server::audit_profile`, the plan client built before the role check,
   `DeletedMessage::plan_region`), which proves the sites agree today, not
-  that the next one will. `gate_refusal` still names the PIN profile on
-  purpose: settle that first. ~1 day, `writes.rs` / `role.rs` /
+  that the next one will. `gate_refusal`'s pin profile is the audit
+  profile (`write_refusal_unaudited` returns the profile it was given):
+  keep them one value. ~1 day, `writes.rs` / `role.rs` /
   `undo.rs`. From the 2026-10-31 design review and the 0.49.0
   architecture review.
 
@@ -216,8 +217,8 @@ Tier definitions:
   region, session)` for the session-or-base client (`writes.rs`
   dispatch, `undo.rs` restore); one function for "extras plus the
   session's `role=`/`session=`" and the `(&str, &str)` refs conversion
-  (three and five copies); `undo.rs` reads `can_ask` directly where
-  `write_extras` exists so callers don't. ~2 hours.
+  (three and five copies); `undo.rs` and `dispatch_dlq_and_audit` read
+  `can_ask` directly where `write_extras` exists so callers don't. ~2 hours.
 
 - [ ] **`PlanRole` embeds `MappedRole`.** It copies six of its fields;
   `PlanRole { mapped, assumes }` removes the copy. `PendingWrite::role()`
