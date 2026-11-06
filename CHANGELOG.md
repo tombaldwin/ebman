@@ -6,7 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
-## [0.49.0] - 2026-11-03
+## [0.49.0] - 2026-11-06
+
+### Security
+
+- **`pin-utils` is out of the build (RUSTSEC-2026-0441, unmaintained).**
+  It came in through the AWS SDK's `aws-smithy-http` and
+  `aws-smithy-runtime`, whose newer releases dropped it; both moved
+  within their compatible ranges, and `deny.toml` is unchanged.
 
 ### Added
 
