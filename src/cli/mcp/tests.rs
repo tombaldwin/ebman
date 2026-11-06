@@ -2878,6 +2878,49 @@ mod orchestration {
         );
     }
 
+    /// What a held message says it has left: the undo window, less when
+    /// the delete's role session ends first, none once it has.
+    #[tokio::test]
+    async fn an_undo_s_time_left_is_its_window_cut_short_by_its_session() {
+        /// The listing's seconds, with the delete's session expiring at
+        /// `expires`.
+        async fn left(s: &Server, expires: Option<std::time::SystemTime>) -> u64 {
+            for d in s.deleted.lock().await.iter_mut() {
+                let old = d.session.clone().expect("a session");
+                let mut client = test_client(aws_smithy_mocks::mock_client!(
+                    aws_sdk_elasticbeanstalk,
+                    aws_smithy_mocks::RuleMode::MatchAny,
+                    []
+                ));
+                client.context.credentials_expire_at = expires;
+                d.session = Some(super::role::RoleSession {
+                    client: std::sync::Arc::new(client),
+                    ..old
+                });
+            }
+            let listing = s
+                .call_tool("dlq_undo", &json!({}))
+                .await
+                .expect("a listing");
+            let listing: Value = serde_json::from_str(&listing).expect("json");
+            listing["recoverable"][0]["expires_in_secs"]
+                .as_u64()
+                .expect("seconds")
+        }
+        let (s, _out, _session, _before) = delete_under_a_dlq_role(None, false).await;
+        let window = super::undo::UNDO_WINDOW_SECS;
+        let margin = super::undo::SESSION_MARGIN_SECS;
+        let in_secs = |n| std::time::SystemTime::now() + std::time::Duration::from_secs(n);
+
+        let no_expiry = left(&s, None).await;
+        assert!((window - 5..=window).contains(&no_expiry), "{no_expiry}");
+        let outlasts = left(&s, Some(in_secs(margin + window + 3600))).await;
+        assert!((window - 5..=window).contains(&outlasts), "{outlasts}");
+        let cut_short = left(&s, Some(in_secs(margin + 100))).await;
+        assert!((90..=100).contains(&cut_short), "{cut_short}");
+        assert_eq!(left(&s, Some(in_secs(margin / 2))).await, 0);
+    }
+
     /// A restore the role may not send names the role, its session and
     /// the permission it needs, keeps the message held for a retry, and
     /// leaves AWS's own words alone in the audit line.
@@ -6418,6 +6461,15 @@ fn fleet_cost_total_matches_its_entries() {
 /// The base client refuses `RestartAppServer`, so a write that went out
 /// as the base identity is seen to.
 fn role_confirm_server(env: &'static str, action: &'static str) -> std::sync::Arc<Server> {
+    role_confirm_server_in(env, action, "poly-role-1")
+}
+
+/// `role_confirm_server`, its client reporting `region`.
+fn role_confirm_server_in(
+    env: &'static str,
+    action: &'static str,
+    region: &str,
+) -> std::sync::Arc<Server> {
     use aws_sdk_elasticbeanstalk::operation::describe_environments::DescribeEnvironmentsOutput;
     use aws_sdk_elasticbeanstalk::types::EnvironmentDescription;
     let listing = aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::describe_environments)
@@ -6458,7 +6510,7 @@ fn role_confirm_server(env: &'static str, action: &'static str) -> std::sync::Ar
         [&listing, &events, &base_restart]
     );
     let mut client = test_client(eb);
-    client.context.region = "poly-role-1".into();
+    client.context.region = region.into();
     let cfg = crate::config::parse(
         "mcp.role.deploys.role_arn = \"arn:aws:iam::123456789012:role/EbmanAgentDeploy\"\n\
          mcp.role.deploys.verbs = \"restart\"\n\
@@ -6715,6 +6767,61 @@ async fn a_declined_write_files_under_the_plan_s_region() {
     }
 }
 
+/// A region the SDK never resolved is no region: the plan holds none,
+/// so no line of the write can say `region=unknown`.
+#[tokio::test]
+async fn an_unresolved_region_is_not_the_plan_s() {
+    let env = "poly-role-unresolved-region-probe";
+    for (reported, held) in [
+        ("", None),
+        ("unknown", None),
+        ("poly-role-4", Some("poly-role-4")),
+    ] {
+        let s = role_confirm_server_in(env, "decline", reported);
+        s.tool_write_plan(writes::WriteVerb::Restart, &json!({"env": env}))
+            .await
+            .unwrap_or_else(|e| panic!("{e}"));
+        let writes = s.writes.lock().await;
+        let pending = writes.pending.as_ref().expect("installed");
+        assert_eq!(pending.plan_region.as_deref(), held, "{reported:?}");
+    }
+}
+
+/// On AWS, where the line is written: a confirm whose question reached
+/// nobody says nothing was asked, whichever way it reached nobody.
+#[tokio::test]
+async fn a_confirm_that_put_no_question_writes_no_ask_line_on_aws() {
+    async fn lines_of(s: &Server, env: &str) -> Vec<String> {
+        let before = crate::audit::delta::mark();
+        let _ = plan_and_confirm(s, env).await;
+        crate::audit::delta::lines_for(&before, env)
+    }
+    // The client cannot elicit.
+    let env = "poly-unasked-no-elicitation-probe";
+    let s = role_confirm_server(env, "accept");
+    s.client_supports_elicitation
+        .store(false, std::sync::atomic::Ordering::Relaxed);
+    let lines = lines_of(&s, env).await;
+    assert!(!lines.is_empty());
+    assert!(
+        !lines.iter().any(|l| l.contains("stage=asked")),
+        "{lines:#?}"
+    );
+
+    // It can, but there is no channel to ask it on.
+    let env = "poly-unasked-no-channel-probe";
+    let s = role_confirm_server(env, "accept");
+    if let Ok(mut slot) = s.outbound.lock() {
+        *slot = None;
+    }
+    let lines = lines_of(&s, env).await;
+    assert!(!lines.is_empty());
+    assert!(
+        !lines.iter().any(|l| l.contains("stage=asked")),
+        "{lines:#?}"
+    );
+}
+
 /// A freeze declared between plan and confirm refuses under the plan's
 /// region too.
 #[tokio::test]
@@ -6783,6 +6890,25 @@ async fn a_role_session_in_another_region_refuses() {
     );
 }
 
+/// `AwsClient` has no `Debug`, so a session prints by what identifies it.
+#[tokio::test]
+async fn a_role_session_debugs_as_its_role_and_name() {
+    let session = role::RoleSession {
+        client: std::sync::Arc::new(test_client(aws_smithy_mocks::mock_client!(
+            aws_sdk_elasticbeanstalk,
+            aws_smithy_mocks::RuleMode::MatchAny,
+            []
+        ))),
+        arn: "arn:aws:iam::123456789012:role/EbmanAgentDeploy".into(),
+        name: "ebman-mcp-poly-1".into(),
+    };
+    assert_eq!(
+        format!("{session:?}"),
+        "RoleSession { arn: \"arn:aws:iam::123456789012:role/EbmanAgentDeploy\", \
+         name: \"ebman-mcp-poly-1\", .. }"
+    );
+}
+
 /// A role that cannot be assumed refuses the approved write, audited
 /// `role_unassumable`, and never sends it as the base identity.
 #[tokio::test]
@@ -6805,6 +6931,12 @@ async fn an_unassumable_role_refuses_and_dispatches_nothing() {
         .iter()
         .find(|l| l.contains("stage=refused") && l.contains("rule=role_unassumable"))
         .unwrap_or_else(|| panic!("{lines:#?}"));
+    // The remedy names whose credentials need the grant.
+    assert!(
+        refused
+            .contains("let profile `ops` assume arn:aws:iam::123456789012:role/EbmanAgentDeploy"),
+        "{refused}"
+    );
     // CloudTrail holds a failed AssumeRole under the session name, and
     // this is the line it joins to (D5, D7).
     assert!(
