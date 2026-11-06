@@ -120,7 +120,7 @@ it.*
      the "Not scheduled" latency ruling rests on it. `--demo` writes no
      audit lines, and the dev registration is `--demo`, so it needs a
      non-demo MCP connection on a build of 0.43.0 or later (Homebrew is
-     0.48.0). One confirm, even a decline, settles it.
+     0.49.0). One confirm, even a decline, settles it.
    - **The App tab against AWS.** Discovery has run on a real fleet;
      the SEARCH expression and its dynamic instance label, metric math
      over it, the Logs Insights `parse`/`stats` query and
@@ -155,7 +155,9 @@ it.*
    from config and the operator docs carry example policies, but D7's
    AssumeRole probe from `doctor` waits on the maintainer, because MCP
    `doctor` is AWS-free by contract (its description says "Reads no
-   AWS"). Then the live check against a real account.
+   AWS"). Then the live check against a real account. **Shipped in
+   0.49.0 (2026-11-06);** what is left is that `doctor` ruling, the
+   expired-session undo ruling (BACKLOG) and the live check.
    It builds on the shipped ask
    (stage 5 was killed on 2026-09-25, so there is nothing to replace)
    and splits into five slices. Its three contestable calls are listed
@@ -163,21 +165,36 @@ it.*
 
 ### Next
 
-*2026-10-31: the design review's eight "later" items and seven BACKLOG
-items were done in this window and archived ("PLAN.md items done
-2026-10-31"). These are next; the `write_refusal` split was killed by
-evidence on 2026-11-02 (archived).*
+*Refilled 2026-11-06: the `scan.rs` split is done (archived, "PLAN.md
+items done 2026-11-06"). These three came from BACKLOG, the refactors
+the 0.49.0 review deferred until after the release.*
 
-3. *(architecture)* **`src/app/tests/scan.rs` has outgrown its name and location**
-   (~1,100 lines): source-scan primitives, git/packaging checks (account
-   IDs, protected names) and the `write_gate` guard, under `app/tests/`
-   while `verb.rs`, `aws/tests/` and `cli` all use it. A crate-level
-   test-support module split into `scan` and `packaging`. *0.45 release
-   review.*
+3. *(architecture)* **One `WriteAudit` per MCP write** (absorbs `Server::refuse(..)`):
+   resolve profile, region, label and env once, at plan time after
+   `fetch_envs`, store it on `PendingWrite` and copy it onto
+   `DeletedMessage`, and route asked / refused / dispatched / completed
+   through it, with `Option<String>` in place of the `"-"` / `"unknown"`
+   sentinels (`role.rs` makes a control decision on `region != "-"`).
+   The 0.49.0 review fixed every site that disagreed (788d432:
+   `Server::audit_profile`, the plan client built before the role check,
+   `DeletedMessage::plan_region`), which proves the sites agree today, not
+   that the next one will. `gate_refusal`'s pin profile is the audit
+   profile (`write_refusal_unaudited` returns the profile it was given):
+   keep them one value. ~1 day, `writes.rs` / `role.rs` /
+   `undo.rs`. From the 2026-10-31 design review and the 0.49.0
+   architecture review.
 
-*Left in BACKLOG.md: `Server::refuse(..)` for the six `Audited::record`
-callers, whose profile choices differ on purpose and need settling
-first.*
+4. *(architecture)* **Session plumbing helpers.** `Server::dispatch_client(profile,
+   region, session)` for the session-or-base client (`writes.rs`
+   dispatch, `undo.rs` restore); one function for "extras plus the
+   session's `role=`/`session=`" and the `(&str, &str)` refs conversion
+   (three and five copies); `undo.rs` and `dispatch_dlq_and_audit` read
+   `can_ask` directly where `write_extras` exists so callers don't. ~2 hours.
+
+5. *(architecture)* **`PlanRole` embeds `MappedRole`.** It copies six of its fields;
+   `PlanRole { mapped, assumes }` removes the copy. `PendingWrite::role()`
+   is an accessor over a `pub role`, so there are two ways to read it.
+   ~1 hour.
 
 ### Released
 

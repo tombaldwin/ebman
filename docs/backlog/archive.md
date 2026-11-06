@@ -5869,3 +5869,11 @@ a `--read-only` server.
   sentence), `explain_verdict` matching `gap.rule`, every carrier typed
   (`EnvLintInputs`, `LintRun`, the pre-flight `not_run`), renderers call
   `to_string()` at the edge. Three mutations CAUGHT.
+
+## PLAN.md items done 2026-11-06
+
+- **`src/app/tests/scan.rs` split.** Now `src/tests/scan.rs` (source-scan
+  primitives) and `src/tests/packaging.rs` (tracked files, account IDs,
+  protected names), crate-level and `cfg(test)`; the write-gate guard
+  sits in `src/write_gate.rs`. 2,363 lib test names unchanged; the moved
+  guards were each shown to fail against a planted violation.

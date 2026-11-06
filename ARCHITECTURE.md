@@ -367,7 +367,9 @@ carry enough of them to need their own directory: `app`'s are in
 [`src/app/tests/`](src/app/tests/), one module per surface, with the shared
 fixtures in [`support.rs`](src/app/tests/support.rs); the MCP server's are in
 [`src/cli/mcp/tests.rs`](src/cli/mcp/tests.rs) and
-[`src/cli/mcp/tests/`](src/cli/mcp/tests/).
+[`src/cli/mcp/tests/`](src/cli/mcp/tests/). Support the whole crate shares is
+in [`src/tests/`](src/tests/): `scan` for source-scanning guards, `packaging`
+for what may be published.
 
 The MCP ones are attached two different ways, and the difference is
 load-bearing. `mod.rs`'s tests are a plain `mod tests;` at the same path the

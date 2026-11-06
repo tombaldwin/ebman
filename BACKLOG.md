@@ -184,21 +184,6 @@ Tier definitions:
 
 #### Correctness and safety, from the 2026-09-25 reviews
 
-- [ ] **One `WriteAudit` per MCP write** (absorbs `Server::refuse(..)`):
-  resolve profile, region, label and env once, at plan time after
-  `fetch_envs`, store it on `PendingWrite` and copy it onto
-  `DeletedMessage`, and route asked / refused / dispatched / completed
-  through it, with `Option<String>` in place of the `"-"` / `"unknown"`
-  sentinels (`role.rs` makes a control decision on `region != "-"`).
-  The 0.49.0 review fixed every site that disagreed (788d432:
-  `Server::audit_profile`, the plan client built before the role check,
-  `DeletedMessage::plan_region`), which proves the sites agree today, not
-  that the next one will. `gate_refusal`'s pin profile is the audit
-  profile (`write_refusal_unaudited` returns the profile it was given):
-  keep them one value. ~1 day, `writes.rs` / `role.rs` /
-  `undo.rs`. From the 2026-10-31 design review and the 0.49.0
-  architecture review.
-
 - [ ] **The MCP write family's glob-import cycle.** `role.rs`, `undo.rs`
   and `mcp/freeze.rs` `use super::writes::*` to reach shared primitives,
   and `writes.rs` globs `role` and `undo` back. Split `mcp/refusal.rs`
@@ -212,18 +197,6 @@ Tier definitions:
   `mcp/tests.rs` is ~7000 lines; the role tests sit at its end and the
   undo tests inside `orchestration`. ARCHITECTURE.md's convention is one
   child per module, as `writes.rs` and `tools.rs` have. Half a day.
-
-- [ ] **Session plumbing helpers.** `Server::dispatch_client(profile,
-  region, session)` for the session-or-base client (`writes.rs`
-  dispatch, `undo.rs` restore); one function for "extras plus the
-  session's `role=`/`session=`" and the `(&str, &str)` refs conversion
-  (three and five copies); `undo.rs` and `dispatch_dlq_and_audit` read
-  `can_ask` directly where `write_extras` exists so callers don't. ~2 hours.
-
-- [ ] **`PlanRole` embeds `MappedRole`.** It copies six of its fields;
-  `PlanRole { mapped, assumes }` removes the copy. `PendingWrite::role()`
-  is an accessor over a `pub role`, so there are two ways to read it.
-  ~1 hour.
 
 - [ ] **`write_verb_names()` builds the whole JSON descriptor table** on
   every `role_check`, so on every plan and every doctor. A static list.
