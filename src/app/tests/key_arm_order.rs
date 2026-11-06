@@ -419,7 +419,7 @@ fn every_source_file_puts_guarded_key_arms_first() {
     // 20 files match today. A floor of 2 would still have passed on a
     // walk that had collapsed to almost nothing.
     let mut checked = 0usize;
-    for (path, src) in super::scan::source_files() {
+    for (path, src) in crate::tests::scan::source_files() {
         if !src.contains("KeyCode::Char") {
             continue;
         }
@@ -510,7 +510,7 @@ fn the_key_arm_rule_can_see_a_violation() {
 #[test]
 fn overlay_key_routing_has_no_wildcard_arm() {
     let src = std::fs::read_to_string("src/app/input.rs").expect("input.rs");
-    let body = super::scan::production_half(&src);
+    let body = crate::tests::scan::production_half(&src);
     let start = body
         .find("fn key_route(&self) -> OverlayRoute {")
         .expect("the routing classification must exist");

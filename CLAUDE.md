@@ -120,7 +120,7 @@ The final message must explicitly list **skipped items** alongside what shipped,
 - **A mutation experiment must be proven to have applied.** `cargo fmt` reformats — a multi-line match arm becomes one line — so a `replace` written against the pre-fmt shape silently no-ops and the test "passes" the mutation. That happened here: a fix was reported as shipped while the code path still called the old function, and the test only proved a neighbouring property. Assert the string matched, or count occurrences before and after, before believing a mutation result.
 - **Use `scripts/mutate.sh` for mutation experiments.** It encodes the four rules below that each cost a real mistake: back up with `cp` (never `git checkout`), prove the mutation applied (a `sed` written against the pre-`fmt` shape silently no-ops and the test "passes" the mutation), treat a run with no `test result:` line as inconclusive rather than a pass (a mutation that doesn't compile looks identical to one the tests ignored — this was misread twice in one session), and restore on every exit path.
 - **Clean up after a mutation sweep.** Each experiment is a fresh compile and cargo never garbage-collects the dep artefacts left behind: one session accumulated **427 GiB** in `target/` and filled the disk mid-run. `scripts/mutate.sh` warns past 40G; `cargo clean` fixes it and a fresh `target/` is about 7G.
-- **Source-scanning guards go through `src/app/tests/scan.rs`.** Don't
+- **Source-scanning guards go through `src/tests/scan.rs`.** Don't
   hand-roll a tree walk or a comment stripper. Eight guards each carried
   `line.split("//").next()`, which truncates at a `//` inside a string
   literal — so everything after a URL literal was invisible to all of

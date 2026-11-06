@@ -2393,7 +2393,7 @@ mod paging_tests {
     /// failure mode the extraction was meant to end.
     #[test]
     fn the_platform_listing_uses_the_extracted_filters() {
-        let src = crate::app::tests::scan::production_source("aws/eb.rs");
+        let src = crate::tests::scan::production_source("aws/eb.rs");
         // Bounded at BOTH the next function and the test module. A
         // slice that ran to EOF would swallow this test's own string
         // literals, so the guard would be matching itself — and a

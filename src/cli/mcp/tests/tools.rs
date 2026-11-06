@@ -25,7 +25,7 @@ fn dispatch_arm_names() -> Vec<String> {
     // tests into `tests/` made `include_str!("tools.rs")` a read of
     // THIS file, which still compiles and still finds `call_tool`
     // mentioned in its own assertions.
-    let src = crate::app::tests::scan::production_source("cli/mcp/tools.rs");
+    let src = crate::tests::scan::production_source("cli/mcp/tools.rs");
     let src = src.as_str();
     let start = src.find("async fn call_tool").expect("call_tool exists");
     let body = &src[start..];

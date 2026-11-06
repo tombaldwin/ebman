@@ -1183,7 +1183,7 @@ mod tests {
         // must not satisfy this.
         for name in ["cli/drift.rs", "cli/mcp/tools.rs", "app/cmd_misc.rs"] {
             assert!(
-                crate::app::tests::scan::production_source(name).contains("redact_drift_fields"),
+                crate::tests::scan::production_source(name).contains("redact_drift_fields"),
                 "{name} renders drift without redacting it"
             );
         }

@@ -1949,10 +1949,10 @@ mod tests {
     /// enumeration has to be kept current to notice.
     #[test]
     fn only_the_renderer_builds_a_stage_line() {
-        let prod = crate::app::tests::scan::production_source("src/audit.rs");
+        let prod = crate::tests::scan::production_source("src/audit.rs");
         let code: String = prod
             .lines()
-            .map(crate::app::tests::scan::strip_line_comment)
+            .map(crate::tests::scan::strip_line_comment)
             .collect::<Vec<_>>()
             .join("\n");
 
@@ -1995,10 +1995,10 @@ mod tests {
     /// parameter is.
     #[test]
     fn no_audit_writer_accepts_a_prebuilt_line() {
-        let prod = crate::app::tests::scan::production_source("src/audit.rs");
+        let prod = crate::tests::scan::production_source("src/audit.rs");
         let code: String = prod
             .lines()
-            .map(crate::app::tests::scan::strip_line_comment)
+            .map(crate::tests::scan::strip_line_comment)
             .collect::<Vec<_>>()
             .join("\n");
 
@@ -2852,7 +2852,7 @@ mod parser_properties {
         // writer against a line inside the test module if the doc line
         // ever goes — the shape that hid a broken guard in
         // `cli/mcp/writes.rs` for months.
-        let doc = crate::app::tests::scan::production_source("src/audit.rs");
+        let doc = crate::tests::scan::production_source("src/audit.rs");
         let doc_shape = doc
             .lines()
             .find(|l| l.contains("rollout_id=ID"))

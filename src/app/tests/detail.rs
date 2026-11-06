@@ -3275,7 +3275,7 @@ fn app_config_is_replaced_only_through_set_app_tabs() {
         "self.cfg = ",
         "app.cfg = ",
     ];
-    let writes = super::scan::production_statements_where(|code| {
+    let writes = crate::tests::scan::production_statements_where(|code| {
         code.contains("cfg") && WRITES.iter().any(|w| code.contains(w))
     });
     // config.rs builds a `Config` (its parser, and the save that keeps
@@ -3334,7 +3334,7 @@ async fn an_envs_app_tab_comes_from_config_then_a_preview_then_nothing() {
     // Also the branching shapes: `match … .envs.get(..)`, `if let Some(_)
     // = … .envs.get(..)`, `matches!(… .envs.get(..), …)`. The one such
     // statement allowed is app_tab_source's own match.
-    let asked = super::scan::production_statements_where(|code| {
+    let asked = crate::tests::scan::production_statements_where(|code| {
         code.contains(".envs.contains_key(")
             || (code.contains(".envs.get(")
                 && (code.contains(".is_some()")
@@ -3351,7 +3351,8 @@ async fn an_envs_app_tab_comes_from_config_then_a_preview_then_nothing() {
     );
     // A preview is made from what discovery found only by AppTabSource,
     // however it is imported: every use but the definition is there.
-    let previewed = super::scan::production_statements_where(|code| code.contains("preview_spec"));
+    let previewed =
+        crate::tests::scan::production_statements_where(|code| code.contains("preview_spec"));
     let uses: Vec<&String> = previewed
         .iter()
         .filter(|l| !l.contains("fn preview_spec("))

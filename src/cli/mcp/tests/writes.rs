@@ -434,7 +434,7 @@ fn the_confirm_window_outlives_a_receipt_handle() {
     // constant-folded, so clippy rightly calls it an assertion that
     // cannot fail — the "test that is worse than none" shape this
     // repo keeps finding.
-    let sqs = crate::app::tests::scan::production_source("aws/sqs.rs");
+    let sqs = crate::tests::scan::production_source("aws/sqs.rs");
     let visibility: u64 = sqs
         .split(".visibility_timeout(")
         .nth(1)
@@ -450,7 +450,7 @@ fn the_confirm_window_outlives_a_receipt_handle() {
              before simplifying anything."
     );
     // And the plan type must not be able to carry a handle.
-    let src = crate::app::tests::scan::production_source("cli/mcp/writes.rs");
+    let src = crate::tests::scan::production_source("cli/mcp/writes.rs");
     let decl = src
         .split("pub(super) struct PendingWrite {")
         .nth(1)
@@ -547,7 +547,7 @@ async fn a_resend_plan_with_no_main_queue_sends_nothing() {
 /// from the crate root, so a guard cannot be handed its own text.
 #[test]
 fn a_resend_sends_before_it_deletes() {
-    let src = crate::app::tests::scan::production_source("cli/mcp/writes.rs");
+    let src = crate::tests::scan::production_source("cli/mcp/writes.rs");
     let body = src
         .split("async fn dispatch_one_dlq_message(")
         .nth(1)
@@ -1003,7 +1003,7 @@ fn a_resend_carries_the_sqsd_attributes() {
     let sources = ["cli/mcp/writes.rs", "app/spawn_dlq.rs"];
     let mut calls = 0;
     for name in sources {
-        let prod = crate::app::tests::scan::production_source(name);
+        let prod = crate::tests::scan::production_source(name);
         for (i, _) in prod.match_indices(".send_message(") {
             calls += 1;
             // The call text up to its closing `.await`, which is
@@ -2592,7 +2592,7 @@ async fn a_verb_outside_the_grant_is_a_typed_refusal() {
 /// alongside `record`.
 #[test]
 fn a_refusal_cannot_be_constructed_without_recording_it() {
-    let body = crate::app::tests::scan::production_source("cli/mcp/writes.rs");
+    let body = crate::tests::scan::production_source("cli/mcp/writes.rs");
     let start = body
         .find("mod audited {")
         .expect("the audited module must exist");
@@ -2961,7 +2961,7 @@ async fn a_failed_restore_says_whether_the_window_is_still_open() {
     // The live failure paths (client, send) use the answer. They are
     // not reachable on the demo backend, so pin the wiring: a literal
     // `true` there would tell an agent to retry a message that is gone.
-    let prod = crate::app::tests::scan::production_source("cli/mcp/undo.rs");
+    let prod = crate::tests::scan::production_source("cli/mcp/undo.rs");
     let calls: Vec<&str> = prod
         .match_indices("restore_failed(&")
         .map(|(i, _)| prod[i..].lines().next().unwrap_or_default())

@@ -103,6 +103,8 @@ pub(crate) mod llm;
 pub(crate) mod release_meta;
 
 pub(crate) mod terraform;
+#[cfg(test)]
+mod tests;
 /// The single write-authorisation decision, shared by the TUI and CLI
 /// gates. See the module docs for why the wording is NOT shared.
 pub(crate) mod write_gate;

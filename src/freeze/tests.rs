@@ -1089,14 +1089,14 @@ fn no_other_test_reads_the_shared_store() {
         concat!("WriteEnv::", "real()"),
     ];
     let mut found = Vec::new();
-    for (path, src) in crate::app::tests::scan::source_files() {
-        let test_part: Vec<&str> = if crate::app::tests::scan::is_test_path(&path) {
+    for (path, src) in crate::tests::scan::source_files() {
+        let test_part: Vec<&str> = if crate::tests::scan::is_test_path(&path) {
             src.lines().collect()
         } else {
             // The lines `production_half` cut: it removes whole test
             // modules and keeps the rest in order, so walking both
             // together leaves exactly those.
-            let production = crate::app::tests::scan::production_half(&src);
+            let production = crate::tests::scan::production_half(&src);
             let mut kept = production.lines().peekable();
             src.lines()
                 .filter(|line| {
@@ -1112,7 +1112,7 @@ fn no_other_test_reads_the_shared_store() {
         let n: usize = test_part
             .iter()
             .map(|l| {
-                let code = crate::app::tests::scan::strip_line_comment(l);
+                let code = crate::tests::scan::strip_line_comment(l);
                 needles
                     .iter()
                     .map(|n| code.matches(n).count())

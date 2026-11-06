@@ -426,7 +426,7 @@ mod key_bytes_tests {
     /// and the same limit.
     #[test]
     fn forwarded_covers_every_arm_that_emits_bytes() {
-        let src = crate::app::tests::scan::production_source("src/shell.rs");
+        let src = crate::tests::scan::production_source("src/shell.rs");
         let body = src
             .split_once("\npub(crate) fn key_event_to_bytes")
             .expect("key_event_to_bytes moved or was renamed")

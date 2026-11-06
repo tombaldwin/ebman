@@ -1092,7 +1092,7 @@ fn every_registry_command_is_covered_by_some_test() {
     // appears nowhere is a claim with nothing behind it, which is the
     // failure mode an honour-system list invites.
     let mut test_src = String::new();
-    for (path, text) in super::scan::source_files() {
+    for (path, text) in crate::tests::scan::source_files() {
         // The files directly in `src/app/tests/`, as the walk this
         // replaced read them.
         if path
@@ -1166,9 +1166,9 @@ fn every_render_surface_is_accounted_for() {
     // here, and whoever adds it has to either cover it and add the name,
     // or say why not.
     let mut found: Vec<String> = Vec::new();
-    for (path, text) in super::scan::source_files() {
+    for (path, text) in crate::tests::scan::source_files() {
         let ui = path == "src/ui.rs" || path.starts_with("src/ui/");
-        if !ui || super::scan::is_test_path(&path) {
+        if !ui || crate::tests::scan::is_test_path(&path) {
             continue;
         }
         for line in text.lines() {
@@ -1448,8 +1448,8 @@ fn no_wrapped_string_literal_leaves_an_indentation_hole() {
     // caught the bug solely for messages someone remembered to route
     // through it.
     let mut offenders: Vec<String> = Vec::new();
-    for (path, text) in super::scan::source_files() {
-        if super::scan::is_test_path(&path) {
+    for (path, text) in crate::tests::scan::source_files() {
+        if crate::tests::scan::is_test_path(&path) {
             continue;
         }
         for lit in literals_with_embedded_newlines(&text) {
@@ -1478,13 +1478,13 @@ fn terminal_restore_goes_through_the_best_effort_helper() {
     // never ran, leaving the operator on a dead alternate screen with
     // mouse capture on, typing `reset` blind.
     let mut offenders: Vec<String> = Vec::new();
-    for (path, text) in super::scan::source_files() {
+    for (path, text) in crate::tests::scan::source_files() {
         // `lib.rs` defines the helper; it is allowed to call it.
-        if super::scan::is_test_path(&path) || path == "src/lib.rs" {
+        if crate::tests::scan::is_test_path(&path) || path == "src/lib.rs" {
             continue;
         }
         for (n, line) in text.lines().enumerate() {
-            let code = super::scan::strip_line_comment(line);
+            let code = crate::tests::scan::strip_line_comment(line);
             if code.contains("disable_raw_mode()?") {
                 offenders.push(format!("{path}:{}", n + 1));
             }
@@ -1512,12 +1512,12 @@ fn every_cached_index_is_checked() {
     // indexes a `filtered` list it computed itself, in the same
     // function, so those indices cannot be stale.
     let mut offenders: Vec<String> = Vec::new();
-    for (path, text) in super::scan::source_files() {
-        if super::scan::is_test_path(&path) || path == "src/app/view.rs" {
+    for (path, text) in crate::tests::scan::source_files() {
+        if crate::tests::scan::is_test_path(&path) || path == "src/app/view.rs" {
             continue;
         }
         for (n, line) in text.lines().enumerate() {
-            let code = super::scan::strip_line_comment(line);
+            let code = crate::tests::scan::strip_line_comment(line);
             // `environments[…]` is always the fleet list. For the
             // shorter `envs`, only a DERFERENCED index is a cached
             // view index (`envs[*i]` from a `DisplayRow::Env(i)`) —
@@ -1554,9 +1554,9 @@ fn the_test_suite_does_not_mutate_the_environment() {
     // The fix each time was to split the pure half out and pass the
     // value in; this stops the pattern coming back.
     let mut offenders: Vec<String> = Vec::new();
-    for (path, text) in super::scan::source_files() {
+    for (path, text) in crate::tests::scan::source_files() {
         for (n, line) in text.lines().enumerate() {
-            let code = super::scan::strip_line_comment(line);
+            let code = crate::tests::scan::strip_line_comment(line);
             // Needles assembled at runtime so this detector does
             // not match its own source — the first version flagged
             // exactly one offender: itself.
@@ -1740,10 +1740,7 @@ mod docs_drift {
 
         // `other if other.starts_with("runbooks.") =>`
         let mut prefixes = Vec::new();
-        for line in config
-            .lines()
-            .map(crate::app::tests::scan::strip_line_comment)
-        {
+        for line in config.lines().map(crate::tests::scan::strip_line_comment) {
             if let Some((_, rest)) = line.split_once("other if other.starts_with(\"") {
                 if let Some((prefix, _)) = rest.split_once('"') {
                     prefixes.push(prefix.to_string());
@@ -1787,10 +1784,7 @@ mod docs_drift {
             .map(|(body, _)| body)
             .expect("apply_field is followed by finish");
         let mut accepted = Vec::new();
-        for line in body
-            .lines()
-            .map(crate::app::tests::scan::strip_line_comment)
-        {
+        for line in body.lines().map(crate::tests::scan::strip_line_comment) {
             let t = line.trim();
             if let Some(rest) = t.strip_prefix('"') {
                 if let Some((name, tail)) = rest.split_once('"') {
@@ -1925,7 +1919,7 @@ mod docs_drift {
     /// body that hands back more than its code (`audit_body`).
     fn body_return_codes(src: &str, body_fn: &str) -> std::collections::BTreeSet<u8> {
         let mut out = std::collections::BTreeSet::new();
-        for (name, body) in super::super::scan::fn_bodies(src) {
+        for (name, body) in crate::tests::scan::fn_bodies(src) {
             if name != body_fn {
                 continue;
             }
@@ -1983,8 +1977,8 @@ mod docs_drift {
             ("cli/action.rs", vec![2, 3]),
             ("cli/audit_replay.rs", vec![2]),
         ] {
-            let src = super::super::scan::production_source(module);
-            let got = forwarded_codes(&super::super::scan::statements_of(&src));
+            let src = crate::tests::scan::production_source(module);
+            let got = forwarded_codes(&crate::tests::scan::statements_of(&src));
             assert!(
                 want.iter().all(|c| got.contains(c)),
                 "{module}: forwarded codes {got:?} missing some of {want:?}"
@@ -2011,7 +2005,7 @@ mod docs_drift {
     /// The functions in `src` that return an exit code: their signature
     /// returns `i32` or `(i32, ...)`.
     fn exit_fns(src: &str) -> Vec<String> {
-        super::super::scan::fn_bodies(src)
+        crate::tests::scan::fn_bodies(src)
             .into_iter()
             .filter(|(_, body)| {
                 let sig = body.split('{').next().unwrap_or_default();
@@ -2164,8 +2158,8 @@ pub(crate) fn exit_code(failed: bool) -> i32 {
 
     #[test]
     fn the_auto_fixed_rules_are_documented() {
-        let src = super::super::scan::production_source("lint/rules.rs");
-        let fixed = auto_fixed_rules(&super::super::scan::statements_of(&src));
+        let src = crate::tests::scan::production_source("lint/rules.rs");
+        let fixed = auto_fixed_rules(&crate::tests::scan::statements_of(&src));
         assert!(fixed.len() >= 4, "reader broken: {fixed:?}");
         let listed = fixed
             .iter()
@@ -2199,7 +2193,7 @@ pub(crate) fn exit_code(failed: bool) -> i32 {
         ];
         let body_of = |sub: &str| format!("{}_body", sub.replace(' ', "_"));
         for (sub, module) in table {
-            let src = super::super::scan::production_source(module);
+            let src = crate::tests::scan::production_source(module);
             // Another subcommand's body in the same module (freeze.rs
             // holds `thaw` too): its codes are not this one's.
             let others: Vec<String> = table
@@ -2217,7 +2211,7 @@ pub(crate) fn exit_code(failed: bool) -> i32 {
                 used.extend(body_return_codes(&src, f));
             }
             if others.is_empty() {
-                let statements = super::super::scan::statements_of(&src);
+                let statements = crate::tests::scan::statements_of(&src);
                 used.extend(exit_codes_in(&statements));
                 used.extend(forwarded_codes(&statements));
             }
@@ -2241,7 +2235,7 @@ pub(crate) fn exit_code(failed: bool) -> i32 {
                 "freeze",
                 "thaw",
             ];
-            let defined = super::super::scan::fn_bodies(&src)
+            let defined = crate::tests::scan::fn_bodies(&src)
                 .iter()
                 .any(|(n, _)| *n == own);
             assert!(
@@ -2593,14 +2587,14 @@ mod mutants_found_these {
 #[test]
 fn every_rollout_audit_call_passes_a_profile() {
     let mut offenders: Vec<String> = Vec::new();
-    for (path, text) in crate::app::tests::scan::source_files() {
-        if crate::app::tests::scan::is_test_path(&path) || path.ends_with("audit.rs") {
+    for (path, text) in crate::tests::scan::source_files() {
+        if crate::tests::scan::is_test_path(&path) || path.ends_with("audit.rs") {
             continue;
         }
         // `append_rollout(` then its next non-empty argument line.
         let lines: Vec<&str> = text.lines().collect();
         for (i, l) in lines.iter().enumerate() {
-            if !crate::app::tests::scan::strip_line_comment(l).contains("append_rollout(") {
+            if !crate::tests::scan::strip_line_comment(l).contains("append_rollout(") {
                 continue;
             }
             // Second argument is `profile`; scan the next few lines for
@@ -3449,8 +3443,8 @@ fn a_standing_read_only_cannot_be_lifted_in_session() {
 #[test]
 fn no_string_literal_collapses_its_continuation_into_a_run_of_spaces() {
     let mut offenders: Vec<String> = Vec::new();
-    for (path, text) in super::scan::source_files() {
-        if super::scan::is_test_path(&path) {
+    for (path, text) in crate::tests::scan::source_files() {
+        if crate::tests::scan::is_test_path(&path) {
             continue;
         }
         for lit in literals_with_collapsed_indent_run(&text) {

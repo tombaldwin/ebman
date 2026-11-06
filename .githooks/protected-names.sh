@@ -1,6 +1,6 @@
 # Shared by the commit-msg and pre-commit hooks: does any text name a
 # protected client? The list is the one `cargo test`'s guard reads
-# (`src/app/tests/scan.rs`): `.protected-names` at the repo root, plus
+# (`src/tests/packaging.rs`): `.protected-names` at the repo root, plus
 # the EBMAN_PROTECTED_NAMES variable. One name per line or
 # comma-separated, `#` comment lines, matched case-insensitively as a
 # substring; a name under four characters is an error.

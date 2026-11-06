@@ -405,13 +405,13 @@ mod write_gate_guard {
         ];
 
         let mut found: Vec<(String, usize)> = Vec::new();
-        for (path, text) in crate::app::tests::scan::source_files() {
+        for (path, text) in crate::tests::scan::source_files() {
             // `write_env.rs` declares it. Exactly that file: the
             // exemption was any `mod.rs`, `cli/mcp/mod.rs` included.
             if !path.starts_with("src/cli/") || path == "src/cli/write_env.rs" {
                 continue;
             }
-            let prod = crate::app::tests::scan::production_half(&text);
+            let prod = crate::tests::scan::production_half(&text);
             let n = prod.matches("write_refusal_unaudited(").count();
             if n > 0 {
                 found.push((path, n));
@@ -460,11 +460,11 @@ mod write_gate_guard {
         // offenders. `is_test_path` is where that question is answered
         // once for every guard.
         let mut scanned = 0usize;
-        for (path, text) in crate::app::tests::scan::source_files() {
+        for (path, text) in crate::tests::scan::source_files() {
             if !path.starts_with("src/cli") {
                 continue;
             }
-            if crate::app::tests::scan::is_test_path(&path) {
+            if crate::tests::scan::is_test_path(&path) {
                 continue;
             }
             scanned += 1;
@@ -482,9 +482,9 @@ mod write_gate_guard {
             }
             // Stop at the inline test module — fixtures legitimately
             // exercise `pin_reason` directly.
-            let prod = crate::app::tests::scan::production_half(&text);
+            let prod = crate::tests::scan::production_half(&text);
             for (n, line) in prod.lines().enumerate() {
-                let code = crate::app::tests::scan::strip_line_comment(line);
+                let code = crate::tests::scan::strip_line_comment(line);
                 // Widened when `pin_reason` was folded into
                 // `write_gate::decide`. The old form scanned for a
                 // single method name, which would have become
@@ -588,8 +588,8 @@ mod write_gate_input_guard {
             ("cli/freeze.rs", "run_freeze"),
             ("cli/freeze.rs", "run_thaw"),
         ] {
-            let src = crate::app::tests::scan::production_source(module);
-            let body = crate::app::tests::scan::fn_bodies(&src)
+            let src = crate::tests::scan::production_source(module);
+            let body = crate::tests::scan::fn_bodies(&src)
                 .into_iter()
                 .find(|(name, _)| name == f)
                 .unwrap_or_else(|| panic!("{module}: `{f}` is defined"))
@@ -630,15 +630,15 @@ mod write_gate_input_guard {
         ];
         let needle = concat!("std::env::var(\"AWS_", "PROFILE\")");
         let mut found: Vec<(String, usize)> = Vec::new();
-        for (path, src) in crate::app::tests::scan::source_files() {
-            if crate::app::tests::scan::is_test_path(&path) {
+        for (path, src) in crate::tests::scan::source_files() {
+            if crate::tests::scan::is_test_path(&path) {
                 continue;
             }
-            let production = crate::app::tests::scan::production_half(&src);
+            let production = crate::tests::scan::production_half(&src);
             let n = production
                 .lines()
                 .map(|l| {
-                    crate::app::tests::scan::strip_line_comment(l)
+                    crate::tests::scan::strip_line_comment(l)
                         .matches(needle)
                         .count()
                 })
@@ -666,8 +666,8 @@ mod write_gate_input_guard {
     /// every process shares, and the audited gate.
     #[test]
     fn the_real_write_env_reads_the_operators_machine() {
-        let src = crate::app::tests::scan::production_source("cli/write_env.rs");
-        let body = crate::app::tests::scan::fn_bodies(&src)
+        let src = crate::tests::scan::production_source("cli/write_env.rs");
+        let body = crate::tests::scan::fn_bodies(&src)
             .into_iter()
             .find(|(name, _)| name == "real")
             .expect("`WriteEnv::real` is defined")
@@ -703,8 +703,8 @@ mod write_gate_input_guard {
             ("cli/freeze.rs", "run_freeze", "freeze_body("),
             ("cli/freeze.rs", "run_thaw", "thaw_body("),
         ] {
-            let src = crate::app::tests::scan::production_source(module);
-            let body = crate::app::tests::scan::fn_bodies(&src)
+            let src = crate::tests::scan::production_source(module);
+            let body = crate::tests::scan::fn_bodies(&src)
                 .into_iter()
                 .find(|(name, _)| name == f)
                 .unwrap_or_else(|| panic!("{module}: `{f}` is defined"))

@@ -25,7 +25,7 @@ const PRINT_MACROS: &[&str] = &["println!", "eprintln!", "print!(", "eprint!("];
 fn print_sites_under(areas: &[&str]) -> Vec<String> {
     let mut hits = Vec::new();
     for m in PRINT_MACROS {
-        for site in super::scan::find_in_production(m) {
+        for site in crate::tests::scan::find_in_production(m) {
             if areas.iter().any(|a| site.starts_with(a)) {
                 hits.push(format!("{site} — {m}"));
             }
@@ -68,7 +68,7 @@ fn the_print_detector_actually_detects_prints() {
 /// nothing, the guard would also pass forever.
 #[test]
 fn the_tui_areas_exist_and_hold_source() {
-    let files = super::scan::source_files();
+    let files = crate::tests::scan::source_files();
     for area in TUI_AREAS {
         let n = files.iter().filter(|(p, _)| p.starts_with(area)).count();
         assert!(
@@ -104,7 +104,7 @@ const HANDLE_EXCEPTIONS: &[(&str, usize, &str)] = &[(
 fn handle_sites() -> std::collections::BTreeMap<String, usize> {
     let mut per_file: std::collections::BTreeMap<String, usize> = Default::default();
     for h in TERMINAL_HANDLES {
-        for site in super::scan::find_in_production(h) {
+        for site in crate::tests::scan::find_in_production(h) {
             let path = site
                 .rsplit_once(':')
                 .map_or(site.clone(), |(p, _)| p.to_string());

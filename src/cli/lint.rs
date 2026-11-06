@@ -1923,7 +1923,7 @@ mod degrade_guard {
         // `#[cfg(test)]` item, not at the test module, and so reported
         // clean over whatever followed. `production_half` excises test
         // modules wherever they appear and keeps the rest.
-        let prod = crate::app::tests::scan::production_source("cli/lint.rs");
+        let prod = crate::tests::scan::production_source("cli/lint.rs");
         let prod = prod.as_str();
         // A fetch failure that prints and returns is invisible to the
         // check below.
@@ -1949,14 +1949,14 @@ mod degrade_guard {
         // in this shape, through the release that claimed to close it.
         let lines: Vec<&str> = prod.lines().collect();
         for (i, line) in lines.iter().enumerate() {
-            let stripped = crate::app::tests::scan::strip_line_comment(line);
+            let stripped = crate::tests::scan::strip_line_comment(line);
             if !stripped.contains("eprintln!(") {
                 continue;
             }
             let mut stmt = String::new();
             for l in lines.iter().skip(i).take(6) {
-                stmt.push_str(crate::app::tests::scan::strip_line_comment(l));
-                if crate::app::tests::scan::strip_line_comment(l)
+                stmt.push_str(crate::tests::scan::strip_line_comment(l));
+                if crate::tests::scan::strip_line_comment(l)
                     .trim_end()
                     .ends_with(';')
                 {
@@ -1999,7 +1999,7 @@ mod degrade_guard {
         // strippers here did not.
         let decl: String = decl
             .lines()
-            .map(crate::app::tests::scan::strip_line_comment)
+            .map(crate::tests::scan::strip_line_comment)
             .collect::<Vec<_>>()
             .join("\n");
         assert!(
@@ -2120,8 +2120,8 @@ mod note_rendering {
     /// clean. `run` renders through `render_notes`.
     #[test]
     fn the_lint_cycle_prints_nothing_itself() {
-        let src = crate::app::tests::scan::production_source("cli/lint.rs");
-        for (name, body) in crate::app::tests::scan::fn_bodies(&src) {
+        let src = crate::tests::scan::production_source("cli/lint.rs");
+        for (name, body) in crate::tests::scan::fn_bodies(&src) {
             if name != "run_cycle" && name != "apply_fixes_for_env" {
                 continue;
             }
@@ -2627,7 +2627,7 @@ mod webhook_gate_tests {
     /// a clean result.
     #[test]
     fn the_extracted_gates_are_wired_into_run() {
-        let prod = crate::app::tests::scan::production_source("cli/lint.rs");
+        let prod = crate::tests::scan::production_source("cli/lint.rs");
 
         assert!(
             prod.contains("fix_may_dispatch(yes, to_set.len())"),
@@ -4044,8 +4044,8 @@ mod body {
     /// them all green while no channel ever heard from a watch.
     #[test]
     fn run_posts_the_webhook_through_fire_webhook() {
-        let src = crate::app::tests::scan::production_source("cli/lint.rs");
-        let body = crate::app::tests::scan::fn_bodies(&src)
+        let src = crate::tests::scan::production_source("cli/lint.rs");
+        let body = crate::tests::scan::fn_bodies(&src)
             .into_iter()
             .find(|(name, _)| name == "run")
             .expect("`run` is defined")

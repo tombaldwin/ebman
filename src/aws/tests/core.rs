@@ -361,9 +361,9 @@ fn every_paginated_listing_declares_how_it_treats_truncation() {
     // the callers that actually have to make this choice live in
     // `app/` and `cli/`. Scoping the guard to the module that *defines*
     // the type let the first out-of-tree `.items()` land unlabelled.
-    let files: Vec<(String, String)> = crate::app::tests::scan::source_files()
+    let files: Vec<(String, String)> = crate::tests::scan::source_files()
         .into_iter()
-        .filter(|(p, _)| !crate::app::tests::scan::is_test_path(p))
+        .filter(|(p, _)| !crate::tests::scan::is_test_path(p))
         .collect();
     assert!(
         files.len() > 20,
@@ -379,7 +379,7 @@ fn every_paginated_listing_declares_how_it_treats_truncation() {
         // splitting at the first `//` cut a line at a URL literal.
         let text: String = raw
             .lines()
-            .map(crate::app::tests::scan::strip_line_comment)
+            .map(crate::tests::scan::strip_line_comment)
             .collect::<Vec<_>>()
             .join("\n");
         // Walk `.items()` call sites and name the enclosing fn.
@@ -597,7 +597,7 @@ mod cache_lock_guard {
                 let (start, end) = (span.start().line, span.end().line);
                 let body: String = self.lines[start.saturating_sub(1)..end.min(self.lines.len())]
                     .iter()
-                    .map(|l| crate::app::tests::scan::strip_line_comment(l))
+                    .map(|l| crate::tests::scan::strip_line_comment(l))
                     .collect::<Vec<_>>()
                     .join("\n");
                 self.out.push((f.sig.ident.to_string(), body));
@@ -629,7 +629,7 @@ mod cache_lock_guard {
     fn every_test_that_reaches_the_client_cache_takes_the_lock() {
         let mut offenders = Vec::new();
         let mut parsed = 0usize;
-        for (path, src) in crate::app::tests::scan::source_files() {
+        for (path, src) in crate::tests::scan::source_files() {
             if syn::parse_file(&src).is_ok() {
                 parsed += 1;
             }
@@ -1016,17 +1016,17 @@ fn every_sdk_call_that_propagates_goes_through_aws_ctx() {
     let mut offenders: Vec<String> = Vec::new();
     let mut checked = 0usize;
 
-    for (path, text) in crate::app::tests::scan::source_files() {
-        if crate::app::tests::scan::is_test_path(&path) {
+    for (path, text) in crate::tests::scan::source_files() {
+        if crate::tests::scan::is_test_path(&path) {
             continue;
         }
         if !(path == "src/aws.rs" || path.starts_with("src/aws/")) {
             continue;
         }
-        let prod = crate::app::tests::scan::production_half(&text);
+        let prod = crate::tests::scan::production_half(&text);
         let lines: Vec<&str> = prod.lines().collect();
         for (n, line) in lines.iter().enumerate() {
-            let code = crate::app::tests::scan::strip_line_comment(line);
+            let code = crate::tests::scan::strip_line_comment(line);
             // `.send()` is the direct case. A STORED future is the
             // deferred one: `let x_fut = … .send();` for
             // `tokio::try_join!` is awaited on a line that names no
@@ -1048,7 +1048,7 @@ fn every_sdk_call_that_propagates_goes_through_aws_ctx() {
             // `aws_ctx` and report compliance.
             let mut stmt = String::new();
             for l in lines.iter().skip(n).take(12) {
-                let c = crate::app::tests::scan::strip_line_comment(l);
+                let c = crate::tests::scan::strip_line_comment(l);
                 stmt.push_str(c);
                 stmt.push('\n');
                 let t = c.trim_end();

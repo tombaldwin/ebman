@@ -1649,11 +1649,13 @@ fn no_function_mixes_the_home_region_with_a_rows() {
         "current_env_client(",
     ];
     let mut hits = Vec::new();
-    for (path, text) in super::scan::source_files() {
-        if super::scan::is_test_path(&path) || !path.contains("src/app") {
+    for (path, text) in crate::tests::scan::source_files() {
+        if crate::tests::scan::is_test_path(&path) || !path.contains("src/app") {
             continue;
         }
-        for (name, body) in super::scan::fn_bodies(&super::scan::production_half(&text)) {
+        for (name, body) in
+            crate::tests::scan::fn_bodies(&crate::tests::scan::production_half(&text))
+        {
             let home = body.contains("= self.context.region.clone();");
             if home && PER_ROW.iter().any(|p| body.contains(p)) {
                 hits.push(format!("{path}: fn {name}"));

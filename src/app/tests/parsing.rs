@@ -380,7 +380,7 @@ fn json_surfaces_are_parsed_by_a_json_parser() {
     // needles are not matches.
     let needles = [concat!("noya", "lib"), concat!("serde", "_yml")];
     let mut offenders = Vec::new();
-    for (path, src) in super::scan::source_files() {
+    for (path, src) in crate::tests::scan::source_files() {
         // `saved_config.rs` and `eb_cli.rs` are exempt and stay exempt:
         // EB saved configurations and `.elasticbeanstalk/config.yml`
         // really are YAML, and the only two YAML parser consumers.
@@ -388,7 +388,7 @@ fn json_surfaces_are_parsed_by_a_json_parser() {
             continue;
         }
         for (n, line) in src.lines().enumerate() {
-            let code = super::scan::strip_line_comment(line);
+            let code = crate::tests::scan::strip_line_comment(line);
             if needles.iter().any(|y| code.contains(y)) {
                 offenders.push(format!("{path}:{}", n + 1));
             }
@@ -399,7 +399,8 @@ fn json_surfaces_are_parsed_by_a_json_parser() {
         "JSON parsed with the YAML parser again: {offenders:?}"
     );
     assert!(
-        super::scan::production_source("saved_config.rs").contains(&format!("{}::", needles[0])),
+        crate::tests::scan::production_source("saved_config.rs")
+            .contains(&format!("{}::", needles[0])),
         "saved configs are genuinely YAML — if this flipped, check why"
     );
 }

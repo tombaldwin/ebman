@@ -784,9 +784,9 @@ fn nothing_re_expresses_the_peek_gate() {
     // Located from the crate root: relative `include_str!` re-points
     // silently when the test moves next to a file of the same name.
     let code = |path: &str| -> String {
-        crate::app::tests::scan::production_source(path)
+        crate::tests::scan::production_source(path)
             .lines()
-            .map(crate::app::tests::scan::strip_line_comment)
+            .map(crate::tests::scan::strip_line_comment)
             .collect::<Vec<_>>()
             .join("\n")
     };

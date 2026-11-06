@@ -49,13 +49,13 @@ fn the_clipboard_is_only_reached_through_yank() {
     // sole door: `:update` reached `arboard` directly once, and every
     // test that ran it wrote to the real clipboard.
     //
-    // The walk and the comment-stripping live in `super::scan`, which
+    // The walk and the comment-stripping live in `crate::tests::scan`, which
     // has accuracy tests of its own. They used to be open-coded here,
     // and the stripper was `line.split("//").next()` — which truncates
     // inside a string literal, so a call placed after a URL literal on
     // the same line was invisible to this guard. Demonstrated, not
     // theorised.
-    let sites = super::scan::find_in_production("arboard::");
+    let sites = crate::tests::scan::find_in_production("arboard::");
     assert_eq!(
         sites.len(),
         1,
@@ -71,11 +71,13 @@ fn only_action_result_builds_an_action_result() {
     // none: the handler no longer does, so the journal would show the
     // write dispatched and never finished.
     let mut builders = Vec::new();
-    for (path, text) in super::scan::source_files() {
-        if super::scan::is_test_path(&path) || !path.contains("src/app") {
+    for (path, text) in crate::tests::scan::source_files() {
+        if crate::tests::scan::is_test_path(&path) || !path.contains("src/app") {
             continue;
         }
-        for (name, body) in super::scan::fn_bodies(&super::scan::production_half(&text)) {
+        for (name, body) in
+            crate::tests::scan::fn_bodies(&crate::tests::scan::production_half(&text))
+        {
             // `handle_msg` matches on it; that is not building one.
             // `::ActionResult {` catches `AppMsg::` and `Self::` alike, and
             // not `DlqActionResult`. A bare `ActionResult {` after a glob

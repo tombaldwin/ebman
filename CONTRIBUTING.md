@@ -16,7 +16,7 @@ cargo test
 
 The hooks run `cargo fmt --check` and clippy before each commit, and refuse a
 commit whose staged lines or message name a protected client (a list kept
-outside the repo, in `.protected-names`; see `src/app/tests/scan.rs`).
+outside the repo, in `.protected-names`; see `src/tests/packaging.rs`).
 
 You don't need AWS credentials to develop or to run the tests — `cargo test`
 stubs the SDK, and `cargo run -- --demo` starts the TUI against a synthetic

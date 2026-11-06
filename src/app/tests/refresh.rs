@@ -1832,10 +1832,10 @@ fn every_spawn_declares_whether_it_is_per_env() {
     ];
 
     let mut offenders: Vec<String> = Vec::new();
-    let files: Vec<(String, String)> = super::scan::source_files()
+    let files: Vec<(String, String)> = crate::tests::scan::source_files()
         .into_iter()
         .filter(|(p, _)| {
-            (p == "src/app.rs" || p.starts_with("src/app/")) && !super::scan::is_test_path(p)
+            (p == "src/app.rs" || p.starts_with("src/app/")) && !crate::tests::scan::is_test_path(p)
         })
         .collect();
     assert!(files.len() > 20, "the walk found only {}", files.len());
@@ -1848,7 +1848,7 @@ fn every_spawn_declares_whether_it_is_per_env() {
         let lines: Vec<&str> = raw.lines().collect();
         for (n, line) in lines.iter().enumerate() {
             // Comments discuss `self.aws` by name.
-            let code = super::scan::strip_line_comment(line);
+            let code = crate::tests::scan::strip_line_comment(line);
             if !(code.contains("self.aws.clone()") || code.contains("self.spawn_aws(")) {
                 continue;
             }
@@ -2429,7 +2429,7 @@ async fn a_throttled_refresh_backs_off_into_the_future() {
 /// firing correctly are still as written.
 #[test]
 fn the_update_recheck_ticker_is_idle_safe_and_does_not_double_fire() {
-    let src = crate::app::tests::scan::production_source("src/app.rs");
+    let src = crate::tests::scan::production_source("src/app.rs");
     let body = src
         .split_once("\n    pub async fn run(")
         .expect("App::run moved or was renamed")
@@ -2542,7 +2542,7 @@ async fn a_fleet_refresh_checks_for_firing_alarms() {
 #[test]
 fn the_spawn_helpers_and_the_fleet_polls_log_inside_a_span() {
     let src = include_str!("../spawn_refresh.rs");
-    let code = super::scan::statements_of(src).join("\n");
+    let code = crate::tests::scan::statements_of(src).join("\n");
     let aws_spans = code
         .matches("tracing::info_span!(\"aws\", op = op_name, region = ")
         .count();

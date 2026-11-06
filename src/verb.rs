@@ -166,14 +166,14 @@ mod no_local_spellings {
 
         let mut offenders = Vec::new();
         let mut scanned = 0usize;
-        for (path, src) in crate::app::tests::scan::source_files() {
-            if crate::app::tests::scan::is_test_path(&path) || path.ends_with("src/verb.rs") {
+        for (path, src) in crate::tests::scan::source_files() {
+            if crate::tests::scan::is_test_path(&path) || path.ends_with("src/verb.rs") {
                 continue;
             }
             scanned += 1;
-            let prod = crate::app::tests::scan::production_half(&src);
+            let prod = crate::tests::scan::production_half(&src);
             for (n, line) in prod.lines().enumerate() {
-                let code = crate::app::tests::scan::strip_line_comment(line);
+                let code = crate::tests::scan::strip_line_comment(line);
                 for needle in &needles {
                     if code.contains(needle.as_str()) {
                         offenders.push(format!("{path}:{}: {needle}", n + 1));

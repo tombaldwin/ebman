@@ -3351,7 +3351,7 @@ fn mcp_drift_discovery_starts_from_an_absolute_path() {
     // `"\n#[cfg(test)]\nmod "`. That split went decorative the moment
     // `tools.rs` started spelling its test modules with `#[path]` — it
     // matched nothing and returned the whole file, tests included.
-    let prod = crate::app::tests::scan::production_source("cli/mcp/tools.rs");
+    let prod = crate::tests::scan::production_source("cli/mcp/tools.rs");
     let prod = prod.as_str();
     assert!(
         prod.contains("std::env::current_dir()"),
@@ -3576,7 +3576,7 @@ fn every_result_that_can_be_partial_says_so() {
     // and removing a field came back green. Caught by mutation, and
     // it is the second time in this file that a source scan has
     // needed protecting from itself.
-    let prod = crate::app::tests::scan::production_source;
+    let prod = crate::tests::scan::production_source;
     let src = format!(
         "{}{}{}",
         prod("src/cli/mcp/tools.rs"),
@@ -4109,7 +4109,7 @@ fn only_the_call_that_asks_a_human_gets_a_humans_budget() {
 /// `the_extracted_gates_are_wired_into_run`.
 #[test]
 fn the_frame_loop_times_calls_by_the_computed_budget() {
-    let src = crate::app::tests::scan::production_source("cli/mcp/mod.rs");
+    let src = crate::tests::scan::production_source("cli/mcp/mod.rs");
     let src = src.as_str();
     let prod = src;
     let call = prod
@@ -4573,7 +4573,7 @@ async fn an_unclaimed_reply_would_be_answered_as_a_bad_method() {
 /// ...and that the source actually intercepts before dispatching.
 #[test]
 fn take_ask_reply_precedes_the_dispatch() {
-    let src = crate::app::tests::scan::production_source("cli/mcp/mod.rs");
+    let src = crate::tests::scan::production_source("cli/mcp/mod.rs");
     let src = src.as_str();
     let body = src;
     let claim = body
@@ -5298,7 +5298,7 @@ async fn a_timed_out_ask_tells_the_client_to_withdraw_it() {
 /// not exist. JSON-RPC says a response is not answered at all.
 #[test]
 fn a_reply_to_a_forgotten_ask_is_dropped_not_answered() {
-    let src = crate::app::tests::scan::production_source("cli/mcp/mod.rs");
+    let src = crate::tests::scan::production_source("cli/mcp/mod.rs");
     let src = src.as_str();
     let body = src;
     let claim = body
@@ -5429,7 +5429,7 @@ fn the_ask_audit_vocabulary_is_stable_and_excludes_the_unasked() {
 /// The unasked case must not produce a line claiming a question.
 #[test]
 fn a_connection_that_was_never_asked_writes_no_ask_line() {
-    let src = crate::app::tests::scan::production_source("cli/mcp/writes.rs");
+    let src = crate::tests::scan::production_source("cli/mcp/writes.rs");
     let src = src.as_str();
     let body = src;
     let call = body
@@ -5548,7 +5548,7 @@ async fn terminate_and_purge_require_the_operator_to_type_the_name() {
 /// Only the two destructive-and-irreversible verbs demand it.
 #[test]
 fn the_typed_confirm_is_scoped_to_terminate_and_purge() {
-    let src = crate::app::tests::scan::production_source("cli/mcp/writes.rs");
+    let src = crate::tests::scan::production_source("cli/mcp/writes.rs");
     let src = src.as_str();
     let body = src;
     let arm = body
@@ -5992,8 +5992,8 @@ async fn doctor_reports_a_freeze_in_the_servers_store() {
 /// would answer writes through a TUI's `:freeze-deploys`.
 #[test]
 fn a_production_server_reads_the_shared_freeze() {
-    let src = crate::app::tests::scan::production_source("cli/mcp/mod.rs");
-    let body = crate::app::tests::scan::fn_bodies(&src)
+    let src = crate::tests::scan::production_source("cli/mcp/mod.rs");
+    let body = crate::tests::scan::fn_bodies(&src)
         .into_iter()
         .find(|(name, _)| name == "own_freeze_store")
         .expect("`own_freeze_store` is defined")

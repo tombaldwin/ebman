@@ -563,7 +563,7 @@ mod tests {
             // spellings, and being a PREFIX split it still dropped
             // everything after a mid-file test module. Third time
             // through, it goes to the shared helper.
-            let prod = crate::app::tests::scan::production_source(file);
+            let prod = crate::tests::scan::production_source(file);
             assert!(
                 prod.contains("resolve_state_path("),
                 "{file} must resolve through the shared precedence"
@@ -590,7 +590,7 @@ mod tests {
     /// exits; the same shape as its sibling guard below.
     #[test]
     fn an_explicit_tfdir_outranks_the_configured_state_path() {
-        let prod = crate::app::tests::scan::production_source("cli/drift.rs");
+        let prod = crate::tests::scan::production_source("cli/drift.rs");
         assert!(
             prod.contains("if tfdir.is_some() { None } else { configured }"),
             "an explicit --tfdir must suppress the config default, or a \
@@ -627,7 +627,7 @@ mod tests {
         assert!(v["envs"].as_array().is_some_and(|e| e.is_empty()));
 
         // And the CLI must emit exactly that, not a literal of its own.
-        let prod = crate::app::tests::scan::production_source("cli/drift.rs");
+        let prod = crate::tests::scan::production_source("cli/drift.rs");
         assert!(
             !prod.contains(r#""tfstate\":null,\"envs\":[]"#),
             "the hand-written literal is back and will drift from the \

@@ -1188,12 +1188,12 @@ fn every_confirmation_gate_names_its_test() {
     // 1. The list must cover every comparison in production, so a new
     //    gate cannot be added without being classified.
     let mut found: Vec<String> = Vec::new();
-    for (path, text) in super::scan::source_files() {
-        if super::scan::is_test_path(&path) {
+    for (path, text) in crate::tests::scan::source_files() {
+        if crate::tests::scan::is_test_path(&path) {
             continue;
         }
         for line in text.lines() {
-            if super::scan::strip_line_comment(line).contains(".text() == ") {
+            if crate::tests::scan::strip_line_comment(line).contains(".text() == ") {
                 found.push(path.clone());
             }
         }
@@ -1221,9 +1221,9 @@ fn every_confirmation_gate_names_its_test() {
 
     // 2. Every gate's named test must actually exist. A renamed test
     //    would otherwise leave a gate claiming cover it doesn't have.
-    let all_tests: String = super::scan::source_files()
+    let all_tests: String = crate::tests::scan::source_files()
         .into_iter()
-        .filter(|(p, _)| super::scan::is_test_path(p))
+        .filter(|(p, _)| crate::tests::scan::is_test_path(p))
         .map(|(_, t)| t)
         .collect();
     for (path, use_) in TYPED_COMPARISONS {
@@ -1254,12 +1254,12 @@ fn every_confirmation_gate_names_its_test() {
     // 4. The same three checks for confirmation STATE, which is the
     //    half this guard originally missed.
     let mut found_state: Vec<String> = Vec::new();
-    for (path, text) in super::scan::source_files() {
-        if super::scan::is_test_path(&path) {
+    for (path, text) in crate::tests::scan::source_files() {
+        if crate::tests::scan::is_test_path(&path) {
             continue;
         }
         for line in text.lines() {
-            let t = super::scan::strip_line_comment(line).trim();
+            let t = crate::tests::scan::strip_line_comment(line).trim();
             let Some(rest) = t.strip_prefix("pub ").or(Some(t)) else {
                 continue;
             };
@@ -1768,7 +1768,7 @@ fn the_refusal_label_table_matches_the_dispatch_vocabulary() {
     // exactly the defect it exists to catch — the table was its own
     // evidence. Verified by mutation, which is the only reason it was
     // noticed.
-    let src = crate::app::tests::scan::source_files();
+    let src = crate::tests::scan::source_files();
     let all: String = src
         .iter()
         .filter(|(path, _)| !path.ends_with("app/safety.rs"))
@@ -2451,7 +2451,8 @@ async fn the_tuis_own_freeze_goes_through_its_marker_path() {
 /// real store is for the CLI, MCP and the App's own constructor.
 #[test]
 fn the_app_uses_no_global_freeze_path() {
-    let hits = super::scan::production_statements_where(|code| code.contains("FreezeStore::real("));
+    let hits =
+        crate::tests::scan::production_statements_where(|code| code.contains("FreezeStore::real("));
     let in_app: Vec<&String> = hits
         .iter()
         .filter(|h| h.starts_with("src/app/") || h.starts_with("src/ui/"))
@@ -2467,14 +2468,14 @@ fn the_app_uses_no_global_freeze_path() {
 /// test read the developer's real state.
 #[test]
 fn the_fresh_app_reads_nothing_from_the_machine() {
-    let src = super::scan::production_source("app.rs");
+    let src = crate::tests::scan::production_source("app.rs");
     let body_of = |signature: &str| {
         src.split(signature)
             .nth(1)
             .and_then(|rest| rest.split("\n    }\n").next())
             .unwrap_or_else(|| panic!("`{signature}` is here"))
             .lines()
-            .map(super::scan::strip_line_comment)
+            .map(crate::tests::scan::strip_line_comment)
             .collect::<Vec<_>>()
             .join("\n")
     };

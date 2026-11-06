@@ -159,15 +159,15 @@ fn no_lint_caller_flattens_a_failed_tag_fetch_into_an_empty_list() {
     // of a listed file blinded it again, silently. A list goes stale
     // on every move; the tree does not.
     let mut bindings_seen = 0usize;
-    for (path, full) in super::scan::source_files() {
-        if super::scan::is_test_path(&path) {
+    for (path, full) in crate::tests::scan::source_files() {
+        if crate::tests::scan::is_test_path(&path) {
             continue;
         }
-        let src = super::scan::production_half(&full);
+        let src = crate::tests::scan::production_half(&full);
         let name = path.as_str();
         let code: String = src
             .lines()
-            .map(super::scan::strip_line_comment)
+            .map(crate::tests::scan::strip_line_comment)
             .collect::<Vec<_>>()
             .join("\n");
         // Find each tag-keys binding and check the WHOLE expression,
@@ -262,7 +262,7 @@ fn the_tui_lint_paths_use_the_shared_assembly() {
     // The runner `:lint` and `:explain` call finishes through the same
     // step the pre-deploy lint does; `finish` is tested directly, the
     // async runner (it needs AWS) is not.
-    let runner = super::scan::production_source("app/tui_lint.rs");
+    let runner = crate::tests::scan::production_source("app/tui_lint.rs");
     let body = runner
         .split("pub(crate) async fn run_tui_lint(")
         .nth(1)
@@ -294,7 +294,7 @@ fn the_tui_lint_paths_use_the_shared_assembly() {
             "snap.finish_fetched(",
         ),
     ] {
-        let prod = super::scan::production_source(file);
+        let prod = crate::tests::scan::production_source(file);
         let body = prod
             .split(func)
             .nth(1)
@@ -429,7 +429,7 @@ fn a_cached_input_that_is_missing_is_reported_not_read_as_clean() {
 /// pins the sender, which runs in a spawned task no unit test reaches.
 #[test]
 fn the_pre_deploy_lint_reports_a_failed_run() {
-    let prod = super::scan::production_source("app/spawn_deploy.rs");
+    let prod = crate::tests::scan::production_source("app/spawn_deploy.rs");
     let body = prod
         .split("fn spawn_confirm_lint(")
         .nth(1)
@@ -437,7 +437,7 @@ fn the_pre_deploy_lint_reports_a_failed_run() {
         .unwrap_or_else(|| panic!("spawn_confirm_lint not found"));
     let code: String = body
         .lines()
-        .map(super::scan::strip_line_comment)
+        .map(crate::tests::scan::strip_line_comment)
         .collect::<Vec<_>>()
         .join("\n");
     assert!(
@@ -495,15 +495,15 @@ fn the_pre_deploy_lint_reports_a_failed_run() {
 fn only_the_shared_assembly_builds_a_lint_context() {
     let mut found: Vec<(String, usize)> = Vec::new();
     let mut scanned = 0usize;
-    for (path, full) in super::scan::source_files() {
-        if super::scan::is_test_path(&path) || path.contains("src/lint/") {
+    for (path, full) in crate::tests::scan::source_files() {
+        if crate::tests::scan::is_test_path(&path) || path.contains("src/lint/") {
             continue;
         }
         scanned += 1;
-        let prod = super::scan::production_half(&full);
+        let prod = crate::tests::scan::production_half(&full);
         let n = prod
             .lines()
-            .map(super::scan::strip_line_comment)
+            .map(crate::tests::scan::strip_line_comment)
             .filter(|l| l.contains("LintContext::for_env("))
             .count();
         if n > 0 {
@@ -597,7 +597,7 @@ fn a_failed_platform_listing_reaches_lint_as_a_gap_on_every_surface() {
     // exit is `process::exit`, which no test can observe, so the wiring
     // is pinned here; `ebman lint` and MCP are tested through their
     // mock backends (`a_failed_stack_listing_*`).
-    let prod = super::scan::production_source("cli/explain.rs");
+    let prod = crate::tests::scan::production_source("cli/explain.rs");
     assert!(
         prod.contains("Platforms::from_listing("),
         "cli/explain.rs lists platforms for lint without `Platforms::from_listing`"
@@ -748,8 +748,8 @@ fn only_tui_lint_calls_the_lint_engine_outside_lint_and_cli() {
     ];
     let mut offenders: Vec<String> = Vec::new();
     let mut scanned = 0usize;
-    for (path, full) in super::scan::source_files() {
-        if super::scan::is_test_path(&path)
+    for (path, full) in crate::tests::scan::source_files() {
+        if crate::tests::scan::is_test_path(&path)
             || path.contains("src/lint/")
             || path.contains("src/cli/")
             || path.ends_with("src/app/tui_lint.rs")
@@ -757,8 +757,8 @@ fn only_tui_lint_calls_the_lint_engine_outside_lint_and_cli() {
             continue;
         }
         scanned += 1;
-        let prod = super::scan::production_half(&full);
-        for line in prod.lines().map(super::scan::strip_line_comment) {
+        let prod = crate::tests::scan::production_half(&full);
+        for line in prod.lines().map(crate::tests::scan::strip_line_comment) {
             if let Some(hit) = ENGINE.iter().find(|n| line.contains(*n)) {
                 offenders.push(format!("{path}: {hit}"));
             }
@@ -778,14 +778,14 @@ fn only_tui_lint_calls_the_lint_engine_outside_lint_and_cli() {
 #[test]
 fn reported_once_is_built_only_by_report_once() {
     let mut offenders: Vec<String> = Vec::new();
-    for (path, full) in super::scan::source_files() {
-        if super::scan::is_test_path(&path) || path.ends_with("src/lint/inputs.rs") {
+    for (path, full) in crate::tests::scan::source_files() {
+        if crate::tests::scan::is_test_path(&path) || path.ends_with("src/lint/inputs.rs") {
             continue;
         }
-        let prod = super::scan::production_half(&full);
+        let prod = crate::tests::scan::production_half(&full);
         if prod
             .lines()
-            .map(super::scan::strip_line_comment)
+            .map(crate::tests::scan::strip_line_comment)
             .any(|l| l.contains("ReportedOnce"))
         {
             offenders.push(path);
@@ -795,10 +795,10 @@ fn reported_once_is_built_only_by_report_once() {
         offenders.is_empty(),
         "built outside report_once: {offenders:?}"
     );
-    let inputs = super::scan::production_source("lint/inputs.rs");
+    let inputs = crate::tests::scan::production_source("lint/inputs.rs");
     let built = inputs
         .lines()
-        .map(super::scan::strip_line_comment)
+        .map(crate::tests::scan::strip_line_comment)
         .filter(|l| l.contains("Self::ReportedOnce") && !l.contains("=>"))
         .count();
     assert_eq!(

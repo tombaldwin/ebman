@@ -533,8 +533,8 @@ mod body {
     /// reach through `run` itself: it builds a real AWS client.
     #[test]
     fn run_passes_the_configured_required_tags() {
-        let src = crate::app::tests::scan::production_source("cli/explain.rs");
-        let body = crate::app::tests::scan::fn_bodies(&src)
+        let src = crate::tests::scan::production_source("cli/explain.rs");
+        let body = crate::tests::scan::fn_bodies(&src)
             .into_iter()
             .find(|(name, _)| name == "run")
             .expect("`run` is defined")
