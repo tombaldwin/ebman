@@ -181,6 +181,13 @@ first.*
 
 ### Released
 
+**0.49.0 (2026-11-06)**: MCP writes can go out under a narrower role
+(`mcp.role.*`), with `role=` and `session=` in the audit lines; redaction
+covers EB's `EnvironmentVariables` template echo, reported from a Demo
+read that leaked real values; `pin-utils` out of the build
+(RUSTSEC-2026-0441). The per-push mutants verdict found seven survivors
+on the diff before tagging; all now have tests.
+
 **0.48.0 (2026-10-29)**: `freeze_fleet`, an MCP tool that declares a
 persistent fleet freeze with no confirmation (on every server,
 `--read-only` included); a confirm modal's pre-flight answers matched
