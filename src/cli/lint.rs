@@ -4128,8 +4128,12 @@ mod body {
             async {
                 // The interval is a second and this polls every
                 // millisecond, so the stop wins the race only once the
-                // last cycle has run.
-                while cycles.load(Ordering::SeqCst) < script.len() {
+                // last cycle has run. A run that never gets there stops
+                // too, for its asserts to fail rather than this to hang.
+                let give_up = tokio::time::Instant::now() + std::time::Duration::from_secs(60);
+                while cycles.load(Ordering::SeqCst) < script.len()
+                    && tokio::time::Instant::now() < give_up
+                {
                     tokio::time::sleep(std::time::Duration::from_millis(1)).await;
                 }
             },
