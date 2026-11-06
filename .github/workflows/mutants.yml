@@ -111,7 +111,7 @@ jobs:
           shard="${{ matrix.shard }}/4"
           # A small diff leaves some shards empty: say so, and skip the
           # baseline build they would otherwise pay for.
-          count=$(cargo mutants --in-diff pr.diff --shard "$shard" --list | wc -l)
+          count=$(cargo mutants --in-diff pr.diff --shard "$shard" --exclude src/main.rs --list | wc -l)
           echo "shard $shard: $count mutants"
           if [ "$count" = 0 ]; then
             echo "shard $shard has no mutants on the changed lines"
@@ -126,7 +126,12 @@ jobs:
           # every mutant: a shard killed at its timeout, or a broken
           # one, still uploads, without it.
           set +e
-          cargo mutants --in-diff pr.diff --shard "$shard" --no-shuffle --timeout 120 -- --lib
+          # `--exclude src/main.rs`, as the weekly sweep has: `-- --lib`
+          # never builds the binary, so every main.rs mutant survives
+          # whatever the tests (`tests/cli.rs` drives it). Ruled
+          # 2026-10-31.
+          cargo mutants --in-diff pr.diff --shard "$shard" --exclude src/main.rs \
+            --no-shuffle --timeout 120 -- --lib
           code=$?
           set -e
           case "$code" in

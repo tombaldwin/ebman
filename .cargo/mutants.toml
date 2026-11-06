@@ -19,4 +19,14 @@
 # weekly whole-tree sweep and its "new survivors" report. `scripts/mutants-exclusions.sh` fails on an entry
 # that matches no mutant, so the list shrinks when the code it excused
 # goes away.
-exclude_re = []
+exclude_re = [
+  # Compiled only on macOS, so the Linux runner reports every mutant of
+  # it as surviving; its tests run on a Mac (a83ec02's push; ruled
+  # 2026-10-31). The Linux probe beside it is judged as usual.
+  "^src/freeze/liveness\\.rs:\\d+:\\d+: replace macos_start_epoch -> Option<i64> with (None|Some\\(-?[01]\\))$",
+  "^src/freeze/liveness\\.rs:\\d+:\\d+: replace == with != in macos_start_epoch$",
+  # Reads the host's environment and AWS profile files, which tests
+  # never do (it returns None under cfg(test) by design) and aws-config
+  # gives no way to fake. Ruled 2026-10-31.
+  "^src/aws\\.rs:\\d+:\\d+: replace AwsClient::resolve_region -> Option<String> with (None|Some\\(String::new\\(\\)\\)|Some\\(\"xyzzy\"\\.into\\(\\)\\))$",
+]
