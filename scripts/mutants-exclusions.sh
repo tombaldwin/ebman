@@ -14,7 +14,9 @@ LIST=${2:-}
 if [ -z "$LIST" ]; then
   LIST=$(mktemp)
   trap 'rm -f "$LIST"' EXIT
-  cargo mutants --list --no-config > "$LIST"
+  # `--colors never`: CI sets CARGO_TERM_COLOR=always, and a coloured
+  # name matches no entry.
+  cargo mutants --list --no-config --colors never > "$LIST"
 fi
 
 python3 -I - "$CONFIG" "$LIST" <<'PY'
