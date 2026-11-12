@@ -253,6 +253,9 @@ fn parse_action_args(args: &[String]) -> Result<ActionArgs, ActionArgError> {
             code: 2,
         });
     }
+    let (version_given, to_given, with_given) = (version.is_some(), to.is_some(), with.is_some());
+    let (min_given, max_given) = (min.is_some(), max.is_some());
+    let (wait_given, rollback_given) = (wait_for_green.is_some(), auto_rollback.is_some());
     // A deploy's own usage errors are decided here, with the rest, so
     // they beat the gate: a malformed deploy on a frozen fleet is a
     // usage error (2), not a refusal (3) with an audit line.
@@ -321,6 +324,26 @@ fn parse_action_args(args: &[String]) -> Result<ActionArgs, ActionArgError> {
             }
         },
     };
+    // A flag another verb takes is a mistake, not something to ignore:
+    // `rollback --version X` would otherwise roll back to whatever the
+    // events say, not X.
+    let given = [
+        ("--version", version_given),
+        ("--to", to_given),
+        ("--with", with_given),
+        ("--min", min_given),
+        ("--max", max_given),
+        ("--wait-for-green", wait_given),
+        ("--auto-rollback", rollback_given),
+    ];
+    if let Some((flag, _)) = given
+        .iter()
+        .find(|(flag, set)| *set && !flags_for(action_name).contains(flag))
+    {
+        return Err(usage(format!(
+            "ebman action {action_name}: {flag} is not one of its flags"
+        )));
+    }
     let destructive = matches!(action_name, "terminate");
     if destructive && !yes {
         return Err(ActionArgError {
@@ -336,6 +359,18 @@ fn parse_action_args(args: &[String]) -> Result<ActionArgs, ActionArgError> {
         route,
         yes,
     })
+}
+
+/// The flags an `ebman action` verb takes beyond `--env` and `--yes`.
+/// Pure.
+fn flags_for(action: &str) -> &'static [&'static str] {
+    match action {
+        "deploy" => &["--version", "--wait-for-green", "--auto-rollback"],
+        "rollback" => &["--to", "--wait-for-green", "--auto-rollback"],
+        "swap" => &["--with"],
+        "scale" => &["--min", "--max"],
+        _ => &[],
+    }
 }
 
 /// `ebman action` — dispatch one write, or a `rollout` across many.
@@ -1933,6 +1968,75 @@ mod body {
                 "{argv:?}: nothing audited as dispatched"
             );
         }
+    }
+
+    /// A flag another verb takes is a usage error, not ignored.
+    #[test]
+    fn a_flag_the_verb_does_not_take_is_a_usage_error() {
+        let parse = |a: &[&str]| {
+            let argv: Vec<String> = std::iter::once("action")
+                .chain(a.iter().copied())
+                .map(String::from)
+                .collect();
+            parse_action_args(&argv)
+        };
+        for argv in [
+            &["rollback", "--env", "api", "--version", "v2"][..],
+            &["restart", "--env", "api", "--min", "1"][..],
+            &["deploy", "--env", "api", "--version", "v2", "--to", "v1"][..],
+            &["swap", "--env", "api", "--with", "b", "--max", "3"][..],
+            &[
+                "scale",
+                "--env",
+                "api",
+                "--min",
+                "1",
+                "--max",
+                "2",
+                "--wait-for-green",
+                "5m",
+            ][..],
+        ] {
+            let err = parse(argv)
+                .err()
+                .unwrap_or_else(|| panic!("{argv:?} parsed"));
+            assert_eq!(err.code, 2, "{argv:?}");
+            assert!(
+                err.msg.contains("is not one of its flags"),
+                "{argv:?}: {}",
+                err.msg
+            );
+        }
+        for argv in [
+            &[
+                "rollback",
+                "--env",
+                "api",
+                "--to",
+                "v1",
+                "--auto-rollback",
+                "1h",
+            ][..],
+            &[
+                "deploy",
+                "--env",
+                "api",
+                "--version",
+                "v2",
+                "--wait-for-green",
+                "5m",
+            ][..],
+            &["swap", "--env", "api", "--with", "b"][..],
+            &["scale", "--env", "api", "--min", "1", "--max", "2"][..],
+            &["restart", "--env", "api"][..],
+        ] {
+            assert!(parse(argv).is_ok(), "{argv:?}");
+        }
+        assert!(
+            parse(&["frobnicate", "--env", "api", "--to", "v1"])
+                .is_err_and(|e| e.msg.contains("unknown action")),
+            "an unknown verb is still named as one"
+        );
     }
 
     #[test]
