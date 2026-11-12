@@ -2979,9 +2979,19 @@ async fn version_lifecycle_sets_says_what_it_replaced_and_undoes() {
         aws_sdk_ec2::Client::new(&sdk),
     );
     let mut app = App::for_tests(client, crate::config::Config::default());
-    app.environments = vec![mk_env("lifecycle-probe", "shop", "Web", "Green")];
+    app.environments = vec![
+        mk_env("lifecycle-probe", "shop", "Web", "Green"),
+        mk_env("lifecycle-prod", "shop", "Web", "Green"),
+        mk_env("lifecycle-other", "blog", "Web", "Green"),
+    ];
     app.rebuild_view();
-    app.table_state.select(Some(0));
+    let probe_row = app
+        .view
+        .filtered()
+        .iter()
+        .position(|&i| app.environments[i].name == "lifecycle-probe")
+        .expect("listed");
+    app.table_state.select(Some(probe_row));
     while app.msg_rx.try_recv().is_ok() {}
     async fn next_set(app: &mut App) -> String {
         loop {
@@ -3036,7 +3046,18 @@ async fn version_lifecycle_sets_says_what_it_replaced_and_undoes() {
         app.error_message
     );
 
-    app.cfg.safety_envs.insert("lifecycle-probe".into(), true);
+    // A pin on another application's env does not refuse it...
+    app.cfg.safety_envs.insert("lifecycle-other".into(), true);
+    let pending_before = app.pending_actions.len();
+    app.execute_command("version-lifecycle off");
+    assert_eq!(
+        app.pending_actions.len(),
+        pending_before + 1,
+        "another app's pin is not this one's"
+    );
+    // ...but one on any env of this application does, though it is not
+    // the env selected: the policy, and --delete-source, reach them all.
+    app.cfg.safety_envs.insert("lifecycle-prod".into(), true);
     let refused_at = crate::audit::delta::mark();
     let pending_before = app.pending_actions.len();
     app.execute_command("version-lifecycle off");
@@ -3045,7 +3066,7 @@ async fn version_lifecycle_sets_says_what_it_replaced_and_undoes() {
         pending_before,
         "nothing dispatched"
     );
-    let refusals = crate::audit::delta::lines_for(&refused_at, "lifecycle-probe");
+    let refusals = crate::audit::delta::lines_for(&refused_at, "lifecycle-prod");
     assert!(
         refusals
             .iter()

@@ -118,8 +118,19 @@ impl App {
             self.show_version_lifecycle(&env);
             return;
         }
+        // The policy is the application's, and `--delete-source` reaches
+        // every env's rollback targets: a pin on any env of the app in
+        // this region refuses it, not only one on the env selected.
         let key = self.env_key(&env);
-        if self.deny_write(&key, "version-lifecycle") {
+        let mut app_envs: Vec<EnvKey> = self
+            .environments
+            .iter()
+            .filter(|e| e.application == env.application)
+            .map(|e| self.env_key(e))
+            .filter(|k| k.region == key.region && *k != key)
+            .collect();
+        app_envs.insert(0, key.clone());
+        if self.deny_write_batch(&app_envs, "version-lifecycle") {
             return;
         }
         let EnvKey { region, .. } = key;
