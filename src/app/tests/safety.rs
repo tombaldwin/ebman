@@ -2961,10 +2961,15 @@ async fn version_lifecycle_sets_says_what_it_replaced_and_undoes() {
         })
     };
     let (set_200, back_to_100) = (count_of(200), count_of(100));
+    let quota =
+        aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::describe_account_attributes)
+            .then_output(|| {
+                op::describe_account_attributes::DescribeAccountAttributesOutput::builder().build()
+            });
     let eb = aws_smithy_mocks::mock_client!(
         aws_sdk_elasticbeanstalk,
         aws_smithy_mocks::RuleMode::MatchAny,
-        [&apps, &set_200, &back_to_100]
+        [&apps, &set_200, &back_to_100, &quota]
     );
     let sdk = aws_config::SdkConfig::builder()
         .region(aws_config::Region::new("us-east-1"))
@@ -3007,6 +3012,18 @@ async fn version_lifecycle_sets_says_what_it_replaced_and_undoes() {
         }
     }
 
+    // With no argument it shows the selected env's application's policy.
+    app.execute_command("version-lifecycle");
+    let body = loop {
+        let msg = tokio::time::timeout(std::time::Duration::from_secs(10), app.msg_rx.recv())
+            .await
+            .expect("an overlay within 10s")
+            .expect("a message");
+        if let AppMsg::TextOverlay { body, .. } = msg {
+            break body;
+        }
+    };
+    assert!(body.contains("retention: max 100 versions"), "{body}");
     app.execute_command("version-lifecycle undo");
     assert!(
         app.error_message

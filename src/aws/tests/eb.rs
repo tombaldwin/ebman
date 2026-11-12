@@ -868,6 +868,31 @@ async fn list_events_display_calls_do_not_paginate() {
     );
 }
 
+/// The fleet-wide panel read: the newest `max`, every env, one page.
+#[tokio::test]
+async fn list_events_reads_the_fleets_newest_page() {
+    use aws_sdk_elasticbeanstalk::operation::describe_events::DescribeEventsOutput;
+    use aws_sdk_elasticbeanstalk::types::EventDescription;
+    let page = mock!(Client::describe_events)
+        .match_requests(|r| r.max_records() == Some(50) && r.environment_name().is_none())
+        .then_output(|| {
+            DescribeEventsOutput::builder()
+                .events(
+                    EventDescription::builder()
+                        .message("deployed")
+                        .environment_name("api-prod")
+                        .build(),
+                )
+                .next_token("PAGE_2")
+                .build()
+        });
+    let client = client_with_eb(mock_client!(aws_sdk_elasticbeanstalk, [&page]));
+    let events = client.list_events(50).await.unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].message, "deployed");
+    assert_eq!(page.num_calls(), 1);
+}
+
 // ── multi-region row labelling ─────────────────────────────────────
 
 #[test]

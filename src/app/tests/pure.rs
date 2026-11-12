@@ -1894,6 +1894,13 @@ fn the_listeners_overlay_names_each_certificates_expiry() {
             ..Default::default()
         }),
         Ok(CertStatus {
+            domain: "today.example.com".into(),
+            not_after: Some(at),
+            days_left: Some(0),
+            status: "ISSUED".into(),
+            ..Default::default()
+        }),
+        Ok(CertStatus {
             domain: "far.example.com".into(),
             not_after: Some(at),
             days_left: Some(200),
@@ -1907,6 +1914,10 @@ fn the_listeners_overlay_names_each_certificates_expiry() {
         "{text}"
     );
     assert!(text.contains("renewal PENDING_VALIDATION]  ⚠"), "{text}");
+    assert!(
+        text.contains("(in 0 days)"),
+        "day 0 expires later today: {text}"
+    );
     assert!(
         text.contains("EXPIRED") && text.contains("3 days ago"),
         "{text}"

@@ -1689,6 +1689,9 @@ fn ebl024_warns_at_30_days_and_errors_at_7_or_a_broken_renewal() {
             .severity,
         Severity::Error
     );
+    // Day 0 has not expired yet: it expires later today.
+    let today = run(&[cert("today.example", 0, None)]).expect("fires");
+    assert!(today.title.contains("in 0 days"), "{}", today.title);
     let expired = run(&[cert("gone.example", -2, None)]).expect("fires");
     assert_eq!(expired.severity, Severity::Error);
     assert!(
