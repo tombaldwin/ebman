@@ -1023,3 +1023,40 @@ fn every_subcommand_answers_help() {
     let out = ebman(&["audit", "replay", "--help"]);
     assert!(out.status.success() && stdout(&out).contains("audit replay"));
 }
+
+/// `ebman audit` end to end: the binary reads `~/.cache/ebman/audit.log`
+/// under the redirected home, filters it, renders JSON, withholds an
+/// env-var value, and exits 2 on a usage error. `audit_body` is tested
+/// in-crate; this is the process entry around it, which nothing ran.
+#[test]
+fn audit_reads_the_local_log_and_withholds_a_secret() {
+    let home = std::env::temp_dir().join(format!("ebman-cli-audit-{}", std::process::id()));
+    let cache = home.join(".cache/ebman");
+    std::fs::create_dir_all(&cache).unwrap_or_else(|e| panic!("cache dir: {e}"));
+    std::fs::write(
+        cache.join("audit.log"),
+        "2026-10-23T11:00:00+00:00\taccount=1\tprofile=-\tregion=eu-west-2\tstage=dispatched action=SetOption target=poly-api ns=aws:elasticbeanstalk:application:environment name=DATABASE_URL value=\"postgres://u:hunter2@db\"\n\
+         2026-10-23T11:00:01+00:00\taccount=1\tprofile=-\tregion=eu-west-2\tstage=dispatched action=RestartAppServer target=poly-worker\n",
+    )
+    .unwrap_or_else(|e| panic!("audit log: {e}"));
+    let run = |args: &[&str]| {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_ebman"));
+        no_aws_credentials(&mut cmd)
+            .args(args)
+            .env("NO_COLOR", "1")
+            .env("HOME", &home)
+            .output()
+            .unwrap_or_else(|e| panic!("could not run ebman: {e}"))
+    };
+    let out = run(&["audit", "--json"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let text = stdout(&out);
+    assert_eq!(text.lines().count(), 2, "both lines: {text}");
+    assert!(
+        text.contains("DATABASE_URL") && !text.contains("hunter2"),
+        "{text}"
+    );
+    let out = run(&["audit", "--env", "poly-worker"]);
+    assert!(stdout(&out).contains("poly-worker") && !stdout(&out).contains("poly-api"));
+    assert_eq!(run(&["audit", "--bogus"]).status.code(), Some(2));
+}
