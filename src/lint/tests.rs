@@ -1017,7 +1017,7 @@ fn rules_satisfy_trait_invariants() {
     // new EBL is added. Catches both regressions (rule removed)
     // and additions-without-test-update (new rule landed; review
     // whether its applies()/fix() satisfy the invariants above).
-    assert_eq!(rules.len(), 19, "rule registry size changed");
+    assert_eq!(rules.len(), 20, "rule registry size changed");
 }
 
 // ── EBL016 — live health-check probe ────────────────────────────
@@ -1660,4 +1660,88 @@ fn version_retention_fires_on_a_kept_pile_and_a_spent_quota() {
     assert_eq!(ids(&two), ["EBL023"], "900 of 1000");
     // No quota reported, or a zero one: no claim.
     assert!(version_retention_issues(&[app("a", 950, Some(1))], Some(0)).is_empty());
+}
+
+#[test]
+fn ebl024_warns_at_30_days_and_errors_at_7_or_a_broken_renewal() {
+    use crate::aws::CertStatus;
+    let env = mk_env("prod", "Web", "Green");
+    let opts: Vec<(String, String, String)> = vec![];
+    let cert = |domain: &str, days: i64, renewal: Option<&str>| CertStatus {
+        arn: format!("arn:{domain}"),
+        domain: domain.into(),
+        not_after: Some(chrono::Utc::now() + chrono::Duration::days(days)),
+        days_left: Some(days),
+        status: if days < 0 { "EXPIRED" } else { "ISSUED" }.into(),
+        renewal: renewal.map(str::to_string),
+    };
+    let run = |certs: &[CertStatus]| {
+        let ctx = LintContext::for_env(&env, &opts).with_listener_certs(certs);
+        ListenerCertExpiring.applies(&ctx)
+    };
+    assert!(run(&[cert("fine.example", 31, Some("SUCCESS"))]).is_none());
+    let warn = run(&[cert("soon.example", 30, None)]).expect("fires");
+    assert_eq!(warn.severity, Severity::Warn);
+    assert!(warn.title.contains("in 30 days"), "{}", warn.title);
+    assert_eq!(
+        run(&[cert("close.example", 7, None)])
+            .expect("fires")
+            .severity,
+        Severity::Error
+    );
+    let expired = run(&[cert("gone.example", -2, None)]).expect("fires");
+    assert_eq!(expired.severity, Severity::Error);
+    assert!(
+        expired.title.contains("expired") && expired.title.contains("2 days ago"),
+        "{}",
+        expired.title
+    );
+    let failed =
+        run(&[cert("renewal.example", 60, Some("FAILED"))]).expect("a failed renewal fires");
+    assert_eq!(failed.severity, Severity::Error);
+    // The most urgent of several, a broken one first.
+    let worst = run(&[
+        cert("later.example", 20, None),
+        cert("sooner.example", 10, None),
+        cert("broken.example", 50, Some("FAILED")),
+    ])
+    .expect("fires");
+    assert_eq!(
+        worst.fields.get("domain").map(String::as_str),
+        Some("broken.example")
+    );
+    let worst = run(&[
+        cert("later.example", 20, None),
+        cert("sooner.example", 10, None),
+    ])
+    .expect("fires");
+    assert_eq!(
+        worst.fields.get("domain").map(String::as_str),
+        Some("sooner.example")
+    );
+    // Not probed: no claim.
+    assert!(ListenerCertExpiring
+        .applies(&LintContext::for_env(&env, &opts))
+        .is_none());
+}
+
+#[test]
+fn listener_cert_arns_reads_every_https_listener_once() {
+    let o = |ns: &str, n: &str, v: &str| (ns.to_string(), n.to_string(), v.to_string());
+    let arns = crate::aws::listener_cert_arns(&[
+        o(
+            "aws:elbv2:listener:443",
+            "SSLCertificateArns",
+            "arn:a, arn:b",
+        ),
+        o("aws:elbv2:listener:8443", "SSLCertificateArns", "arn:b"),
+        o("aws:elbv2:listener:443", "SSLPolicy", "arn:not-a-cert"),
+        o(
+            "aws:elasticbeanstalk:application:environment",
+            "SSLCertificateArns",
+            "arn:c",
+        ),
+        o("aws:elbv2:listener:9443", "SSLCertificateArns", ""),
+    ]);
+    assert_eq!(arns, ["arn:a", "arn:b"]);
 }

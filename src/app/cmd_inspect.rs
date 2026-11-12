@@ -874,12 +874,34 @@ impl App {
         let env_name = env.name.clone();
         self.status_message = Some(format!("fetching listeners for {env_name}…"));
         tokio::spawn(async move {
-            let result = match client.resolve().await {
-                Ok(aws) => aws
-                    .fetch_env_listeners(&app_name, &env_name)
-                    .await
-                    .map_err(|e| flatten_err("fetch_env_listeners", e)),
-                Err(e) => Err(flatten_err("cached_client", e)),
+            let (result, certs) = match client.resolve().await {
+                Ok(aws) => {
+                    let rows = aws
+                        .fetch_env_listeners(&app_name, &env_name)
+                        .await
+                        .map_err(|e| flatten_err("fetch_env_listeners", e));
+                    // Each certificate a listener serves, with its expiry.
+                    let mut certs = Vec::new();
+                    if let Ok(rows) = &rows {
+                        let options: Vec<(String, String, String)> = rows
+                            .iter()
+                            .map(|(port, opt, v)| {
+                                (format!("aws:elbv2:listener:{port}"), opt.clone(), v.clone())
+                            })
+                            .collect();
+                        for arn in crate::aws::listener_cert_arns(&options) {
+                            certs.push(
+                                aws.describe_certificate(&arn, chrono::Utc::now())
+                                    .await
+                                    .map_err(|e| {
+                                        format!("{arn}: {}", flatten_err("describe_certificate", e))
+                                    }),
+                            );
+                        }
+                    }
+                    (rows, certs)
+                }
+                Err(e) => (Err(flatten_err("cached_client", e)), Vec::new()),
             };
             let body = match result {
                 Ok(rows) if rows.is_empty() => "No listener config found.\n\n\
@@ -902,6 +924,7 @@ impl App {
                         }
                         body.push_str(&format!("  {opt:<32}  {value}\n"));
                     }
+                    body.push_str(&format_listener_certs(&certs));
                     body.push_str(
                         "\n`:set-option aws:elbv2:listener:<PORT> <KEY> <VALUE>` to change a setting.\n\
                          esc / q to close",
@@ -999,4 +1022,43 @@ impl App {
             });
         });
     }
+}
+
+/// `:listeners`' certificate section: each certificate's domain, expiry
+/// and renewal state, or why it could not be read. Pure. Empty when no
+/// listener serves one.
+pub(crate) fn format_listener_certs(certs: &[Result<crate::aws::CertStatus, String>]) -> String {
+    if certs.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from("\n── certificates ──\n");
+    for c in certs {
+        match c {
+            Err(e) => out.push_str(&format!("  could not read: {e}\n")),
+            Ok(c) => {
+                let when = match (c.not_after, c.days_left) {
+                    (Some(t), Some(d)) if d < 0 => {
+                        format!("EXPIRED {} ({} days ago)", t.format("%Y-%m-%d"), -d)
+                    }
+                    (Some(t), Some(d)) => format!("expires {} (in {d} days)", t.format("%Y-%m-%d")),
+                    _ => "no expiry on record".to_string(),
+                };
+                let renewal = c
+                    .renewal
+                    .as_deref()
+                    .map(|r| format!(", renewal {r}"))
+                    .unwrap_or_default();
+                let flag = if c.broken() || c.days_left.is_some_and(|d| d <= 30) {
+                    "  ⚠"
+                } else {
+                    ""
+                };
+                out.push_str(&format!(
+                    "  {}  {when}  [{}{renewal}]{flag}\n",
+                    c.domain, c.status
+                ));
+            }
+        }
+    }
+    out
 }

@@ -188,6 +188,34 @@ pub(crate) async fn probe_xray_trace_denied(
     }
 }
 
+/// EBL024 input probe: describe each certificate the env's listeners
+/// serve. `Ok(None)` when it does not apply (switched off, or no HTTPS
+/// listener); `Err(why)` when a certificate could not be read, which the
+/// caller reports — an unread certificate is not a valid one.
+pub(crate) async fn probe_listener_certs(
+    aws: &aws::AwsClient,
+    options: &[(String, String, String)],
+    disabled: &[String],
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<Option<Vec<aws::CertStatus>>, String> {
+    if disabled.iter().any(|d| d == "EBL024") {
+        return Ok(None);
+    }
+    let arns = aws::listener_cert_arns(options);
+    if arns.is_empty() {
+        return Ok(None);
+    }
+    let mut certs = Vec::with_capacity(arns.len());
+    for arn in arns {
+        certs.push(
+            aws.describe_certificate(&arn, now)
+                .await
+                .map_err(|e| format!("DescribeCertificate: {e}"))?,
+        );
+    }
+    Ok(Some(certs))
+}
+
 /// EBL018 input probe: for a prod-named env fronted by an ALB, ask
 /// WAFv2 whether a WebACL is associated. `Checked(true)` = no WAF (the
 /// rule's firing signal), `Checked(false)` = WAF present,
@@ -256,6 +284,9 @@ pub(crate) struct EnvLintInputs {
     pub probe_failure: Option<String>,
     pub newer_stack: Option<String>,
     pub waf_missing: Option<bool>,
+    /// EBL024's input: the listener certificates' expiry. `None` when
+    /// not probed or the probe failed (and the gap says so).
+    pub listener_certs: Option<Vec<aws::CertStatus>>,
     /// Checks that could NOT run, with why.
     ///
     /// The rules still skip on a failed probe — that part was right, a
@@ -285,6 +316,7 @@ impl EnvLintInputs {
             probe_failure: None,
             newer_stack: None,
             waf_missing: None,
+            listener_certs: None,
             coverage_warnings: Vec::new(),
             dlq_depth: None,
         }
@@ -353,6 +385,13 @@ pub(crate) async fn fetch_env_lint_inputs(
     // EBL018 probe — only for prod-named ALB envs (both gates checked
     // inside), so the common path pays no WAF calls.
     let waf_outcome = probe_waf_missing(aws, env, &inputs.options, disabled).await;
+    // EBL024 probe — only for an env with an HTTPS listener.
+    match probe_listener_certs(aws, &inputs.options, disabled, chrono::Utc::now()).await {
+        Ok(certs) => inputs.listener_certs = certs,
+        Err(why) => inputs
+            .coverage_warnings
+            .extend(ProbeOutcome::Unknown(why).coverage_warning("EBL024", &env.name)),
+    }
     // EBL016 probe — opt-in via `probe_live` (one curl HEAD per env
     // is too slow for default lint). Only a FAILURE is recorded.
     let probe_failure: Option<String> = if probe_live && !env.cname.is_empty() {
@@ -524,6 +563,7 @@ pub(crate) fn assemble(
         xray_denied: None,
         probe_failure: None,
         waf_missing: None,
+        listener_certs: None,
         dlq_depth: None,
     }
 }
@@ -724,6 +764,9 @@ pub(crate) fn build_lint_context<'a>(
     }
     if let Some(missing) = inputs.waf_missing {
         ctx = ctx.with_waf_missing(missing);
+    }
+    if let Some(certs) = inputs.listener_certs.as_deref() {
+        ctx = ctx.with_listener_certs(certs);
     }
     if let Some(depth) = inputs.dlq_depth {
         ctx = ctx.with_dlq_depth(depth);

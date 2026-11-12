@@ -66,6 +66,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   `lint`: **EBL022** (an application keeping every version past 200)
   and **EBL023** (the region's versions at 80% of the quota, Warn; 95%,
   Error) — at the quota, a deploy that creates a version fails.
+- **Listener certificate expiry.** `:listeners` lists each certificate
+  an HTTPS listener serves with its expiry and ACM renewal state, and
+  the new lint rule **EBL024** (TUI, `ebman lint`, MCP `lint`) warns at
+  30 days and errors at 7, once expired, or when ACM's renewal failed. A
+  certificate that cannot be read is reported as lost coverage.
 
 ### Fixed
 

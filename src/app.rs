@@ -104,7 +104,7 @@ mod cmd_action; // lifecycle: deploy / upgrade / clone / scale / ...
 mod cmd_alarms; // CloudWatch alarm CRUD
 mod cmd_config_template; // saved-configuration template CRUD
 mod cmd_cost; // cost + promotion reports
-mod cmd_inspect; // read-only overlays: secrets, diff, listeners, explain
+pub(crate) mod cmd_inspect; // read-only overlays: secrets, diff, listeners, explain
 pub(crate) mod cmd_lifecycle; // application version retention policy
 pub(crate) mod cmd_managed; // managed platform updates: what is scheduled, apply now
 mod cmd_misc; // custom platforms, versions, metrics

@@ -289,6 +289,14 @@ Also shown on the fleet row (`(deprecated)` / `(retired)` beside the platform), 
 
 ---
 
+### EBL024 — Listener certificate expiring
+
+**Severity:** Warn (30 days) · Error (7 days, expired, or renewal failed) · **Auto-fix:** none (`:listener-edit 443`)
+
+Detection: the certificates the env's HTTPS listeners serve (`aws:elbv2:listener:PORT` `SSLCertificateArns`), each described in ACM. One issue per env, naming the most urgent: a failed renewal or an expired certificate first, then the soonest to expire. A per-env probe like EBL018's, in `ebman lint`, MCP `lint` and the TUI's `:lint`; skipped for an env with no HTTPS listener, and a certificate that cannot be read is lost coverage, not a valid certificate. `:listeners` shows each certificate's expiry and renewal state too.
+
+Why it matters: ACM renews its own certificates while DNS validation keeps working; when it stops, or for an imported certificate, nothing renews, and the first sign is clients refusing the site.
+
 ### EBL022 — Application keeps every version
 
 **Severity:** Warn · **Auto-fix:** none (`:version-lifecycle max-count N`)

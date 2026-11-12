@@ -2739,6 +2739,9 @@ pub(crate) mod cycle_wiring {
         pub(crate) versions_piling_up: bool,
         /// `DescribeAccountAttributes` is refused: EBL023's input is lost.
         pub(crate) quota_rejected: bool,
+        /// The env serves HTTPS with a certificate five days from expiry:
+        /// EBL024 fires as an error.
+        pub(crate) cert_expiring: bool,
     }
 
     /// The branch whose platform dates the mock refuses to report.
@@ -2844,6 +2847,7 @@ pub(crate) mod cycle_wiring {
         // pass has something to PLAN and therefore something to
         // dispatch. An empty settings response yields issues with no
         // `SetOption` fix, which reaches the planner and stops there.
+        let cert_expiring = faults.cert_expiring;
         let cfgsettings = aws_smithy_mocks::mock!(
             aws_sdk_elasticbeanstalk::Client::describe_configuration_settings
         )
@@ -2852,6 +2856,19 @@ pub(crate) mod cycle_wiring {
                 ConfigurationOptionSetting, ConfigurationSettingsDescription,
             };
             let mut out = aws_sdk_elasticbeanstalk::operation::describe_configuration_settings::DescribeConfigurationSettingsOutput::builder();
+            if cert_expiring {
+                out = out.configuration_settings(
+                    ConfigurationSettingsDescription::builder()
+                        .option_settings(
+                            ConfigurationOptionSetting::builder()
+                                .namespace("aws:elbv2:listener:443")
+                                .option_name("SSLCertificateArns")
+                                .value("arn:aws:acm:us-west-1:123456789012:certificate/expiring")
+                                .build(),
+                        )
+                        .build(),
+                );
+            }
             if fixable {
                 let opt = |ns: &str, name: &str, value: &str| {
                     ConfigurationOptionSetting::builder()
@@ -3074,6 +3091,22 @@ pub(crate) mod cycle_wiring {
             .region(aws_config::Region::new("us-west-1"))
             .behavior_version(aws_config::BehaviorVersion::latest())
             .build();
+        // EBL024's certificate, five days from expiry.
+        let cert =
+            aws_smithy_mocks::mock!(aws_sdk_acm::Client::describe_certificate).then_output(|| {
+                let in_5 =
+                    chrono::Utc::now() + chrono::Duration::days(5) + chrono::Duration::hours(1);
+                aws_sdk_acm::operation::describe_certificate::DescribeCertificateOutput::builder()
+                    .certificate(
+                        aws_sdk_acm::types::CertificateDetail::builder()
+                            .domain_name("poly.example.com")
+                            .status(aws_sdk_acm::types::CertificateStatus::Issued)
+                            .not_after(aws_smithy_types::DateTime::from_secs(in_5.timestamp()))
+                            .build(),
+                    )
+                    .build()
+            });
+        let acm = aws_smithy_mocks::mock_client!(aws_sdk_acm, [&cert]);
         aws::AwsClient::for_tests(
             eb,
             aws_sdk_sqs::Client::new(&cfg),
@@ -3082,6 +3115,7 @@ pub(crate) mod cycle_wiring {
             aws_sdk_s3::Client::new(&cfg),
             aws_sdk_ec2::Client::new(&cfg),
         )
+        .with_acm_for_tests(acm)
     }
 
     /// The knobs `run_cycle` takes, so a test can set the one it
@@ -3348,6 +3382,31 @@ pub(crate) mod cycle_wiring {
             .issues
             .iter()
             .filter(|i| i.rule_id == "EBL021")
+            .collect();
+        assert_eq!(found.len(), 1, "{:?}", report.issues);
+        assert_eq!(found[0].severity, crate::lint::Severity::Error);
+        assert_eq!(found[0].env_name.as_deref(), Some("poly-prod-web"));
+        assert!(!report.degraded(), "{:?}", report.degrade_reasons);
+    }
+
+    /// EBL024 runs from the shared assembly: an HTTPS listener's
+    /// certificate five days out is an error on the env.
+    #[tokio::test]
+    async fn an_expiring_listener_certificate_is_an_ebl024_error() {
+        let report = run_with(vec![None], |_| async {
+            Ok(mock_client_inner(
+                vec!["poly-prod-web".into()],
+                MockFaults {
+                    cert_expiring: true,
+                    ..MockFaults::default()
+                },
+            ))
+        })
+        .await;
+        let found: Vec<_> = report
+            .issues
+            .iter()
+            .filter(|i| i.rule_id == "EBL024")
             .collect();
         assert_eq!(found.len(), 1, "{:?}", report.issues);
         assert_eq!(found[0].severity, crate::lint::Severity::Error);

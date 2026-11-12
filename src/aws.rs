@@ -90,6 +90,7 @@ mod waf;
 // several services' calls at once.
 mod discover;
 
+pub(crate) use acm::{listener_cert_arns, CertStatus};
 pub(crate) use cloudwatch::*;
 pub(crate) use cost::*;
 pub(crate) use discover::discover_app;
@@ -533,6 +534,14 @@ impl AwsClient {
                 credentials_expire_at: None,
             },
         }
+    }
+
+    /// [`Self::for_tests`] with ACM mocked too, for a test outside this
+    /// module (the lint probe's).
+    #[cfg(test)]
+    pub(crate) fn with_acm_for_tests(self, acm: AcmClient) -> Self {
+        assert!(self.acm.set(acm).is_ok(), "a fresh client's cell is empty");
+        self
     }
 
     /// Verify credentials work and fetch the caller identity. Used at startup to

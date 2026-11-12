@@ -1866,3 +1866,58 @@ fn the_next_retention_policy_keeps_the_role_and_undo_restores_whole() {
     assert_eq!(next_policy(&LifecycleCommand::Undo, None, &bare), None);
     assert_eq!(next_policy(&LifecycleCommand::Show, None, &bare), None);
 }
+
+#[test]
+fn the_listeners_overlay_names_each_certificates_expiry() {
+    use crate::app::cmd_inspect::format_listener_certs;
+    use crate::aws::CertStatus;
+    assert_eq!(
+        format_listener_certs(&[]),
+        "",
+        "no HTTPS listener, no section"
+    );
+    let at = chrono::Utc::now() + chrono::Duration::days(12);
+    let text = format_listener_certs(&[
+        Ok(CertStatus {
+            domain: "api.example.com".into(),
+            not_after: Some(at),
+            days_left: Some(12),
+            status: "ISSUED".into(),
+            renewal: Some("PENDING_VALIDATION".into()),
+            ..Default::default()
+        }),
+        Ok(CertStatus {
+            domain: "old.example.com".into(),
+            not_after: Some(at),
+            days_left: Some(-3),
+            status: "EXPIRED".into(),
+            ..Default::default()
+        }),
+        Ok(CertStatus {
+            domain: "far.example.com".into(),
+            not_after: Some(at),
+            days_left: Some(200),
+            status: "ISSUED".into(),
+            ..Default::default()
+        }),
+        Err("arn:x: AccessDenied".into()),
+    ]);
+    assert!(
+        text.contains("api.example.com") && text.contains("in 12 days"),
+        "{text}"
+    );
+    assert!(text.contains("renewal PENDING_VALIDATION]  ⚠"), "{text}");
+    assert!(
+        text.contains("EXPIRED") && text.contains("3 days ago"),
+        "{text}"
+    );
+    let far = text
+        .lines()
+        .find(|l| l.contains("far.example.com"))
+        .expect("listed");
+    assert!(!far.contains('⚠'), "{far}");
+    assert!(
+        text.contains("could not read: arn:x: AccessDenied"),
+        "{text}"
+    );
+}

@@ -5984,3 +5984,10 @@ a `--read-only` server.
   per-context undo record (`caches.lifecycle_undo`) and a pure
   `next_policy`. The PLAN entry offered MCP exposure via lint only, and
   that is what shipped.
+- **Listener certificate expiry.** `aws::CertStatus` (days left worked
+  out at read time, so the rule stays pure), `listener_cert_arns`,
+  `describe_certificate`; `probe_listener_certs` in the shared lint
+  assembly beside the WAF probe; registry rule EBL024 (the registry
+  count pin moved 19 → 20, as its comment asks); `:listeners` lists
+  expiry. `AwsClient::with_acm_for_tests` lets a test outside `aws`
+  mock ACM, which the CLI lint fleet now does.

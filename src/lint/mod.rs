@@ -183,6 +183,10 @@ pub(crate) struct LintContext<'a> {
     /// present. `None` = not probed (classic/network LB, non-prod
     /// name, probe error, or TUI path); rule skips.
     pub waf_missing: Option<bool>,
+    /// The ACM certificates the env's listeners serve, when the caller
+    /// probed them (`probe_listener_certs`). `None` = not probed (no
+    /// HTTPS listener, probe error, or the confirm path); EBL024 skips.
+    pub listener_certs: Option<&'a [crate::aws::CertStatus]>,
 }
 
 impl<'a> LintContext<'a> {
@@ -205,6 +209,7 @@ impl<'a> LintContext<'a> {
             xray_trace_denied: None,
             health_probe_failure: None,
             waf_missing: None,
+            listener_certs: None,
         }
     }
 
@@ -267,6 +272,12 @@ impl<'a> LintContext<'a> {
     /// Enables EBL018 (prod env without WAF).
     pub(crate) fn with_waf_missing(mut self, missing: bool) -> Self {
         self.waf_missing = Some(missing);
+        self
+    }
+
+    /// Attach the listener certificates' expiry. Enables EBL024.
+    pub(crate) fn with_listener_certs(mut self, certs: &'a [crate::aws::CertStatus]) -> Self {
+        self.listener_certs = Some(certs);
         self
     }
 }

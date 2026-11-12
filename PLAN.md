@@ -172,10 +172,6 @@ it as one release. Ranked by operator value; each is a feature item
 the shared gate, two-phase on MCP, audited, with an undo where one
 exists.*
 
-14. **Listener certificate expiry.** `acm:DescribeCertificate` for each
-    listener's certificate: expiry and renewal status in `:listeners`,
-    and a lint rule. Read-only.
-
 15. **Every region at once for MCP reads and `ebman envs`.** `regions`
     on `list_environments`, `lint`, `recent_events`; `ebman envs
     --regions`. Read-only.

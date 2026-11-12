@@ -1355,6 +1355,72 @@ pub(crate) fn version_retention_issues(
     out
 }
 
+/// EBL024 — a certificate an HTTPS listener serves expires within 30
+/// days (Warn), or within 7, is past its date, or ACM's renewal failed
+/// (Error). An ACM certificate renews itself, until DNS validation stops
+/// working; then the first sign is browsers refusing the site. Input
+/// from the `probe_listener_certs` probe; one issue per env, naming the
+/// most urgent certificate.
+pub(crate) struct ListenerCertExpiring;
+
+impl Rule for ListenerCertExpiring {
+    fn id(&self) -> &'static str {
+        "EBL024"
+    }
+    fn severity(&self) -> Severity {
+        Severity::Warn
+    }
+    fn applies(&self, ctx: &LintContext) -> Option<Issue> {
+        let certs = ctx.listener_certs?;
+        let urgent = |c: &crate::aws::CertStatus| c.broken() || c.days_left.is_some_and(|d| d <= 7);
+        let worst = certs
+            .iter()
+            .filter(|c| urgent(c) || c.days_left.is_some_and(|d| d <= 30))
+            .min_by_key(|c| (!c.broken(), c.days_left.unwrap_or(i64::MAX)))?;
+        let mut fields = BTreeMap::new();
+        fields.insert("certificate".into(), worst.arn.clone());
+        fields.insert("domain".into(), worst.domain.clone());
+        if let Some(d) = worst.days_left {
+            fields.insert("days_left".into(), d.to_string());
+        }
+        let when = match (worst.days_left, worst.not_after) {
+            (Some(d), Some(t)) if d < 0 => {
+                format!("expired {} ({} days ago)", t.format("%Y-%m-%d"), -d)
+            }
+            (Some(d), Some(t)) => format!("expires {} (in {d} days)", t.format("%Y-%m-%d")),
+            _ => "has no expiry date on record".to_string(),
+        };
+        let renewal = worst
+            .renewal
+            .as_deref()
+            .map(|r| format!(", renewal {r}"))
+            .unwrap_or_default();
+        Some(Issue {
+            rule_id: self.id().into(),
+            severity: if urgent(worst) {
+                Severity::Error
+            } else {
+                Severity::Warn
+            },
+            env_name: Some(ctx.env.name.clone()),
+            title: format!("Listener certificate for {} {when}", worst.domain),
+            detail: format!(
+                "The HTTPS listener serves {} ({}{renewal}). ACM renews its certificates \
+                 itself while DNS validation still works; a renewal that failed, or an \
+                 imported certificate, does not renew, and clients refuse the site once it \
+                 expires.",
+                worst.domain, worst.status
+            ),
+            suggestion: Some(
+                "check ACM's renewal status and the validation CNAME, or attach a new \
+                 certificate: `:listener-edit 443`"
+                    .into(),
+            ),
+            fields,
+        })
+    }
+}
+
 /// EBL016 — the env's health-check URL fails a live HTTP probe.
 /// Detection input comes from the caller (CLI-only, behind
 /// `ebman lint --probe-live` — one curl HEAD per env is too slow
@@ -1439,6 +1505,7 @@ pub(crate) fn default_rules(disabled: &[String]) -> Vec<Box<dyn Rule>> {
         Box::new(AllAtOnceMultiAz),
         Box::new(XrayEnabledButTracesDenied),
         Box::new(NoWafOnProdAlb),
+        Box::new(ListenerCertExpiring),
     ];
     candidates
         .into_iter()
