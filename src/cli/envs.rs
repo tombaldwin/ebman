@@ -70,6 +70,19 @@ pub(crate) fn render_envs_json(
     serde_json::to_string(&rows)
 }
 
+/// The same rows as values, for a caller that merges several regions'
+/// into one array: built as values rather than rendered and parsed
+/// back, where a parse failure dropped a region's rows without a word.
+pub(crate) fn env_rows_json(
+    envs: &[aws::Environment],
+    firing: Option<&FiringByEnv>,
+    lifecycle: Option<&Lifecycle>,
+) -> serde_json::Result<Vec<serde_json::Value>> {
+    envs.iter()
+        .map(|e| serde_json::to_value(EnvRow::of(e, firing, lifecycle)))
+        .collect()
+}
+
 /// `branch name → lifecycle state`, as `ListPlatformBranches` gives it.
 pub(crate) type Lifecycle = std::collections::HashMap<String, String>;
 
@@ -282,10 +295,7 @@ pub(crate) async fn envs_with(
             }
         };
         if json {
-            let rendered = render_envs_json(&envs, firing.as_ref(), lifecycle.as_ref())?;
-            if let Ok(serde_json::Value::Array(rows)) = serde_json::from_str(&rendered) {
-                json_rows.extend(rows);
-            }
+            json_rows.extend(env_rows_json(&envs, firing.as_ref(), lifecycle.as_ref())?);
         } else {
             for e in &envs {
                 let mut row = envs_text_row(e, firing.as_ref(), lifecycle.as_ref());
@@ -388,6 +398,19 @@ mod envs_json_tests {
     /// not tell a worker from a web env except by guessing at the name,
     /// and had no timestamp to tell a sixteen-hour-old condition from a
     /// live one.
+    /// The merged path's rows are exactly the single-region JSON's.
+    #[test]
+    fn row_values_match_the_rendered_json() {
+        let e = env();
+        let firing = FiringByEnv::new();
+        let rendered: serde_json::Value = serde_json::from_str(
+            &render_envs_json(std::slice::from_ref(&e), Some(&firing), None).unwrap(),
+        )
+        .unwrap();
+        let rows = env_rows_json(&[e], Some(&firing), None).unwrap();
+        assert_eq!(serde_json::Value::Array(rows), rendered);
+    }
+
     #[test]
     fn the_env_json_carries_tier_and_the_update_timestamp() {
         let json = render_envs_json(&[env()], Some(&FiringByEnv::new()), None).unwrap();
