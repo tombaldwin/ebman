@@ -45,7 +45,7 @@ const SUBS: &[Sub] = &[
     Sub {
         name: "envs",
         desc: "List environments in the current profile / region",
-        args: &["--json"],
+        args: &["--json", "--regions"],
     },
     Sub {
         name: "lint",

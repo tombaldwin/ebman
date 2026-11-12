@@ -5991,3 +5991,9 @@ a `--read-only` server.
   count pin moved 19 → 20, as its comment asks); `:listeners` lists
   expiry. `AwsClient::with_acm_for_tests` lets a test outside `aws`
   mock ACM, which the CLI lint fleet now does.
+- **Every region at once.** MCP `regions` on `list_environments`, `lint`
+  and `recent_events`, by running the single-region tool per region
+  (`fan_out_regions`) and merging (`merge_region_answers`, pure):
+  rows tagged, `regions_failed`, events re-sorted and capped. `ebman envs
+  --regions` renders each region with its own alarm and branch data (env
+  names repeat across regions) and exits 1 when one did not answer.

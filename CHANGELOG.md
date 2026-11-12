@@ -71,6 +71,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   the new lint rule **EBL024** (TUI, `ebman lint`, MCP `lint`) warns at
   30 days and errors at 7, once expired, or when ACM's renewal failed. A
   certificate that cannot be read is reported as lost coverage.
+- **Every region in one read.** `ebman envs --regions all|r1,r2` and a
+  `regions` argument on MCP `list_environments`, `lint` and
+  `recent_events`: `all` is the home region and the configured
+  `extra_regions`. Each row names its region, and a region that does not
+  answer is named (`regions_failed` on MCP; a warning and exit 1 from
+  `ebman envs`, after the rest print) rather than dropped.
 
 ### Fixed
 

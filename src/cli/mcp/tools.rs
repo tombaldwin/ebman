@@ -205,6 +205,7 @@ fn read_tool_table() -> Value {
             "inputSchema": {
                 "type": "object",
                 "properties": {
+                    "regions": {"type": "string", "description": "Several regions in one call: \"all\" (this server's region and the configured extra_regions) or a comma list. The answer becomes an object naming each row's region, with `regions_failed` for any that did not answer"},
                     "profile": {"type": "string", "description": "AWS profile (default: ambient)"},
                     "region": {"type": "string", "description": "AWS region (default: profile/env default)"}
                 }
@@ -264,6 +265,7 @@ fn read_tool_table() -> Value {
                     "env": {"type": "string", "description": "Limit to one environment"},
                     "severity": {"type": "string", "description": "Minimum severity: info | warn | error"},
                     "rules": {"type": "string", "description": "Comma-separated rule ids to keep (e.g. EBL001,EBL014)"},
+                    "regions": {"type": "string", "description": "Several regions in one call: \"all\" (this server's region and the configured extra_regions) or a comma list. The answer becomes an object naming each row's region, with `regions_failed` for any that did not answer"},
                     "profile": {"type": "string"},
                     "region": {"type": "string"}
                 }
@@ -322,6 +324,7 @@ fn read_tool_table() -> Value {
                     "env": {"type": "string", "description": "Limit to one environment"},
                     "max": {"type": "integer", "description": "Max events (default 50, cap 200)"},
                     "since": {"type": "string", "description": "Only events in this window, e.g. 5m, 1h, 2d"},
+                    "regions": {"type": "string", "description": "Several regions in one call: \"all\" (this server's region and the configured extra_regions) or a comma list. The answer becomes an object naming each row's region, with `regions_failed` for any that did not answer"},
                     "min_severity": {"type": "string", "description": "TRACE | DEBUG | INFO | WARN | ERROR | FATAL: this and above"},
                     "profile": {"type": "string"},
                     "region": {"type": "string"}
@@ -536,6 +539,92 @@ pub(super) fn render_why_json(
         versions,
         errs.join(",")
     )
+}
+
+/// The region demo's fleet lives in.
+const DEMO_REGION: &str = "us-east-1";
+
+/// The regions a `regions` argument names: `all` is `home` and the
+/// configured extra regions, each once; otherwise a comma list. Pure.
+pub(super) fn region_spec(spec: &str, home: &str, extra: &[String]) -> Result<Vec<String>, String> {
+    let mut out: Vec<String> = Vec::new();
+    let named: Vec<String> = if spec.trim().eq_ignore_ascii_case("all") {
+        std::iter::once(home.to_string())
+            .chain(extra.iter().cloned())
+            .collect()
+    } else {
+        util::split_csv(spec)
+    };
+    for r in named {
+        if !r.is_empty() && !out.contains(&r) {
+            out.push(r);
+        }
+    }
+    if out.is_empty() {
+        return Err("'regions' names no region — \"all\" or a comma list".into());
+    }
+    Ok(out)
+}
+
+/// Merge a fanned-out tool's answers. Rows (`list_environments`'s envs,
+/// `recent_events`' events, `lint`'s issues) each carry their region;
+/// `lint`'s `skipped_envs` say which region they were in; events are
+/// newest first across regions, capped at `max`; a region whose call
+/// failed is in `regions_failed`. Pure.
+pub(super) fn merge_region_answers(
+    tool: &str,
+    answers: Vec<(String, Result<Value, String>)>,
+    max: Option<u64>,
+) -> Value {
+    let mut rows: Vec<Value> = Vec::new();
+    let mut skipped: Vec<Value> = Vec::new();
+    let mut failed: Vec<Value> = Vec::new();
+    let mut asked: Vec<String> = Vec::new();
+    for (region, answer) in answers {
+        asked.push(region.clone());
+        let v = match answer {
+            Ok(v) => v,
+            Err(e) => {
+                failed.push(json!({"region": region, "error": e}));
+                continue;
+            }
+        };
+        let (list, extra) = match tool {
+            "lint" => (v.get("issues").cloned(), v.get("skipped_envs").cloned()),
+            _ => (Some(v), None),
+        };
+        for mut row in list.and_then(|l| l.as_array().cloned()).unwrap_or_default() {
+            if row.get("region").is_none_or(Value::is_null) {
+                row["region"] = json!(region);
+            }
+            rows.push(row);
+        }
+        for s in extra
+            .and_then(|l| l.as_array().cloned())
+            .unwrap_or_default()
+        {
+            skipped.push(json!(format!(
+                "[{region}] {}",
+                s.as_str().unwrap_or_default()
+            )));
+        }
+    }
+    let key = match tool {
+        "list_environments" => "envs",
+        "recent_events" => {
+            rows.sort_by(|a, b| b["at"].as_str().cmp(&a["at"].as_str()));
+            if let Some(max) = max {
+                rows.truncate(usize::try_from(max).unwrap_or(usize::MAX));
+            }
+            "events"
+        }
+        _ => "issues",
+    };
+    let mut out = json!({key: rows, "regions": asked, "regions_failed": failed});
+    if tool == "lint" {
+        out["skipped_envs"] = json!(skipped);
+    }
+    out
 }
 
 /// `wait_for_env`'s defaults: inside the 30s each call is given.
@@ -971,6 +1060,11 @@ impl Server {
     }
 
     pub(super) async fn call_tool(&self, name: &str, args: &Value) -> Result<String, String> {
+        if args.get("regions").is_some_and(|r| !r.is_null())
+            && matches!(name, "list_environments" | "lint" | "recent_events")
+        {
+            return Box::pin(self.fan_out_regions(name, args)).await;
+        }
         match name {
             "list_environments" => self.tool_list_environments(args).await,
             "worker_queues" => self.tool_worker_queues(args).await,
@@ -2197,6 +2291,39 @@ impl Server {
         };
         crate::cli::envs::render_envs_json(&envs, firing.as_ref(), lifecycle.as_ref())
             .map_err(|e| e.to_string())
+    }
+
+    /// A read across several regions: the tool once per region, the
+    /// answers merged with each row tagged by its region, and a region
+    /// that failed named in `regions_failed` rather than left out. Demo's
+    /// fleet lives in one region; the others answer empty.
+    async fn fan_out_regions(&self, tool: &str, args: &Value) -> Result<String, String> {
+        let spec = arg_str(args, "regions").ok_or("'regions' must be a string")?;
+        let mut single = args.clone();
+        if let Some(o) = single.as_object_mut() {
+            o.remove("regions");
+        }
+        let home = match self.backend {
+            Backend::Demo => DEMO_REGION.to_string(),
+            Backend::Aws => self.client(&single).await?.context.region.clone(),
+        };
+        let regions = region_spec(&spec, &home, &self.safety_cfg.extra_regions)?;
+        let mut answers: Vec<(String, Result<Value, String>)> = Vec::new();
+        for region in regions {
+            if matches!(self.backend, Backend::Demo) && region != home {
+                answers.push((region, Ok(Value::Null)));
+                continue;
+            }
+            let mut one = single.clone();
+            one["region"] = json!(region);
+            let answer = Box::pin(self.call_tool(tool, &one))
+                .await
+                .and_then(|t| serde_json::from_str::<Value>(&t).map_err(|e| e.to_string()));
+            answers.push((region, answer));
+        }
+        // The cap applies to the merged answer, as it does to one region's.
+        let max = arg_u64(args, "max").or(Some(EVENTS_DEFAULT_MAX as u64));
+        Ok(merge_region_answers(tool, answers, max).to_string())
     }
 
     /// Wait for an env to leave Updating, Launching or Terminating, polling

@@ -9,7 +9,7 @@
 /// The SUBCOMMANDS section. Each block starts on a line indented four
 /// spaces with the subcommand's name; its continuation lines are
 /// indented further.
-pub const SUBCOMMANDS_HELP: &str = r#"    envs [--json]                                List environments in current profile / region.
+pub const SUBCOMMANDS_HELP: &str = r#"    envs [--json] [--regions all|r1,r2]          List environments in current profile / region(s).
     lint [--env NAME] [--regions r1,r2,r3] [--json] [--severity LVL] [--rules ID1,ID2] [--quiet]
          [--fix (--yes | --dry-run)] [--watch [--interval 60s] [--webhook URL]] [--probe-live]
          [--baseline FILE | --against-baseline FILE]

@@ -1,4 +1,4 @@
-//! `ebman envs [--json]` — list environments in the current profile
+//! `ebman envs [--json] [--regions all|r1,r2]` — list environments in the current profile
 //! / region. The simplest CLI subcommand; ships JSON output too so
 //! CI scripts can `jq '.[] | select(.health=="Red")'` etc.
 
@@ -157,18 +157,33 @@ impl<'a> EnvRow<'a> {
 /// Exit 2 on a usage error. The thin shell over `envs_with`: parse,
 /// build the real client and config, write to the real stdout/stderr.
 pub async fn run(args: &[String]) -> Result<()> {
-    let json = match parse_envs_args(args) {
-        Ok(json) => json,
+    let parsed = match parse_envs_args(args) {
+        Ok(p) => p,
         Err(msg) => {
             eprintln!("{msg}");
             std::process::exit(2);
         }
     };
-    let aws = aws::AwsClient::with(None, None).await?;
+    let home = aws::AwsClient::with(None, None).await?;
     let cfg = crate::config::load();
+    let clients = match parsed.regions.as_deref() {
+        None => vec![home],
+        Some(spec) => {
+            let regions = envs_regions(spec, &home.context.region, &cfg.extra_regions);
+            if regions.is_empty() {
+                eprintln!("ebman envs: --regions names no region (all, or r1,r2)");
+                std::process::exit(2);
+            }
+            let mut clients = Vec::with_capacity(regions.len());
+            for r in regions {
+                clients.push(aws::AwsClient::with(None, Some(r)).await?);
+            }
+            clients
+        }
+    };
     envs_with(
-        &aws,
-        json,
+        &clients,
+        parsed.json,
         &crate::config::LiveConfig::of(&cfg),
         &mut std::io::stdout().lock(),
         &mut std::io::stderr().lock(),
@@ -179,74 +194,140 @@ pub async fn run(args: &[String]) -> Result<()> {
 /// `--json`, or the usage error (exit 2) for anything else. Unknown
 /// flags are rejected like every other subcommand: `--jsn` used to
 /// print the text table and exit 0.
-fn parse_envs_args(args: &[String]) -> std::result::Result<bool, String> {
-    let mut json = false;
-    for arg in args.iter().skip(1) {
+fn parse_envs_args(args: &[String]) -> std::result::Result<EnvsArgs, String> {
+    let mut parsed = EnvsArgs::default();
+    let mut iter = args.iter().skip(1);
+    while let Some(arg) = iter.next() {
         match arg.as_str() {
-            "--json" => json = true,
+            "--json" => parsed.json = true,
+            "--regions" => {
+                parsed.regions = Some(crate::cli::take_value(
+                    &mut iter,
+                    "ebman envs",
+                    "--regions",
+                    "all, or a region list",
+                )?)
+            }
             other => {
                 return Err(format!(
-                    "ebman envs: unknown flag '{other}' (usage: ebman envs [--json])"
+                    "ebman envs: unknown flag '{other}' (usage: ebman envs [--json] [--regions all|r1,r2])"
                 ))
             }
         }
     }
-    Ok(json)
+    Ok(parsed)
+}
+
+/// `ebman envs`' flags.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct EnvsArgs {
+    json: bool,
+    /// `all` (the home region and the configured `extra_regions`) or a
+    /// comma list; `None` for the home region alone.
+    regions: Option<String>,
+}
+
+/// The regions `--regions` names: `all` is `home` and `extra`, each
+/// once; otherwise the comma list. Pure.
+pub(crate) fn envs_regions(spec: &str, home: &str, extra: &[String]) -> Vec<String> {
+    let named: Vec<String> = if spec.trim().eq_ignore_ascii_case("all") {
+        std::iter::once(home.to_string())
+            .chain(extra.iter().cloned())
+            .collect()
+    } else {
+        crate::util::split_csv(spec)
+    };
+    let mut out: Vec<String> = Vec::new();
+    for r in named {
+        if !r.is_empty() && !out.contains(&r) {
+            out.push(r);
+        }
+    }
+    out
 }
 
 /// The body of `ebman envs`, against any client and any writers, so a
 /// test drives it with a mocked SDK and reads what it printed.
 pub(crate) async fn envs_with(
-    aws: &aws::AwsClient,
+    clients: &[aws::AwsClient],
     json: bool,
     live: &crate::config::LiveConfig,
     out: &mut dyn std::io::Write,
     err: &mut dyn std::io::Write,
 ) -> Result<()> {
-    let envs = aws
-        .list_environments()
-        .await
-        .map_err(|e| color_eyre::eyre::eyre!("list_environments: {e}"))?;
-    let firing = match fetch_firing_by_env(aws, &envs, &live.alarm_dimensions, &live.app_tabs).await
-    {
-        Ok(f) => Some(f),
-        // The listing stands; the alarms are unknown, and say so.
-        Err(e) => {
-            writeln!(
-                err,
-                "warning: could not check for firing alarms ({e}); shown as unknown"
-            )?;
-            None
+    // One region's rows, rendered with that region's alarms and branch
+    // listing: env names repeat across regions, so they are never merged
+    // into one map.
+    let multi = clients.len() > 1;
+    let mut json_rows: Vec<serde_json::Value> = Vec::new();
+    let mut text_rows: Vec<String> = Vec::new();
+    let mut failed: Vec<String> = Vec::new();
+    for aws in clients {
+        let envs = match aws.list_environments().await {
+            Ok(envs) => envs,
+            Err(e) if multi => {
+                writeln!(
+                    err,
+                    "warning: region {}: list_environments: {e}",
+                    aws.context.region
+                )?;
+                failed.push(aws.context.region.clone());
+                continue;
+            }
+            Err(e) => return Err(color_eyre::eyre::eyre!("list_environments: {e}")),
+        };
+        // Each row already names its region: `list_environments` stamps it.
+        let firing =
+            match fetch_firing_by_env(aws, &envs, &live.alarm_dimensions, &live.app_tabs).await {
+                Ok(f) => Some(f),
+                // The listing stands; the alarms are unknown, and say so.
+                Err(e) => {
+                    writeln!(
+                        err,
+                        "warning: could not check for firing alarms ({e}); shown as unknown"
+                    )?;
+                    None
+                }
+            };
+        let lifecycle = match fetch_lifecycle(aws).await {
+            Ok(l) => Some(l),
+            Err(e) => {
+                writeln!(
+                    err,
+                    "warning: could not list platform branches ({e}); lifecycle shown as unknown"
+                )?;
+                None
+            }
+        };
+        if json {
+            let rendered = render_envs_json(&envs, firing.as_ref(), lifecycle.as_ref())?;
+            if let Ok(serde_json::Value::Array(rows)) = serde_json::from_str(&rendered) {
+                json_rows.extend(rows);
+            }
+        } else {
+            for e in &envs {
+                text_rows.push(envs_text_row(e, firing.as_ref(), lifecycle.as_ref()));
+            }
         }
-    };
-    let lifecycle = match fetch_lifecycle(aws).await {
-        Ok(l) => Some(l),
-        Err(e) => {
-            writeln!(
-                err,
-                "warning: could not list platform branches ({e}); lifecycle shown as unknown"
-            )?;
-            None
-        }
-    };
+    }
     if json {
-        writeln!(
-            out,
-            "{}",
-            render_envs_json(&envs, firing.as_ref(), lifecycle.as_ref())?
-        )?;
+        writeln!(out, "{}", serde_json::Value::Array(json_rows))?;
     } else {
         writeln!(
             out,
             "NAME\tAPPLICATION\tSTATUS\tHEALTH\tPLATFORM\tCNAME\tVERSION\tALARMS"
         )?;
-        for e in &envs {
-            writeln!(
-                out,
-                "{}",
-                envs_text_row(e, firing.as_ref(), lifecycle.as_ref())
-            )?;
+        for row in text_rows {
+            writeln!(out, "{row}")?;
         }
+    }
+    // The regions that answered are printed; one that did not makes the
+    // run a failure, so a script does not take a partial fleet as whole.
+    if !failed.is_empty() {
+        return Err(color_eyre::eyre::eyre!(
+            "regions that did not answer: {}",
+            failed.join(", ")
+        ));
     }
     Ok(())
 }
@@ -525,7 +606,7 @@ mod run_tests {
     async fn run(rule: aws_smithy_mocks::Rule, json: bool) -> (String, String) {
         let (mut out, mut err) = (Vec::new(), Vec::new());
         let live = crate::config::LiveConfig::of(&crate::config::Config::default());
-        envs_with(&client(rule), json, &live, &mut out, &mut err)
+        envs_with(&[client(rule)], json, &live, &mut out, &mut err)
             .await
             .expect("lists");
         (
@@ -549,6 +630,60 @@ mod run_tests {
         assert_eq!(v[0]["platform_lifecycle"], "Deprecated", "{v}");
     }
 
+    /// Several regions: one table, each row naming its region; a region
+    /// that does not answer is warned about, the others still print, and
+    /// the run fails so a script does not take a partial fleet as whole.
+    #[tokio::test]
+    async fn several_regions_print_together_and_a_dead_one_fails_the_run() {
+        let mut eu = client(firing());
+        eu.context.region = "eu-west-2".into();
+        let dead_listing =
+            aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::describe_environments)
+                .then_error(|| {
+                    aws_sdk_elasticbeanstalk::operation::describe_environments::DescribeEnvironmentsError::generic(
+                        aws_smithy_types::error::ErrorMetadata::builder()
+                            .code("AccessDenied")
+                            .message("REGIONDENIED")
+                            .build(),
+                    )
+                });
+        let sdk = aws_config::SdkConfig::builder()
+            .region(aws_config::Region::new("ap-south-1"))
+            .behavior_version(aws_config::BehaviorVersion::latest())
+            .build();
+        let mut dead = aws::AwsClient::for_tests(
+            aws_smithy_mocks::mock_client!(aws_sdk_elasticbeanstalk, [&dead_listing]),
+            aws_sdk_sqs::Client::new(&sdk),
+            aws_sdk_cloudwatch::Client::new(&sdk),
+            aws_sdk_cloudwatchlogs::Client::new(&sdk),
+            aws_sdk_s3::Client::new(&sdk),
+            aws_sdk_ec2::Client::new(&sdk),
+        );
+        dead.context.region = "ap-south-1".into();
+        let home = client(firing());
+        let live = crate::config::LiveConfig::of(&crate::config::Config::default());
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let result = envs_with(&[home, eu, dead], true, &live, &mut out, &mut err).await;
+        let out = String::from_utf8(out).unwrap();
+        let err = String::from_utf8(err).unwrap();
+        let v: serde_json::Value = serde_json::from_str(out.trim()).expect("valid JSON");
+        let regions: Vec<&str> = v
+            .as_array()
+            .expect("rows")
+            .iter()
+            .filter_map(|r| r["region"].as_str())
+            .collect();
+        assert_eq!(regions, ["us-east-1", "eu-west-2"], "{v}");
+        assert!(
+            err.contains("ap-south-1") && err.contains("REGIONDENIED"),
+            "{err}"
+        );
+        assert!(
+            result.is_err_and(|e| e.to_string().contains("ap-south-1")),
+            "a dead region fails the run"
+        );
+    }
+
     #[tokio::test]
     async fn a_failed_alarm_check_is_unknown_on_stdout_and_said_on_stderr() {
         let (out, err) = run(refused(), false).await;
@@ -562,10 +697,39 @@ mod run_tests {
     }
 
     #[test]
+    fn regions_all_is_home_and_the_extra_regions_once() {
+        let extra = vec!["eu-west-2".to_string(), "us-east-1".to_string()];
+        assert_eq!(
+            envs_regions("all", "us-east-1", &extra),
+            ["us-east-1", "eu-west-2"]
+        );
+        assert_eq!(envs_regions(" ALL ", "us-east-1", &[]), ["us-east-1"]);
+        assert_eq!(
+            envs_regions("eu-west-2, ap-south-1,eu-west-2", "us-east-1", &extra),
+            ["eu-west-2", "ap-south-1"]
+        );
+        assert!(envs_regions(" , ", "us-east-1", &extra).is_empty());
+    }
+
+    #[test]
     fn an_unknown_flag_is_a_usage_error() {
         let args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        assert_eq!(parse_envs_args(&args(&["envs"])), Ok(false));
-        assert_eq!(parse_envs_args(&args(&["envs", "--json"])), Ok(true));
+        assert_eq!(parse_envs_args(&args(&["envs"])), Ok(EnvsArgs::default()));
+        assert_eq!(
+            parse_envs_args(&args(&["envs", "--json"])),
+            Ok(EnvsArgs {
+                json: true,
+                regions: None
+            })
+        );
+        assert_eq!(
+            parse_envs_args(&args(&["envs", "--regions", "all"])),
+            Ok(EnvsArgs {
+                json: false,
+                regions: Some("all".into())
+            })
+        );
+        assert!(parse_envs_args(&args(&["envs", "--regions"])).is_err());
         assert!(parse_envs_args(&args(&["envs", "--jsn"]))
             .unwrap_err()
             .contains("unknown flag '--jsn'"));

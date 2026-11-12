@@ -439,6 +439,120 @@ fn an_env_settles_when_its_operation_ends() {
     }
 }
 
+#[test]
+fn region_spec_is_all_or_a_list_each_once() {
+    use super::tools::region_spec;
+    let extra = vec!["eu-west-2".to_string(), "us-east-1".to_string()];
+    assert_eq!(
+        region_spec("all", "us-east-1", &extra).unwrap(),
+        ["us-east-1", "eu-west-2"]
+    );
+    assert_eq!(
+        region_spec("eu-west-2,ap-south-1, eu-west-2", "us-east-1", &extra).unwrap(),
+        ["eu-west-2", "ap-south-1"]
+    );
+    assert!(region_spec(" , ", "us-east-1", &extra).is_err());
+}
+
+#[test]
+fn merged_regions_tag_every_row_and_name_the_failures() {
+    use super::tools::merge_region_answers;
+    let envs = merge_region_answers(
+        "list_environments",
+        vec![
+            (
+                "us-east-1".into(),
+                Ok(json!([{"name": "a", "region": null}])),
+            ),
+            (
+                "eu-west-2".into(),
+                Ok(json!([{"name": "b", "region": "eu-west-2"}])),
+            ),
+            ("ap-south-1".into(), Err("AccessDenied".into())),
+        ],
+        None,
+    );
+    assert_eq!(envs["envs"][0]["region"], "us-east-1", "{envs}");
+    assert_eq!(envs["envs"][1]["region"], "eu-west-2", "{envs}");
+    assert_eq!(
+        envs["regions"],
+        json!(["us-east-1", "eu-west-2", "ap-south-1"])
+    );
+    assert_eq!(envs["regions_failed"][0]["region"], "ap-south-1", "{envs}");
+    assert_eq!(envs["regions_failed"][0]["error"], "AccessDenied", "{envs}");
+
+    let events = merge_region_answers(
+        "recent_events",
+        vec![
+            (
+                "us-east-1".into(),
+                Ok(json!([{"at": "2026-01-01T00:00:01+00:00"}])),
+            ),
+            (
+                "eu-west-2".into(),
+                Ok(
+                    json!([{"at": "2026-01-01T00:00:03+00:00"}, {"at": "2026-01-01T00:00:02+00:00"}]),
+                ),
+            ),
+        ],
+        Some(2),
+    );
+    let at: Vec<&str> = events["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|e| e["at"].as_str())
+        .collect();
+    assert_eq!(
+        at,
+        ["2026-01-01T00:00:03+00:00", "2026-01-01T00:00:02+00:00"],
+        "newest first, capped"
+    );
+    assert_eq!(events["events"][0]["region"], "eu-west-2");
+
+    let lint = merge_region_answers(
+        "lint",
+        vec![(
+            "eu-west-2".into(),
+            Ok(json!({"issues": [{"rule_id": "EBL001"}], "skipped_envs": ["x: denied"]})),
+        )],
+        None,
+    );
+    assert_eq!(lint["issues"][0]["region"], "eu-west-2", "{lint}");
+    assert_eq!(lint["skipped_envs"][0], "[eu-west-2] x: denied", "{lint}");
+}
+
+/// On demo, `regions` fans a read out: the fleet answers from its one
+/// region, another answers empty, and the answer is an object naming
+/// each row's region.
+#[tokio::test]
+async fn a_read_fans_out_over_regions_on_demo() {
+    let s = demo_server();
+    let out = s
+        .call_tool(
+            "list_environments",
+            &json!({"regions": "us-east-1,eu-west-2"}),
+        )
+        .await
+        .expect("answers");
+    let v: Value = serde_json::from_str(&out).expect("json");
+    let envs = v["envs"].as_array().expect("envs");
+    assert_eq!(envs.len(), demo_fixture::envs().len(), "{v}");
+    assert!(envs.iter().all(|e| e["region"] == "us-east-1"), "{v}");
+    assert_eq!(v["regions"], json!(["us-east-1", "eu-west-2"]));
+    assert_eq!(v["regions_failed"], json!([]));
+    let out = s
+        .call_tool("lint", &json!({"regions": "all"}))
+        .await
+        .expect("answers");
+    let v: Value = serde_json::from_str(&out).expect("json");
+    assert!(v["issues"].as_array().is_some_and(|i| !i.is_empty()), "{v}");
+    assert!(s
+        .call_tool("recent_events", &json!({"regions": " , "}))
+        .await
+        .is_err());
+}
+
 fn writes_dialog(p: &writes::PendingWrite) -> String {
     super::dialog::ask_summary(p)
 }
