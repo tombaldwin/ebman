@@ -41,8 +41,8 @@ use chrono::{TimeZone, Utc};
 
 use crate::app::App;
 use crate::aws::{
-    AppVersion, CwAlarm, DlqOrigin, EnvInstanceCounts, Environment, Event as EbEvent, Instance,
-    QueueMessage, QueueStats, SqsdTask, WorkerQueues,
+    AppVersion, CwAlarm, DlqOrigin, EnvHealth, EnvInstanceCounts, Environment, Event as EbEvent,
+    Instance, QueueMessage, QueueStats, SqsdTask, WorkerQueues,
 };
 
 /// Anchor timestamp the fixture is computed against. Stable across
@@ -207,6 +207,62 @@ pub(crate) fn canned_ssm_session(instance_id: &str) -> String {
 /// name prefix against the env name since the fixture-side alarms
 /// encode their owning env that way. Used by `spawn_detail_alarms`
 /// and `spawn_why_red_alarms` in demo mode.
+/// One demo environment's enhanced-health rollup, shaped by its colour
+/// so `:why` tells the story the fleet row does. An env the fixture
+/// does not have answers as live does for an unknown name.
+pub(crate) fn env_health_for(env_name: &str) -> Result<EnvHealth, String> {
+    let env = envs()
+        .into_iter()
+        .find(|e| e.name == env_name)
+        .ok_or_else(|| format!("No Environment found for EnvironmentName = '{env_name}'."))?;
+    let at = Some(fixture_now());
+    Ok(match env.health.as_str() {
+        "Red" => EnvHealth {
+            health_status: "Severe".into(),
+            color: "Red".into(),
+            causes: vec![
+                "38.0 % of the requests are failing with HTTP 5xx.".into(),
+                "Impaired services on 1 out of 2 instances.".into(),
+            ],
+            refreshed_at: at,
+            requests_per_sec: Some(6.2),
+            pct_2xx: Some(60),
+            pct_3xx: Some(0),
+            pct_4xx: Some(2),
+            pct_5xx: Some(38),
+            p50_secs: Some(0.41),
+            p90_secs: Some(2.9),
+            p99_secs: Some(4.2),
+        },
+        "Yellow" => EnvHealth {
+            health_status: "Warning".into(),
+            color: "Yellow".into(),
+            causes: vec!["Instance i-0demo2 has not sent any data since launch.".into()],
+            refreshed_at: at,
+            ..EnvHealth::default()
+        },
+        "Green" => EnvHealth {
+            health_status: "Ok".into(),
+            color: "Green".into(),
+            refreshed_at: at,
+            requests_per_sec: Some(42.0),
+            pct_2xx: Some(99),
+            pct_3xx: Some(1),
+            pct_4xx: Some(0),
+            pct_5xx: Some(0),
+            p50_secs: Some(0.03),
+            p90_secs: Some(0.08),
+            p99_secs: Some(0.21),
+            ..EnvHealth::default()
+        },
+        _ => EnvHealth {
+            health_status: "Unknown".into(),
+            color: "Grey".into(),
+            ..EnvHealth::default()
+        },
+    })
+}
+
 pub(crate) fn alarms_for_env(env_name: &str) -> Vec<CwAlarm> {
     alarms()
         .into_iter()

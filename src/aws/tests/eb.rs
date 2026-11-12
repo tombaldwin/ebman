@@ -1579,3 +1579,51 @@ mod eb_error_regression {
         assert!(flat.starts_with("AccessDenied:"), "{flat}");
     }
 }
+
+#[test]
+fn env_health_keeps_the_banner_causes_and_reads_the_window_as_a_rate() {
+    use aws_sdk_elasticbeanstalk::operation::describe_environment_health::DescribeEnvironmentHealthOutput;
+    use aws_sdk_elasticbeanstalk::types::{ApplicationMetrics, Latency, StatusCodes};
+    let out = DescribeEnvironmentHealthOutput::builder()
+        .health_status("Degraded")
+        .color("Red")
+        .causes("Impaired services on 1 out of 2 instances.")
+        .causes("12.0 % of the requests are failing with HTTP 5xx.")
+        .refreshed_at(aws_smithy_types::DateTime::from_secs(1_700_000_000))
+        .application_metrics(
+            ApplicationMetrics::builder()
+                .duration(10)
+                .request_count(25)
+                .status_codes(
+                    StatusCodes::builder()
+                        .status2xx(85)
+                        .status3xx(1)
+                        .status4xx(2)
+                        .status5xx(12)
+                        .build(),
+                )
+                .latency(Latency::builder().p50(0.1).p90(0.9).p99(2.5).build())
+                .build(),
+        )
+        .build();
+    let h = super::env_health_from(&out);
+    assert_eq!(h.health_status, "Degraded");
+    assert_eq!(h.color, "Red");
+    assert_eq!(h.causes.len(), 2, "every cause, in order");
+    assert!(h.causes[1].contains("5xx"));
+    assert_eq!(h.refreshed_at.map(|t| t.timestamp()), Some(1_700_000_000));
+    assert_eq!(h.requests_per_sec, Some(2.5), "25 over a 10s window");
+    assert_eq!(
+        (h.pct_2xx, h.pct_3xx, h.pct_4xx, h.pct_5xx),
+        (Some(85), Some(1), Some(2), Some(12))
+    );
+    assert_eq!(
+        (h.p50_secs, h.p90_secs, h.p99_secs),
+        (Some(0.1), Some(0.9), Some(2.5))
+    );
+
+    // No metrics at all: every figure absent, not zero.
+    let bare = super::env_health_from(&DescribeEnvironmentHealthOutput::builder().build());
+    assert_eq!(bare, super::EnvHealth::default());
+    assert!(bare.requests_per_sec.is_none() && bare.pct_5xx.is_none());
+}

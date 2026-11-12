@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- **`:why` and MCP `why` lead with the environment's own health.**
+  Enhanced health's status and the causes behind the console's red
+  banner ("38.0 % of the requests are failing with HTTP 5xx"), with the
+  request rate, status-code mix and p50/p90/p99 latency over EB's last
+  window. ebman read `DescribeEnvironmentHealth` before only for
+  instance counts. An env with basic health reporting shows EB's reason
+  instead; a figure EB did not report is left out, never shown as 0.
+
 ### Fixed
 
 - **Two lint rules suggested commands that do not exist.** EBL008

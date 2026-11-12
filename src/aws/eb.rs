@@ -82,6 +82,65 @@ pub(crate) fn instance_app_stats(
     (stats != InstanceAppStats::default()).then_some(stats)
 }
 
+/// One environment's enhanced-health rollup, as the console's banner
+/// shows it: `DescribeEnvironmentHealth` with every attribute. The list
+/// view's four-colour `health` comes from `DescribeEnvironments` and
+/// says nothing about why.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct EnvHealth {
+    /// Enhanced health's own word (`Ok`, `Warning`, `Degraded`,
+    /// `Severe`, `Info`, `Pending`, `Unknown`, `Suspended`), finer than
+    /// the colour.
+    pub health_status: String,
+    pub color: String,
+    /// The sentences behind the banner, e.g. "50.0 % of the requests
+    /// are failing with HTTP 5xx". Empty means enhanced health named
+    /// none, which is not the same as not having asked.
+    pub causes: Vec<String>,
+    pub refreshed_at: Option<DateTime<Utc>>,
+    /// Over EB's last window, usually 10 seconds. `None` when EB
+    /// reported no application metrics at all.
+    pub requests_per_sec: Option<f64>,
+    /// Percent of requests, as the API reports them.
+    pub pct_2xx: Option<i32>,
+    pub pct_3xx: Option<i32>,
+    pub pct_4xx: Option<i32>,
+    pub pct_5xx: Option<i32>,
+    pub p50_secs: Option<f64>,
+    pub p90_secs: Option<f64>,
+    pub p99_secs: Option<f64>,
+}
+
+/// Map a `DescribeEnvironmentHealth` answer to [`EnvHealth`]. Requests
+/// per second as [`instance_app_stats`] reads them: the count over the
+/// window's `duration` when there is one.
+pub(crate) fn env_health_from(
+    out: &aws_sdk_elasticbeanstalk::operation::describe_environment_health::DescribeEnvironmentHealthOutput,
+) -> EnvHealth {
+    let app = out.application_metrics();
+    let codes = app.and_then(|a| a.status_codes());
+    let latency = app.and_then(|a| a.latency());
+    EnvHealth {
+        health_status: out.health_status().unwrap_or_default().to_string(),
+        color: out.color().unwrap_or_default().to_string(),
+        causes: out.causes().to_vec(),
+        refreshed_at: out
+            .refreshed_at()
+            .and_then(|d| DateTime::from_timestamp(d.secs(), d.subsec_nanos())),
+        requests_per_sec: app.map(|a| match a.duration() {
+            Some(d) if d > 0 => f64::from(a.request_count()) / f64::from(d),
+            _ => f64::from(a.request_count()),
+        }),
+        pct_2xx: codes.and_then(|c| c.status2xx()),
+        pct_3xx: codes.and_then(|c| c.status3xx()),
+        pct_4xx: codes.and_then(|c| c.status4xx()),
+        pct_5xx: codes.and_then(|c| c.status5xx()),
+        p50_secs: latency.and_then(|l| l.p50()),
+        p90_secs: latency.and_then(|l| l.p90()),
+        p99_secs: latency.and_then(|l| l.p99()),
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct Application {
     pub name: String,
@@ -2137,6 +2196,21 @@ impl AwsClient {
             .await
             .aws_ctx("DescribeEnvironmentHealth failed")?;
         Ok(summarise_instance_health(resp.instances_health.as_ref()))
+    }
+
+    /// The environment's enhanced-health rollup (`:why`, MCP `why`).
+    /// Basic health has none: EB refuses the call, and the error says so
+    /// in its own words rather than as an empty rollup.
+    pub(crate) async fn fetch_env_health(&self, env_name: &str) -> Result<EnvHealth> {
+        let resp = self
+            .client
+            .describe_environment_health()
+            .environment_name(env_name)
+            .attribute_names(aws_sdk_elasticbeanstalk::types::EnvironmentHealthAttribute::All)
+            .send()
+            .await
+            .aws_ctx("DescribeEnvironmentHealth failed")?;
+        Ok(env_health_from(&resp))
     }
 
     pub(crate) async fn list_instances(&self, env_name: &str) -> Result<Vec<Instance>> {

@@ -212,7 +212,7 @@ fn read_tool_table() -> Value {
         },
         {
             "name": "why",
-            "description": "Everything that bears on one environment's health, assembled in a single call: recent events, alarms, instances, dead-letter queue depth and its messages, and the application's recent versions. NOT REDACTED: this peeks the dead-letter queue automatically (up to 5 messages, no opt-in) and returns each body verbatim — a worker queue carries whatever your application POSTed to it. This is the TUI's `:why` overlay. Deliberately NOT a narrative — it puts the facts side by side and leaves the conclusion to the reader, because a confident wrong story is harder to disagree with than adjacent facts. CAVEATS: the dead-letter peek increments each returned message's `receive_count`, which counts every receive and is not a retry count. Any section that failed to fetch comes back as null with the reason in `errors`, so a partial answer is visible as partial rather than reading as \"nothing there\".",
+            "description": "Everything that bears on one environment's health, assembled in a single call: enhanced health's own status and the causes behind the console's banner (`health`: e.g. \"38.0 % of the requests are failing with HTTP 5xx\", plus request rate, status-code mix and p50/p90/p99 latency over EB's last ~10s window), recent events, alarms, instances, dead-letter queue depth and its messages, and the application's recent versions. NOT REDACTED: this peeks the dead-letter queue automatically (up to 5 messages, no opt-in) and returns each body verbatim — a worker queue carries whatever your application POSTed to it. This is the TUI's `:why` overlay. Deliberately NOT a narrative — it puts the facts side by side and leaves the conclusion to the reader, because a confident wrong story is harder to disagree with than adjacent facts. CAVEATS: the dead-letter peek increments each returned message's `receive_count`, which counts every receive and is not a retry count. Any section that failed to fetch comes back as null with the reason in `errors`, so a partial answer is visible as partial rather than reading as \"nothing there\"; `health` is null on an environment with basic health reporting, which has no causes to give.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -446,6 +446,7 @@ pub(super) fn section_or_error(
 #[allow(clippy::too_many_arguments)]
 pub(super) fn render_why_json(
     env: &str,
+    health: &str,
     events: &str,
     alarms: &str,
     instances: &str,
@@ -464,8 +465,9 @@ pub(super) fn render_why_json(
         })
         .collect();
     format!(
-        "{{\"env\":{},\"events\":{},\"alarms\":{},\"instances\":{},\"queues\":{},\"recent_versions\":{},\"errors\":[{}]}}",
+        "{{\"env\":{},\"health\":{},\"events\":{},\"alarms\":{},\"instances\":{},\"queues\":{},\"recent_versions\":{},\"errors\":[{}]}}",
         util::json_string(env),
+        health,
         events,
         alarms,
         instances,
@@ -473,6 +475,28 @@ pub(super) fn render_why_json(
         versions,
         errs.join(",")
     )
+}
+
+/// The `why` bundle's `health` section: enhanced health's own status
+/// and the causes behind the console's banner, then the request mix.
+/// A metric EB did not report is `null`, never 0: an idle env and an
+/// unmeasured one are different answers.
+pub(super) fn render_env_health_json(h: &aws::EnvHealth) -> String {
+    json!({
+        "status": h.health_status,
+        "color": h.color,
+        "causes": h.causes,
+        "refreshed_at": h.refreshed_at.map(|t| t.to_rfc3339()),
+        "requests_per_sec": h.requests_per_sec,
+        "pct_2xx": h.pct_2xx,
+        "pct_3xx": h.pct_3xx,
+        "pct_4xx": h.pct_4xx,
+        "pct_5xx": h.pct_5xx,
+        "p50_secs": h.p50_secs,
+        "p90_secs": h.p90_secs,
+        "p99_secs": h.p99_secs,
+    })
+    .to_string()
 }
 
 fn render_alarms_json(alarms: &[aws::CwAlarm]) -> String {
@@ -1552,8 +1576,15 @@ impl Server {
         if matches!(self.backend, Backend::Demo) {
             let queues = demo_fixture::worker_queues_for_env(&env_name);
             let events = demo_fixture::events_for_env(&env_name);
+            let mut errors: Vec<(String, String)> = Vec::new();
+            let health = section_or_error(
+                "health",
+                demo_fixture::env_health_for(&env_name).map(|h| render_env_health_json(&h)),
+                &mut errors,
+            );
             return Ok(render_why_json(
                 &env_name,
+                &health,
                 &render_events_json(&events),
                 "null",
                 "null",
@@ -1565,7 +1596,7 @@ impl Server {
                     empty_queue_reason(&env.tier, &queues),
                 ),
                 "null",
-                &[],
+                &errors,
             ));
         }
 
@@ -1581,6 +1612,16 @@ impl Server {
             section_or_error(name, r, &mut errors)
         };
 
+        // First: the console's own sentence for why the env is the
+        // colour it is, which every other section is evidence for.
+        let health = section(
+            "health",
+            client
+                .fetch_env_health(&env_name)
+                .await
+                .map(|h| render_env_health_json(&h))
+                .map_err(|e| e.to_string()),
+        );
         let events = section(
             "events",
             client
@@ -1652,7 +1693,7 @@ impl Server {
         };
 
         Ok(render_why_json(
-            &env_name, &events, &alarms, &instances, &queues, &versions, &errors,
+            &env_name, &health, &events, &alarms, &instances, &queues, &versions, &errors,
         ))
     }
 

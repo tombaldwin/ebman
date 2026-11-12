@@ -856,6 +856,11 @@ pub(crate) enum AppMsg {
         session_id: u64,
         result: Result<Vec<crate::aws::Event>, String>,
     },
+    WhyRedHealth {
+        gen: u64,
+        session_id: u64,
+        result: Result<crate::aws::EnvHealth, String>,
+    },
     WhyRedAlarms {
         gen: u64,
         session_id: u64,

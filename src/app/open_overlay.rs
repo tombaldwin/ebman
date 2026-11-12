@@ -30,6 +30,7 @@ impl App {
             env_name: env_name.clone(),
             region,
             tier,
+            health: None,
             events: None,
             alarms: None,
             instances: None,
@@ -42,6 +43,7 @@ impl App {
             session_id,
             cursor: 0,
         });
+        self.spawn_why_red_health(env_name.clone(), session_id);
         self.spawn_why_red_events(env_name.clone(), session_id);
         self.spawn_why_red_alarms(env_name.clone(), session_id);
         self.spawn_why_red_instances(env_name.clone(), session_id);

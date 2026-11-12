@@ -1136,11 +1136,80 @@ pub(super) fn format_why_deploy(v: &crate::aws::AppVersion) -> String {
     out
 }
 
+/// The `:why` overlay's health section: enhanced health's status in its
+/// colour, each banner cause, then the request mix over EB's window. A
+/// figure EB did not report is left out, not shown as 0.
+pub(super) fn why_health_lines(
+    health: Option<&Result<Box<crate::aws::EnvHealth>, String>>,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
+    let muted = |s: String| Line::from(Span::styled(s, Style::default().fg(theme.muted)));
+    let h = match health {
+        None => return vec![muted(" fetching health…".into())],
+        Some(Err(e)) => {
+            return vec![Line::from(Span::styled(
+                format!(" error: {e}"),
+                Style::default().fg(theme.health_red),
+            ))]
+        }
+        Some(Ok(h)) => h,
+    };
+    let status = if h.health_status.is_empty() {
+        "—".to_string()
+    } else {
+        h.health_status.clone()
+    };
+    let mut lines = vec![Line::from(vec![
+        Span::raw(" "),
+        Span::styled(status, crate::ui::chrome::health_style(&h.color, theme)),
+        Span::styled(
+            if h.color.is_empty() {
+                String::new()
+            } else {
+                format!("  ({})", h.color)
+            },
+            Style::default().fg(theme.muted),
+        ),
+    ])];
+    if h.causes.is_empty() {
+        lines.push(muted(" (no causes reported)".into()));
+    }
+    for c in &h.causes {
+        lines.push(Line::from(Span::styled(
+            format!(" • {c}"),
+            Style::default().fg(crate::ui::chrome::health_color(&h.color, theme)),
+        )));
+    }
+    let mut mix: Vec<String> = Vec::new();
+    if let Some(r) = h.requests_per_sec {
+        mix.push(format!("{r:.1} req/s"));
+    }
+    for (label, pct) in [("2xx", h.pct_2xx), ("4xx", h.pct_4xx), ("5xx", h.pct_5xx)] {
+        if let Some(p) = pct {
+            mix.push(format!("{label} {p}%"));
+        }
+    }
+    for (label, secs) in [
+        ("p50", h.p50_secs),
+        ("p90", h.p90_secs),
+        ("p99", h.p99_secs),
+    ] {
+        if let Some(s) = secs {
+            mix.push(format!("{label} {:.0}ms", s * 1000.0));
+        }
+    }
+    if !mix.is_empty() {
+        lines.push(muted(format!(" {}", mix.join(" · "))));
+    }
+    lines
+}
+
 pub(super) fn draw_why_red_overlay(f: &mut Frame, area: Rect, app: &mut App) {
     let Some(crate::app::Overlay::WhyRed {
         env_name,
         region,
         tier,
+        health,
         events,
         alarms,
         instances,
@@ -1236,6 +1305,12 @@ pub(super) fn draw_why_red_overlay(f: &mut Frame, area: Rect, app: &mut App) {
         ]));
         lines.push(blank());
     }
+
+    // 0. HEALTH — the console's own sentence for why the env is the
+    // colour it is; every section below is evidence for or against it.
+    lines.push(section("health"));
+    lines.extend(why_health_lines(health.as_ref(), theme));
+    lines.push(blank());
 
     // 1. RECENT EVENTS (last 30 minutes — the window where "what went
     // wrong" usually shows up; older events are noise during triage).

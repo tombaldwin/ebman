@@ -544,6 +544,34 @@ async fn demo_e2e_list_environments_and_lint() {
     assert!(body.contains("EBL014"), "planted finding surfaced: {body}");
 }
 
+/// `why` puts the console's banner causes first; on demo, the red
+/// staging env says why it is red, and a green one has no causes.
+#[tokio::test]
+async fn demo_why_leads_with_the_env_s_health_causes() {
+    let s = demo_server();
+    let why = |env: &'static str| {
+        let s = &s;
+        async move {
+            let out = s.call_tool("why", &json!({"env": env})).await.expect("why");
+            serde_json::from_str::<Value>(&out).expect("json")
+        }
+    };
+    let red = why("poly-staging-api").await;
+    assert_eq!(red["health"]["color"], "Red", "{red}");
+    assert!(
+        red["health"]["causes"][0]
+            .as_str()
+            .is_some_and(|c| c.contains("5xx")),
+        "{red}"
+    );
+    let green = why("poly-prod-api").await;
+    assert_eq!(green["health"]["causes"], json!([]), "{green}");
+    assert!(
+        green["errors"].as_array().is_some_and(Vec::is_empty),
+        "{green}"
+    );
+}
+
 #[tokio::test]
 async fn demo_e2e_option_settings_redacts_env_vars_by_default() {
     let s = demo_server();
@@ -1170,17 +1198,23 @@ async fn why_returns_every_section_in_one_call() {
 fn a_failed_why_section_is_null_with_its_reason() {
     let bundle = super::tools::render_why_json(
         "api-prod",
+        "null",
         "[]",
         "null",
         "[]",
         "null",
         "[]",
         &[
+            (
+                "health".to_string(),
+                "Enhanced health is not enabled".to_string(),
+            ),
             ("alarms".to_string(), "AccessDenied".to_string()),
             ("queues".to_string(), "throttled".to_string()),
         ],
     );
     let parsed: Value = serde_json::from_str(&bundle).expect("valid JSON");
+    assert!(parsed["health"].is_null(), "{bundle}");
     assert!(parsed["alarms"].is_null(), "{bundle}");
     assert!(parsed["queues"].is_null(), "{bundle}");
     assert!(
@@ -1188,7 +1222,7 @@ fn a_failed_why_section_is_null_with_its_reason() {
         "sections that succeeded must still be there: {bundle}"
     );
     let errs = parsed["errors"].as_array().expect("errors array");
-    assert_eq!(errs.len(), 2, "{bundle}");
+    assert_eq!(errs.len(), 3, "{bundle}");
     assert!(
         errs.iter()
             .any(|e| e["section"] == "alarms" && e["error"] == "AccessDenied"),
@@ -1532,10 +1566,28 @@ mod orchestration {
             aws_sdk_elasticbeanstalk::operation::describe_environment_resources::DescribeEnvironmentResourcesOutput::builder()
                 .build()
         });
+        // Refused, as on an env with basic health reporting: the
+        // section is null and its reason is named, as every section's is.
+        let env_health = aws_smithy_mocks::mock!(EbClient::describe_environment_health).then_error(|| {
+            aws_sdk_elasticbeanstalk::operation::describe_environment_health::DescribeEnvironmentHealthError::generic(
+                aws_smithy_types::error::ErrorMetadata::builder()
+                    .code("InvalidRequestException")
+                    .message("HEALTHREFUSED enhanced health reporting is not enabled")
+                    .build(),
+            )
+        });
         let eb = aws_smithy_mocks::mock_client!(
             aws_sdk_elasticbeanstalk,
             aws_smithy_mocks::RuleMode::MatchAny,
-            [&listing, &events, &health, &versions, &settings, &resources]
+            [
+                &listing,
+                &events,
+                &health,
+                &env_health,
+                &versions,
+                &settings,
+                &resources
+            ]
         );
         let cw = aws_smithy_mocks::mock_client!(
             aws_sdk_cloudwatch,
@@ -1581,6 +1633,16 @@ mod orchestration {
         let mut names = names;
         names.sort_unstable();
         assert_eq!(names, ["own-spelling", "poly-prod-wk-db-cpu"]);
+        assert!(v["health"].is_null(), "{v}");
+        assert!(
+            v["errors"]
+                .as_array()
+                .is_some_and(|e| e.iter().any(|e| e["section"] == "health"
+                    && e["error"]
+                        .as_str()
+                        .is_some_and(|m| m.contains("HEALTHREFUSED")))),
+            "{v}"
+        );
     }
 
     /// Which lint input the mock fleet refuses.
@@ -2492,6 +2554,29 @@ mod orchestration {
                 .then_output(|| {
                     aws_sdk_elasticbeanstalk::operation::describe_application_versions::DescribeApplicationVersionsOutput::builder().build()
                 });
+        // The rollup, asked for whole: the console's banner causes and
+        // the request mix, which `why` puts first.
+        let env_health = aws_smithy_mocks::mock!(EbClient::describe_environment_health)
+            .match_requests(|req| {
+                req.attribute_names()
+                    == [aws_sdk_elasticbeanstalk::types::EnvironmentHealthAttribute::All]
+            })
+            .then_output(|| {
+                use aws_sdk_elasticbeanstalk::types::{ApplicationMetrics, Latency, StatusCodes};
+                aws_sdk_elasticbeanstalk::operation::describe_environment_health::DescribeEnvironmentHealthOutput::builder()
+                    .health_status("Severe")
+                    .color("Red")
+                    .causes("38.0 % of the requests are failing with HTTP 5xx.")
+                    .application_metrics(
+                        ApplicationMetrics::builder()
+                            .duration(10)
+                            .request_count(62)
+                            .status_codes(StatusCodes::builder().status5xx(38).build())
+                            .latency(Latency::builder().p99(4.2).build())
+                            .build(),
+                    )
+                    .build()
+            });
         let eb = aws_smithy_mocks::mock_client!(
             aws_sdk_elasticbeanstalk,
             aws_smithy_mocks::RuleMode::MatchAny,
@@ -2501,6 +2586,7 @@ mod orchestration {
                 &settings,
                 &events,
                 &health,
+                &env_health,
                 &versions
             ]
         );
@@ -2532,6 +2618,21 @@ mod orchestration {
             v["queues"]["peeked"], false,
             "and we did not look, because there was nothing to look at: {out}"
         );
+        let health = &v["health"];
+        assert_eq!(health["status"], "Severe", "{out}");
+        assert_eq!(
+            health["causes"][0], "38.0 % of the requests are failing with HTTP 5xx.",
+            "{out}"
+        );
+        assert_eq!(
+            health["requests_per_sec"], 6.2,
+            "per second over the window: {out}"
+        );
+        assert_eq!(health["pct_5xx"], 38, "{out}");
+        assert_eq!(health["p99_secs"], 4.2, "{out}");
+        // Not reported is null, never 0: an unmeasured 2xx share is not
+        // a 0% success rate.
+        assert!(health["pct_2xx"].is_null(), "{out}");
     }
 
     /// Confirm must act on the message the PLAN named, or refuse.

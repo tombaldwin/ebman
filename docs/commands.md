@@ -29,7 +29,7 @@ Type `:` to open the command bar. `Tab` / `Shift-Tab` complete the command name,
 
 ## Per-env inspection
 
-- `:why` / `:diagnose` — diagnostic overlay (events + alarms + instances + recent deploys; DLQ peek for Worker envs). Bound to `!`.
+- `:why` / `:diagnose` — diagnostic overlay, led by enhanced health's own status and the causes behind the console's banner, with the request rate, status-code mix and p50/p90/p99 latency; then events + alarms + instances + recent deploys; DLQ peek for Worker envs. Bound to `!`.
 - `:diff NAME` — side-by-side env comparison vs selected env. `:diff ENV-A ENV-B` names both explicitly. Add `--ignore-keys "version,updated"` to suppress those metadata rows (field labels: `name`, `application`, `tier`, `status`, `health`, `platform`, `version`, `cname`, `updated`; `version_label` also matches `version`). Under `:region all`, a name listed in two regions is refused until you pick one as `NAME@REGION` (`api-prod@eu-west-2`); the same holds for `:config-diff` and `:promote-env`.
 - `:config-diff ENV` — option-setting deltas between the selected env and `ENV`.
 - `:config-diff-local [NAME]` — diff the deployed env against a local EB CLI saved config under `.elasticbeanstalk/saved_configs/`. No arg auto-picks the lone file.

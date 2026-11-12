@@ -160,6 +160,10 @@ pub(crate) enum Overlay {
         /// Captured at open time so the renderer knows whether to show
         /// the worker-only sections (queues, DLQ peek).
         tier: String,
+        /// Enhanced health's rollup: the console's banner causes and the
+        /// request mix. `Some(Err)` on basic health, which has none. Boxed:
+        /// it is the largest slot, and every overlay pays for the largest.
+        health: Option<Result<Box<crate::aws::EnvHealth>, String>>,
         events: Option<Result<Vec<crate::aws::Event>, String>>,
         alarms: Option<Result<Vec<crate::aws::CwAlarm>, String>>,
         instances: Option<Result<Vec<crate::aws::Instance>, String>>,

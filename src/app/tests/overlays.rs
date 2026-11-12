@@ -782,6 +782,7 @@ async fn the_why_red_overlay_renders_its_findings() {
         env_name: "api-prod".into(),
         region: "us-east-1".into(),
         tier: "Web".into(),
+        health: None,
         events: Some(Ok(vec![make_event("WHYREDCANARY deploy failed")])),
         alarms: Some(Ok(Vec::new())),
         instances: Some(Ok(Vec::new())),
@@ -797,6 +798,116 @@ async fn the_why_red_overlay_renders_its_findings() {
         out.contains("WHYREDCANARY"),
         "the event that explains the red renders:\n{out}"
     );
+}
+
+/// The health section leads `:why`: the console's banner causes, and
+/// only the figures EB reported. Arrives through the real message, so a
+/// result for another session is dropped and one for this one lands.
+#[tokio::test]
+async fn the_why_overlay_leads_with_the_env_s_health_causes() {
+    let mut app = test_app();
+    app.environments = vec![mk_env("api-prod", "poly", "Web", "Red")];
+    app.view.invalidate();
+    app.rebuild_view();
+    app.table_state.select(Some(0));
+    app.current_overlay = Some(crate::app::Overlay::WhyRed {
+        env_name: "api-prod".into(),
+        region: "us-east-1".into(),
+        tier: "Web".into(),
+        health: None,
+        events: Some(Ok(Vec::new())),
+        alarms: Some(Ok(Vec::new())),
+        instances: Some(Ok(Vec::new())),
+        deploys: Some(Ok(Vec::new())),
+        queues: None,
+        dlq_messages: None,
+        session_id: 7,
+        cursor: 0,
+    });
+    let rollup = |cause: &str| crate::aws::EnvHealth {
+        health_status: "Severe".into(),
+        color: "Red".into(),
+        causes: vec![cause.into()],
+        requests_per_sec: Some(6.2),
+        pct_5xx: Some(38),
+        p99_secs: Some(4.2),
+        ..Default::default()
+    };
+    // A late answer for an earlier `:why` is not this one's.
+    app.handle_msg(crate::app::AppMsg::WhyRedHealth {
+        gen: app.generation,
+        session_id: 6,
+        result: Ok(rollup("STALECAUSE")),
+    });
+    let out = render(&mut app, 180, 44);
+    assert!(!out.contains("STALECAUSE"), "{out}");
+    assert!(out.contains("fetching health"), "{out}");
+
+    app.handle_msg(crate::app::AppMsg::WhyRedHealth {
+        gen: app.generation,
+        session_id: 7,
+        result: Ok(rollup(
+            "HEALTHCANARY 38.0 % of the requests are failing with HTTP 5xx.",
+        )),
+    });
+    let out = render(&mut app, 180, 44);
+    assert!(
+        out.contains("HEALTHCANARY"),
+        "the banner cause renders:\n{out}"
+    );
+    assert!(out.contains("Severe"), "{out}");
+    assert!(
+        out.contains("6.2 req/s") && out.contains("5xx 38%"),
+        "{out}"
+    );
+    assert!(out.contains("p99 4200ms"), "{out}");
+    assert!(
+        !out.contains("2xx"),
+        "a share EB did not report is left out:\n{out}"
+    );
+    let health_at = out.find("HEALTHCANARY").expect("rendered");
+    let events_at = out.find("recent events").expect("events section");
+    assert!(health_at < events_at, "health leads the overlay:\n{out}");
+
+    // Basic health: EB refuses, and the reason shows.
+    app.handle_msg(crate::app::AppMsg::WhyRedHealth {
+        gen: app.generation,
+        session_id: 7,
+        result: Err("BASICHEALTH enhanced health is not enabled".into()),
+    });
+    let out = render(&mut app, 180, 44);
+    assert!(out.contains("BASICHEALTH"), "{out}");
+}
+
+/// Opening `:why` fetches the health rollup alongside the other
+/// sections: on demo the fetch answers at once, and the red env's
+/// banner cause lands in the overlay it was opened for.
+#[tokio::test]
+async fn opening_why_fetches_the_env_s_health() {
+    let mut app = test_app();
+    app.demo_mode = true;
+    app.environments = crate::demo_fixture::envs();
+    app.view.invalidate();
+    app.rebuild_view();
+    let env = app
+        .environments
+        .iter()
+        .find(|e| e.name == "poly-staging-api")
+        .cloned()
+        .expect("the red demo env");
+    while app.msg_rx.try_recv().is_ok() {}
+    app.open_why_red(&env);
+    while let Ok(msg) = app.msg_rx.try_recv() {
+        app.handle_msg(msg);
+    }
+    let Some(crate::app::Overlay::WhyRed { health, .. }) = &app.current_overlay else {
+        panic!("the overlay is open");
+    };
+    let causes = match health {
+        Some(Ok(h)) => h.causes.clone(),
+        other => panic!("the rollup landed: {other:?}"),
+    };
+    assert!(causes.iter().any(|c| c.contains("5xx")), "{causes:?}");
 }
 
 #[tokio::test]
@@ -1030,6 +1141,7 @@ async fn the_why_overlay_names_the_dead_lettered_task() {
         env_name: "api-prod".into(),
         region: "us-east-1".into(),
         tier: "Worker".into(),
+        health: None,
         events: Some(Ok(Vec::new())),
         alarms: Some(Ok(Vec::new())),
         instances: Some(Ok(Vec::new())),

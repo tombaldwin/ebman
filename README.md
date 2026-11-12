@@ -53,7 +53,7 @@ Production env goes red at 3am. From your terminal:
 
 1. `ebman` — launch; `prod-api` shows up tinted red in the table
 2. `/prod-api` `↵` — jump to it
-3. `!` — open `:why`: recent events / alarms / instance health / last deploys, all in one overlay
+3. `!` — open `:why`: the console's health causes / recent events / alarms / instance health / last deploys, all in one overlay
 4. `:diff prod-api staging-api` — confirm staging is still on the previous version
 5. `:rollback` — redeploy the last-known-good version label, with a 5-second undo window
 6. Action + outcome land in `~/.cache/ebman/audit.log`
@@ -67,7 +67,7 @@ Built for operators who triage EB envs daily and don't want the AWS console roun
 - **Live env table** with sort / filter / group-by-app / health sparkline / severity tints / mouse support.
 - **Per-env drill-down** — tabs for Health / Events / Instances / Metrics / Queue / Logs / Config / App.
 - **Your own metrics** — the App tab shows an env's CloudWatch metrics, RDS / ElastiCache rows and top log errors from `app.ENV.*` in `config.toml`; with no config it shows what discovery found, and `e` edits the config in a form, no restart needed.
-- **Red-env triage** — `:why` opens a one-screen diagnostic: recent events + alarms + instance health + last deploys, with a DLQ peek for Worker envs.
+- **Red-env triage** — `:why` opens a one-screen diagnostic: the causes behind the console's banner and the request mix, then recent events + alarms + instance health + last deploys, with a DLQ peek for Worker envs.
 - **Incident mode** — `:incident START "headline"` freezes deploys fleet-wide, pins a header banner with a running clock, and audit-logs the window; `ebman freeze` declares a freeze no session owns, holding until `ebman thaw`; `:event-tail` streams EB events across every env in one overlay; `ebman audit replay <line-id>` re-runs an audited action for post-incident review.
 - **Honest health** — envs with alarms in ALARM, DLQs with messages, or stale platforms surface on the row itself, not behind a tab.
 - **Forensics** — `:diff env-A env-B` for option-setting deltas, `:lineage` for the deploy timeline, `:alarm-history NAME` for CW state transitions, `:config-diff-local` against a local EB CLI saved config.

@@ -5913,3 +5913,12 @@ a `--read-only` server.
   `audit.profile` and records the same value. Six mutations each fail a
   test, two of them only after `a_write_s_audit_region_prefers_what_its_client_resolved`
   was added (accepting `-` as a region; ignoring the resolved one).
+- **Env-level health in `:why` and MCP `why`.** `aws::EnvHealth` from
+  `DescribeEnvironmentHealth` with every attribute (`env_health_from`,
+  pure); `fetch_env_health`; a demo fixture shaped by colour. The TUI
+  overlay leads with it (`why_health_lines`, the slot boxed for the
+  enum's size), and the MCP bundle's first section is `health`, `null`
+  with EB's reason on basic health. Ten mutations; one (the section's
+  error label) needed the alarm-prefix test to assert a refused health
+  section, and removing the message from the generation list does not
+  compile.

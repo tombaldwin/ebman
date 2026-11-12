@@ -172,11 +172,6 @@ it as one release. Ranked by operator value; each is a feature item
 the shared gate, two-phase on MCP, audited, with an undo where one
 exists.*
 
-7. **Env-level health in `:why` and MCP `why`.** `DescribeEnvironmentHealth`
-   with every attribute: the console's banner causes, enhanced status,
-   request rate, status mix and latency. ebman asks only for instance
-   counts today (`aws/eb.rs` `fetch_env_instance_counts`). Read-only.
-
 8. **Platform branch lifecycle.** `ListPlatformBranches` per region:
    a deprecated or retired branch on the fleet row, a lint rule (Warn
    deprecated, Error retired), and a field on `list_environments` /

@@ -1,9 +1,10 @@
-//! `:why` overlay background fetches. Six `spawn_why_red_*` helpers,
+//! `:why` overlay background fetches. Seven `spawn_why_red_*` helpers,
 //! each fanning a single AWS read against the env's app / region:
-//! events (last 50), alarms, instances, recent deploys, worker
-//! queues (worker tier only), and (second-stage) DLQ message peek.
+//! the enhanced-health rollup, events (last 50), alarms, instances,
+//! recent deploys, worker queues (worker tier only), and (second-stage)
+//! DLQ message peek.
 //!
-//! All six follow the same pattern: snapshot a `session_id` from
+//! All seven follow the same pattern: snapshot a `session_id` from
 //! the `Overlay::WhyRed` overlay state at spawn time, route the
 //! result through a typed `AppMsg::WhyRed*` variant, and let the
 //! handler in `msg.rs` write it into the overlay's slot. The
@@ -59,6 +60,29 @@ impl App {
             "peek_messages",
             move |aws| async move { aws.peek_messages(&dlq_url, 3).await },
             move |gen, result| AppMsg::WhyRedDlqMessages {
+                gen,
+                session_id,
+                result,
+            },
+        );
+    }
+
+    pub(crate) fn spawn_why_red_health(&self, env_name: String, session_id: u64) {
+        if self.demo_mode {
+            let result = crate::demo_fixture::env_health_for(&env_name);
+            let gen = self.generation;
+            let _ = self.msg_tx.send(AppMsg::WhyRedHealth {
+                gen,
+                session_id,
+                result,
+            });
+            return;
+        }
+        self.spawn_aws_in(
+            self.why_red_client(),
+            "fetch_env_health",
+            move |aws| async move { aws.fetch_env_health(&env_name).await },
+            move |gen, result| AppMsg::WhyRedHealth {
                 gen,
                 session_id,
                 result,

@@ -42,6 +42,7 @@ impl AppMsg {
             | Preflight { gen, .. }
             | Alarms { gen, .. }
             | WhyRedEvents { gen, .. }
+            | WhyRedHealth { gen, .. }
             | WhyRedAlarms { gen, .. }
             | WhyRedInstances { gen, .. }
             | WhyRedDeploys { gen, .. }
@@ -172,6 +173,9 @@ impl App {
             AppMsg::WhyRedEvents {
                 session_id, result, ..
             } => self.handle_why_red_events(session_id, result),
+            AppMsg::WhyRedHealth {
+                session_id, result, ..
+            } => self.handle_why_red_health(session_id, result),
             AppMsg::WhyRedAlarms {
                 session_id, result, ..
             } => self.handle_why_red_alarms(session_id, result),
@@ -791,6 +795,23 @@ impl App {
                 *body = format_alarms(result);
             }
             _ => (),
+        }
+    }
+
+    fn handle_why_red_health(
+        &mut self,
+        session_id: u64,
+        result: Result<crate::aws::EnvHealth, String>,
+    ) {
+        if let Some(Overlay::WhyRed {
+            session_id: s,
+            health,
+            ..
+        }) = self.current_overlay.as_mut()
+        {
+            if *s == session_id {
+                *health = Some(result.map(Box::new));
+            }
         }
     }
 
