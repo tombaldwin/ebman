@@ -169,7 +169,8 @@ pub async fn run(args: &[String]) -> Result<()> {
     let clients = match parsed.regions.as_deref() {
         None => vec![home],
         Some(spec) => {
-            let regions = envs_regions(spec, &home.context.region, &cfg.extra_regions);
+            let regions =
+                crate::util::regions_named(spec, &home.context.region, &cfg.extra_regions);
             if regions.is_empty() {
                 eprintln!("ebman envs: --regions names no region (all, or r1,r2)");
                 std::process::exit(2);
@@ -225,25 +226,6 @@ struct EnvsArgs {
     /// `all` (the home region and the configured `extra_regions`) or a
     /// comma list; `None` for the home region alone.
     regions: Option<String>,
-}
-
-/// The regions `--regions` names: `all` is `home` and `extra`, each
-/// once; otherwise the comma list. Pure.
-pub(crate) fn envs_regions(spec: &str, home: &str, extra: &[String]) -> Vec<String> {
-    let named: Vec<String> = if spec.trim().eq_ignore_ascii_case("all") {
-        std::iter::once(home.to_string())
-            .chain(extra.iter().cloned())
-            .collect()
-    } else {
-        crate::util::split_csv(spec)
-    };
-    let mut out: Vec<String> = Vec::new();
-    for r in named {
-        if !r.is_empty() && !out.contains(&r) {
-            out.push(r);
-        }
-    }
-    out
 }
 
 /// The body of `ebman envs`, against any client and any writers, so a
@@ -694,21 +676,6 @@ mod run_tests {
         let (out, _) = run(refused(), true).await;
         let v: serde_json::Value = serde_json::from_str(out.trim()).expect("valid JSON");
         assert!(v[0]["firing_alarms"].is_null(), "{v}");
-    }
-
-    #[test]
-    fn regions_all_is_home_and_the_extra_regions_once() {
-        let extra = vec!["eu-west-2".to_string(), "us-east-1".to_string()];
-        assert_eq!(
-            envs_regions("all", "us-east-1", &extra),
-            ["us-east-1", "eu-west-2"]
-        );
-        assert_eq!(envs_regions(" ALL ", "us-east-1", &[]), ["us-east-1"]);
-        assert_eq!(
-            envs_regions("eu-west-2, ap-south-1,eu-west-2", "us-east-1", &extra),
-            ["eu-west-2", "ap-south-1"]
-        );
-        assert!(envs_regions(" , ", "us-east-1", &extra).is_empty());
     }
 
     #[test]

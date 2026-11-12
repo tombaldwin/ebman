@@ -544,26 +544,14 @@ pub(super) fn render_why_json(
 /// The region demo's fleet lives in.
 const DEMO_REGION: &str = "us-east-1";
 
-/// The regions a `regions` argument names: `all` is `home` and the
-/// configured extra regions, each once; otherwise a comma list. Pure.
+/// The regions a `regions` argument names ([`util::regions_named`]),
+/// or why it names none.
 pub(super) fn region_spec(spec: &str, home: &str, extra: &[String]) -> Result<Vec<String>, String> {
-    let mut out: Vec<String> = Vec::new();
-    let named: Vec<String> = if spec.trim().eq_ignore_ascii_case("all") {
-        std::iter::once(home.to_string())
-            .chain(extra.iter().cloned())
-            .collect()
-    } else {
-        util::split_csv(spec)
-    };
-    for r in named {
-        if !r.is_empty() && !out.contains(&r) {
-            out.push(r);
-        }
-    }
-    if out.is_empty() {
+    let regions = util::regions_named(spec, home, extra);
+    if regions.is_empty() {
         return Err("'regions' names no region — \"all\" or a comma list".into());
     }
-    Ok(out)
+    Ok(regions)
 }
 
 /// Merge a fanned-out tool's answers. Rows (`list_environments`'s envs,

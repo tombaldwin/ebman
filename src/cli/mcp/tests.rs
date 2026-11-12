@@ -440,16 +440,12 @@ fn an_env_settles_when_its_operation_ends() {
 }
 
 #[test]
-fn region_spec_is_all_or_a_list_each_once() {
+fn region_spec_refuses_a_list_naming_no_region() {
     use super::tools::region_spec;
-    let extra = vec!["eu-west-2".to_string(), "us-east-1".to_string()];
+    let extra = vec!["eu-west-2".to_string()];
     assert_eq!(
         region_spec("all", "us-east-1", &extra).unwrap(),
-        ["us-east-1", "eu-west-2"]
-    );
-    assert_eq!(
-        region_spec("eu-west-2,ap-south-1, eu-west-2", "us-east-1", &extra).unwrap(),
-        ["eu-west-2", "ap-south-1"]
+        ["eu-west-2", "us-east-1"]
     );
     assert!(region_spec(" , ", "us-east-1", &extra).is_err());
 }

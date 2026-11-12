@@ -544,6 +544,67 @@ pub(crate) fn split_csv(value: &str) -> Vec<String> {
         .collect()
 }
 
+/// Every region a multi-region view covers: the configured extra
+/// regions and the home region, sorted, once each. `:region all`, `ebman
+/// envs --regions all` and MCP `regions: "all"` all mean this. Pure.
+pub(crate) fn all_regions(extra: &[String], home: &str) -> Vec<String> {
+    let mut regions = extra.to_vec();
+    regions.push(home.to_string());
+    regions.sort();
+    regions.dedup();
+    regions
+}
+
+/// The regions a `--regions` / `regions` value names: `all` (any case)
+/// is [`all_regions`]; anything else a comma list, in its order, once
+/// each. Empty when it names none. Pure.
+pub(crate) fn regions_named(spec: &str, home: &str, extra: &[String]) -> Vec<String> {
+    if spec.trim().eq_ignore_ascii_case("all") {
+        return all_regions(extra, home);
+    }
+    let mut out: Vec<String> = Vec::new();
+    for r in split_csv(spec) {
+        if !out.contains(&r) {
+            out.push(r);
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod region_list_tests {
+    use super::{all_regions, regions_named};
+
+    #[test]
+    fn all_is_the_extras_plus_home_sorted_once_each() {
+        assert_eq!(all_regions(&[], "us-west-1"), vec!["us-west-1"]);
+        let extra = vec!["us-west-1".to_string(), "eu-west-2".to_string()];
+        assert_eq!(
+            all_regions(&extra, "us-west-1"),
+            vec!["eu-west-2", "us-west-1"],
+            "home listed in extra_regions too is listed once"
+        );
+        assert_eq!(
+            all_regions(&extra, "ap-south-1"),
+            vec!["ap-south-1", "eu-west-2", "us-west-1"]
+        );
+    }
+
+    #[test]
+    fn a_named_list_keeps_its_order_once_each_and_all_is_any_case() {
+        let extra = vec!["eu-west-2".to_string()];
+        assert_eq!(
+            regions_named(" ALL ", "us-east-1", &extra),
+            ["eu-west-2", "us-east-1"]
+        );
+        assert_eq!(
+            regions_named("us-east-1, ap-south-1,us-east-1", "eu-west-2", &extra),
+            ["us-east-1", "ap-south-1"]
+        );
+        assert!(regions_named(" , ", "us-east-1", &extra).is_empty());
+    }
+}
+
 #[cfg(test)]
 mod split_csv_tests {
     use super::split_csv;

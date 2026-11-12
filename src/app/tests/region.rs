@@ -2247,22 +2247,6 @@ async fn region_all_names_the_regions_it_fans_across() {
     );
 }
 
-#[test]
-fn fanout_regions_is_the_extras_plus_home_sorted_once_each() {
-    use crate::app::cmd_nav::fanout_regions;
-    assert_eq!(fanout_regions(&[], "us-west-1"), vec!["us-west-1"]);
-    let extra = vec!["us-west-1".to_string(), "eu-west-2".to_string()];
-    assert_eq!(
-        fanout_regions(&extra, "us-west-1"),
-        vec!["eu-west-2", "us-west-1"],
-        "home listed in extra_regions too is listed once"
-    );
-    assert_eq!(
-        fanout_regions(&extra, "ap-south-1"),
-        vec!["ap-south-1", "eu-west-2", "us-west-1"]
-    );
-}
-
 fn switched_to(region: &str) -> Box<crate::aws::AwsClient> {
     let mut client = crate::aws::AwsClient::stub();
     client.context.region = region.to_string();
