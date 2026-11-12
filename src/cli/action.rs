@@ -37,13 +37,29 @@ struct ActionArgs {
 enum Route {
     Verb(CliVerb),
     Deploy(DeployFlags),
+    /// Redeploy the previous version: `to` names it, else the env's
+    /// event history does. Audited as the deploy it is.
+    Rollback {
+        to: Option<String>,
+        flags: DeployFlags,
+    },
+    /// Swap CNAMEs with `with`. Both envs pass the gate.
+    Swap {
+        with: String,
+    },
+    Scale {
+        min: i32,
+        max: i32,
+    },
 }
 
 impl Route {
     fn audit_label(&self) -> &'static str {
         match self {
             Route::Verb(v) => CliAction::Verb(*v).audit_label(),
-            Route::Deploy(_) => CliAction::Deploy.audit_label(),
+            Route::Deploy(_) | Route::Rollback { .. } => CliAction::Deploy.audit_label(),
+            Route::Swap { .. } => crate::verb::Verb::SwapCnames.audit_label(),
+            Route::Scale { .. } => crate::verb::Verb::Scale.audit_label(),
         }
     }
 }
@@ -119,6 +135,7 @@ enum CliVerb {
     Rebuild,
     Restart,
     Terminate,
+    Abort,
 }
 
 impl CliVerb {
@@ -140,6 +157,8 @@ impl CliVerb {
             CliVerb::Terminate,
             crate::verb::Verb::Terminate,
         ),
+        // Cancels the update in flight; EB rolls the environment back.
+        ("abort", CliVerb::Abort, crate::verb::Verb::AbortUpdate),
     ];
 
     fn parse(name: &str) -> Option<Self> {
@@ -169,11 +188,12 @@ impl CliVerb {
             CliVerb::Rebuild => aws.rebuild_env(env).await,
             CliVerb::Restart => aws.restart_app_server(env).await,
             CliVerb::Terminate => aws.terminate_env(env).await,
+            CliVerb::Abort => aws.abort_environment_update(env).await,
         }
     }
 }
 
-const ACTION_USAGE: &str = "usage: ebman action <rebuild|restart|terminate|deploy|rollout> --env NAME [--version LABEL] [--regions r1,r2,r3] [--yes] [--wait-for-green Nm] [--auto-rollback Nm]";
+const ACTION_USAGE: &str = "usage: ebman action <rebuild|restart|terminate|abort|deploy|rollback|swap|scale|rollout> --env NAME [--version LABEL] [--to LABEL] [--with NAME] [--min N --max N] [--regions r1,r2,r3] [--yes] [--wait-for-green Nm] [--auto-rollback Nm]";
 
 /// Pure parser for the single-env action verbs. Mirrors the original
 /// inline logic exactly: empty/dash-prefixed verb → usage error;
@@ -192,6 +212,10 @@ fn parse_action_args(args: &[String]) -> Result<ActionArgs, ActionArgError> {
     let mut version: Option<String> = None;
     let mut wait_for_green: Option<String> = None;
     let mut auto_rollback: Option<String> = None;
+    let mut to: Option<String> = None;
+    let mut with: Option<String> = None;
+    let mut min: Option<String> = None;
+    let mut max: Option<String> = None;
     let mut yes = false;
     let mut iter = args.iter().skip(2);
     while let Some(arg) = iter.next() {
@@ -210,6 +234,10 @@ fn parse_action_args(args: &[String]) -> Result<ActionArgs, ActionArgError> {
             "--auto-rollback" => {
                 auto_rollback = Some(take_flag_value(&mut iter, "--auto-rollback", "a duration")?)
             }
+            "--to" => to = Some(take_flag_value(&mut iter, "--to", "a version label")?),
+            "--with" => with = Some(take_flag_value(&mut iter, "--with", "an env name")?),
+            "--min" => min = Some(take_flag_value(&mut iter, "--min", "an instance count")?),
+            "--max" => max = Some(take_flag_value(&mut iter, "--max", "an instance count")?),
             "--yes" => yes = true,
             other => {
                 return Err(ActionArgError {
@@ -219,43 +247,79 @@ fn parse_action_args(args: &[String]) -> Result<ActionArgs, ActionArgError> {
             }
         }
     }
-    let Some(env) = env_name else {
+    if env_name.is_none() {
         return Err(ActionArgError {
             msg: "ebman action: --env NAME is required".into(),
             code: 2,
         });
-    };
+    }
     // A deploy's own usage errors are decided here, with the rest, so
     // they beat the gate: a malformed deploy on a frozen fleet is a
     // usage error (2), not a refusal (3) with an audit line.
-    let route = match CliAction::parse(action_name) {
-        None => {
-            return Err(ActionArgError {
-                msg: format!("ebman action: unknown action '{action_name}'\n{ACTION_USAGE}"),
-                code: 2,
-            })
-        }
-        Some(CliAction::Verb(v)) => Route::Verb(v),
-        Some(CliAction::Deploy) => {
-            let usage = |msg: String| ActionArgError { msg, code: 2 };
-            let version = version
-                .ok_or_else(|| usage("ebman action deploy: --version LABEL is required".into()))?;
-            let secs = |flag: &str, value: Option<String>| match value {
-                Some(s) => aws::parse_window_ms(&s)
-                    .map(|ms| Some((ms / 1000) as u64))
-                    .ok_or_else(|| {
-                        usage(format!(
-                        "ebman action deploy: {flag} expects a duration like `5m` / `30m` / `1h`"
-                    ))
-                    }),
-                None => Ok(None),
-            };
-            Route::Deploy(DeployFlags {
-                version,
+    let usage = |msg: String| ActionArgError { msg, code: 2 };
+    let secs = |flag: &str, value: Option<String>| match value {
+        Some(s) => aws::parse_window_ms(&s)
+            .map(|ms| Some((ms / 1000) as u64))
+            .ok_or_else(|| {
+                usage(format!(
+                    "ebman action {action_name}: {flag} expects a duration like `5m` / `30m` / `1h`"
+                ))
+            }),
+        None => Ok(None),
+    };
+    let route = match action_name {
+        "rollback" => Route::Rollback {
+            to,
+            // The target is resolved after the gate; `version` is
+            // filled in then.
+            flags: DeployFlags {
+                version: String::new(),
                 wait_for_green_secs: secs("--wait-for-green", wait_for_green)?,
                 auto_rollback_secs: secs("--auto-rollback", auto_rollback)?,
-            })
+            },
+        },
+        "swap" => {
+            let with = with.ok_or_else(|| {
+                usage("ebman action swap: --with NAME (the other environment) is required".into())
+            })?;
+            if with == env_name.as_deref().unwrap_or_default() {
+                return Err(usage(
+                    "ebman action swap: an environment cannot swap with itself".into(),
+                ));
+            }
+            Route::Swap { with }
         }
+        "scale" => {
+            let count = |flag: &str, v: Option<String>| -> Result<i64, ActionArgError> {
+                v.ok_or_else(|| usage(format!("ebman action scale: {flag} N is required")))?
+                    .parse::<i64>()
+                    .map_err(|_| {
+                        usage(format!("ebman action scale: {flag} expects a whole number"))
+                    })
+            };
+            let (min, max) = aws::scale_bounds(count("--min", min)?, count("--max", max)?)
+                .map_err(|e| usage(format!("ebman action scale: {e}")))?;
+            Route::Scale { min, max }
+        }
+        _ => match CliAction::parse(action_name) {
+            None => {
+                return Err(ActionArgError {
+                    msg: format!("ebman action: unknown action '{action_name}'\n{ACTION_USAGE}"),
+                    code: 2,
+                })
+            }
+            Some(CliAction::Verb(v)) => Route::Verb(v),
+            Some(CliAction::Deploy) => {
+                let version = version.ok_or_else(|| {
+                    usage("ebman action deploy: --version LABEL is required".into())
+                })?;
+                Route::Deploy(DeployFlags {
+                    version,
+                    wait_for_green_secs: secs("--wait-for-green", wait_for_green)?,
+                    auto_rollback_secs: secs("--auto-rollback", auto_rollback)?,
+                })
+            }
+        },
     };
     let destructive = matches!(action_name, "terminate");
     if destructive && !yes {
@@ -268,7 +332,7 @@ fn parse_action_args(args: &[String]) -> Result<ActionArgs, ActionArgError> {
     }
     Ok(ActionArgs {
         action: action_name.to_string(),
-        env,
+        env: env_name.unwrap_or_default(),
         route,
         yes,
     })
@@ -338,14 +402,22 @@ where
     // exists for. No region: the gate runs before any AWS client is
     // built, and the rules it applies are region-independent.
     let profile = write_env.ambient_profile.as_deref();
-    if let Some(reason) = write_env.refusal(&crate::cli::GateQuery {
-        env: &env,
-        profile,
-        region: None,
-        verb: route.audit_label(),
-    }) {
-        let _ = writeln!(err, "ebman action: {reason}");
-        return 3;
+    // A swap changes both environments, so both pass the gate: a pin on
+    // the other one refuses it as surely as a pin on `--env`.
+    let mut gated = vec![env.as_str()];
+    if let Route::Swap { with } = &route {
+        gated.push(with.as_str());
+    }
+    for target in gated {
+        if let Some(reason) = write_env.refusal(&crate::cli::GateQuery {
+            env: target,
+            profile,
+            region: None,
+            verb: route.audit_label(),
+        }) {
+            let _ = writeln!(err, "ebman action: {reason}");
+            return 3;
+        }
     }
     let aws = match client_for(None, None).await {
         Ok(c) => c,
@@ -357,6 +429,32 @@ where
 
     let verb = match route {
         Route::Deploy(flags) => return deploy(&aws, &env, flags, profile, out, err).await,
+        Route::Rollback { to, flags } => {
+            return rollback(&aws, &env, to, flags, profile, out, err).await
+        }
+        Route::Swap { with } => {
+            let label = crate::verb::Verb::SwapCnames.audit_label();
+            let extras = [("with", with.as_str())];
+            let line = AuditedAs {
+                label,
+                extras: &extras,
+                profile,
+            };
+            return dispatch_audited(&aws, &env, line, out, err, || aws.swap_cnames(&env, &with))
+                .await;
+        }
+        Route::Scale { min, max } => {
+            let label = crate::verb::Verb::Scale.audit_label();
+            let (min_s, max_s) = (min.to_string(), max.to_string());
+            let extras = [("min", min_s.as_str()), ("max", max_s.as_str())];
+            let line = AuditedAs {
+                label,
+                extras: &extras,
+                profile,
+            };
+            return dispatch_audited(&aws, &env, line, out, err, || aws.scale_env(&env, min, max))
+                .await;
+        }
         Route::Verb(v) => v,
     };
     let label = verb.audit_label();
@@ -388,6 +486,126 @@ where
             1
         }
     }
+}
+
+/// What a dispatch's audited pair names, besides the env and region.
+struct AuditedAs<'a> {
+    label: &'a str,
+    extras: &'a [(&'a str, &'a str)],
+    profile: Option<&'a str>,
+}
+
+/// One dispatch with its audited pair: dispatched before, completed after,
+/// both naming the extras. Exit 0, or 1 on AWS's refusal.
+async fn dispatch_audited<F, Fut>(
+    aws: &aws::AwsClient,
+    env: &str,
+    AuditedAs {
+        label,
+        extras,
+        profile,
+    }: AuditedAs<'_>,
+    out: &mut dyn std::io::Write,
+    err: &mut dyn std::io::Write,
+    call: F,
+) -> i32
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<(), color_eyre::eyre::Report>>,
+{
+    audit::append_action_dispatched(None, profile, &aws.context.region, label, env, extras);
+    let result = call().await;
+    let err_text = result.as_ref().err().map(|e| e.to_string());
+    audit::append_action_completed(
+        None,
+        profile,
+        &aws.context.region,
+        label,
+        env,
+        match err_text.as_deref() {
+            None => Ok(()),
+            Some(e) => Err(e),
+        },
+        extras,
+    );
+    match err_text {
+        None => {
+            let _ = writeln!(out, "ok: {label} on {env} dispatched");
+            0
+        }
+        Some(e) => {
+            let _ = writeln!(err, "err: {e}");
+            1
+        }
+    }
+}
+
+/// `ebman action rollback`: the previous version, redeployed. `to` names
+/// it; otherwise the env's recent events do, as the TUI's event-scan
+/// fallback reads them (the TUI's in-memory pre-deploy snapshot does not
+/// exist here). Then it is the deploy it is, flags and exit codes
+/// included.
+async fn rollback(
+    aws: &aws::AwsClient,
+    env: &str,
+    to: Option<String>,
+    flags: DeployFlags,
+    profile: Option<&str>,
+    out: &mut dyn std::io::Write,
+    err: &mut dyn std::io::Write,
+) -> i32 {
+    let current = match aws.list_environments().await {
+        Ok(envs) => match envs.into_iter().find(|e| e.name == env) {
+            Some(e) => e.version_label,
+            None => {
+                let _ = writeln!(err, "ebman action rollback: env '{env}' not found");
+                return 2;
+            }
+        },
+        Err(e) => {
+            let _ = writeln!(err, "ebman action rollback: list_environments: {e}");
+            return 1;
+        }
+    };
+    let target = match to {
+        Some(label) => label,
+        None => match aws.list_events_for_env(env, 100).await {
+            Ok(events) => match crate::app::previous_version_label(&events, &current) {
+                Some(prev) => prev,
+                None => {
+                    let _ = writeln!(
+                        err,
+                        "ebman action rollback: no earlier version in {env}'s recent events — name one with --to LABEL"
+                    );
+                    return 1;
+                }
+            },
+            Err(e) => {
+                let _ = writeln!(err, "ebman action rollback: list_events_for_env: {e}");
+                return 1;
+            }
+        },
+    };
+    if target == current {
+        let _ = writeln!(
+            err,
+            "ebman action rollback: {target} is already the deployed version"
+        );
+        return 2;
+    }
+    let _ = writeln!(out, "rollback: {current} -> {target}");
+    deploy(
+        aws,
+        env,
+        DeployFlags {
+            version: target,
+            ..flags
+        },
+        profile,
+        out,
+        err,
+    )
+    .await
 }
 
 /// `ebman action deploy`'s flags, parsed and validated.
@@ -1474,6 +1692,211 @@ mod body {
 
     const STUCK: &[(&str, &str)] = &[("Updating", "Grey")];
 
+    /// One Ready env `api` on `build-2`, whose events show `build-1`
+    /// before it, answering abort, swap, scale and a deploy of
+    /// `build-1`. Returns the rules so a test can count each.
+    struct Lifecycle {
+        client: aws::AwsClient,
+        aborted: aws_smithy_mocks::Rule,
+        swapped: aws_smithy_mocks::Rule,
+        scaled: aws_smithy_mocks::Rule,
+        rolled_back: aws_smithy_mocks::Rule,
+    }
+
+    fn lifecycle() -> Lifecycle {
+        use aws_sdk_elasticbeanstalk::operation as op;
+        use aws_sdk_elasticbeanstalk::types::{EnvironmentDescription, EventDescription};
+        let listing =
+            aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::describe_environments)
+                .then_output(|| {
+                    op::describe_environments::DescribeEnvironmentsOutput::builder()
+                        .environments(
+                            EnvironmentDescription::builder()
+                                .environment_name("api")
+                                .application_name("shop")
+                                .version_label("build-2")
+                                .status("Ready".into())
+                                .health("Green".into())
+                                .build(),
+                        )
+                        .build()
+                });
+        let events = aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::describe_events)
+            .then_output(|| {
+                let ev = |v: &str| EventDescription::builder().version_label(v).build();
+                op::describe_events::DescribeEventsOutput::builder()
+                    .events(ev("build-2"))
+                    .events(ev("build-1"))
+                    .build()
+            });
+        let aborted =
+            aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::abort_environment_update)
+                .match_requests(|r| r.environment_name() == Some("api"))
+                .then_output(|| {
+                    op::abort_environment_update::AbortEnvironmentUpdateOutput::builder().build()
+                });
+        let swapped =
+            aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::swap_environment_cnames)
+                .match_requests(|r| {
+                    r.source_environment_name() == Some("api")
+                        && r.destination_environment_name() == Some("api-green")
+                })
+                .then_output(|| {
+                    op::swap_environment_cnames::SwapEnvironmentCnamEsOutput::builder().build()
+                });
+        let scaled = aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::update_environment)
+            .match_requests(|r| {
+                let has = |name: &str, v: &str| {
+                    r.option_settings()
+                        .iter()
+                        .any(|o| o.option_name() == Some(name) && o.value() == Some(v))
+                };
+                has("MinSize", "2") && has("MaxSize", "6")
+            })
+            .then_output(|| op::update_environment::UpdateEnvironmentOutput::builder().build());
+        let rolled_back =
+            aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::update_environment)
+                .match_requests(|r| r.version_label() == Some("build-1"))
+                .then_output(|| op::update_environment::UpdateEnvironmentOutput::builder().build());
+        let eb = aws_smithy_mocks::mock_client!(
+            aws_sdk_elasticbeanstalk,
+            aws_smithy_mocks::RuleMode::MatchAny,
+            [&listing, &events, &aborted, &swapped, &scaled, &rolled_back]
+        );
+        let cfg = aws_config::SdkConfig::builder()
+            .region(aws_config::Region::new("us-east-1"))
+            .behavior_version(aws_config::BehaviorVersion::latest())
+            .build();
+        let client = aws::AwsClient::for_tests(
+            eb,
+            aws_sdk_sqs::Client::new(&cfg),
+            aws_sdk_cloudwatch::Client::new(&cfg),
+            aws_sdk_cloudwatchlogs::Client::new(&cfg),
+            aws_sdk_s3::Client::new(&cfg),
+            aws_sdk_ec2::Client::new(&cfg),
+        );
+        Lifecycle {
+            client,
+            aborted,
+            swapped,
+            scaled,
+            rolled_back,
+        }
+    }
+
+    /// `abort`, `swap`, `scale` and `rollback` each dispatch their own
+    /// call with what they were given, audited as a pair under the
+    /// shared label.
+    #[tokio::test]
+    async fn the_lifecycle_verbs_dispatch_what_they_name() {
+        use crate::audit::delta::{lines_for, mark};
+        let f = lifecycle();
+        let r = action(&["abort", "--env", "api"], None, Some(f.client)).await;
+        assert_eq!(r.code, 0, "{}", r.err);
+        assert_eq!(f.aborted.num_calls(), 1);
+        assert_eq!(r.verb.as_deref(), Some("AbortUpdate"));
+
+        let f = lifecycle();
+        let before = mark();
+        let r = action(
+            &["swap", "--env", "api", "--with", "api-green"],
+            None,
+            Some(f.client),
+        )
+        .await;
+        assert_eq!(r.code, 0, "{}", r.err);
+        assert_eq!(f.swapped.num_calls(), 1);
+        let lines = lines_for(&before, "api");
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("action=SwapCnames") && l.contains("with=api-green")),
+            "{lines:#?}"
+        );
+
+        let f = lifecycle();
+        let r = action(
+            &["scale", "--env", "api", "--min", "2", "--max", "6"],
+            None,
+            Some(f.client),
+        )
+        .await;
+        assert_eq!(r.code, 0, "{}", r.err);
+        assert_eq!(f.scaled.num_calls(), 1, "MinSize 2, MaxSize 6");
+
+        let f = lifecycle();
+        let r = action(&["rollback", "--env", "api"], None, Some(f.client)).await;
+        assert_eq!(r.code, 0, "{}", r.err);
+        assert!(r.out.contains("build-2 -> build-1"), "{}", r.out);
+        assert_eq!(f.rolled_back.num_calls(), 1, "the version the events name");
+        assert_eq!(r.verb.as_deref(), Some("Deploy"), "a rollback is a deploy");
+
+        let f = lifecycle();
+        let r = action(
+            &["rollback", "--env", "api", "--to", "build-2"],
+            None,
+            Some(f.client),
+        )
+        .await;
+        assert_eq!(r.code, 2, "already deployed: {}", r.err);
+    }
+
+    /// A swap changes both environments, so a pin on the other one
+    /// refuses it; and the new verbs' malformed forms are usage errors
+    /// before the gate or a client.
+    #[tokio::test]
+    async fn a_swap_is_gated_on_both_envs_and_bad_forms_are_usage() {
+        let argv = |args: &[&str]| -> Vec<String> {
+            std::iter::once("action")
+                .chain(args.iter().copied())
+                .map(String::from)
+                .collect()
+        };
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let Lifecycle {
+            client, swapped, ..
+        } = lifecycle();
+        let client = std::sync::Mutex::new(Some(client));
+        let code = action_body(
+            &argv(&["swap", "--env", "api", "--with", "api-green"]),
+            crate::cli::WriteEnv::for_tests(Some("ops"), |q: &crate::cli::GateQuery<'_>, _| {
+                (q.env == "api-green").then(|| "api-green is pinned".to_string())
+            }),
+            |_, _| {
+                let c = client.lock().unwrap().take();
+                async move { c.ok_or_else(|| color_eyre::eyre::eyre!("built twice")) }
+            },
+            &mut out,
+            &mut err,
+        )
+        .await;
+        assert_eq!(code, 3, "{}", String::from_utf8_lossy(&err));
+        assert_eq!(swapped.num_calls(), 0);
+
+        for (args, why) in [
+            (&["swap", "--env", "api"][..], "--with"),
+            (&["swap", "--env", "api", "--with", "api"][..], "itself"),
+            (&["scale", "--env", "api", "--min", "2"][..], "--max"),
+            (
+                &["scale", "--env", "api", "--min", "5", "--max", "2"][..],
+                "more than max",
+            ),
+            (
+                &["scale", "--env", "api", "--min", "x", "--max", "2"][..],
+                "whole number",
+            ),
+            (
+                &["scale", "--env", "api", "--min", "0", "--max", "20000"][..],
+                "10000",
+            ),
+        ] {
+            let r = action(args, None, None).await;
+            assert_eq!(r.code, 2, "{args:?}: {}", r.err);
+            assert!(r.err.contains(why), "{args:?}: {}", r.err);
+            assert!(!r.client_built, "{args:?}: usage before any client");
+        }
+    }
+
     /// Every dispatch is audited as a `dispatched` / `completed` pair,
     /// the auto-rollback's included.
     #[tokio::test(start_paused = true)]
@@ -1882,11 +2305,12 @@ mod tests {
                 "rebuild" => crate::mode_action::Action::Rebuild,
                 "restart" => crate::mode_action::Action::RestartAppServer,
                 "terminate" => crate::mode_action::Action::Terminate,
+                "abort" => crate::mode_action::Action::AbortUpdate,
                 other => panic!("unmapped CLI verb {other}"),
             };
             assert_eq!(
                 verb.audit_label(),
-                format!("{tui:?}"),
+                tui.audit_label(),
                 "{name}: CLI and TUI must audit under the same action name"
             );
         }

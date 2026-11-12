@@ -174,6 +174,27 @@ pub(crate) struct ManagedActionRecord {
     pub finished: Option<DateTime<Utc>>,
 }
 
+/// An auto-scaling group's min and max, checked as the CLI and MCP take
+/// them: neither negative, min no more than max, and max within the
+/// 10,000 instances EB allows. The error names what is wrong.
+pub(crate) fn scale_bounds(min: i64, max: i64) -> std::result::Result<(i32, i32), String> {
+    if min < 0 || max < 0 {
+        return Err(format!(
+            "min and max must not be negative (got {min}..{max})"
+        ));
+    }
+    if min > max {
+        return Err(format!("min {min} is more than max {max}"));
+    }
+    if max > 10_000 {
+        return Err(format!(
+            "max {max} is more than the 10000 instances EB allows"
+        ));
+    }
+    // In range by the checks above.
+    Ok((min as i32, max as i32))
+}
+
 /// How many past managed updates the TUI and MCP show: enough for "what
 /// happened the last few times", one page.
 pub(crate) const MANAGED_HISTORY_MAX: i32 = 10;
@@ -1950,6 +1971,8 @@ impl AwsClient {
     /// (no instances, env keeps its config). The API returns immediately;
     /// EB performs the scale as a rolling change.
     pub(crate) async fn scale_env(&self, env_name: &str, min: i32, max: i32) -> Result<()> {
+        let (min, max) =
+            scale_bounds(i64::from(min), i64::from(max)).map_err(|e| color_eyre::eyre::eyre!(e))?;
         use aws_sdk_elasticbeanstalk::types::ConfigurationOptionSetting;
         let opts = vec![
             ConfigurationOptionSetting::builder()

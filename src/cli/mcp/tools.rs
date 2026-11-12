@@ -952,6 +952,22 @@ impl Server {
                 .tool_write_plan(writes::WriteVerb::Rebuild, args)
                 .await
                 .map_err(refusal::WriteError::into_message),
+            "rollback" => self
+                .tool_write_plan(writes::WriteVerb::Rollback, args)
+                .await
+                .map_err(refusal::WriteError::into_message),
+            "abort_update" => self
+                .tool_write_plan(writes::WriteVerb::AbortUpdate, args)
+                .await
+                .map_err(refusal::WriteError::into_message),
+            "swap_cnames" => self
+                .tool_write_plan(writes::WriteVerb::SwapCnames, args)
+                .await
+                .map_err(refusal::WriteError::into_message),
+            "scale" => self
+                .tool_write_plan(writes::WriteVerb::Scale, args)
+                .await
+                .map_err(refusal::WriteError::into_message),
             "dlq_redrive" => self
                 .tool_write_plan(writes::WriteVerb::DlqRedrive, args)
                 .await

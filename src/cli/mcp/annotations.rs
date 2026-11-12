@@ -147,6 +147,23 @@ pub(super) const TOOL_ATTRS: &[(&str, ToolAttrs)] = &[
     // consumes the scheduled action, and a second is refused.
     // Every message goes back to be processed, not destroyed; not
     // idempotent, since the first call empties the queue it acts on.
+    // A rollback is a deploy: reversible, and the same target twice
+    // lands in the same place.
+    (
+        "rollback",
+        ToolAttrs::write(Verb::Deploy.destructive(), true),
+    ),
+    // Stops a change; aborting twice finds nothing to abort.
+    (
+        "abort_update",
+        ToolAttrs::write(Verb::AbortUpdate.destructive(), true),
+    ),
+    // Swapping twice swaps back: not idempotent.
+    (
+        "swap_cnames",
+        ToolAttrs::write(Verb::SwapCnames.destructive(), false),
+    ),
+    ("scale", ToolAttrs::write(Verb::Scale.destructive(), true)),
     (
         "dlq_redrive",
         ToolAttrs::write(Verb::DlqRedrive.destructive(), false),

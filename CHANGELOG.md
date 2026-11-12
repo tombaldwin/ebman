@@ -42,6 +42,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   plan refuses an empty queue and one already being redriven. Audited
   with the task handle; no undo, since every message is processed
   again.
+- **Rollback, abort, swap and scale on the CLI and MCP.** They were
+  TUI-only, so the README's headline `:rollback` could not be scripted
+  or proposed by an agent. `ebman action rollback|abort|swap|scale` and
+  the MCP write verbs `rollback`, `abort_update`, `swap_cnames` and
+  `scale`. A rollback takes `--to`/`to` or the first earlier version in
+  the env's events, and audits as a `Deploy`; `abort_update` refuses an
+  env that is not updating; a swap gates both environments and refuses
+  two applications; scale bounds are checked (0 ≤ min ≤ max ≤ 10000).
+  Abort, swap and scale now audit under one shared label on every
+  surface (`AbortUpdate`, `SwapCnames`, `Scale`, the TUI's spellings).
 
 ### Fixed
 

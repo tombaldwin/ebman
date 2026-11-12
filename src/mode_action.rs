@@ -85,6 +85,9 @@ impl Action {
             Action::RestartAppServer => Some(Verb::RestartAppServer),
             Action::Rebuild => Some(Verb::Rebuild),
             Action::Terminate => Some(Verb::Terminate),
+            Action::AbortUpdate => Some(Verb::AbortUpdate),
+            Action::SwapCnames => Some(Verb::SwapCnames),
+            Action::Scale => Some(Verb::Scale),
             _ => None,
         }
     }

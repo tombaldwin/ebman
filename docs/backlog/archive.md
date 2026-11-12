@@ -5955,3 +5955,16 @@ a `--read-only` server.
   `worker_queues`. Cancelling is TUI-only, as the descriptor says. The
   audit label is `DlqRedrive`: `dlq-redrive` collided with the command
   name under the shared-verb spelling guard.
+- **Rollback, swap, abort and scale off the TUI.** Shared verbs
+  `AbortUpdate`, `SwapCnames`, `Scale` (the TUI's spellings, which its
+  `Action::shared_verb` now maps); `aws::scale_bounds` (0 ≤ min ≤ max ≤
+  10000), checked by `scale_env` itself. CLI `ebman action abort |
+  swap --with | scale --min --max | rollback [--to]` (rollback reuses
+  `previous_version_label` and then the deploy path; a swap gates both
+  envs). MCP `rollback` (`target_from`), `abort_update` (refuses an env
+  not updating), `swap_cnames` (one application; both envs gated at plan
+  and at both confirm gates through `PendingWrite::targets`), `scale`.
+  Self-review: a first `dispatch_audited` reached for
+  `#[allow(clippy::too_many_arguments)]` and now takes an `AuditedAs`
+  struct; a demo test of all four overflowed the debug test stack and
+  became four.

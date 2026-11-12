@@ -40,7 +40,10 @@ pub(crate) const REFUSAL_ACTION_LABELS: &[(&str, &str)] = &[
     ("config-apply", "ConfigApply"),
     ("config-delete", "ConfigDelete"),
     ("config-save", "ConfigSave"),
-    ("swap-cnames target", "SwapCnames"),
+    (
+        "swap-cnames target",
+        crate::verb::Verb::SwapCnames.audit_label(),
+    ),
     (
         "managed-apply",
         crate::verb::Verb::ApplyManagedAction.audit_label(),

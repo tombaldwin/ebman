@@ -36,6 +36,12 @@ pub(crate) enum Verb {
     /// Move a dead-letter queue's messages back to its source queue,
     /// inside SQS.
     DlqRedrive,
+    /// Cancel an environment update in flight.
+    AbortUpdate,
+    /// Swap two environments' CNAMEs (blue/green).
+    SwapCnames,
+    /// Set the auto-scaling group's min and max instance counts.
+    Scale,
 }
 
 impl Verb {
@@ -51,6 +57,9 @@ impl Verb {
         Verb::DlqPurge,
         Verb::ApplyManagedAction,
         Verb::DlqRedrive,
+        Verb::AbortUpdate,
+        Verb::SwapCnames,
+        Verb::Scale,
     ];
 
     /// The `action=` label every surface writes for this verb. `const`
@@ -68,6 +77,10 @@ impl Verb {
             Verb::DlqPurge => "dlq-purge",
             Verb::ApplyManagedAction => "ApplyManagedAction",
             Verb::DlqRedrive => "DlqRedrive",
+            // The TUI's spellings since it first dispatched them.
+            Verb::AbortUpdate => "AbortUpdate",
+            Verb::SwapCnames => "SwapCnames",
+            Verb::Scale => "Scale",
         }
     }
 

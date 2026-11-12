@@ -208,6 +208,153 @@ fn a_managed_updates_half_that_failed_is_null_with_its_reason() {
     );
 }
 
+async fn lifecycle_plan_ok(s: &Server, tool: &str, args: Value) -> Value {
+    let (err, plan) = call(s, tool, args).await;
+    assert!(!err, "{tool}: {plan}");
+    plan
+}
+
+async fn lifecycle_confirm(s: &Server, plan: &Value) -> Value {
+    let token = plan["confirm_token"].as_str().expect("token").to_string();
+    let (err, done) = call(s, "confirm_action", json!({"confirm_token": token})).await;
+    assert!(!err, "{done}");
+    done
+}
+
+/// `rollback` on demo: the previous version, from the staging env's
+/// events, planned as the deploy it is; the current or an unknown
+/// version refused.
+#[tokio::test]
+async fn rollback_plans_the_previous_version_on_demo() {
+    let s = demo_writes_server();
+    let plan = lifecycle_plan_ok(&s, "rollback", json!({"env": "poly-staging-api"})).await;
+    assert_eq!(plan["plan"]["target_version"], "build-823", "{plan}");
+    assert_eq!(plan["plan"]["target_from"], "events", "{plan}");
+    assert_eq!(
+        plan["plan"]["action"], "Deploy",
+        "a rollback is a deploy: {plan}"
+    );
+    assert_eq!(lifecycle_confirm(&s, &plan).await["dispatched"], true);
+    for to in ["build-825", "nope"] {
+        let (err, _) = call(&s, "rollback", json!({"env": "poly-staging-api", "to": to})).await;
+        assert!(err, "{to}");
+    }
+}
+
+/// `abort_update` on demo: only an env that is updating.
+#[tokio::test]
+async fn abort_update_needs_an_update_in_flight_on_demo() {
+    let s = demo_writes_server();
+    let (err, refused) = call(&s, "abort_update", json!({"env": "poly-prod-api"})).await;
+    assert!(
+        err && refused.to_string().contains("not updating"),
+        "{refused}"
+    );
+    let plan = lifecycle_plan_ok(&s, "abort_update", json!({"env": "poly-canary-api"})).await;
+    assert_eq!(lifecycle_confirm(&s, &plan).await["dispatched"], true);
+}
+
+/// `swap_cnames` on demo: both named in the dialog; never itself, never
+/// an unknown env.
+#[tokio::test]
+async fn swap_cnames_names_both_on_demo() {
+    let s = demo_writes_server();
+    let plan = lifecycle_plan_ok(
+        &s,
+        "swap_cnames",
+        json!({"env": "poly-prod-api", "with": "poly-staging-api"}),
+    )
+    .await;
+    assert_eq!(plan["plan"]["swap"]["with"], "poly-staging-api", "{plan}");
+    {
+        let st = s.writes.lock().await;
+        let dialog = writes_dialog(st.pending.as_ref().expect("planned"));
+        assert!(
+            dialog.contains("poly-prod-api ⇄ poly-staging-api"),
+            "{dialog}"
+        );
+    }
+    assert_eq!(lifecycle_confirm(&s, &plan).await["dispatched"], true);
+    for with in ["poly-prod-api", "no-such-env"] {
+        let (err, _) = call(
+            &s,
+            "swap_cnames",
+            json!({"env": "poly-prod-api", "with": with}),
+        )
+        .await;
+        assert!(err, "{with}");
+    }
+}
+
+/// `scale` on demo: bounds checked, and the dialog names them.
+#[tokio::test]
+async fn scale_checks_its_bounds_on_demo() {
+    let s = demo_writes_server();
+    for (min, max) in [(5, 2), (-1, 2), (0, 20_000)] {
+        let (err, _) = call(
+            &s,
+            "scale",
+            json!({"env": "poly-prod-api", "min": min, "max": max}),
+        )
+        .await;
+        assert!(err, "{min}..{max}");
+    }
+    let plan = lifecycle_plan_ok(
+        &s,
+        "scale",
+        json!({"env": "poly-prod-api", "min": 2, "max": 6}),
+    )
+    .await;
+    {
+        let st = s.writes.lock().await;
+        let dialog = writes_dialog(st.pending.as_ref().expect("planned"));
+        assert!(dialog.contains("min 2, max 6"), "{dialog}");
+    }
+    assert_eq!(lifecycle_confirm(&s, &plan).await["dispatched"], true);
+}
+
+/// A swap changes the other environment too: a pin on it refuses the
+/// plan, and one that applies by confirm time refuses the confirm.
+#[tokio::test]
+async fn a_swap_is_refused_by_a_pin_on_either_environment() {
+    let cfg = crate::config::parse(
+        "safety.envs.poly-staging-api.read_only = true\nsafety.envs.poly-dev-api.read_only = true\n",
+    );
+    let s = Server::with_config(true, false, WriteScope::All, cfg);
+    let (err, refused) = call(
+        &s,
+        "swap_cnames",
+        json!({"env": "poly-prod-api", "with": "poly-staging-api"}),
+    )
+    .await;
+    assert!(
+        err && refused.to_string().contains("poly-staging-api"),
+        "{refused}"
+    );
+
+    let (err, plan) = call(
+        &s,
+        "swap_cnames",
+        json!({"env": "poly-prod-api", "with": "poly-canary-api"}),
+    )
+    .await;
+    assert!(!err, "{plan}");
+    // As if the plan had named a pinned partner: confirm re-gates both.
+    s.writes
+        .lock()
+        .await
+        .pending
+        .as_mut()
+        .expect("planned")
+        .swap_with = Some("poly-dev-api".into());
+    let token = plan["confirm_token"].as_str().expect("token").to_string();
+    let (err, refused) = call(&s, "confirm_action", json!({"confirm_token": token})).await;
+    assert!(
+        err && refused.to_string().contains("poly-dev-api"),
+        "{refused}"
+    );
+}
+
 fn writes_dialog(p: &writes::PendingWrite) -> String {
     super::dialog::ask_summary(p)
 }
@@ -4916,6 +5063,8 @@ async fn a_role_refusal_at_confirm_asks_no_one() {
             dlq_targets: Vec::new(),
             dlq_url: None,
             dlq_main_url: None,
+            swap_with: None,
+            scale: None,
             managed_action: None,
             role_check: crate::config::RoleCheck::Unmapped { required: true },
             role: None,
@@ -7220,6 +7369,142 @@ async fn apply_managed_action_dispatches_the_scheduled_id() {
             .any(|l| l.contains("stage=completed") && l.contains("action=ApplyManagedAction")),
         "{lines:#?}"
     );
+}
+
+/// On AWS, each lifecycle verb dispatches exactly what its plan named:
+/// the swap both envs, the scale its bounds, the rollback the version
+/// the events gave, the abort its env.
+#[tokio::test]
+async fn the_lifecycle_verbs_dispatch_what_the_plan_named() {
+    use aws_sdk_elasticbeanstalk::operation as op;
+    use aws_sdk_elasticbeanstalk::types::{EnvironmentDescription, EventDescription};
+    let listing = aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::describe_environments)
+        .then_output(|| {
+            let env = |name: &str, status: &str| {
+                EnvironmentDescription::builder()
+                    .environment_name(name)
+                    .application_name("poly")
+                    .version_label("build-2")
+                    .status(status.into())
+                    .build()
+            };
+            op::describe_environments::DescribeEnvironmentsOutput::builder()
+                .environments(env("poly-live-a", "Updating"))
+                .environments(env("poly-live-b", "Ready"))
+                .environments(
+                    EnvironmentDescription::builder()
+                        .environment_name("shop-live-c")
+                        .application_name("shop")
+                        .status("Ready".into())
+                        .build(),
+                )
+                .build()
+        });
+    let events = aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::describe_events)
+        .then_output(|| {
+            let ev = |v: &str| EventDescription::builder().version_label(v).build();
+            op::describe_events::DescribeEventsOutput::builder()
+                .events(ev("build-2"))
+                .events(ev("build-1"))
+                .build()
+        });
+    let versions =
+        aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::describe_application_versions)
+            .then_output(|| {
+                op::describe_application_versions::DescribeApplicationVersionsOutput::builder()
+                    .application_versions(
+                        aws_sdk_elasticbeanstalk::types::ApplicationVersionDescription::builder()
+                            .version_label("build-1")
+                            .build(),
+                    )
+                    .build()
+            });
+    let swapped =
+        aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::swap_environment_cnames)
+            .match_requests(|r| {
+                r.source_environment_name() == Some("poly-live-a")
+                    && r.destination_environment_name() == Some("poly-live-b")
+            })
+            .then_output(|| {
+                op::swap_environment_cnames::SwapEnvironmentCnamEsOutput::builder().build()
+            });
+    let aborted =
+        aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::abort_environment_update)
+            .match_requests(|r| r.environment_name() == Some("poly-live-a"))
+            .then_output(|| {
+                op::abort_environment_update::AbortEnvironmentUpdateOutput::builder().build()
+            });
+    let scaled = aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::update_environment)
+        .match_requests(|r| {
+            let has = |n: &str, v: &str| {
+                r.option_settings()
+                    .iter()
+                    .any(|o| o.option_name() == Some(n) && o.value() == Some(v))
+            };
+            has("MinSize", "1") && has("MaxSize", "3")
+        })
+        .then_output(|| op::update_environment::UpdateEnvironmentOutput::builder().build());
+    let rolled_back = aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::update_environment)
+        .match_requests(|r| r.version_label() == Some("build-1"))
+        .then_output(|| op::update_environment::UpdateEnvironmentOutput::builder().build());
+    let eb = aws_smithy_mocks::mock_client!(
+        aws_sdk_elasticbeanstalk,
+        aws_smithy_mocks::RuleMode::MatchAny,
+        [
+            &listing,
+            &events,
+            &versions,
+            &swapped,
+            &aborted,
+            &scaled,
+            &rolled_back
+        ]
+    );
+    let s = Server::with_injected_client(
+        WriteScope::All,
+        crate::config::Config::default(),
+        test_client(eb),
+    );
+    for (verb, args) in [
+        (
+            writes::WriteVerb::SwapCnames,
+            json!({"env": "poly-live-a", "with": "poly-live-b"}),
+        ),
+        (
+            writes::WriteVerb::AbortUpdate,
+            json!({"env": "poly-live-a"}),
+        ),
+        (
+            writes::WriteVerb::Scale,
+            json!({"env": "poly-live-a", "min": 1, "max": 3}),
+        ),
+        (writes::WriteVerb::Rollback, json!({"env": "poly-live-a"})),
+    ] {
+        let plan = s
+            .tool_write_plan(verb, &args)
+            .await
+            .unwrap_or_else(|e| panic!("{verb:?}: {e}"));
+        let v: Value = serde_json::from_str(&plan).expect("json");
+        let token = v["confirm_token"].as_str().expect("token").to_string();
+        s.tool_confirm_action(&json!({"confirm_token": token}))
+            .await
+            .unwrap_or_else(|e| panic!("{verb:?}: {e}"));
+    }
+    // Another application's env: EB swaps within one, so the plan refuses.
+    let other_app = s
+        .tool_write_plan(
+            writes::WriteVerb::SwapCnames,
+            &json!({"env": "poly-live-a", "with": "shop-live-c"}),
+        )
+        .await;
+    assert!(
+        other_app.is_err_and(|e| e.to_string().contains("one application")),
+        "two applications"
+    );
+    assert_eq!(swapped.num_calls(), 1, "a with b");
+    assert_eq!(aborted.num_calls(), 1);
+    assert_eq!(scaled.num_calls(), 1, "min 1, max 3");
+    assert_eq!(rolled_back.num_calls(), 1, "build-1, from the events");
 }
 
 /// The session a role assume would give: a client whose restart works,

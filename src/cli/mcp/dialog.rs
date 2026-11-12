@@ -82,6 +82,16 @@ impl Shown {
 /// which the operator remembers what it does not contain.
 pub(super) fn ask_summary(p: &PendingWrite) -> String {
     let what = match p.dlq_targets.as_slice() {
+        [] if p.swap_with.is_some() => format!(
+            "{} — {} ⇄ {}",
+            p.verb.label(),
+            sanitize(&p.env, Shown::ASK),
+            sanitize(p.swap_with.as_deref().unwrap_or_default(), Shown::ASK)
+        ),
+        [] if p.scale.is_some() => {
+            let (min, max) = p.scale.unwrap_or_default();
+            format!("{} to min {min}, max {max}", p.verb.label())
+        }
         [] => match (p.version.as_deref(), &p.managed_action) {
             (Some(v), _) => format!("{} to {}", p.verb.label(), sanitize(v, Shown::ASK)),
             // EB's own description of what the update installs, beside
@@ -258,6 +268,21 @@ pub(super) fn forecloses(verb: WriteVerb, dlq_visible: Option<i64>, named: usize
             .to_string(),
         WriteVerb::Restart => "In-flight requests on the instances are dropped. Nothing else — \
              no state is lost and nothing here needs undoing."
+            .to_string(),
+        WriteVerb::Rollback => "The current version is replaced by the earlier one; the current \
+             one stays deployable, so rolling forward is another deploy."
+            .to_string(),
+        WriteVerb::AbortUpdate => "The update in flight stops and EB rolls the environment back \
+             to where it was. Nothing is destroyed; what the update was doing is undone, and \
+             can be redone."
+            .to_string(),
+        WriteVerb::SwapCnames => "Each URL's traffic moves to the other environment at once. \
+             Nothing is destroyed, and swapping again swaps back — but clients holding the old \
+             DNS answer keep reaching the old target until it expires."
+            .to_string(),
+        WriteVerb::Scale => "The auto-scaling group's limits change, and EB applies it as an \
+             environment update: a smaller max terminates instances above it, and min = max = 0 \
+             stops the environment until scaled up again."
             .to_string(),
         WriteVerb::DlqRedrive => format!(
             "Every message leaves the dead-letter queue for the worker queue, to be \

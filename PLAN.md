@@ -172,10 +172,6 @@ it as one release. Ranked by operator value; each is a feature item
 the shared gate, two-phase on MCP, audited, with an undo where one
 exists.*
 
-11. **Rollback, swap, abort and scale off the TUI.** CLI and MCP verbs;
-    from BACKLOG "Surface parity", whose CLI reads and naming half stays
-    there. `swap` names both environments in its plan.
-
 12. **Deploy follow-up for agents.** A bounded wait on an env settling
     after a write; `since` and `min_severity` on `recent_events`; the
     pre-deploy lint in the MCP deploy plan, which the TUI runs.

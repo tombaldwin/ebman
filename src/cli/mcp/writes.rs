@@ -438,6 +438,15 @@ pub(super) enum WriteVerb {
     /// SQS's message move task: no body leaves AWS, and no undo (every
     /// message is processed again), but the TUI can cancel it.
     DlqRedrive,
+    /// Cancel the environment update in flight; EB rolls it back.
+    AbortUpdate,
+    /// Swap two environments' CNAMEs: blue/green. Both are gated.
+    SwapCnames,
+    /// Set the auto-scaling group's min and max.
+    Scale,
+    /// Redeploy the version before the current one: a deploy, audited
+    /// as one, whose target the plan resolves.
+    Rollback,
 }
 
 impl WriteVerb {
@@ -446,7 +455,7 @@ impl WriteVerb {
     /// this against the descriptor table, so a variant added to one
     /// and not the other fails the build.
     #[cfg(test)]
-    pub(super) const ALL: [WriteVerb; 10] = [
+    pub(super) const ALL: [WriteVerb; 14] = [
         WriteVerb::Deploy,
         WriteVerb::Restart,
         WriteVerb::Rebuild,
@@ -457,6 +466,10 @@ impl WriteVerb {
         WriteVerb::DlqPurge,
         WriteVerb::ApplyManagedAction,
         WriteVerb::DlqRedrive,
+        WriteVerb::AbortUpdate,
+        WriteVerb::SwapCnames,
+        WriteVerb::Scale,
+        WriteVerb::Rollback,
     ];
 
     /// The MCP tool name this verb is advertised as.
@@ -478,6 +491,10 @@ impl WriteVerb {
             WriteVerb::DlqPurge => "dlq_purge",
             WriteVerb::ApplyManagedAction => "apply_managed_action",
             WriteVerb::DlqRedrive => "dlq_redrive",
+            WriteVerb::AbortUpdate => "abort_update",
+            WriteVerb::SwapCnames => "swap_cnames",
+            WriteVerb::Scale => "scale",
+            WriteVerb::Rollback => "rollback",
         }
     }
 
@@ -495,6 +512,12 @@ impl WriteVerb {
             WriteVerb::DlqPurge => Verb::DlqPurge,
             WriteVerb::ApplyManagedAction => Verb::ApplyManagedAction,
             WriteVerb::DlqRedrive => Verb::DlqRedrive,
+            WriteVerb::AbortUpdate => Verb::AbortUpdate,
+            WriteVerb::SwapCnames => Verb::SwapCnames,
+            WriteVerb::Scale => Verb::Scale,
+            // A rollback is a deploy of an earlier version, and the TUI
+            // and CLI audit it as one.
+            WriteVerb::Rollback => Verb::Deploy,
         }
     }
 
@@ -670,6 +693,8 @@ struct PlanDetails {
     dlq_visible: Option<i64>,
     /// `apply_managed_action`'s action: its id and EB's description.
     managed_action: Option<(String, String)>,
+    swap_with: Option<String>,
+    scale: Option<(i32, i32)>,
 }
 
 /// The longest `set_option` namespace, name or value a plan may carry.
@@ -787,6 +812,10 @@ pub(super) struct PendingWrite {
     /// original, and reported success. The work never reached the
     /// worker. The TUI always used the reported main queue.
     pub dlq_main_url: Option<String>,
+    /// `swap_cnames`'s other environment, gated beside `env`.
+    pub swap_with: Option<String>,
+    /// `scale`'s (min, max), checked by `aws::scale_bounds`.
+    pub scale: Option<(i32, i32)>,
     /// `apply_managed_action`'s action, as the plan found it scheduled:
     /// the id dispatched and EB's description, which the dialog names.
     pub managed_action: Option<(String, String)>,
@@ -801,6 +830,14 @@ pub(super) struct PendingWrite {
     /// plan time: the region is the one the plan's client found the env
     /// in, and a role session is assumed in it.
     pub audit: WriteAudit,
+}
+
+impl PendingWrite {
+    /// Every environment the write changes, each gated at confirm: the
+    /// env, and a swap's other one.
+    pub(super) fn targets(&self) -> impl Iterator<Item = &str> {
+        std::iter::once(self.env.as_str()).chain(self.swap_with.as_deref())
+    }
 }
 
 /// Token TTL — long enough for an agent round-trip, short enough
@@ -893,6 +930,62 @@ pub(super) fn write_tool_descriptors() -> Vec<Value> {
                     "region": {"type": "string"}
                 },
                 "required": ["env"]
+            }
+        }),
+        json!({
+            "name": "rollback",
+            "description": format!("Redeploy the version before the current one. `to` names it; otherwise the plan takes it from the environment's recent events (the first earlier version label), and says which it used (`target_from`). Audited as the deploy it is. {confirm_note}"),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "env": {"type": "string", "description": "Environment name (required)"},
+                    "to": {"type": "string", "description": "The version label to go back to (default: the previous one, from events)"},
+                    "profile": {"type": "string"},
+                    "region": {"type": "string"}
+                },
+                "required": ["env"]
+            }
+        }),
+        json!({
+            "name": "abort_update",
+            "description": format!("Cancel the update in flight on an environment (a bad deploy, a configuration change); EB rolls it back. The plan refuses an environment that is not updating. The safest write there is mid-incident: it stops a change rather than making one. {confirm_note}"),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "env": {"type": "string", "description": "Environment name (required)"},
+                    "profile": {"type": "string"},
+                    "region": {"type": "string"}
+                },
+                "required": ["env"]
+            }
+        }),
+        json!({
+            "name": "swap_cnames",
+            "description": format!("Swap two environments' CNAMEs — the blue/green cut-over: traffic for each URL moves to the other. Both must be in the same application, and BOTH pass the pins and freezes, at plan and at confirm. Swapping again swaps back. {confirm_note}"),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "env": {"type": "string", "description": "One environment (required)"},
+                    "with": {"type": "string", "description": "The other environment (required)"},
+                    "profile": {"type": "string"},
+                    "region": {"type": "string"}
+                },
+                "required": ["env", "with"]
+            }
+        }),
+        json!({
+            "name": "scale",
+            "description": format!("Set an environment's auto-scaling min and max instance counts (0 ≤ min ≤ max ≤ 10000; min = max = 0 stops it). EB applies it as an environment update. {confirm_note}"),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "env": {"type": "string", "description": "Environment name (required)"},
+                    "min": {"type": "integer", "description": "Minimum instances (required)"},
+                    "max": {"type": "integer", "description": "Maximum instances (required)"},
+                    "profile": {"type": "string"},
+                    "region": {"type": "string"}
+                },
+                "required": ["env", "min", "max"]
             }
         }),
         json!({
@@ -1278,6 +1371,8 @@ impl Server {
         // much else is in the queue. Only the DLQ branch resolves it.
         let mut dlq_visible: Option<i64> = None;
         let mut managed_action: Option<(String, String)> = None;
+        let mut swap_with: Option<String> = None;
+        let mut scale: Option<(i32, i32)> = None;
 
         match verb {
             WriteVerb::Deploy => {
@@ -1409,6 +1504,8 @@ impl Server {
                     dlq_main_url: None,
                     dlq_visible: None,
                     managed_action: None,
+                    swap_with: None,
+                    scale: None,
                 };
                 self.resolve_dlq_plan(verb, args, env, &profile, &mut out)
                     .await?;
@@ -1515,6 +1612,112 @@ impl Server {
                 dlq_main_url = Some(main);
                 dlq_visible = visible;
             }
+            WriteVerb::AbortUpdate => {
+                // Nothing in flight, nothing to abort: refused here
+                // rather than approved and then refused by EB.
+                if !env.status.eq_ignore_ascii_case("Updating") {
+                    return Err(format!(
+                        "'{}' is {}, not updating: there is no update to abort",
+                        env.name, env.status
+                    ));
+                }
+                plan_extra = format!(",\"status\":{}", util::json_string(&env.status));
+            }
+            WriteVerb::SwapCnames => {
+                let with = arg_str(args, "with")
+                    .ok_or("'with' is required — the environment to swap CNAMEs with")?;
+                if with == env.name {
+                    return Err("an environment cannot swap CNAMEs with itself".into());
+                }
+                let envs = self.fetch_envs(args).await?;
+                let other = envs
+                    .iter()
+                    .find(|e| e.name == with)
+                    .ok_or_else(|| format!("env '{with}' not found"))?;
+                if other.application != env.application {
+                    return Err(format!(
+                        "'{}' is in application '{}' and '{with}' in '{}': EB swaps CNAMEs \
+                         within one application",
+                        env.name, env.application, other.application
+                    ));
+                }
+                plan_extra = format!(
+                    ",\"swap\":{{\"env\":{},\"cname\":{},\"with\":{},\"with_cname\":{}}}",
+                    util::json_string(&env.name),
+                    util::json_string(&env.cname),
+                    util::json_string(&other.name),
+                    util::json_string(&other.cname),
+                );
+                swap_with = Some(with);
+            }
+            WriteVerb::Scale => {
+                let count = |k: &str| {
+                    args.get(k)
+                        .and_then(Value::as_i64)
+                        .ok_or_else(|| format!("'{k}' (a whole number) is required"))
+                };
+                let (min, max) = crate::aws::scale_bounds(count("min")?, count("max")?)?;
+                plan_extra = format!(",\"min\":{min},\"max\":{max}");
+                scale = Some((min, max));
+            }
+            WriteVerb::Rollback => {
+                let current = env.version_label.clone();
+                let (target, source) = match arg_str(args, "to") {
+                    Some(to) => (to, "named"),
+                    None => {
+                        let events = match self.backend {
+                            Backend::Demo => demo_fixture::events_for_env(&env.name),
+                            Backend::Aws => self
+                                .client(args)
+                                .await?
+                                .list_events_for_env(&env.name, 100)
+                                .await
+                                .map_err(|e| {
+                                    tool_error(&profile, "list_events_for_env", &e.to_string())
+                                })?,
+                        };
+                        let prev = crate::app::previous_version_label(&events, &current)
+                            .ok_or_else(|| {
+                                format!(
+                                    "no earlier version in '{}''s recent events — name one with 'to'",
+                                    env.name
+                                )
+                            })?;
+                        (prev, "events")
+                    }
+                };
+                if target == current {
+                    return Err(format!("{target} is already the deployed version"));
+                }
+                let known = match self.backend {
+                    Backend::Demo => demo_fixture::deploys_for_app(&env.application)
+                        .iter()
+                        .any(|v| v.label == target),
+                    Backend::Aws => self
+                        .client(args)
+                        .await?
+                        .list_application_versions(&env.application)
+                        .await
+                        .map_err(|e| {
+                            tool_error(&profile, "list_application_versions", &e.to_string())
+                        })?
+                        .iter()
+                        .any(|v| v.label == target),
+                };
+                if !known {
+                    return Err(format!(
+                        "version '{target}' does not exist for application '{}'",
+                        env.application
+                    ));
+                }
+                plan_extra = format!(
+                    ",\"current_version\":{},\"target_version\":{},\"target_from\":{}",
+                    util::json_string(&current),
+                    util::json_string(&target),
+                    util::json_string(source),
+                );
+                version = Some(target);
+            }
             WriteVerb::Restart | WriteVerb::Rebuild | WriteVerb::Terminate => {}
         }
 
@@ -1527,6 +1730,8 @@ impl Server {
             dlq_main_url,
             dlq_visible,
             managed_action,
+            swap_with,
+            scale,
         })
     }
 
@@ -1641,9 +1846,19 @@ impl Server {
             dlq_main_url,
             dlq_visible,
             managed_action,
+            swap_with,
+            scale,
         } = self
             .resolve_plan_details(verb, args, &env, &profile)
             .await?;
+
+        // A swap changes the other environment as much as this one: it
+        // passes the same gate, now that the plan knows which it is.
+        if let Some(with) = swap_with.as_deref() {
+            if let Some(refused) = self.gate_refusal(with, &audit, verb.label(), &role_check) {
+                return Err(WriteError::Refused(refused));
+            }
+        }
 
         // Recent events give the plan operational context (3 max).
         let events_json = match &plan_client {
@@ -1697,6 +1912,8 @@ impl Server {
                 dlq_url: dlq_url.clone(),
                 dlq_main_url: dlq_main_url.clone(),
                 managed_action: managed_action.clone(),
+                swap_with: swap_with.clone(),
+                scale,
                 role_check: role_check.clone(),
                 role: role.clone(),
                 audit: audit.clone(),
@@ -1832,9 +2049,12 @@ impl Server {
             // were checked at plan time, but the token window is long
             // enough for an incident to be declared since. A refusal
             // here drops the plan — reality changed, re-plan required.
-            if let Some(refused) =
-                self.gate_refusal(&p.env, &p.audit, p.verb.label(), &p.role_check)
-            {
+            // Bound first: the scrutinee's borrow of `p` would otherwise
+            // outlive the `st.pending = None` below.
+            let refused = p
+                .targets()
+                .find_map(|t| self.gate_refusal(t, &p.audit, p.verb.label(), &p.role_check));
+            if let Some(refused) = refused {
                 st.pending = None;
                 return Err(WriteError::Refused(refused));
             }
@@ -1961,12 +2181,9 @@ impl Server {
         // to win, and `safety-and-privacy.md` promises exactly that.
         // The freeze is re-read from disk here, so this is the check
         // that catches it.
-        if let Some(refused) = self.gate_refusal(
-            &pending.env,
-            &pending.audit,
-            pending.verb.label(),
-            &pending.role_check,
-        ) {
+        if let Some(refused) = pending.targets().find_map(|t| {
+            self.gate_refusal(t, &pending.audit, pending.verb.label(), &pending.role_check)
+        }) {
             return Err(WriteError::Refused(refused.map_message(|m| {
                 format!("{m} (declared while the confirmation was open — nothing was dispatched)")
             })));
@@ -2267,6 +2484,32 @@ impl Server {
                     .map_err(|e| e.to_string()),
                 None => Err("plan carried no queue url".into()),
             },
+            WriteVerb::AbortUpdate => client
+                .abort_environment_update(&p.env)
+                .await
+                .map(|()| None)
+                .map_err(|e| e.to_string()),
+            WriteVerb::SwapCnames => match p.swap_with.as_deref() {
+                Some(with) => client
+                    .swap_cnames(&p.env, with)
+                    .await
+                    .map(|()| None)
+                    .map_err(|e| e.to_string()),
+                None => Err("the plan carried no environment to swap with".into()),
+            },
+            WriteVerb::Scale => match p.scale {
+                Some((min, max)) => client
+                    .scale_env(&p.env, min, max)
+                    .await
+                    .map(|()| None)
+                    .map_err(|e| e.to_string()),
+                None => Err("the plan carried no min and max".into()),
+            },
+            WriteVerb::Rollback => client
+                .deploy_version(&p.env, p.version.as_deref().unwrap_or_default())
+                .await
+                .map(|()| None)
+                .map_err(|e| e.to_string()),
             WriteVerb::DlqRedrive => match (p.dlq_url.as_deref(), p.dlq_main_url.as_deref()) {
                 (Some(dlq), Some(main)) => async {
                     let source = client.queue_arn(dlq).await?;
