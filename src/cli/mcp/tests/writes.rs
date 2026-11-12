@@ -1979,6 +1979,16 @@ fn the_foreclosure_line_counts_the_batch() {
     );
     let resend = forecloses(WriteVerb::DlqResend, None, 4);
     assert!(resend.contains("All 4 messages"), "{resend}");
+    // The boundary, on both verbs: two is a batch, one is not.
+    let two = forecloses(WriteVerb::DlqDelete, None, 2);
+    assert!(two.contains("All 2 messages are destroyed"), "{two}");
+    let one_resend = forecloses(WriteVerb::DlqResend, None, 1);
+    assert!(
+        one_resend.contains("The message leaves") && !one_resend.contains("All 1"),
+        "{one_resend}"
+    );
+    let two_resend = forecloses(WriteVerb::DlqResend, None, 2);
+    assert!(two_resend.contains("All 2 messages leave"), "{two_resend}");
 }
 
 /// A batch writes one audit line per message, each naming its own.
