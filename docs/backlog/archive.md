@@ -5946,3 +5946,12 @@ a `--read-only` server.
   EB's description. Self-review removed a demo branch in the TUI spawn
   that `deny_write` made unreachable, and found the apply test's
   refresh hitting a mock with no listing rule.
+- **Server-side DLQ redrive.** `aws::RedriveTask` (`in_progress` covers
+  RUNNING and CANCELLING), `queue_arn`, `start_redrive`,
+  `list_redrives`, `cancel_redrive`. TUI `:dlq-redrive [status|cancel]`
+  on worker envs, both writes gated and audited with `task=`; MCP write
+  verb `dlq_redrive` (plan refuses an empty queue and one already
+  moving, names the destination and depth) and a `redrive` field on
+  `worker_queues`. Cancelling is TUI-only, as the descriptor says. The
+  audit label is `DlqRedrive`: `dlq-redrive` collided with the command
+  name under the shared-verb spelling guard.

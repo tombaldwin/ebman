@@ -172,11 +172,6 @@ it as one release. Ranked by operator value; each is a feature item
 the shared gate, two-phase on MCP, audited, with an undo where one
 exists.*
 
-10. **Server-side DLQ redrive.** SQS `StartMessageMoveTask` /
-    `ListMessageMoveTasks` / `CancelMessageMoveTask`: the whole DLQ back
-    to its source queue with no body leaving AWS. A write, cancellable,
-    not undoable.
-
 11. **Rollback, swap, abort and scale off the TUI.** CLI and MCP verbs;
     from BACKLOG "Surface parity", whose CLI reads and naming half stays
     there. `swap` names both environments in its plan.

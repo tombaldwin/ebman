@@ -1691,3 +1691,46 @@ fn the_managed_updates_overlay_says_what_is_scheduled_and_what_failed() {
         "a failure is not none: {failed}"
     );
 }
+
+#[test]
+fn the_redrive_status_says_how_far_and_how_to_stop_it() {
+    use crate::app::cmd_redrive::format_redrives;
+    use crate::aws::RedriveTask;
+    let now = chrono::Utc::now();
+    let running = RedriveTask {
+        handle: "t1".into(),
+        status: "RUNNING".into(),
+        moved: 40,
+        to_move: Some(100),
+        started: Some(now - chrono::Duration::minutes(3)),
+        ..Default::default()
+    };
+    let failed = RedriveTask {
+        handle: "t0".into(),
+        status: "FAILED".into(),
+        moved: 2,
+        failure: Some("AccessDenied on the destination".into()),
+        ..Default::default()
+    };
+    let text = format_redrives(&Ok(vec![running, failed]), now);
+    assert!(
+        text.contains("RUNNING  40 of 100 moved  started 3m ago"),
+        "{text}"
+    );
+    assert!(
+        text.contains("FAILED: AccessDenied on the destination"),
+        "{text}"
+    );
+    assert!(text.contains(":dlq-redrive cancel"), "{text}");
+    let done = format_redrives(
+        &Ok(vec![RedriveTask {
+            status: "COMPLETED".into(),
+            moved: 7,
+            ..Default::default()
+        }]),
+        now,
+    );
+    assert!(!done.contains("cancel"), "nothing to stop: {done}");
+    assert!(format_redrives(&Ok(Vec::new()), now).contains("no redrive has run"));
+    assert!(format_redrives(&Err("Throttling".into()), now).contains("could not read"));
+}

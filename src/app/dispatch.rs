@@ -377,6 +377,7 @@ impl App {
             "notify" => self.cmd_notify(&rest),
             "managed-window" => self.cmd_managed_window(&rest),
             "managed-updates" => self.cmd_managed_updates(),
+            "dlq-redrive" => self.cmd_dlq_redrive(&rest),
             "managed-apply" => self.cmd_managed_apply(&rest),
             "alarm-create" => self.cmd_alarm_create(&rest),
             "alarm-delete" => self.cmd_alarm_delete(&rest),

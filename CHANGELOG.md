@@ -33,6 +33,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   an id EB does not have scheduled, and the confirmation names EB's
   description of what it installs. Gated and audited like every write,
   with no undo (`:abort` stops one in flight).
+- **A whole dead-letter queue can be redriven inside SQS.**
+  `:dlq-redrive` and the MCP write verb `dlq_redrive` start SQS's
+  message move task from a worker env's dead-letter queue back to its
+  worker queue, so no message body passes through ebman however many
+  there are. `:dlq-redrive status` and `worker_queues` (new `redrive`
+  field) report its progress; `:dlq-redrive cancel` stops it. The MCP
+  plan refuses an empty queue and one already being redriven. Audited
+  with the task handle; no undo, since every message is processed
+  again.
 
 ### Fixed
 

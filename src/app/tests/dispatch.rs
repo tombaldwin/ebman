@@ -880,6 +880,7 @@ pub(super) const OBSERVABLE_COMMANDS: &[&str] = &[
     "listeners",
     "loglevel debug",
     "logs-insights fields @message",
+    "dlq-redrive status",
     "managed-apply demo-ma-0001",
     "managed-updates",
     "managed-window Mon 3",

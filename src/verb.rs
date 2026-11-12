@@ -33,6 +33,9 @@ pub(crate) enum Verb {
     DlqPurge,
     /// Run a scheduled managed platform update now.
     ApplyManagedAction,
+    /// Move a dead-letter queue's messages back to its source queue,
+    /// inside SQS.
+    DlqRedrive,
 }
 
 impl Verb {
@@ -47,6 +50,7 @@ impl Verb {
         Verb::DlqDelete,
         Verb::DlqPurge,
         Verb::ApplyManagedAction,
+        Verb::DlqRedrive,
     ];
 
     /// The `action=` label every surface writes for this verb. `const`
@@ -63,6 +67,7 @@ impl Verb {
             Verb::DlqDelete => "sqs-delete",
             Verb::DlqPurge => "dlq-purge",
             Verb::ApplyManagedAction => "ApplyManagedAction",
+            Verb::DlqRedrive => "DlqRedrive",
         }
     }
 

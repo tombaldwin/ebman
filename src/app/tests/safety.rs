@@ -2703,3 +2703,163 @@ async fn managed_apply_is_gated_dispatched_and_reported() {
         app.error_message
     );
 }
+
+/// A mocked worker env for `:dlq-redrive`: its queues, a move task
+/// RUNNING when `running`, and the start and cancel SQS answers.
+fn redrive_app(running: bool) -> (App, aws_smithy_mocks::Rule, aws_smithy_mocks::Rule) {
+    use aws_sdk_sqs::operation::get_queue_attributes::GetQueueAttributesOutput;
+    use aws_sdk_sqs::types::QueueAttributeName;
+    let resources = aws_smithy_mocks::mock!(
+        aws_sdk_elasticbeanstalk::Client::describe_environment_resources
+    )
+    .then_output(|| {
+        aws_sdk_elasticbeanstalk::operation::describe_environment_resources::DescribeEnvironmentResourcesOutput::builder()
+            .environment_resources(
+                aws_sdk_elasticbeanstalk::types::EnvironmentResourceDescription::builder()
+                    .queues(
+                        aws_sdk_elasticbeanstalk::types::Queue::builder()
+                            .name("WorkerQueue")
+                            .url("https://sqs/main")
+                            .build(),
+                    )
+                    .build(),
+            )
+            .build()
+    });
+    let settings = aws_smithy_mocks::mock!(
+        aws_sdk_elasticbeanstalk::Client::describe_configuration_settings
+    )
+    .then_output(|| {
+        aws_sdk_elasticbeanstalk::operation::describe_configuration_settings::DescribeConfigurationSettingsOutput::builder().build()
+    });
+    let attrs =
+        aws_smithy_mocks::mock!(aws_sdk_sqs::Client::get_queue_attributes).then_output(|| {
+            GetQueueAttributesOutput::builder()
+                .attributes(QueueAttributeName::ApproximateNumberOfMessages, "5")
+                .attributes(
+                    QueueAttributeName::QueueArn,
+                    "arn:aws:sqs:us-east-1:123456789012:q",
+                )
+                .build()
+        });
+    let tasks = aws_smithy_mocks::mock!(aws_sdk_sqs::Client::list_message_move_tasks)
+        .then_output(move || {
+            let mut b = aws_sdk_sqs::operation::list_message_move_tasks::ListMessageMoveTasksOutput::builder();
+            if running {
+                b = b.results(
+                    aws_sdk_sqs::types::ListMessageMoveTasksResultEntry::builder()
+                        .task_handle("task-running")
+                        .status("RUNNING")
+                        .approximate_number_of_messages_moved(3)
+                        .build(),
+                );
+            }
+            b.build()
+        });
+    let start =
+        aws_smithy_mocks::mock!(aws_sdk_sqs::Client::start_message_move_task).then_output(|| {
+            aws_sdk_sqs::operation::start_message_move_task::StartMessageMoveTaskOutput::builder()
+                .task_handle("task-new")
+                .build()
+        });
+    let cancel = aws_smithy_mocks::mock!(aws_sdk_sqs::Client::cancel_message_move_task)
+        .match_requests(|req| req.task_handle() == Some("task-running"))
+        .then_output(|| {
+            aws_sdk_sqs::operation::cancel_message_move_task::CancelMessageMoveTaskOutput::builder()
+                .approximate_number_of_messages_moved(3)
+                .build()
+        });
+    let eb = aws_smithy_mocks::mock_client!(
+        aws_sdk_elasticbeanstalk,
+        aws_smithy_mocks::RuleMode::MatchAny,
+        [&resources, &settings]
+    );
+    let sqs = aws_smithy_mocks::mock_client!(
+        aws_sdk_sqs,
+        aws_smithy_mocks::RuleMode::MatchAny,
+        [&attrs, &tasks, &start, &cancel]
+    );
+    let sdk = aws_config::SdkConfig::builder()
+        .region(aws_config::Region::new("us-east-1"))
+        .behavior_version(aws_config::BehaviorVersion::latest())
+        .build();
+    let client = crate::aws::AwsClient::for_tests(
+        eb,
+        sqs,
+        aws_sdk_cloudwatch::Client::new(&sdk),
+        aws_sdk_cloudwatchlogs::Client::new(&sdk),
+        aws_sdk_s3::Client::new(&sdk),
+        aws_sdk_ec2::Client::new(&sdk),
+    );
+    let mut app = App::for_tests(client, crate::config::Config::default());
+    app.environments = vec![mk_env("redrive-probe-wk", "shop", "Worker", "Yellow")];
+    app.rebuild_view();
+    app.table_state.select(Some(0));
+    while app.msg_rx.try_recv().is_ok() {}
+    (app, start, cancel)
+}
+
+async fn next_redrive_toast(app: &mut App) -> String {
+    loop {
+        let msg = tokio::time::timeout(std::time::Duration::from_secs(10), app.msg_rx.recv())
+            .await
+            .expect("a result within 10s")
+            .expect("a message");
+        let done = matches!(msg, AppMsg::RedriveDone { .. });
+        app.handle_msg(msg);
+        if done {
+            return app.toasts.iter().map(|t| t.text.clone()).collect();
+        }
+    }
+}
+
+/// `:dlq-redrive` starts the move, audited with its task; refuses while
+/// one runs; `cancel` stops the running one; a pin refuses both; and a
+/// web env has no dead-letter queue to redrive.
+#[tokio::test]
+async fn dlq_redrive_starts_refuses_and_cancels() {
+    let (mut app, start, _) = redrive_app(false);
+    let before = crate::audit::delta::mark();
+    app.execute_command("dlq-redrive");
+    assert_eq!(app.pending_actions.len(), 1);
+    let toasts = next_redrive_toast(&mut app).await;
+    assert!(toasts.contains("redrive started"), "{toasts}");
+    assert_eq!(start.num_calls(), 1);
+    let lines = crate::audit::delta::lines_for(&before, "redrive-probe-wk");
+    assert!(
+        lines.iter().any(|l| l.contains("stage=completed")
+            && l.contains("action=DlqRedrive")
+            && l.contains("task=task-new")),
+        "{lines:#?}"
+    );
+
+    let (mut app, start, cancel) = redrive_app(true);
+    app.execute_command("dlq-redrive");
+    let toasts = next_redrive_toast(&mut app).await;
+    assert!(toasts.contains("already running"), "{toasts}");
+    assert_eq!(start.num_calls(), 0, "SQS would refuse a second task");
+    app.toasts.clear();
+    app.execute_command("dlq-redrive cancel");
+    let toasts = next_redrive_toast(&mut app).await;
+    assert!(toasts.contains("cancelled after about 3"), "{toasts}");
+    assert_eq!(cancel.num_calls(), 1);
+
+    let (mut app, start, cancel) = redrive_app(true);
+    app.cfg.safety_envs.insert("redrive-probe-wk".into(), true);
+    app.execute_command("dlq-redrive");
+    app.execute_command("dlq-redrive cancel");
+    assert!(app.pending_actions.is_empty(), "a pin refuses both");
+    assert_eq!((start.num_calls(), cancel.num_calls()), (0, 0));
+
+    app.environments = vec![mk_env("web-probe", "shop", "Web", "Green")];
+    app.rebuild_view();
+    app.table_state.select(Some(0));
+    app.execute_command("dlq-redrive");
+    assert!(
+        app.error_message
+            .as_deref()
+            .is_some_and(|e| e.contains("not a worker env")),
+        "{:?}",
+        app.error_message
+    );
+}

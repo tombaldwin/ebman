@@ -434,6 +434,10 @@ pub(super) enum WriteVerb {
     /// maintenance window. No undo: a platform update is an immutable
     /// deployment, and `:abort` in the TUI stops one in flight.
     ApplyManagedAction,
+    /// Move the whole dead-letter queue back to its source queue with
+    /// SQS's message move task: no body leaves AWS, and no undo (every
+    /// message is processed again), but the TUI can cancel it.
+    DlqRedrive,
 }
 
 impl WriteVerb {
@@ -442,7 +446,7 @@ impl WriteVerb {
     /// this against the descriptor table, so a variant added to one
     /// and not the other fails the build.
     #[cfg(test)]
-    pub(super) const ALL: [WriteVerb; 9] = [
+    pub(super) const ALL: [WriteVerb; 10] = [
         WriteVerb::Deploy,
         WriteVerb::Restart,
         WriteVerb::Rebuild,
@@ -452,6 +456,7 @@ impl WriteVerb {
         WriteVerb::DlqDelete,
         WriteVerb::DlqPurge,
         WriteVerb::ApplyManagedAction,
+        WriteVerb::DlqRedrive,
     ];
 
     /// The MCP tool name this verb is advertised as.
@@ -472,6 +477,7 @@ impl WriteVerb {
             WriteVerb::DlqDelete => "dlq_delete",
             WriteVerb::DlqPurge => "dlq_purge",
             WriteVerb::ApplyManagedAction => "apply_managed_action",
+            WriteVerb::DlqRedrive => "dlq_redrive",
         }
     }
 
@@ -488,6 +494,7 @@ impl WriteVerb {
             WriteVerb::DlqDelete => Verb::DlqDelete,
             WriteVerb::DlqPurge => Verb::DlqPurge,
             WriteVerb::ApplyManagedAction => Verb::ApplyManagedAction,
+            WriteVerb::DlqRedrive => Verb::DlqRedrive,
         }
     }
 
@@ -882,6 +889,19 @@ pub(super) fn write_tool_descriptors() -> Vec<Value> {
                 "type": "object",
                 "properties": {
                     "env": {"type": "string", "description": "Environment name (required)"},
+                    "profile": {"type": "string"},
+                    "region": {"type": "string"}
+                },
+                "required": ["env"]
+            }
+        }),
+        json!({
+            "name": "dlq_redrive",
+            "description": format!("Move EVERY message in a worker environment's dead-letter queue back to its source queue, inside SQS (its message move task): no message body passes through ebman or you, however many there are. Each one is processed again by the worker, so there is no undo; the TUI's `:dlq-redrive cancel` stops a running one, and `worker_queues` reports its progress. The plan refuses an empty queue, and one already being redriven. The identity needs sqs:StartMessageMoveTask and sqs:ListMessageMoveTasks with the move's own permissions (receive and delete on the dead-letter queue, send on the source). {confirm_note}"),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "env": {"type": "string", "description": "Worker environment name (required)"},
                     "profile": {"type": "string"},
                     "region": {"type": "string"}
                 },
@@ -1434,6 +1454,66 @@ impl Server {
                         .unwrap_or_else(|| "null".into()),
                 );
                 managed_action = Some((action.id, action.description));
+            }
+            WriteVerb::DlqRedrive => {
+                let queues = match self.backend {
+                    Backend::Demo => demo_fixture::worker_queues_for_env(&env.name),
+                    Backend::Aws => self
+                        .client(args)
+                        .await?
+                        .describe_worker_queues(&env.application, &env.name)
+                        .await
+                        .map_err(|e| {
+                            tool_error(&profile, "describe_worker_queues", &e.to_string())
+                        })?,
+                };
+                let (Some(dlq), Some(main)) = (queues.dlq_url.clone(), queues.main_url.clone())
+                else {
+                    return Err(format!(
+                        "'{}' has no dead-letter queue and source queue to redrive between",
+                        env.name
+                    ));
+                };
+                let visible = queues.dlq_stats.as_ref().map(|q| q.visible);
+                if visible == Some(0) {
+                    return Err(format!(
+                        "the dead-letter queue of '{}' is empty: nothing to redrive",
+                        env.name
+                    ));
+                }
+                // SQS refuses a second task on the queue; refuse it here,
+                // naming the one that runs, before anyone is asked.
+                if let Backend::Aws = self.backend {
+                    let client = self.client(args).await?;
+                    let arn = client
+                        .queue_arn(&dlq)
+                        .await
+                        .map_err(|e| tool_error(&profile, "queue_arn", &e.to_string()))?;
+                    let tasks = client
+                        .list_redrives(&arn)
+                        .await
+                        .map_err(|e| tool_error(&profile, "list_redrives", &e.to_string()))?;
+                    if let Some(t) = tasks.iter().find(|t| t.in_progress()) {
+                        return Err(format!(
+                            "a redrive is already {} on '{}' ({} moved); the TUI's \
+                             `:dlq-redrive cancel` stops it",
+                            t.status.to_lowercase(),
+                            env.name,
+                            t.moved
+                        ));
+                    }
+                }
+                plan_extra = format!(
+                    ",\"dead_letter_queue\":{},\"destination\":{},\"messages_now\":{}",
+                    util::json_string(&dlq),
+                    util::json_string(&main),
+                    visible
+                        .map(|n| n.to_string())
+                        .unwrap_or_else(|| "null".into()),
+                );
+                dlq_url = Some(dlq);
+                dlq_main_url = Some(main);
+                dlq_visible = visible;
             }
             WriteVerb::Restart | WriteVerb::Rebuild | WriteVerb::Terminate => {}
         }
@@ -2134,6 +2214,9 @@ impl Server {
             &p.env,
             &extras_ref,
         );
+        // A redrive's task handle, for its completed line and the answer:
+        // what CloudTrail and `:dlq-redrive status` name it by.
+        let mut task: Option<String> = None;
         // `Ok(Some(msg))` means a message was destroyed and is briefly
         // recoverable; `Ok(None)` means nothing was, which is every
         // other verb.
@@ -2184,11 +2267,29 @@ impl Server {
                     .map_err(|e| e.to_string()),
                 None => Err("plan carried no queue url".into()),
             },
+            WriteVerb::DlqRedrive => match (p.dlq_url.as_deref(), p.dlq_main_url.as_deref()) {
+                (Some(dlq), Some(main)) => async {
+                    let source = client.queue_arn(dlq).await?;
+                    let destination = client.queue_arn(main).await?;
+                    client.start_redrive(&source, &destination).await
+                }
+                .await
+                .map(|handle| {
+                    task = Some(handle);
+                    None
+                })
+                .map_err(|e| e.to_string()),
+                _ => Err("plan carried no queues".into()),
+            },
             // Handled above, per message.
             WriteVerb::DlqResend | WriteVerb::DlqDelete => {
                 Err("unreachable: dlq resend/delete take the batch path".into())
             }
         };
+        let mut completed_refs = extras_ref.clone();
+        if let Some(t) = &task {
+            completed_refs.push(("task", t.as_str()));
+        }
         crate::audit::append_action_completed(
             None,
             audit_profile.as_deref(),
@@ -2199,7 +2300,7 @@ impl Server {
                 Ok(_) => Ok(()),
                 Err(e) => Err(e.as_str()),
             },
-            &extras_ref,
+            &completed_refs,
         );
         match outcome {
             Ok(destroyed) => {
@@ -2211,8 +2312,11 @@ impl Server {
                         .unwrap_or_default(),
                     None => String::new(),
                 };
+                let task = task
+                    .map(|t| format!(",\"task\":{}", util::json_string(&t)))
+                    .unwrap_or_default();
                 Ok(format!(
-                "{{\"dispatched\":true,\"action\":{},\"env\":{}{recoverable},\"note\":\"dispatch-only — poll list_environments / recent_events for progress\"}}",
+                "{{\"dispatched\":true,\"action\":{},\"env\":{}{recoverable}{task},\"note\":\"dispatch-only — poll list_environments / recent_events for progress\"}}",
                 util::json_string(verb_label),
                 util::json_string(&p.env),
             ))

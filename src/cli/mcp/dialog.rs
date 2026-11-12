@@ -259,6 +259,12 @@ pub(super) fn forecloses(verb: WriteVerb, dlq_visible: Option<i64>, named: usize
         WriteVerb::Restart => "In-flight requests on the instances are dropped. Nothing else — \
              no state is lost and nothing here needs undoing."
             .to_string(),
+        WriteVerb::DlqRedrive => format!(
+            "Every message leaves the dead-letter queue for the worker queue, to be \
+             processed again — a poison message fails again and comes back. There is no \
+             undo; `:dlq-redrive cancel` in the TUI stops a running move.{}",
+            queue_note()
+        ),
         WriteVerb::ApplyManagedAction => "The update runs now instead of in its maintenance \
              window, as EB deploys it: a platform update replaces every instance \
              (immutable), so anything written to instance-local storage is gone. There is \

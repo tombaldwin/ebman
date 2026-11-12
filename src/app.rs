@@ -111,6 +111,7 @@ mod cmd_nav; // region / profile / sort / group / redact
 mod cmd_ops; // rollback, SSM run, SSH, `$EDITOR` env edit
 mod cmd_option; // option-setting setters
 mod cmd_overlay; // multi-account overlays: accounts, org-health, find-env
+pub(crate) mod cmd_redrive; // server-side DLQ redrive: start, status, cancel
 mod cmd_settings; // per-env settings: tag, env, capacity
 mod cmd_view; // saved views and filters
 mod cmd_write; // bulk writes: batch-action, batch-deploy
@@ -1089,6 +1090,14 @@ pub(crate) enum AppMsg {
         result: Result<(), String>,
     },
     /// Result of a `DeleteApplicationVersion` call from `:delete-version`.
+    /// A `:dlq-redrive` start or cancel finished: what to tell the
+    /// operator, or why it did not happen.
+    RedriveDone {
+        gen: u64,
+        pending: PendingId,
+        env_name: String,
+        result: Result<String, String>,
+    },
     /// `:managed-apply` finished: the managed update started, or did not.
     ManagedApplied {
         gen: u64,

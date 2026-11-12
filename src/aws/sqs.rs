@@ -121,7 +121,109 @@ pub(crate) fn derive_dlq_url(main: &str) -> Option<String> {
     Some(format!("{trimmed}-dlq"))
 }
 
+/// One SQS message move task off a dead-letter queue (a "redrive"): the
+/// messages go back to the destination queue inside AWS, with no body
+/// leaving it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct RedriveTask {
+    pub handle: String,
+    /// `RUNNING`, `COMPLETED`, `CANCELLING`, `CANCELLED`, `FAILED`.
+    pub status: String,
+    pub destination_arn: String,
+    pub moved: i64,
+    /// SQS's count when the task started; `None` until it knows.
+    pub to_move: Option<i64>,
+    pub failure: Option<String>,
+    pub started: Option<DateTime<Utc>>,
+}
+
+impl RedriveTask {
+    /// Still moving, or still stopping: a second task on the same queue
+    /// is refused by SQS until this one ends.
+    pub(crate) fn in_progress(&self) -> bool {
+        self.status.eq_ignore_ascii_case("RUNNING")
+            || self.status.eq_ignore_ascii_case("CANCELLING")
+    }
+}
+
+pub(crate) fn redrive_task_from(
+    e: &aws_sdk_sqs::types::ListMessageMoveTasksResultEntry,
+) -> RedriveTask {
+    RedriveTask {
+        handle: e.task_handle().unwrap_or_default().to_string(),
+        status: e.status().unwrap_or_default().to_string(),
+        destination_arn: e.destination_arn().unwrap_or_default().to_string(),
+        moved: e.approximate_number_of_messages_moved(),
+        to_move: e.approximate_number_of_messages_to_move(),
+        failure: e.failure_reason().map(str::to_string),
+        // Epoch milliseconds.
+        started: (e.started_timestamp() > 0)
+            .then(|| DateTime::from_timestamp_millis(e.started_timestamp()))
+            .flatten(),
+    }
+}
+
 impl AwsClient {
+    /// A queue's ARN, which the move-task calls name queues by.
+    pub(crate) async fn queue_arn(&self, queue_url: &str) -> Result<String> {
+        let resp = self
+            .sqs
+            .get_queue_attributes()
+            .queue_url(queue_url)
+            .attribute_names(aws_sdk_sqs::types::QueueAttributeName::QueueArn)
+            .send()
+            .await
+            .aws_ctx("GetQueueAttributes failed")?;
+        resp.attributes
+            .unwrap_or_default()
+            .remove(&aws_sdk_sqs::types::QueueAttributeName::QueueArn)
+            .ok_or_else(|| color_eyre::eyre::eyre!("GetQueueAttributes returned no QueueArn"))
+    }
+
+    /// Start moving every message in `source_arn` (a dead-letter queue)
+    /// to `destination_arn`, inside SQS. Returns the task handle.
+    pub(crate) async fn start_redrive(
+        &self,
+        source_arn: &str,
+        destination_arn: &str,
+    ) -> Result<String> {
+        let resp = self
+            .sqs
+            .start_message_move_task()
+            .source_arn(source_arn)
+            .destination_arn(destination_arn)
+            .send()
+            .await
+            .aws_ctx("StartMessageMoveTask failed")?;
+        Ok(resp.task_handle.unwrap_or_default())
+    }
+
+    /// The move tasks off `source_arn`, newest first: SQS keeps the
+    /// recent ones, so this answers "is one running" and "how did the
+    /// last go".
+    pub(crate) async fn list_redrives(&self, source_arn: &str) -> Result<Vec<RedriveTask>> {
+        let resp = self
+            .sqs
+            .list_message_move_tasks()
+            .source_arn(source_arn)
+            .send()
+            .await
+            .aws_ctx("ListMessageMoveTasks failed")?;
+        Ok(resp.results().iter().map(redrive_task_from).collect())
+    }
+
+    /// Stop a running move task. Returns how many messages it had moved.
+    pub(crate) async fn cancel_redrive(&self, handle: &str) -> Result<i64> {
+        let resp = self
+            .sqs
+            .cancel_message_move_task()
+            .task_handle(handle)
+            .send()
+            .await
+            .aws_ctx("CancelMessageMoveTask failed")?;
+        Ok(resp.approximate_number_of_messages_moved)
+    }
+
     pub(crate) async fn queue_stats(&self, queue_url: &str) -> Result<QueueStats> {
         use aws_sdk_sqs::types::QueueAttributeName as Q;
         let resp = self

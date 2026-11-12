@@ -145,6 +145,12 @@ pub(super) const TOOL_ATTRS: &[(&str, ToolAttrs)] = &[
     // A managed update replaces instances as a deploy does, and EB rolls
     // a failed one back: not destructive. Not idempotent: the first call
     // consumes the scheduled action, and a second is refused.
+    // Every message goes back to be processed, not destroyed; not
+    // idempotent, since the first call empties the queue it acts on.
+    (
+        "dlq_redrive",
+        ToolAttrs::write(Verb::DlqRedrive.destructive(), false),
+    ),
     (
         "apply_managed_action",
         ToolAttrs::write(Verb::ApplyManagedAction.destructive(), false),

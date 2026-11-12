@@ -1753,3 +1753,43 @@ fn managed_actions_and_their_history_map_whole() {
     assert_eq!(r.executed.map(|t| t.timestamp()), Some(1_700_000_000));
     assert_eq!(r.finished.map(|t| t.timestamp()), Some(1_700_000_600));
 }
+
+#[test]
+fn a_move_task_maps_whole_and_knows_whether_it_runs() {
+    let t = crate::aws::redrive_task_from(
+        &aws_sdk_sqs::types::ListMessageMoveTasksResultEntry::builder()
+            .task_handle("h")
+            .status("RUNNING")
+            .destination_arn("arn:aws:sqs:us-east-1:123456789012:main")
+            .approximate_number_of_messages_moved(4)
+            .approximate_number_of_messages_to_move(9)
+            .failure_reason("none yet")
+            .started_timestamp(1_700_000_000_000)
+            .build(),
+    );
+    assert_eq!((t.handle.as_str(), t.status.as_str()), ("h", "RUNNING"));
+    assert_eq!(t.destination_arn, "arn:aws:sqs:us-east-1:123456789012:main");
+    assert_eq!((t.moved, t.to_move), (4, Some(9)));
+    assert_eq!(t.failure.as_deref(), Some("none yet"));
+    assert_eq!(
+        t.started.map(|s| s.timestamp()),
+        Some(1_700_000_000),
+        "milliseconds"
+    );
+    assert!(t.in_progress());
+    for (status, running) in [
+        ("CANCELLING", true),
+        ("COMPLETED", false),
+        ("FAILED", false),
+    ] {
+        let t = crate::aws::RedriveTask {
+            status: status.into(),
+            ..Default::default()
+        };
+        assert_eq!(t.in_progress(), running, "{status}");
+    }
+    let unstarted = crate::aws::redrive_task_from(
+        &aws_sdk_sqs::types::ListMessageMoveTasksResultEntry::builder().build(),
+    );
+    assert!(unstarted.started.is_none());
+}

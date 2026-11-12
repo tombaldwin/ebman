@@ -58,6 +58,38 @@ pub(super) fn append_string_array(mut body: String, key: &str, items: &[String])
     body
 }
 
+/// `worker_queues`'s `redrive` field: the newest move task off the
+/// dead-letter queue, or `null` when none has run. A check that failed
+/// adds `redrive_error` with why, so it never reads as "none".
+pub(super) fn append_redrive(
+    mut body: String,
+    latest: Result<Option<aws::RedriveTask>, String>,
+) -> String {
+    let field = match latest {
+        Ok(None) => "\"redrive\":null".to_string(),
+        Ok(Some(t)) => format!(
+            "\"redrive\":{}",
+            json!({
+                "status": t.status,
+                "moved": t.moved,
+                "to_move": t.to_move,
+                "failure": t.failure,
+                "started": t.started.map(|s| s.to_rfc3339()),
+                "in_progress": t.in_progress(),
+            })
+        ),
+        Err(e) => format!(
+            "\"redrive\":null,\"redrive_error\":{}",
+            util::json_string(&e)
+        ),
+    };
+    body.truncate(body.len() - 1);
+    body.push(',');
+    body.push_str(&field);
+    body.push('}');
+    body
+}
+
 /// Degraded-coverage note for the lint/drift tools (see the tool
 /// descriptions: the agent must check it before treating a run as
 /// full coverage).
@@ -918,6 +950,10 @@ impl Server {
                 .map_err(refusal::WriteError::into_message),
             "rebuild" => self
                 .tool_write_plan(writes::WriteVerb::Rebuild, args)
+                .await
+                .map_err(refusal::WriteError::into_message),
+            "dlq_redrive" => self
+                .tool_write_plan(writes::WriteVerb::DlqRedrive, args)
                 .await
                 .map_err(refusal::WriteError::into_message),
             "apply_managed_action" => self
@@ -1898,12 +1934,15 @@ impl Server {
             } else {
                 Vec::new()
             };
-            return Ok(render_worker_queues_json(
-                &queues,
-                &msgs,
-                peeked,
-                self.safety_cfg.mcp_peek_bodies,
-                empty_queue_reason(&env.tier, &queues),
+            return Ok(append_redrive(
+                render_worker_queues_json(
+                    &queues,
+                    &msgs,
+                    peeked,
+                    self.safety_cfg.mcp_peek_bodies,
+                    empty_queue_reason(&env.tier, &queues),
+                ),
+                Ok(None),
             ));
         }
 
@@ -1932,12 +1971,28 @@ impl Server {
         // distinction this field carries, and `why` already answered it
         // the other way for the same env. Derived from `target`, so it
         // cannot disagree with the decision that chose the URL.
-        Ok(render_worker_queues_json(
-            &queues,
-            &messages,
-            target.is_some(),
-            self.safety_cfg.mcp_peek_bodies,
-            empty_queue_reason(&env.tier, &queues),
+        // Whether a redrive is moving the queue back, and how far. Only
+        // for a queue that exists: no DLQ, no redrive to ask about.
+        let redrive = match &queues.dlq_url {
+            None => Ok(None),
+            Some(url) => match client.queue_arn(url).await {
+                Err(e) => Err(e.to_string()),
+                Ok(arn) => client
+                    .list_redrives(&arn)
+                    .await
+                    .map(|t| t.into_iter().next())
+                    .map_err(|e| e.to_string()),
+            },
+        };
+        Ok(append_redrive(
+            render_worker_queues_json(
+                &queues,
+                &messages,
+                target.is_some(),
+                self.safety_cfg.mcp_peek_bodies,
+                empty_queue_reason(&env.tier, &queues),
+            ),
+            redrive,
         ))
     }
 

@@ -686,6 +686,12 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         CommandKind::Prefill("managed-window "),
     ),
     cmd(
+        "dlq-redrive",
+        ":dlq-redrive [status|cancel] — move the worker's whole DLQ back to its queue, inside SQS",
+        Category::EnvConfig,
+        CommandKind::Prefill("dlq-redrive "),
+    ),
+    cmd(
         "managed-updates",
         ":managed-updates — scheduled managed platform updates and how the last ones went",
         Category::EnvConfig,

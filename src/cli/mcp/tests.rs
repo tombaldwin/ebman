@@ -165,6 +165,27 @@ async fn managed_updates_read_plan_and_apply_on_demo() {
     assert_eq!(done["action"], "ApplyManagedAction", "{done}");
 }
 
+/// On demo, `dlq_redrive` plans the fixture's dead-letter queue and
+/// confirms without touching SQS; a web env has none to redrive.
+#[tokio::test]
+async fn dlq_redrive_plans_and_confirms_on_demo() {
+    let s = demo_writes_server();
+    let (err, _) = call(&s, "dlq_redrive", json!({"env": "poly-prod-api"})).await;
+    assert!(err, "a web env has no dead-letter queue");
+    let (err, plan) = call(&s, "dlq_redrive", json!({"env": "poly-batch"})).await;
+    assert!(!err, "{plan}");
+    assert!(
+        plan["plan"]["destination"]
+            .as_str()
+            .is_some_and(|d| d.ends_with("poly-batch")),
+        "{plan}"
+    );
+    let token = plan["confirm_token"].as_str().expect("token").to_string();
+    let (err, done) = call(&s, "confirm_action", json!({"confirm_token": token})).await;
+    assert!(!err, "{done}");
+    assert_eq!(done["demo"], true, "{done}");
+}
+
 #[test]
 fn a_managed_updates_half_that_failed_is_null_with_its_reason() {
     let out = super::tools::render_managed_updates_json(
@@ -1603,6 +1624,183 @@ mod orchestration {
             .expect("lists");
         let v: Value = serde_json::from_str(&out).expect("valid JSON");
         assert_eq!(v[0]["firing_alarms"], json!(["own-spelling"]), "{v}");
+    }
+
+    /// A worker env whose dead-letter queue holds `depth` messages, with
+    /// SQS's move tasks: one RUNNING when `running`. Answers the start
+    /// and returns its rule so a test can count it.
+    fn redrive_server(depth: u32, running: bool) -> (Server, aws_smithy_mocks::Rule) {
+        use aws_sdk_elasticbeanstalk::operation::describe_environment_resources::DescribeEnvironmentResourcesOutput;
+        use aws_sdk_elasticbeanstalk::types::{EnvironmentResourceDescription, Queue};
+        use aws_sdk_sqs::operation::get_queue_attributes::GetQueueAttributesOutput;
+        use aws_sdk_sqs::types::QueueAttributeName;
+        let resources = aws_smithy_mocks::mock!(EbClient::describe_environment_resources)
+            .then_output(|| {
+                DescribeEnvironmentResourcesOutput::builder()
+                    .environment_resources(
+                        EnvironmentResourceDescription::builder()
+                            .queues(
+                                Queue::builder()
+                                    .name("WorkerQueue")
+                                    .url("https://sqs/main")
+                                    .build(),
+                            )
+                            .build(),
+                    )
+                    .build()
+            });
+        let settings = aws_smithy_mocks::mock!(EbClient::describe_configuration_settings)
+            .then_output(|| {
+                aws_sdk_elasticbeanstalk::operation::describe_configuration_settings::DescribeConfigurationSettingsOutput::builder().build()
+            });
+        let events = aws_smithy_mocks::mock!(EbClient::describe_events).then_output(|| {
+            aws_sdk_elasticbeanstalk::operation::describe_events::DescribeEventsOutput::builder()
+                .build()
+        });
+        let attrs = |url: &'static str, depth: u32| {
+            aws_smithy_mocks::mock!(SqsClient::get_queue_attributes)
+                .match_requests(move |req| req.queue_url() == Some(url))
+                .then_output(move || {
+                    let name = url.rsplit('/').next().unwrap_or_default();
+                    GetQueueAttributesOutput::builder()
+                        .attributes(
+                            QueueAttributeName::ApproximateNumberOfMessages,
+                            depth.to_string(),
+                        )
+                        .attributes(
+                            QueueAttributeName::QueueArn,
+                            format!("arn:aws:sqs:us-west-1:123456789012:{name}"),
+                        )
+                        .build()
+                })
+        };
+        let main = attrs("https://sqs/main", 0);
+        let dlq = attrs("https://sqs/main-dlq", depth);
+        let tasks = aws_smithy_mocks::mock!(SqsClient::list_message_move_tasks)
+            .match_requests(|req| {
+                req.source_arn() == Some("arn:aws:sqs:us-west-1:123456789012:main-dlq")
+            })
+            .then_output(move || {
+                let mut b = aws_sdk_sqs::operation::list_message_move_tasks::ListMessageMoveTasksOutput::builder();
+                if running {
+                    b = b.results(
+                        aws_sdk_sqs::types::ListMessageMoveTasksResultEntry::builder()
+                            .task_handle("task-running")
+                            .status("RUNNING")
+                            .approximate_number_of_messages_moved(4)
+                            .approximate_number_of_messages_to_move(12)
+                            .started_timestamp(1_700_000_000_000)
+                            .build(),
+                    );
+                }
+                b.build()
+            });
+        let start = aws_smithy_mocks::mock!(SqsClient::start_message_move_task)
+            .match_requests(|req| {
+                req.source_arn() == Some("arn:aws:sqs:us-west-1:123456789012:main-dlq")
+                    && req.destination_arn() == Some("arn:aws:sqs:us-west-1:123456789012:main")
+            })
+            .then_output(|| {
+                aws_sdk_sqs::operation::start_message_move_task::StartMessageMoveTaskOutput::builder()
+                    .task_handle("task-new")
+                    .build()
+            });
+        let eb = aws_smithy_mocks::mock_client!(
+            aws_sdk_elasticbeanstalk,
+            aws_smithy_mocks::RuleMode::MatchAny,
+            [&env_listing(), &resources, &settings, &events]
+        );
+        let sqs = aws_smithy_mocks::mock_client!(
+            aws_sdk_sqs,
+            aws_smithy_mocks::RuleMode::MatchAny,
+            [&main, &dlq, &tasks, &start]
+        );
+        let s = Server::with_injected_client(
+            WriteScope::All,
+            crate::config::Config::default(),
+            client_with(eb, sqs),
+        );
+        (s, start)
+    }
+
+    /// `dlq_redrive` plans against the queue as it is: empty, or already
+    /// being moved, is refused before anyone is asked; otherwise confirm
+    /// starts the move from the dead-letter queue to the worker queue,
+    /// and the task is in the answer and the completed line.
+    #[tokio::test]
+    async fn dlq_redrive_plans_against_the_queue_and_starts_the_move() {
+        async fn plan(s: &Server) -> Result<String, String> {
+            s.tool_write_plan(
+                writes::WriteVerb::DlqRedrive,
+                &json!({"env": "poly-prod-wk"}),
+            )
+            .await
+            .map_err(|e| e.to_string())
+        }
+        let (empty, _) = redrive_server(0, false);
+        assert!(plan(&empty).await.is_err_and(|e| e.contains("empty")));
+        let (busy, start) = redrive_server(12, true);
+        assert!(plan(&busy)
+            .await
+            .is_err_and(|e| e.contains("already running") && e.contains("4 moved")));
+        assert_eq!(start.num_calls(), 0);
+
+        let (s, start) = redrive_server(12, false);
+        let out = plan(&s).await.unwrap_or_else(|e| panic!("{e}"));
+        let v: Value = serde_json::from_str(&out).expect("json");
+        assert_eq!(v["plan"]["destination"], "https://sqs/main", "{v}");
+        assert_eq!(v["plan"]["messages_now"], 12, "{v}");
+        assert!(
+            v["plan"]["forecloses"]
+                .as_str()
+                .is_some_and(|f| f.contains("processed again")),
+            "{v}"
+        );
+        let before = crate::audit::delta::mark();
+        let token = v["confirm_token"].as_str().expect("token").to_string();
+        let done = s
+            .tool_confirm_action(&json!({"confirm_token": token}))
+            .await
+            .unwrap_or_else(|e| panic!("{e}"));
+        let d: Value = serde_json::from_str(&done).expect("json");
+        assert_eq!(d["task"], "task-new", "{d}");
+        assert_eq!(
+            start.num_calls(),
+            1,
+            "from the DLQ to the worker queue, once"
+        );
+        let lines = crate::audit::delta::lines_for(&before, "poly-prod-wk");
+        assert!(
+            lines.iter().any(|l| l.contains("stage=completed")
+                && l.contains("action=DlqRedrive")
+                && l.contains("task=task-new")),
+            "{lines:#?}"
+        );
+    }
+
+    /// `worker_queues` reports a running redrive's progress.
+    #[tokio::test]
+    async fn worker_queues_reports_the_redrive_in_progress() {
+        let (s, _) = redrive_server(12, true);
+        let out = s
+            .call_tool("worker_queues", &json!({"env": "poly-prod-wk"}))
+            .await
+            .expect("answers");
+        let v: Value = serde_json::from_str(&out).expect("json");
+        assert_eq!(v["redrive"]["status"], "RUNNING", "{v}");
+        assert_eq!(v["redrive"]["moved"], 4, "{v}");
+        assert_eq!(v["redrive"]["to_move"], 12, "{v}");
+        assert_eq!(v["redrive"]["in_progress"], true, "{v}");
+        let (idle, _) = redrive_server(12, false);
+        let out = idle
+            .call_tool("worker_queues", &json!({"env": "poly-prod-wk"}))
+            .await
+            .expect("answers");
+        let v: Value = serde_json::from_str(&out).expect("json");
+        assert!(
+            v["redrive"].is_null() && v.get("redrive_error").is_none(),
+            "{v}"
+        );
     }
 
     /// A branch listing that names nothing ebman would mark.
