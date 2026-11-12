@@ -191,13 +191,21 @@ impl App {
         let client = self.client_for_region(&region);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
+        // The audit line is permanent and fans out to `notify_webhook`,
+        // so a secret value is withheld at the writer, not left for
+        // each reader to remember.
+        let audited_value = crate::util::redact_option_value(&namespace, &name, &value, true);
         crate::audit::append_action_dispatched(
             self.context.account_id.as_deref(),
             self.context.profile.as_deref(),
             &region,
             crate::verb::Verb::SetOption.audit_label(),
             &env,
-            &[("ns", &namespace), ("name", &name), ("value", &value)],
+            &[
+                ("ns", &namespace),
+                ("name", &name),
+                ("value", &audited_value),
+            ],
         );
         let pending_label = format!("set-option {namespace}.{name}");
         let pending = self.push_pending(pending_label.clone(), env.clone());

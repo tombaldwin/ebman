@@ -230,7 +230,7 @@ A stdio MCP server exposing ebman's read surface as tools, so Claude Code (or an
 ```bash
 claude mcp add ebman -- ebman mcp serve          # register with Claude Code
 ebman mcp serve --demo                            # synthetic fleet, zero AWS — try the protocol
-ebman mcp serve --no-redact                       # disable get_option_settings env-var redaction
+ebman mcp serve --no-redact                       # disable env-var redaction in get_option_settings, drift and audit_log
 ```
 
 ### Wiring it up (`ebman mcp setup`)

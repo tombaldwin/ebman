@@ -194,12 +194,7 @@ pub(crate) fn audit_body(
     };
     tail.offset = bytes.len() as u64;
     let text = String::from_utf8_lossy(&bytes);
-    let filter = tail.filter();
-    let entries: Vec<audit_log::AuditEntry> = text
-        .lines()
-        .filter_map(audit_log::parse_audit_line)
-        .filter(|e| filter.matches(e))
-        .collect();
+    let entries = shown_entries(&text, &tail.filter());
     let _ = write!(
         out,
         "{}",
@@ -213,6 +208,19 @@ pub(crate) fn audit_body(
     (0, tail.args.tail.then_some(tail))
 }
 
+/// The entries of `text` a reader may see: parsed, filtered, and with
+/// option values redacted. One function for the first read and the
+/// follow, so `--tail` cannot print what the first read withheld.
+fn shown_entries(text: &str, filter: &audit_log::AuditFilter<'_>) -> Vec<audit_log::AuditEntry> {
+    let mut entries: Vec<audit_log::AuditEntry> = text
+        .lines()
+        .filter_map(audit_log::parse_audit_line)
+        .filter(|e| filter.matches(e))
+        .collect();
+    audit_log::redact_entries(&mut entries);
+    entries
+}
+
 /// `--tail`: poll the log every second from `tail.offset` and print new
 /// entries, until the process is stopped. A shrink is a rotation.
 async fn follow(path: &std::path::Path, mut tail: Tail) {
@@ -222,12 +230,7 @@ async fn follow(path: &std::path::Path, mut tail: Tail) {
         let Some(chunk) = read_new_lines(path, &mut tail.offset) else {
             continue;
         };
-        let filter = tail.filter();
-        let new_entries: Vec<audit_log::AuditEntry> = chunk
-            .lines()
-            .filter_map(audit_log::parse_audit_line)
-            .filter(|e| filter.matches(e))
-            .collect();
+        let new_entries = shown_entries(&chunk, &tail.filter());
         if new_entries.is_empty() {
             continue;
         }
@@ -386,6 +389,30 @@ mod tests {
             tail.map(|t| t.offset),
             Some(std::fs::metadata(&path).unwrap().len())
         );
+    }
+
+    #[test]
+    fn an_old_line_s_secret_value_is_withheld_from_every_render() {
+        // Lines written before the batch writer redacted can still hold
+        // an env-var value; `ebman audit` feeds log shippers.
+        const SECRET: &str = "2026-10-23T11:00:00+00:00\taccount=1\tprofile=-\tregion=eu-west-2\tstage=dispatched action=SetOption target=api ns=aws:elasticbeanstalk:application:environment name=DATABASE_URL value=\"postgres://u:hunter2@db\"";
+        const PLAIN: &str = "2026-10-23T11:00:01+00:00\taccount=1\tprofile=-\tregion=eu-west-2\tstage=dispatched action=SetOption target=api ns=aws:autoscaling:asg name=MinSize value=3";
+        let path = log_with(&[SECRET, PLAIN]);
+        let (_, json, _, _) = body(&["audit", "--json"], &path);
+        assert!(!json.contains("hunter2"), "{json}");
+        assert!(
+            json.contains("(redacted)") && json.contains("DATABASE_URL"),
+            "{json}"
+        );
+        assert!(json.contains("\"value\":\"3\""), "{json}");
+        let filter = audit_log::AuditFilter {
+            since: None,
+            env: None,
+            rule: None,
+            action: None,
+        };
+        let followed = tail_render(&shown_entries(SECRET, &filter), true);
+        assert!(!followed.contains("hunter2"), "{followed}");
     }
 
     #[test]

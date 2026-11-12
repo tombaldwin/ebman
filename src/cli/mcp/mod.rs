@@ -15,7 +15,8 @@
 //! `--demo` serves the synthetic `demo_fixture` fleet through the
 //! same tool layer (the demo AwsClient is a fail-loudly stub, so demo
 //! data enters above the client) — this is the zero-AWS e2e harness.
-//! `--no-redact` disables the `get_option_settings` env-var redaction.
+//! `--no-redact` disables the env-var redaction in `get_option_settings`,
+//! `drift` and `audit_log`.
 //!
 //! Writes are off unless granted (`--allow-writes`, or a client that
 //! can put the question to the operator). Each is two-phase: a plan,

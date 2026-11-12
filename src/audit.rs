@@ -306,6 +306,28 @@ impl<'a> AuditFilter<'a> {
 
 pub(crate) use crate::verb::action_key;
 
+/// Apply the option-value redaction contract to parsed entries before
+/// any reader shows them. Lines from before 0.50.0 can carry a
+/// `:batch-set-option` value, and `lint --fix` lines carry one still;
+/// env-var values and `DBPassword` are withheld here exactly as
+/// `get_option_settings` withholds them. Keys stay visible; both
+/// extra-key spellings (`ns` from the TUI, `namespace` from lint --fix)
+/// are honoured.
+pub(crate) fn redact_entries(entries: &mut [AuditEntry]) {
+    for e in entries.iter_mut() {
+        let ns = e
+            .extras
+            .get("ns")
+            .or_else(|| e.extras.get("namespace"))
+            .cloned()
+            .unwrap_or_default();
+        let name = e.extras.get("name").cloned().unwrap_or_default();
+        if let Some(v) = e.extras.get_mut("value") {
+            *v = crate::util::redact_option_value(&ns, &name, v, true);
+        }
+    }
+}
+
 /// Render audit entries as a pretty text table (TS / REGION / STAGE /
 /// ACTION / TARGET / OUTCOME). Empty input yields a one-line `(no
 /// entries)` so the operator sees the empty result didn't silently

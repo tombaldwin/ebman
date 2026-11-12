@@ -62,6 +62,7 @@
   `doctor` names each role; `docs/headless.md` has example trust and
   role policies.
 - **Drift redaction everywhere** (0.27+): the same contract covers `ebman drift` (`--no-redact` opts out — piped CI logs shouldn't collect drifted secrets by default) and the TUI `:drift` overlay (always on; the deliberate paths for reading real values are the Config tab / `:env list`).
+- **Audit-log redaction** (0.50+): `:batch-set-option` writes an env-var or `DBPassword` value to the audit log as `(redacted)`, so it never reaches `notify_webhook`; `ebman audit` and the MCP `audit_log` tool withhold one in older lines too (`audit_log` follows `--no-redact`). The raw file is yours to read.
 
 ## What's stored locally
 

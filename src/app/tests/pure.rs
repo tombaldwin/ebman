@@ -786,6 +786,46 @@ async fn batch_set_option_skips_envs_no_longer_in_view() {
 }
 
 #[tokio::test]
+async fn batch_set_option_writes_no_secret_value_to_the_audit_log() {
+    // The audit line fans out to `notify_webhook` and `ebman audit
+    // --json`, so an env-var value set across a fleet would reach Slack
+    // once per env. The key stays; the value does not.
+    let env_name = "batch-redact-probe-env";
+    let mut app = test_app();
+    app.environments = vec![mk_env(env_name, "poly", "Web", "Green")];
+    app.rebuild_view();
+    let path = crate::util::cache_dir().join("audit.log");
+    let before = std::fs::read_to_string(&path).unwrap_or_default();
+
+    app.spawn_batch_set_option(
+        home_key(env_name),
+        "aws:elasticbeanstalk:application:environment".into(),
+        "DATABASE_URL".into(),
+        "postgres://u:hunter2@db".into(),
+    );
+    // A non-secret setting keeps its value: the redaction is the
+    // contract's, not a blanket mask.
+    app.spawn_batch_set_option(
+        home_key(env_name),
+        "aws:autoscaling:asg".into(),
+        "MinSize".into(),
+        "3".into(),
+    );
+
+    let delta = crate::audit::delta::since(&before);
+    let lines: Vec<&str> = delta
+        .lines()
+        .filter(|l| l.contains(env_name) && l.contains("stage=dispatched"))
+        .collect();
+    assert_eq!(lines.len(), 2, "two dispatch lines: {lines:?}");
+    let secret = lines.iter().find(|l| l.contains("DATABASE_URL")).unwrap();
+    assert!(!secret.contains("hunter2"), "value leaked: {secret}");
+    assert!(secret.contains("(redacted)"), "{secret}");
+    let plain = lines.iter().find(|l| l.contains("MinSize")).unwrap();
+    assert!(plain.contains("value=3"), "{plain}");
+}
+
+#[tokio::test]
 async fn re_freezing_updates_the_reason_in_place() {
     // Operator refines the reason mid-incident; replace not stack.
     let mut app = test_app();

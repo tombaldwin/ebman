@@ -578,6 +578,52 @@ async fn demo_e2e_option_settings_redacts_env_vars_by_default() {
 }
 
 #[tokio::test]
+async fn audit_log_withholds_a_secret_value_unless_redaction_is_off() {
+    // `lint --fix` lines and pre-0.50 `:batch-set-option` lines carry a
+    // value; the tool must withhold it exactly as `get_option_settings`
+    // does, and `--no-redact` opens both.
+    let env_name = "audit-log-redact-probe-env";
+    crate::audit::append_lint_fix(
+        "eu-west-2",
+        env_name,
+        "EBL000",
+        "aws:elasticbeanstalk:application:environment",
+        "DATABASE_URL",
+        "postgres://u:hunter2@db",
+        None,
+    );
+    async fn call(s: &Server, env_name: &str) -> String {
+        let resp = rpc(
+            s,
+            json!({"jsonrpc":"2.0","id":13,"method":"tools/call",
+                   "params":{"name":"audit_log","arguments":{"env": env_name}}}),
+        )
+        .await
+        .unwrap();
+        resp["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+    // Demo serves an empty log by design, so this reads as live: the
+    // tool reads only the local file, nothing reaches AWS.
+    let live = |no_redact| {
+        Server::with_config(
+            false,
+            no_redact,
+            WriteScope::None,
+            crate::config::Config::default(),
+        )
+    };
+    let body = call(&live(false), env_name).await;
+    assert!(body.contains("DATABASE_URL"), "the line is there: {body}");
+    assert!(!body.contains("hunter2"), "value leaked: {body}");
+    assert!(body.contains("(redacted)"), "{body}");
+    let body = call(&live(true), env_name).await;
+    assert!(body.contains("hunter2"), "--no-redact passes it: {body}");
+}
+
+#[tokio::test]
 async fn tool_errors_come_back_as_is_error_results_not_rpc_errors() {
     let s = demo_server();
     let resp = rpc(

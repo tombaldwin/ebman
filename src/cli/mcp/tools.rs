@@ -41,28 +41,6 @@ pub(super) fn redact_drift_reports(reports: &mut [DriftReport]) {
     }
 }
 
-/// Apply the redaction contract to audit entries before serving them
-/// through the MCP tool: `:set-option` / `lint --fix` audit lines
-/// carry namespace+name+value extras, and env-var values / DBPassword
-/// must not be readable here when `get_option_settings` withholds
-/// them (0.26 max-review C1 — third instance of the leak class).
-/// Keys stay visible; both extra-key spellings (`ns` from the TUI,
-/// `namespace` from lint --fix) are honoured.
-pub(super) fn redact_audit_entries(entries: &mut [audit_log::AuditEntry]) {
-    for e in entries.iter_mut() {
-        let ns = e
-            .extras
-            .get("ns")
-            .or_else(|| e.extras.get("namespace"))
-            .cloned()
-            .unwrap_or_default();
-        let name = e.extras.get("name").cloned().unwrap_or_default();
-        if let Some(v) = e.extras.get_mut("value") {
-            *v = redact_option_value(&ns, &name, v, true);
-        }
-    }
-}
-
 /// Splice a string array into the trailing `}` of a JSON document.
 /// No-op for an empty list, so the common-case schema stays
 /// byte-identical to the CLI's.
@@ -1545,7 +1523,7 @@ impl Server {
             .filter(|e| filter.matches(e))
             .collect();
         if self.redact {
-            redact_audit_entries(&mut entries);
+            audit_log::redact_entries(&mut entries);
         }
         // Newest kept: the file is append-ordered, so take the tail.
         let start = entries.len().saturating_sub(limit);

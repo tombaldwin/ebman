@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Security
+
+- **`:batch-set-option` no longer writes a secret value to the audit
+  log.** It recorded the value it set, so an env var such as a database
+  URL set across a fleet went out to `notify_webhook` once per
+  environment and showed in `ebman audit --json`. The value is now
+  written `(redacted)` under the same rule as `get_option_settings`
+  (env-var values and `DBPassword`), and `ebman audit` withholds one in
+  lines written before this release. Single-environment `:set-option`
+  never recorded a value. Rotate any secret set this way while a
+  webhook was configured.
+
 ## [0.49.0] - 2026-11-06
 
 ### Security
