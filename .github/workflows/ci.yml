@@ -253,7 +253,8 @@ jobs:
       # caught (`ui::series_anomaly_label` gained a parameter) — the
       # kind of thing that decides whether the next tag is 0.30.3 or
       # 0.31.0, and not something to notice by reading.
-      - uses: obi1kenobi/cargo-semver-checks-action@v2
+      # Pinned to v2.9's commit, as every other required gate is pinned.
+      - uses: obi1kenobi/cargo-semver-checks-action@6b69fcf40e9b5fb17adeb57e4b6ecd020649a239
         if: steps.gate.outputs.run == 'true'
         with:
           feature-group: default-features
