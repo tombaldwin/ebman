@@ -478,8 +478,26 @@ impl App {
             }
         }
 
-        self.view
-            .store(filtered, display, app_colors, stale_platforms);
+        // Branches AWS has deprecated or retired, from the branch listing.
+        let retiring_platforms = self
+            .environments
+            .iter()
+            .filter_map(|e| {
+                let state = crate::aws::platform_lifecycle(e, &self.caches.platform_lifecycle)?;
+                Some((
+                    crate::app::EnvKey::of(e, &self.context.region),
+                    state.to_string(),
+                ))
+            })
+            .collect();
+
+        self.view.store(
+            filtered,
+            display,
+            app_colors,
+            stale_platforms,
+            retiring_platforms,
+        );
     }
 
     /// The selected env's key, for re-selecting it after the rows move.

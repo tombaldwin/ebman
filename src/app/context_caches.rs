@@ -78,6 +78,14 @@ pub(crate) struct ContextCaches {
     /// `latest_stacks` alone cannot say whether the list is still
     /// loading or was denied, and lint's EBL008 gap should name which.
     pub(crate) latest_stacks_error: Option<String>,
+    /// `branch name → lifecycle state` from `ListPlatformBranches`, built
+    /// by `spawn_platform_lifecycle`: the fleet row's deprecated / retired
+    /// marker and `:lint`'s EBL021. Empty until the first fetch lands;
+    /// cleared on context switch with the rest.
+    pub(crate) platform_lifecycle: std::collections::HashMap<String, String>,
+    /// Why the last lifecycle listing failed, if it did, so `:lint` can
+    /// say EBL021 did not run rather than reading empty as clean.
+    pub(crate) platform_lifecycle_error: Option<String>,
     /// The App tab's discovery, kept for the session.
     pub(crate) app_tab_discovery: app_tab_form::AppTabDiscovery,
     pub(crate) prev_alerts: usize,

@@ -304,6 +304,37 @@ pub(super) fn map_platform(p: aws_sdk_elasticbeanstalk::types::PlatformSummary) 
     }
 }
 
+/// The platform branch a managed solution stack is on, by the name
+/// `ListPlatformBranches` gives it: `64bit Amazon Linux 2023 v4.0.1
+/// running Python 3.9` is on `Python 3.9 running on 64bit Amazon Linux
+/// 2023`. `None` for a stack without that shape (a custom platform
+/// reports none, and its lifecycle is not in that listing anyway).
+pub(crate) fn platform_branch_of_stack(stack: &str) -> Option<String> {
+    let (os_and_version, family) = stack.split_once(" running ")?;
+    let os = match os_and_version.rsplit_once(' ') {
+        Some((os, v)) if v.starts_with('v') && v[1..].starts_with(|c: char| c.is_ascii_digit()) => {
+            os
+        }
+        _ => os_and_version,
+    };
+    let (os, family) = (os.trim(), family.trim());
+    (!os.is_empty() && !family.is_empty()).then(|| format!("{family} running on {os}"))
+}
+
+/// Where a platform branch is in its life, when that is worth saying:
+/// `Deprecated` (still runs; AWS has announced its retirement) or
+/// `Retired` (no more updates, and no new environments on it). `None`
+/// for a supported or beta branch, and for an env whose branch is not
+/// in the listing, which says nothing either way.
+pub(crate) fn platform_lifecycle<'a>(
+    env: &Environment,
+    lifecycle: &'a std::collections::HashMap<String, String>,
+) -> Option<&'a str> {
+    let state = lifecycle.get(&platform_branch_of_stack(&env.solution_stack)?)?;
+    (state.eq_ignore_ascii_case("deprecated") || state.eq_ignore_ascii_case("retired"))
+        .then_some(state.as_str())
+}
+
 pub(super) fn map_env(e: aws_sdk_elasticbeanstalk::types::EnvironmentDescription) -> Environment {
     let solution_stack = e.solution_stack_name.clone().unwrap_or_default();
     let raw_platform = e
@@ -1873,6 +1904,33 @@ impl AwsClient {
     /// `PlatformOwner=self` so we only show platforms the caller built, not
     /// the AWS-managed ones. Returns the ARN, platform branch name, and
     /// lifecycle state per entry.
+    /// Every managed platform branch's lifecycle state, by branch name
+    /// (`Supported`, `Beta`, `Deprecated`, `Retired`). One region's
+    /// listing; the state, not a retirement date, which the API does not
+    /// carry. Complete or an error: a branch missing from a short listing
+    /// would read as "nothing to say" about an env on it.
+    pub(crate) async fn list_platform_lifecycle(
+        &self,
+    ) -> Result<std::collections::HashMap<String, String>> {
+        let raw = super::paginate("ListPlatformBranches", move |token| async move {
+            let mut req = self.client.list_platform_branches();
+            if let Some(t) = token {
+                req = req.next_token(t);
+            }
+            let resp = req.send().await.aws_ctx("ListPlatformBranches failed")?;
+            Ok((
+                resp.platform_branch_summary_list.unwrap_or_default(),
+                resp.next_token,
+            ))
+        })
+        .await?
+        .complete("ListPlatformBranches")?;
+        Ok(raw
+            .into_iter()
+            .filter_map(|b| Some((b.branch_name?, b.lifecycle_state?)))
+            .collect())
+    }
+
     pub(crate) async fn list_custom_platforms(&self) -> Result<Vec<CustomPlatform>> {
         use aws_sdk_elasticbeanstalk::types::PlatformFilter;
         let filter = PlatformFilter::builder()

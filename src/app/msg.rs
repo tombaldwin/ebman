@@ -26,6 +26,7 @@ impl AppMsg {
             | Identity { gen, .. }
             | Applications { gen, .. }
             | SolutionStacks { gen, .. }
+            | PlatformLifecycle { gen, .. }
             | AppLatestVersions { gen, .. }
             | WorkerQueueCheck { gen, .. }
             | FiringAlarms { gen, .. }
@@ -105,6 +106,7 @@ impl App {
             AppMsg::Identity { result, .. } => self.handle_identity(result),
             AppMsg::Applications { result, .. } => self.handle_applications(result),
             AppMsg::SolutionStacks { result, .. } => self.handle_solution_stacks(result),
+            AppMsg::PlatformLifecycle { result, .. } => self.handle_platform_lifecycle(result),
             AppMsg::AppLatestVersions { results, .. } => self.handle_app_latest_versions(results),
             AppMsg::WorkerQueueCheck { round, results, .. } => {
                 self.handle_worker_queue_check(round, results)
@@ -384,6 +386,25 @@ impl App {
             Err(msg) => {
                 tracing::warn!(error = %msg, "solution stacks fetch failed");
                 self.caches.latest_stacks_error = Some(msg);
+            }
+        }
+    }
+
+    fn handle_platform_lifecycle(
+        &mut self,
+        result: Result<std::collections::HashMap<String, String>, String>,
+    ) {
+        match result {
+            Ok(lifecycle) => {
+                self.caches.platform_lifecycle = lifecycle;
+                self.caches.platform_lifecycle_error = None;
+                // The fleet's retiring-branch markers are derived from it.
+                self.view.invalidate();
+                self.rebuild_view();
+            }
+            Err(msg) => {
+                tracing::warn!(error = %msg, "platform branch listing failed");
+                self.caches.platform_lifecycle_error = Some(msg);
             }
         }
     }

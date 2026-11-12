@@ -907,3 +907,190 @@ async fn a_tui_lint_run_primes_the_lint_input_cache() {
         Some(5)
     );
 }
+
+/// `:lint`'s EBL021 comes from the session's branch listing: a retired
+/// branch fires; a listing that is missing, failed, or the home
+/// region's for an env elsewhere is a reported gap, never clean.
+#[tokio::test]
+async fn tui_lint_runs_ebl021_from_the_listing_or_says_it_could_not() {
+    let mut app = test_app();
+    let mut env = mk_env("relay", "poly", "WebServer", "Grey");
+    env.solution_stack = "64bit Amazon Linux 2018.03 v2.7.0 running Go 1.4".into();
+    app.environments = vec![env.clone()];
+    app.rebuild_view();
+    let run = |app: &App| {
+        app.lint_snapshot(&env)
+            .finish(crate::lint::inputs::EnvLintInputs::bare(Vec::new()), &[])
+    };
+    let gap = |r: &crate::app::tui_lint::LintRun| {
+        r.coverage_warnings
+            .iter()
+            .map(ToString::to_string)
+            .find(|w| w.contains("EBL021"))
+    };
+
+    let waiting = run(&app);
+    assert!(waiting.issues.iter().all(|i| i.rule_id != "EBL021"));
+    assert!(
+        gap(&waiting).is_some_and(|g| g.contains("has not loaded yet")),
+        "{:?}",
+        waiting.coverage_warnings
+    );
+
+    app.caches.platform_lifecycle_error = Some("ListPlatformBranches failed: AccessDenied".into());
+    assert!(gap(&run(&app)).is_some_and(|g| g.contains("AccessDenied")));
+
+    app.caches.platform_lifecycle = [(
+        "Go 1.4 running on 64bit Amazon Linux 2018.03".to_string(),
+        "Retired".to_string(),
+    )]
+    .into_iter()
+    .collect();
+    let fired = run(&app);
+    assert!(gap(&fired).is_none(), "{:?}", fired.coverage_warnings);
+    let issue = fired
+        .issues
+        .iter()
+        .find(|i| i.rule_id == "EBL021")
+        .expect("a retired branch fires");
+    assert_eq!(issue.severity, crate::lint::Severity::Error);
+
+    let elsewhere = crate::app::tui_lint::lifecycle_from_cache(
+        &app.caches.platform_lifecycle,
+        None,
+        "us-east-1",
+        "eu-west-2",
+    );
+    assert!(elsewhere.is_err_and(|why| why.contains("us-east-1 only")));
+
+    let off = app.lint_snapshot(&env).finish(
+        crate::lint::inputs::EnvLintInputs::bare(Vec::new()),
+        &["EBL021".into()],
+    );
+    assert!(off.issues.iter().all(|i| i.rule_id != "EBL021"));
+}
+
+/// The branch listing marks the fleet row and the Detail header: it
+/// lands through its message, which rebuilds the derived view.
+#[tokio::test]
+async fn a_retired_branch_is_marked_on_the_row_once_the_listing_lands() {
+    let mut app = test_app();
+    let mut env = mk_env("relay", "poly", "WebServer", "Grey");
+    env.solution_stack = "64bit Amazon Linux 2018.03 v2.7.0 running Go 1.4".into();
+    env.platform = "Go 1.4".into();
+    app.environments = vec![env];
+    app.view.invalidate();
+    app.rebuild_view();
+    app.table_state.select(Some(0));
+    assert!(!render(&mut app, 200, 30).contains("(retired)"));
+    app.handle_msg(crate::app::AppMsg::PlatformLifecycle {
+        gen: app.generation,
+        result: Ok([(
+            "Go 1.4 running on 64bit Amazon Linux 2018.03".to_string(),
+            "Retired".to_string(),
+        )]
+        .into_iter()
+        .collect()),
+    });
+    let out = render(&mut app, 200, 30);
+    assert!(out.contains("(retired)"), "{out}");
+    app.open_detail();
+    let out = render(&mut app, 200, 40);
+    assert!(out.contains("branch retired"), "{out}");
+}
+
+/// Each refresh asks for whichever catalogue is still missing: both on
+/// a fresh context, neither once both have landed. The branch listing
+/// arrives through its message and marks the env it names.
+#[tokio::test]
+async fn the_platform_catalogues_are_fetched_until_they_land() {
+    let stacks = aws_smithy_mocks::mock!(
+        aws_sdk_elasticbeanstalk::Client::list_available_solution_stacks
+    )
+    .then_output(|| {
+        aws_sdk_elasticbeanstalk::operation::list_available_solution_stacks::ListAvailableSolutionStacksOutput::builder()
+            .solution_stacks("64bit Amazon Linux 2018.03 v2.7.0 running Go 1.4")
+            .build()
+    });
+    let branches =
+        aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::list_platform_branches)
+            .then_output(|| {
+                aws_sdk_elasticbeanstalk::operation::list_platform_branches::ListPlatformBranchesOutput::builder()
+                    .platform_branch_summary_list(
+                        aws_sdk_elasticbeanstalk::types::PlatformBranchSummary::builder()
+                            .branch_name("Go 1.4 running on 64bit Amazon Linux 2018.03")
+                            .lifecycle_state("Retired")
+                            .build(),
+                    )
+                    .build()
+            });
+    let eb = aws_smithy_mocks::mock_client!(
+        aws_sdk_elasticbeanstalk,
+        aws_smithy_mocks::RuleMode::MatchAny,
+        [&stacks, &branches]
+    );
+    let sdk = aws_config::SdkConfig::builder()
+        .region(aws_config::Region::new("us-east-1"))
+        .behavior_version(aws_config::BehaviorVersion::latest())
+        .build();
+    let client = crate::aws::AwsClient::for_tests(
+        eb,
+        aws_sdk_sqs::Client::new(&sdk),
+        aws_sdk_cloudwatch::Client::new(&sdk),
+        aws_sdk_cloudwatchlogs::Client::new(&sdk),
+        aws_sdk_s3::Client::new(&sdk),
+        aws_sdk_ec2::Client::new(&sdk),
+    );
+    let mut app = App::for_tests(client, crate::config::Config::default());
+    let mut env = mk_env("relay", "poly", "WebServer", "Grey");
+    env.solution_stack = "64bit Amazon Linux 2018.03 v2.7.0 running Go 1.4".into();
+    app.environments = vec![env];
+    app.rebuild_view();
+    while app.msg_rx.try_recv().is_ok() {}
+
+    app.spawn_catalogues();
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    let (mut got_stacks, mut got_lifecycle) = (false, false);
+    while !(got_stacks && got_lifecycle) {
+        let msg = tokio::time::timeout_at(deadline, app.msg_rx.recv())
+            .await
+            .expect("both catalogues within 10s")
+            .expect("a message");
+        match &msg {
+            AppMsg::SolutionStacks { .. } => got_stacks = true,
+            AppMsg::PlatformLifecycle { .. } => got_lifecycle = true,
+            _ => {}
+        }
+        app.handle_msg(msg);
+    }
+    let key = app.env_key(&app.environments[0].clone());
+    assert_eq!(
+        app.view.retiring_platforms().get(&key).map(String::as_str),
+        Some("Retired")
+    );
+
+    // Both loaded: nothing more is asked for.
+    app.spawn_catalogues();
+    tokio::task::yield_now().await;
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(300), app.msg_rx.recv())
+            .await
+            .is_err(),
+        "a loaded catalogue is not fetched again"
+    );
+}
+
+/// Demo marks its relay, whose Go 1.4 branch AWS retired long ago.
+#[tokio::test]
+async fn the_demo_fleet_marks_its_retired_branch() {
+    let mut app = test_app();
+    app.demo_mode = true;
+    crate::demo_fixture::install(&mut app);
+    assert!(
+        app.view
+            .retiring_platforms()
+            .values()
+            .any(|s| s == "Retired"),
+        "the relay is on a retired branch"
+    );
+}

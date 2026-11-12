@@ -52,6 +52,8 @@ pub(crate) struct ViewState {
     display: Vec<DisplayRow>,
     app_colors: HashMap<String, Color>,
     stale_platforms: std::collections::BTreeMap<EnvKey, String>,
+    /// `env → Deprecated / Retired`, for envs on a branch AWS is ending.
+    retiring_platforms: std::collections::BTreeMap<EnvKey, String>,
     stale: bool,
     /// Whether the current stale episode has already been logged. `Cell`
     /// because `assert_fresh` runs from `&self` accessors on the render
@@ -80,6 +82,7 @@ impl ViewState {
             display: Vec::new(),
             app_colors: HashMap::new(),
             stale_platforms: std::collections::BTreeMap::new(),
+            retiring_platforms: std::collections::BTreeMap::new(),
             // Empty caches over an empty `environments` are correct, not
             // stale — the first refresh rebuilds them anyway.
             stale: false,
@@ -204,6 +207,13 @@ impl ViewState {
         &self.stale_platforms
     }
 
+    /// `env → Deprecated / Retired`, for envs whose platform branch AWS
+    /// has deprecated or retired. Empty until the branch listing lands.
+    pub(crate) fn retiring_platforms(&self) -> &std::collections::BTreeMap<EnvKey, String> {
+        self.assert_fresh();
+        &self.retiring_platforms
+    }
+
     /// Install a freshly computed view. The only way to clear the stale
     /// flag, and called from exactly one place: `App::rebuild_view`.
     ///
@@ -216,11 +226,13 @@ impl ViewState {
         display: Vec<DisplayRow>,
         app_colors: HashMap<String, Color>,
         stale_platforms: std::collections::BTreeMap<EnvKey, String>,
+        retiring_platforms: std::collections::BTreeMap<EnvKey, String>,
     ) {
         self.filtered = filtered;
         self.display = display;
         self.app_colors = app_colors;
         self.stale_platforms = stale_platforms;
+        self.retiring_platforms = retiring_platforms;
         self.stale = false;
         self.logged_stale.set(false);
     }
@@ -273,7 +285,13 @@ mod tests {
     }
 
     fn store_empty(v: &mut ViewState) {
-        v.store(Vec::new(), Vec::new(), HashMap::new(), Default::default());
+        v.store(
+            Vec::new(),
+            Vec::new(),
+            HashMap::new(),
+            Default::default(),
+            Default::default(),
+        );
     }
 
     #[test]
@@ -333,6 +351,7 @@ mod tests {
             vec![DisplayRow::Env(0), DisplayRow::Env(2)],
             HashMap::new(),
             Default::default(),
+            Default::default(),
         );
         assert!(!v.is_stale());
         assert_eq!(v.filtered(), &[0, 2]);
@@ -377,7 +396,13 @@ mod tests {
         for k in unconsumed {
             let mut v = view();
             v.set_filter("prod");
-            v.store(Vec::new(), Vec::new(), HashMap::new(), Default::default());
+            v.store(
+                Vec::new(),
+                Vec::new(),
+                HashMap::new(),
+                Default::default(),
+                Default::default(),
+            );
             let before = v.filter().text().to_string();
             let before_col = v.filter().cursor_col();
             let consumed = v.filter_handle_key(k);
@@ -397,7 +422,13 @@ mod tests {
     #[test]
     fn a_consumed_key_does_dirty_the_cache() {
         let mut v = view();
-        v.store(Vec::new(), Vec::new(), HashMap::new(), Default::default());
+        v.store(
+            Vec::new(),
+            Vec::new(),
+            HashMap::new(),
+            Default::default(),
+            Default::default(),
+        );
         assert!(v.filter_handle_key(key(KeyCode::Char('p'), KeyModifiers::NONE)));
         assert!(v.is_stale());
         assert_eq!(v.filter().text(), "p");

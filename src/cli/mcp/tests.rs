@@ -572,6 +572,49 @@ async fn demo_why_leads_with_the_env_s_health_causes() {
     );
 }
 
+/// The demo relay runs on a branch AWS retired: `list_environments`
+/// says so and `lint` raises EBL021 for it, as an error; a supported
+/// branch's env carries its state and no finding.
+#[tokio::test]
+async fn demo_names_the_retired_platform_branch() {
+    let s = demo_server();
+    let out = s
+        .call_tool("list_environments", &json!({}))
+        .await
+        .expect("lists");
+    let envs: Value = serde_json::from_str(&out).expect("json");
+    let by_name = |n: &str| {
+        envs.as_array()
+            .and_then(|a| {
+                a.iter()
+                    .find(|e| e["platform"].is_string() && e["name"] == n)
+            })
+            .cloned()
+            .unwrap_or_else(|| panic!("{n} listed: {envs}"))
+    };
+    assert_eq!(by_name("poly-prod-api")["platform_lifecycle"], "Supported");
+    let retired: Vec<&Value> = envs
+        .as_array()
+        .expect("array")
+        .iter()
+        .filter(|e| e["platform_lifecycle"] == "Retired")
+        .collect();
+    assert_eq!(retired.len(), 1, "the relay alone: {envs}");
+    let relay = retired[0]["name"].as_str().expect("named").to_string();
+
+    let out = s.call_tool("lint", &json!({})).await.expect("lints");
+    let lint: Value = serde_json::from_str(&out).expect("json");
+    let ebl021: Vec<&Value> = lint["issues"]
+        .as_array()
+        .expect("issues")
+        .iter()
+        .filter(|i| i["rule_id"] == "EBL021")
+        .collect();
+    assert_eq!(ebl021.len(), 1, "{lint}");
+    assert_eq!(ebl021[0]["env"], relay.as_str(), "{lint}");
+    assert_eq!(ebl021[0]["severity"], "error", "{lint}");
+}
+
 #[tokio::test]
 async fn demo_e2e_option_settings_redacts_env_vars_by_default() {
     let s = demo_server();
@@ -1348,7 +1391,12 @@ mod orchestration {
         use aws_sdk_cloudwatch::types::{Dimension, MetricAlarm};
         let server_with = |cw_rule: aws_smithy_mocks::Rule| {
             let listing = env_listing();
-            let eb = aws_smithy_mocks::mock_client!(aws_sdk_elasticbeanstalk, [&listing]);
+            let branches = branch_listing();
+            let eb = aws_smithy_mocks::mock_client!(
+                aws_sdk_elasticbeanstalk,
+                aws_smithy_mocks::RuleMode::MatchAny,
+                [&listing, &branches]
+            );
             let cw = aws_smithy_mocks::mock_client!(aws_sdk_cloudwatch, [&cw_rule]);
             let sdk = aws_config::SdkConfig::builder()
                 .region(aws_config::Region::new("us-west-1"))
@@ -1430,7 +1478,12 @@ mod orchestration {
                     .build()
             });
         let listing = env_listing();
-        let eb = aws_smithy_mocks::mock_client!(aws_sdk_elasticbeanstalk, [&listing]);
+        let branches = branch_listing();
+        let eb = aws_smithy_mocks::mock_client!(
+            aws_sdk_elasticbeanstalk,
+            aws_smithy_mocks::RuleMode::MatchAny,
+            [&listing, &branches]
+        );
         let cw = aws_smithy_mocks::mock_client!(aws_sdk_cloudwatch, [&firing]);
         let sdk = aws_config::SdkConfig::builder()
             .region(aws_config::Region::new("us-west-1"))
@@ -1460,6 +1513,13 @@ mod orchestration {
             .expect("lists");
         let v: Value = serde_json::from_str(&out).expect("valid JSON");
         assert_eq!(v[0]["firing_alarms"], json!(["own-spelling"]), "{v}");
+    }
+
+    /// A branch listing that names nothing ebman would mark.
+    fn branch_listing() -> aws_smithy_mocks::Rule {
+        aws_smithy_mocks::mock!(EbClient::list_platform_branches).then_output(|| {
+            aws_sdk_elasticbeanstalk::operation::list_platform_branches::ListPlatformBranchesOutput::builder().build()
+        })
     }
 
     fn env_listing() -> aws_smithy_mocks::Rule {
@@ -1665,6 +1725,10 @@ mod orchestration {
         settings: bool,
         /// The server's config disables EBL008.
         disable_ebl008: bool,
+        /// `ListPlatformBranches` is refused: EBL021's input is lost.
+        branches: bool,
+        /// The env's branch is listed as retired, so EBL021 fires.
+        retired: bool,
     }
 
     /// One Ready/Green web env, every lint input answering except the
@@ -1779,6 +1843,26 @@ mod orchestration {
                     "elasticbeanstalk:DescribePlatformVersion",
                 ))
             });
+        let branches = if f.branches {
+            aws_smithy_mocks::mock!(EbClient::list_platform_branches).then_error(move || {
+                op::list_platform_branches::ListPlatformBranchesError::generic(denied(
+                    "elasticbeanstalk:ListPlatformBranches",
+                ))
+            })
+        } else if f.retired {
+            aws_smithy_mocks::mock!(EbClient::list_platform_branches).then_output(|| {
+                op::list_platform_branches::ListPlatformBranchesOutput::builder()
+                    .platform_branch_summary_list(
+                        aws_sdk_elasticbeanstalk::types::PlatformBranchSummary::builder()
+                            .branch_name("Corretto 17 running on 64bit Amazon Linux 2023")
+                            .lifecycle_state("Retired")
+                            .build(),
+                    )
+                    .build()
+            })
+        } else {
+            branch_listing()
+        };
         let eb = aws_smithy_mocks::mock_client!(
             aws_sdk_elasticbeanstalk,
             aws_smithy_mocks::RuleMode::MatchAny,
@@ -1788,7 +1872,8 @@ mod orchestration {
                 &settings,
                 &health,
                 &platforms,
-                &platform_date
+                &platform_date,
+                &branches
             ]
         );
         let sqs =
@@ -1844,6 +1929,43 @@ mod orchestration {
                 .any(|s| s.contains("EBL008") && s.contains("ListAvailableSolutionStacks")),
             "{skipped:?}"
         );
+    }
+
+    /// An env on a retired branch is an EBL021 error in the live lint.
+    #[tokio::test]
+    async fn lint_raises_ebl021_for_an_env_on_a_retired_branch() {
+        let out = lint_server(LintFaults {
+            retired: true,
+            ..LintFaults::default()
+        })
+        .call_tool("lint", &json!({}))
+        .await
+        .expect("lint answers");
+        let v: Value = serde_json::from_str(&out).expect("valid JSON");
+        let ebl021: Vec<&Value> = v["issues"]
+            .as_array()
+            .expect("issues")
+            .iter()
+            .filter(|i| i["rule_id"] == "EBL021")
+            .collect();
+        assert_eq!(ebl021.len(), 1, "{v}");
+        assert_eq!(ebl021[0]["env"], "poly-web", "{v}");
+        assert_eq!(ebl021[0]["severity"], "error", "{v}");
+    }
+
+    /// A refused branch listing is lost EBL021 coverage, in
+    /// `skipped_envs`, once for the run.
+    #[tokio::test]
+    async fn lint_reports_a_failed_branch_listing_once() {
+        let skipped = lint_skipped(LintFaults {
+            branches: true,
+            two_envs: true,
+            ..LintFaults::default()
+        })
+        .await;
+        let ebl021: Vec<_> = skipped.iter().filter(|s| s.contains("EBL021")).collect();
+        assert_eq!(ebl021.len(), 1, "{skipped:?}");
+        assert!(ebl021[0].contains("ListPlatformBranches"), "{skipped:?}");
     }
 
     /// ...once for the run, not once per env: one failed call is one

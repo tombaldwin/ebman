@@ -949,9 +949,15 @@ impl Server {
         let mut skipped: Vec<String> = Vec::new();
         match self.backend {
             Backend::Demo => {
-                for env in targets {
+                for env in targets.iter().copied() {
                     let inputs = EnvLintInputs::bare(demo_fixture::option_settings_for(&env.name));
                     all_issues.extend(run_rules_for_env(&rules, env, &inputs, &required_tags));
+                }
+                if lint::inputs::ebl021_could_fire(&disabled, targets.iter().copied()) {
+                    all_issues.extend(lint::platform_lifecycle_issues(
+                        targets.iter().copied(),
+                        &demo_fixture::platform_lifecycle(),
+                    ));
                 }
             }
             Backend::Aws => {
@@ -1025,6 +1031,19 @@ impl Server {
                         // DescribeConfigurationSettings failed: …").
                         Err(e) => skipped
                             .push(with_credential_fix(&profile, &format!("{}: {e}", env.name))),
+                    }
+                }
+                // EBL021 — one branch listing for the envs in scope; a
+                // failure is lost coverage, reported in `skipped_envs`.
+                if lint::inputs::ebl021_could_fire(&disabled, targets.iter().copied()) {
+                    match lint::inputs::fetch_platform_lifecycle_issues(
+                        &client,
+                        targets.iter().copied(),
+                    )
+                    .await
+                    {
+                        Ok(issues) => all_issues.extend(issues),
+                        Err(e) => skipped.push(rule_skipped(&profile, "EBL021", &e)),
                     }
                 }
                 // EBL015 — account-level pass via the assembly shared
@@ -1895,8 +1914,12 @@ impl Server {
     /// The env list with each env's firing alarms. A failed alarm
     /// check leaves the list standing with `firing_alarms: null`.
     async fn tool_list_environments(&self, args: &Value) -> Result<String, String> {
-        let (envs, firing) = match self.backend {
-            Backend::Demo => (demo_fixture::envs(), Some(demo_fixture::firing_alarms())),
+        let (envs, firing, lifecycle) = match self.backend {
+            Backend::Demo => (
+                demo_fixture::envs(),
+                Some(demo_fixture::firing_alarms()),
+                Some(demo_fixture::platform_lifecycle()),
+            ),
             Backend::Aws => {
                 // One client for both calls, not one per call.
                 let profile = arg_str(args, "profile");
@@ -1920,10 +1943,20 @@ impl Server {
                         None
                     }
                 };
-                (envs, firing)
+                // Unknown on failure, like the alarms: every env's
+                // `platform_lifecycle` is then null, never "fine".
+                let lifecycle = match crate::cli::envs::fetch_lifecycle(&client).await {
+                    Ok(l) => Some(l),
+                    Err(e) => {
+                        tracing::warn!(error = %e, "list_environments: branch listing failed");
+                        None
+                    }
+                };
+                (envs, firing, lifecycle)
             }
         };
-        crate::cli::envs::render_envs_json(&envs, firing.as_ref()).map_err(|e| e.to_string())
+        crate::cli::envs::render_envs_json(&envs, firing.as_ref(), lifecycle.as_ref())
+            .map_err(|e| e.to_string())
     }
 
     async fn tool_list_versions(&self, args: &Value) -> Result<String, String> {

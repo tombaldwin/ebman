@@ -1627,3 +1627,82 @@ fn env_health_keeps_the_banner_causes_and_reads_the_window_as_a_rate() {
     assert_eq!(bare, super::EnvHealth::default());
     assert!(bare.requests_per_sec.is_none() && bare.pct_5xx.is_none());
 }
+
+fn env_named(name: &str) -> super::Environment {
+    super::Environment {
+        name: name.into(),
+        application: "app".into(),
+        status: "Ready".into(),
+        health: "Green".into(),
+        platform: String::new(),
+        solution_stack: String::new(),
+        platform_version: String::new(),
+        tier: "WebServer".into(),
+        cname: String::new(),
+        version_label: String::new(),
+        arn: None,
+        updated: None,
+        id: None,
+        region: None,
+    }
+}
+
+#[test]
+fn a_managed_stack_names_its_platform_branch() {
+    let b = super::platform_branch_of_stack;
+    assert_eq!(
+        b("64bit Amazon Linux 2023 v4.0.1 running Python 3.9").as_deref(),
+        Some("Python 3.9 running on 64bit Amazon Linux 2023")
+    );
+    assert_eq!(
+        b("64bit Amazon Linux 2 v3.5.1 running Docker").as_deref(),
+        Some("Docker running on 64bit Amazon Linux 2")
+    );
+    assert_eq!(
+        b("64bit Windows Server 2019 v2.10.1 running IIS 10.0").as_deref(),
+        Some("IIS 10.0 running on 64bit Windows Server 2019")
+    );
+    // A `v` token that is not a version is part of the OS name.
+    assert_eq!(
+        b("64bit Amazon Linux vNext running Go").as_deref(),
+        Some("Go running on 64bit Amazon Linux vNext")
+    );
+    assert_eq!(b(""), None, "a custom platform reports no stack");
+    assert_eq!(b("Docker"), None);
+    assert_eq!(b(" running Go"), None, "no OS, no branch");
+}
+
+#[test]
+fn only_a_deprecated_or_retired_branch_is_worth_saying() {
+    let lifecycle: std::collections::HashMap<String, String> = [
+        ("Python 3.9 running on 64bit Amazon Linux 2023", "Supported"),
+        ("Docker running on 64bit Amazon Linux 2", "Deprecated"),
+        ("Go 1.4 running on 64bit Amazon Linux 2018.03", "Retired"),
+    ]
+    .into_iter()
+    .map(|(b, s)| (b.to_string(), s.to_string()))
+    .collect();
+    let env = |stack: &str| super::Environment {
+        solution_stack: stack.into(),
+        ..env_named("e")
+    };
+    let state = |stack: &str| super::platform_lifecycle(&env(stack), &lifecycle);
+    assert_eq!(
+        state("64bit Amazon Linux 2023 v4.0.1 running Python 3.9"),
+        None
+    );
+    assert_eq!(
+        state("64bit Amazon Linux 2 v3.5.1 running Docker"),
+        Some("Deprecated")
+    );
+    assert_eq!(
+        state("64bit Amazon Linux 2018.03 v2.7.0 running Go 1.4"),
+        Some("Retired")
+    );
+    assert_eq!(
+        state("64bit Amazon Linux 2023 v6.1.0 running Node.js 20"),
+        None,
+        "unlisted"
+    );
+    assert_eq!(state(""), None);
+}

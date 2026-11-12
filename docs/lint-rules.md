@@ -12,7 +12,7 @@ This page is the source-of-truth reference. Lint rule IDs follow the `EBL###` pa
 
 | Severity | When it fires | Default exit code (`ebman lint`) |
 |---|---|---|
-| `Error` | Operator-correctable issue that's actively wrong (no rule currently emits this — reserved for future use) | 3 |
+| `Error` | Operator-correctable issue that's actively wrong (EBL021 on a retired platform branch) | 3 |
 | `Warn` | Operator should fix this; defaults work but you're on a worse path | 3 |
 | `Info` | Soft hint; common operator preferences that aren't universally right | 3 |
 
@@ -272,6 +272,20 @@ Why it matters: long-idle custom platforms usually mean the operator forgot they
 Fix: publish a rebuilt version, migrate its envs to a managed platform, or delete it (`:custom-platform-delete`).
 
 Live: 0.26+. DescribePlatformVersion call shape verified live 2026-08-20 (returns DateCreated as a real timestamp; managed-platform ARN used, identical date contract to custom).
+
+---
+
+### EBL021 — Platform branch deprecated or retired
+
+**Severity:** Warn (deprecated) · Error (retired) · **Auto-fix:** none (moving branch is a migration: `:upgrade` lists the compatible platforms)
+
+Detection: the env's managed solution stack names its platform branch (`64bit Amazon Linux 2018.03 v2.7.0 running Go 1.4` is on `Go 1.4 running on 64bit Amazon Linux 2018.03`), and `ListPlatformBranches` lists that branch as `Deprecated` or `Retired`. One listing per region, so like EBL015 it is a pass outside the per-env registry that honours `lint.disable = ["EBL021"]` at its call sites; unlike EBL015 it names each env and runs when lint is scoped to one. A custom platform reports no stack and is not checked. A failed listing is coverage that did not happen: `ebman lint` degrades once for the region, MCP `lint` lists it in `skipped_envs`, and the TUI's `:lint` reports it as not evaluated (the TUI's listing is the home region's, so an env elsewhere says so too).
+
+Why it matters: EBL008 says a newer version exists in the same branch; this says the branch itself is ending. A retired branch gets no managed updates or security patches, and new environments on it are refused, so a rebuild or clone can fail. The listing gives the state, not the date: AWS's platform retirement schedule has those.
+
+Fix: move to a supported branch (`:upgrade` with no argument lists the compatible platforms; a different branch can need application changes).
+
+Also shown on the fleet row (`(deprecated)` / `(retired)` beside the platform), in Detail's header, and as `platform_lifecycle` in `ebman envs --json` and MCP `list_environments`.
 
 ---
 

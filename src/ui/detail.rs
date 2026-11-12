@@ -75,6 +75,18 @@ pub(super) fn draw_detail(f: &mut Frame, area: Rect, app: &mut App) {
                 .add_modifier(Modifier::BOLD),
         ));
     }
+    if let Some(state) = app.view.retiring_platforms().get(&app.env_key(env)) {
+        platform_group.push(Span::styled(
+            format!("  branch {}", state.to_lowercase()),
+            Style::default()
+                .fg(if state.eq_ignore_ascii_case("retired") {
+                    theme.health_red
+                } else {
+                    theme.health_yellow
+                })
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
 
     // The header block's inner width: its own two borders come off the
     // chunk it was given.

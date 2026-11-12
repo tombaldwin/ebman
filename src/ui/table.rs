@@ -450,6 +450,8 @@ pub(crate) struct CellCtx<'a> {
     pub history: Option<&'a std::collections::VecDeque<String>>,
     pub newly_red: bool,
     pub stale_platform: Option<&'a String>,
+    /// `Deprecated` or `Retired` when AWS is ending the env's branch.
+    pub platform_lifecycle: Option<&'a String>,
     pub cost: Option<f64>,
     /// CloudWatch alarms in ALARM state for this env.
     pub firing_alarms: usize,
@@ -612,6 +614,20 @@ pub(crate) fn env_cell<'a>(label: &str, ctx: &CellCtx<'a>) -> Cell<'a> {
                     } else {
                         theme.muted
                     }),
+                ));
+            }
+            // The branch itself is ending: louder than a newer version,
+            // because a retired branch takes no new environments.
+            if let Some(state) = ctx.platform_lifecycle {
+                spans.push(Span::styled(
+                    format!(" ({})", state.to_lowercase()),
+                    Style::default()
+                        .fg(if state.eq_ignore_ascii_case("retired") {
+                            theme.health_red
+                        } else {
+                            theme.health_yellow
+                        })
+                        .add_modifier(Modifier::BOLD),
                 ));
             }
             Cell::from(Line::from(spans))
@@ -908,6 +924,7 @@ pub(crate) fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
                     history: app.caches.history.get(&key),
                     newly_red: app.caches.newly_red.contains(&key),
                     stale_platform: app.view.stale_platforms().get(&key),
+                    platform_lifecycle: app.view.retiring_platforms().get(&key),
                     cost: app.costs.get(&key),
                     firing_alarms: app.caches.firing_alarms.get(&key).map_or(0, Vec::len),
                     alarms_unknown: app.caches.firing_alarms.is_stale(&key),

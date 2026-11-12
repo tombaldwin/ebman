@@ -15,6 +15,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   window. ebman read `DescribeEnvironmentHealth` before only for
   instance counts. An env with basic health reporting shows EB's reason
   instead; a figure EB did not report is left out, never shown as 0.
+- **A platform branch AWS has deprecated or retired is marked.** From
+  `ListPlatformBranches`: `(deprecated)` / `(retired)` beside the
+  platform on the fleet row, `branch retired` in Detail's header, and
+  `platform_lifecycle` in `ebman envs --json` and MCP
+  `list_environments`. New lint rule **EBL021** (Warn deprecated, Error
+  retired) in the TUI, `ebman lint` and MCP `lint`; a failed listing is
+  reported as lost coverage. EBL008 said a newer version existed in the
+  same branch; this says the branch itself is ending. The API gives the
+  state, not a retirement date.
 
 ### Fixed
 

@@ -1488,3 +1488,81 @@ fn every_command_a_rule_names_is_one_ebman_has() {
         "rules name commands ebman lacks: {unknown:?}"
     );
 }
+
+#[test]
+fn ebl021_is_a_warning_when_deprecated_and_an_error_when_retired() {
+    let lifecycle: std::collections::HashMap<String, String> = [
+        ("Docker running on 64bit Amazon Linux 2", "Deprecated"),
+        ("Go 1.4 running on 64bit Amazon Linux 2018.03", "Retired"),
+        ("Python 3.9 running on 64bit Amazon Linux 2023", "Supported"),
+    ]
+    .into_iter()
+    .map(|(b, s)| (b.to_string(), s.to_string()))
+    .collect();
+    let on = |name: &str, stack: &str| Environment {
+        solution_stack: stack.into(),
+        ..mk_env(name, "Web", "Green")
+    };
+    let envs = [
+        on("old", "64bit Amazon Linux 2 v3.5.1 running Docker"),
+        on("relay", "64bit Amazon Linux 2018.03 v2.7.0 running Go 1.4"),
+        on(
+            "current",
+            "64bit Amazon Linux 2023 v4.0.1 running Python 3.9",
+        ),
+        on("custom", ""),
+    ];
+    let issues = platform_lifecycle_issues(envs.iter(), &lifecycle);
+    assert_eq!(
+        issues.len(),
+        2,
+        "supported and custom say nothing: {issues:?}"
+    );
+    let old = &issues[0];
+    assert_eq!(old.rule_id, "EBL021");
+    assert_eq!(old.env_name.as_deref(), Some("old"));
+    assert_eq!(old.severity, Severity::Warn);
+    assert_eq!(
+        old.fields.get("platform_branch").map(String::as_str),
+        Some("Docker running on 64bit Amazon Linux 2")
+    );
+    assert!(old.title.contains("deprecated"), "{}", old.title);
+    let relay = &issues[1];
+    assert_eq!(relay.severity, Severity::Error);
+    assert_eq!(
+        relay.fields.get("lifecycle").map(String::as_str),
+        Some("Retired")
+    );
+    assert!(
+        relay.detail.contains("no new environment"),
+        "{}",
+        relay.detail
+    );
+    assert!(
+        relay
+            .suggestion
+            .as_deref()
+            .is_some_and(|s| s.starts_with(":upgrade")),
+        "{:?}",
+        relay.suggestion
+    );
+}
+
+#[test]
+fn ebl021_runs_only_when_on_and_some_env_has_a_branch() {
+    use crate::lint::inputs::ebl021_could_fire;
+    let managed = Environment {
+        solution_stack: "64bit Amazon Linux 2 v3.5.1 running Docker".into(),
+        ..mk_env("a", "Web", "Green")
+    };
+    let custom = mk_env("b", "Web", "Green");
+    assert!(ebl021_could_fire(&[], [&managed, &custom].into_iter()));
+    assert!(
+        !ebl021_could_fire(&[], [&custom].into_iter()),
+        "nothing to name"
+    );
+    assert!(!ebl021_could_fire(
+        &["EBL021".into()],
+        [&managed].into_iter()
+    ));
+}

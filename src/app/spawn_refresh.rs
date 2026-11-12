@@ -336,12 +336,38 @@ impl App {
             self.spawn_events();
         }
         self.spawn_applications();
-        // Solution stacks change rarely (AWS releases platform versions
-        // roughly monthly); fetch once per context and reuse. Cleared on a
-        // context switch so a new account/region rebuilds it.
+        self.spawn_catalogues();
+    }
+
+    /// The region's platform catalogues: which versions exist, and which
+    /// branches AWS has deprecated or retired. They change rarely (AWS
+    /// releases platform versions roughly monthly), so each is fetched
+    /// once per context and reused; a context switch clears them, so a
+    /// new account or region rebuilds both. One that failed is fetched
+    /// again on the next refresh.
+    pub(crate) fn spawn_catalogues(&self) {
         if self.caches.latest_stacks.is_empty() {
             self.spawn_solution_stacks();
         }
+        if self.caches.platform_lifecycle.is_empty() {
+            self.spawn_platform_lifecycle();
+        }
+    }
+
+    /// Fetch the region's platform branch lifecycle so the envs table can
+    /// mark an env on a deprecated or retired branch. A failure leaves the
+    /// map empty, no env marked, and `:lint` reports EBL021 as not run.
+    ///
+    /// The home region's listing, by name: branch states are kept per
+    /// region, and `:lint` says so for an env elsewhere rather than
+    /// answering for it from here.
+    pub(crate) fn spawn_platform_lifecycle(&self) {
+        self.spawn_aws_in(
+            self.client_for_region(&self.context.region),
+            "list_platform_lifecycle",
+            move |aws| async move { aws.list_platform_lifecycle().await },
+            |gen, result| AppMsg::PlatformLifecycle { gen, result },
+        );
     }
 
     /// Fetch the region's solution-stack catalogue so the envs table can

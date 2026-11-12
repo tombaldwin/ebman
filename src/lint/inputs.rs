@@ -599,6 +599,32 @@ pub(crate) async fn fetch_stale_platform_issues(
     Ok((lint::stale_custom_platform_issues(&dated, now), warnings))
 }
 
+/// Could EBL021 fire for any of `envs`: not switched off, and at least
+/// one on a managed stack whose branch it can name. Otherwise the
+/// listing is not fetched, and a failed one costs no coverage.
+pub(crate) fn ebl021_could_fire<'a>(
+    disabled: &[String],
+    mut envs: impl Iterator<Item = &'a aws::Environment>,
+) -> bool {
+    !disabled.iter().any(|d| d == "EBL021")
+        && envs.any(|e| aws::platform_branch_of_stack(&e.solution_stack).is_some())
+}
+
+/// EBL021's assembly, shared by `ebman lint` and the MCP `lint` tool:
+/// one `ListPlatformBranches` for the region, then the pure pass over
+/// the envs in scope. `Err` is the listing's failure, which each caller
+/// reports as lost coverage, never as a clean result.
+pub(crate) async fn fetch_platform_lifecycle_issues<'a>(
+    aws: &aws::AwsClient,
+    envs: impl IntoIterator<Item = &'a aws::Environment>,
+) -> Result<Vec<lint::Issue>, String> {
+    let lifecycle = aws
+        .list_platform_lifecycle()
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(lint::platform_lifecycle_issues(envs, &lifecycle))
+}
+
 /// Pure: assemble a borrowing `LintContext` over fetched inputs.
 /// Shared by [`run_rules_for_env`] and `run`'s `--fix` path (which
 /// needs the context again for `rule.fix(&ctx)`).

@@ -172,11 +172,6 @@ it as one release. Ranked by operator value; each is a feature item
 the shared gate, two-phase on MCP, audited, with an undo where one
 exists.*
 
-8. **Platform branch lifecycle.** `ListPlatformBranches` per region:
-   a deprecated or retired branch on the fleet row, a lint rule (Warn
-   deprecated, Error retired), and a field on `list_environments` /
-   `ebman envs --json`. The API gives the state, not a date. Read-only.
-
 9. **Managed platform updates.** What is scheduled and what happened
    (`DescribeEnvironmentManagedActions`, `...History`) as reads, and
    apply-now (`ApplyEnvironmentManagedAction`) as a gated write with no

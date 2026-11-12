@@ -771,6 +771,11 @@ pub(crate) enum AppMsg {
         gen: u64,
         result: Result<Vec<String>, String>,
     },
+    /// `ListPlatformBranches`, as `branch → lifecycle state`.
+    PlatformLifecycle {
+        gen: u64,
+        result: Result<std::collections::HashMap<String, String>, String>,
+    },
     /// Recently-registered application versions for an env's app.
     /// Populates the Detail-Health-tab "recent deploys" section.
     DetailRecentVersions {

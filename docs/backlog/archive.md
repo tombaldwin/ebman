@@ -5922,3 +5922,15 @@ a `--read-only` server.
   error label) needed the alarm-prefix test to assert a refused health
   section, and removing the message from the generation list does not
   compile.
+- **Platform branch lifecycle.** `aws::platform_branch_of_stack` names a
+  managed stack's branch, `list_platform_lifecycle` lists the region's
+  (paginated, complete or an error), and `platform_lifecycle` keeps only
+  Deprecated / Retired. Fleet row and Detail header markers from a
+  per-context cache (`spawn_catalogues`, extracted from `spawn_refresh`
+  with the stack listing so both are testable); EBL021 as a pure pass
+  (`platform_lifecycle_issues`) in the TUI `:lint`, `ebman lint`, MCP
+  `lint` and `ebman explain`; `platform_lifecycle` on `envs --json` and
+  `list_environments`. The spawn names the home region explicitly
+  rather than joining `HOME_CLIENT_IS_CORRECT_BECAUSE`. A self-review
+  found `ebman explain EBL021` would always have said "no env has it";
+  fixed and tested before commit.

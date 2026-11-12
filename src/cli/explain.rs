@@ -207,6 +207,20 @@ where
         lint::inputs::Platforms::from_listing(aws_client.list_solution_stacks().await, |e| {
             e.to_string()
         });
+    // EBL021 is outside the per-env registry: one branch listing, asked
+    // for only when that is the rule being explained.
+    let lifecycle = if issue_id == "EBL021"
+        && lint::inputs::ebl021_could_fire(disabled, targets.iter().copied())
+    {
+        Some(
+            aws_client
+                .list_platform_lifecycle()
+                .await
+                .map_err(|e| e.to_string()),
+        )
+    } else {
+        None
+    };
     let mut matched: Vec<lint::Issue> = Vec::new();
     // Envs where the rule could not be evaluated, with why.
     let mut not_evaluated: Vec<String> = Vec::new();
@@ -227,8 +241,21 @@ where
                 continue;
             }
         };
-        let issues = lint::inputs::run_rules_for_env(&rules, env, &inputs, required_tags);
-        match lint::inputs::explain_verdict(issue_id, &issues, &inputs.coverage_warnings) {
+        let mut issues = lint::inputs::run_rules_for_env(&rules, env, &inputs, required_tags);
+        let mut gaps = inputs.coverage_warnings;
+        match &lifecycle {
+            Some(Ok(listing)) => issues.extend(lint::platform_lifecycle_issues(
+                std::iter::once(env),
+                listing,
+            )),
+            Some(Err(why)) if aws::platform_branch_of_stack(&env.solution_stack).is_some() => gaps
+                .extend(
+                    lint::inputs::ProbeOutcome::Unknown(why.clone())
+                        .coverage_warning("EBL021", &env.name),
+                ),
+            _ => {}
+        }
+        match lint::inputs::explain_verdict(issue_id, &issues, &gaps) {
             lint::inputs::ExplainVerdict::Fires(issue) => matched.push(issue.clone()),
             lint::inputs::ExplainVerdict::NotEvaluated(why) => not_evaluated.push(why.to_string()),
             lint::inputs::ExplainVerdict::DoesNotFire => {}
@@ -527,6 +554,43 @@ mod body {
         };
         let (code, err) = explain(&owner, rejected).await;
         assert_eq!(code, 1, "the tag check did not run: {err}");
+    }
+
+    /// EBL021 is explained from the branch listing: a retired branch
+    /// fires, a supported one has nothing to explain, and a refused
+    /// listing is not a clean result.
+    #[tokio::test]
+    async fn ebl021_is_explained_from_the_branch_listing() {
+        async fn explain(faults: MockFaults) -> (i32, String) {
+            let client = mock_client_inner(vec!["api".into()], faults);
+            let (mut out, mut err) = (Vec::new(), Vec::new());
+            let code = explain_body(
+                &opts("EBL021", None, false, false),
+                &client,
+                &[],
+                &[],
+                |_, _| async { Ok::<String, String>("Move branch.".into()) },
+                &mut out,
+                &mut err,
+            )
+            .await;
+            (code, String::from_utf8(err).unwrap())
+        }
+        let (code, err) = explain(MockFaults {
+            branch_retired: true,
+            ..Default::default()
+        })
+        .await;
+        assert_eq!(code, 0, "the retired branch fires: {err}");
+        let (code, err) = explain(MockFaults::default()).await;
+        assert_eq!(code, 3, "a supported branch: {err}");
+        let (code, err) = explain(MockFaults {
+            branches_rejected: true,
+            ..Default::default()
+        })
+        .await;
+        assert_eq!(code, 1, "the listing did not happen: {err}");
+        assert!(err.contains("EBL021"), "{err}");
     }
 
     /// `run` passes the configured `required_tags`, which no test can

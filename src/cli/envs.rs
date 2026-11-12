@@ -53,15 +53,42 @@ pub(crate) async fn fetch_firing_by_env(
 ///
 /// `firing` is `None` when the alarm check failed: every env's
 /// `firing_alarms` is then `null`, where `[]` would claim it is quiet.
+/// `lifecycle` is the branch listing, `None` when it failed, which
+/// leaves every `platform_lifecycle` `null` for the same reason.
 pub(crate) fn render_envs_json(
     envs: &[aws::Environment],
     firing: Option<&FiringByEnv>,
+    lifecycle: Option<&Lifecycle>,
 ) -> serde_json::Result<String> {
-    let rows: Vec<EnvRow<'_>> = envs.iter().map(|e| EnvRow::of(e, firing)).collect();
+    let rows: Vec<EnvRow<'_>> = envs
+        .iter()
+        .map(|e| EnvRow::of(e, firing, lifecycle))
+        .collect();
     // Borrowed strings and options do not fail to serialise; if that
     // ever changed, falling back to `[]` would read as an empty fleet,
     // so the error goes to the caller.
     serde_json::to_string(&rows)
+}
+
+/// `branch name → lifecycle state`, as `ListPlatformBranches` gives it.
+pub(crate) type Lifecycle = std::collections::HashMap<String, String>;
+
+/// The lifecycle state of the env's platform branch (`Supported`,
+/// `Beta`, `Deprecated`, `Retired`), or `None` when the listing failed
+/// or does not name the branch (a custom platform): unknown, not fine.
+fn branch_state<'a>(e: &aws::Environment, lifecycle: Option<&'a Lifecycle>) -> Option<&'a str> {
+    lifecycle?
+        .get(&aws::platform_branch_of_stack(&e.solution_stack)?)
+        .map(String::as_str)
+}
+
+/// The lifecycle listing for `client`'s region. `Err` is a failed
+/// listing, which callers show as unknown.
+pub(crate) async fn fetch_lifecycle(client: &aws::AwsClient) -> Result<Lifecycle, String> {
+    client
+        .list_platform_lifecycle()
+        .await
+        .map_err(|e| format!("ListPlatformBranches: {e}"))
 }
 
 /// One env in the `envs --json` / `list_environments` schema, in its
@@ -93,10 +120,16 @@ struct EnvRow<'a> {
     /// claim the env is quiet. The type says so; the hand-built string
     /// this replaced had to be told.
     firing_alarms: Option<Vec<&'a str>>,
+    /// The platform branch's lifecycle state; `null` when unknown.
+    platform_lifecycle: Option<&'a str>,
 }
 
 impl<'a> EnvRow<'a> {
-    fn of(e: &'a aws::Environment, firing: Option<&'a FiringByEnv>) -> Self {
+    fn of(
+        e: &'a aws::Environment,
+        firing: Option<&'a FiringByEnv>,
+        lifecycle: Option<&'a Lifecycle>,
+    ) -> Self {
         Self {
             name: &e.name,
             application: &e.application,
@@ -114,6 +147,7 @@ impl<'a> EnvRow<'a> {
                     .map(|names| names.iter().map(String::as_str).collect())
                     .unwrap_or_default()
             }),
+            platform_lifecycle: branch_state(e, lifecycle),
         }
     }
 }
@@ -185,15 +219,33 @@ pub(crate) async fn envs_with(
             None
         }
     };
+    let lifecycle = match fetch_lifecycle(aws).await {
+        Ok(l) => Some(l),
+        Err(e) => {
+            writeln!(
+                err,
+                "warning: could not list platform branches ({e}); lifecycle shown as unknown"
+            )?;
+            None
+        }
+    };
     if json {
-        writeln!(out, "{}", render_envs_json(&envs, firing.as_ref())?)?;
+        writeln!(
+            out,
+            "{}",
+            render_envs_json(&envs, firing.as_ref(), lifecycle.as_ref())?
+        )?;
     } else {
         writeln!(
             out,
             "NAME\tAPPLICATION\tSTATUS\tHEALTH\tPLATFORM\tCNAME\tVERSION\tALARMS"
         )?;
         for e in &envs {
-            writeln!(out, "{}", envs_text_row(e, firing.as_ref()))?;
+            writeln!(
+                out,
+                "{}",
+                envs_text_row(e, firing.as_ref(), lifecycle.as_ref())
+            )?;
         }
     }
     Ok(())
@@ -204,12 +256,22 @@ pub(crate) async fn envs_with(
 /// the firing alarms, `-` for none and `?` when the check failed. The
 /// names are comma-joined for reading, and an alarm name may itself
 /// contain a comma: a script splits `--json`'s `firing_alarms` instead.
-pub(crate) fn envs_text_row(e: &aws::Environment, firing: Option<&FiringByEnv>) -> String {
-    let platform = if e.platform_version.is_empty() {
+pub(crate) fn envs_text_row(
+    e: &aws::Environment,
+    firing: Option<&FiringByEnv>,
+    lifecycle: Option<&Lifecycle>,
+) -> String {
+    let mut platform = if e.platform_version.is_empty() {
         e.platform.clone()
     } else {
         format!("{} {}", e.platform, e.platform_version)
     };
+    // Only the states worth an operator's eye: a branch being ended.
+    if let Some(state) = branch_state(e, lifecycle)
+        .filter(|s| s.eq_ignore_ascii_case("deprecated") || s.eq_ignore_ascii_case("retired"))
+    {
+        platform.push_str(&format!(" ({})", state.to_lowercase()));
+    }
     let alarms = match firing {
         None => "?".to_string(),
         Some(map) => map
@@ -256,7 +318,7 @@ mod envs_json_tests {
     /// live one.
     #[test]
     fn the_env_json_carries_tier_and_the_update_timestamp() {
-        let json = render_envs_json(&[env()], Some(&FiringByEnv::new())).unwrap();
+        let json = render_envs_json(&[env()], Some(&FiringByEnv::new()), None).unwrap();
         assert!(
             json.contains("\"tier\":\"Worker\""),
             "a worker env must say so rather than leaving it to the name: {json}"
@@ -286,18 +348,18 @@ mod envs_json_tests {
         let mut e = env();
         e.platform_version = "4.1.0".into();
         let firing = FiringByEnv::from([("poly-prod-wk".to_string(), vec!["a\"b".to_string()])]);
-        let json = render_envs_json(&[e.clone()], Some(&firing)).unwrap();
+        let json = render_envs_json(&[e.clone()], Some(&firing), None).unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
         assert_eq!(v[0]["platform_version"], "4.1.0");
         assert_eq!(v[0]["firing_alarms"], serde_json::json!(["a\"b"]));
         // Quiet is `[]`; a failed check is `null`, not `[]`.
         let v: serde_json::Value = serde_json::from_str(
-            &render_envs_json(&[e.clone()], Some(&FiringByEnv::new())).unwrap(),
+            &render_envs_json(&[e.clone()], Some(&FiringByEnv::new()), None).unwrap(),
         )
         .unwrap();
         assert_eq!(v[0]["firing_alarms"], serde_json::json!([]));
         let v: serde_json::Value =
-            serde_json::from_str(&render_envs_json(&[e], None).unwrap()).unwrap();
+            serde_json::from_str(&render_envs_json(&[e], None, None).unwrap()).unwrap();
         assert!(v[0]["firing_alarms"].is_null());
     }
 
@@ -307,19 +369,22 @@ mod envs_json_tests {
         e.platform_version = "4.1.0".into();
         let firing =
             FiringByEnv::from([("poly-prod-wk".to_string(), vec!["x".into(), "y".into()])]);
-        let row = envs_text_row(&e, Some(&firing));
+        let row = envs_text_row(&e, Some(&firing), None);
         let cols: Vec<&str> = row.split('\t').collect();
         assert_eq!(cols[4], "Java 17 4.1.0");
         assert_eq!(cols[7], "x,y");
         assert_eq!(
-            envs_text_row(&e, Some(&FiringByEnv::new()))
+            envs_text_row(&e, Some(&FiringByEnv::new()), None)
                 .split('\t')
                 .nth(7),
             Some("-")
         );
-        assert_eq!(envs_text_row(&e, None).split('\t').nth(7), Some("?"));
+        assert_eq!(envs_text_row(&e, None, None).split('\t').nth(7), Some("?"));
         e.platform_version.clear();
-        assert_eq!(envs_text_row(&e, None).split('\t').nth(4), Some("Java 17"));
+        assert_eq!(
+            envs_text_row(&e, None, None).split('\t').nth(4),
+            Some("Java 17")
+        );
     }
 
     #[test]
@@ -358,7 +423,7 @@ mod envs_json_tests {
         let mut e = env();
         e.updated = None;
         e.region = None;
-        let json = render_envs_json(&[e], Some(&FiringByEnv::new())).unwrap();
+        let json = render_envs_json(&[e], Some(&FiringByEnv::new()), None).unwrap();
         assert!(json.contains("\"updated\":null"), "{json}");
         assert!(json.contains("\"region\":null"), "{json}");
         assert!(
@@ -401,8 +466,25 @@ mod run_tests {
             .region(aws_config::Region::new("us-east-1"))
             .behavior_version(aws_config::BehaviorVersion::latest())
             .build();
+        // The fleet's branch is deprecated, so the text table marks it.
+        let branches =
+            aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::list_platform_branches)
+                .then_output(|| {
+                    aws_sdk_elasticbeanstalk::operation::list_platform_branches::ListPlatformBranchesOutput::builder()
+                        .platform_branch_summary_list(
+                            aws_sdk_elasticbeanstalk::types::PlatformBranchSummary::builder()
+                                .branch_name("Node.js 20 running on 64bit Amazon Linux 2023")
+                                .lifecycle_state("Deprecated")
+                                .build(),
+                        )
+                        .build()
+                });
         aws::AwsClient::for_tests(
-            aws_smithy_mocks::mock_client!(aws_sdk_elasticbeanstalk, [&listing]),
+            aws_smithy_mocks::mock_client!(
+                aws_sdk_elasticbeanstalk,
+                aws_smithy_mocks::RuleMode::MatchAny,
+                [&listing, &branches]
+            ),
             aws_sdk_sqs::Client::new(&sdk),
             aws_smithy_mocks::mock_client!(aws_sdk_cloudwatch, [&alarms]),
             aws_sdk_cloudwatchlogs::Client::new(&sdk),
@@ -458,9 +540,13 @@ mod run_tests {
         let row = out.lines().nth(1).expect("one env row");
         let cols: Vec<&str> = row.split('\t').collect();
         assert_eq!(cols[0], "shop-prod");
-        assert_eq!(cols[4], "Node.js 20 6.1.0");
+        // The branch AWS deprecated is marked where the platform is.
+        assert_eq!(cols[4], "Node.js 20 6.1.0 (deprecated)");
         assert_eq!(cols[7], "shop-prod-5xx");
         assert!(err.is_empty(), "{err}");
+        let (out, _) = run(firing(), true).await;
+        let v: serde_json::Value = serde_json::from_str(out.trim()).expect("valid JSON");
+        assert_eq!(v[0]["platform_lifecycle"], "Deprecated", "{v}");
     }
 
     #[tokio::test]

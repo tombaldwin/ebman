@@ -98,6 +98,28 @@ pub(crate) fn platforms_from_cache(
     }
 }
 
+/// EBL021's input from the session's branch listing: the map, or why
+/// there is none to use. Loaded for the home region only, like the
+/// platform-version list, so an env elsewhere is not answered for.
+pub(crate) fn lifecycle_from_cache(
+    lifecycle: &std::collections::HashMap<String, String>,
+    failed: Option<&str>,
+    home_region: &str,
+    env_region: &str,
+) -> Result<std::collections::HashMap<String, String>, String> {
+    if env_region != home_region {
+        return Err(format!(
+            "the platform branch list is loaded for {home_region} only, and this env is \
+             in {env_region}"
+        ));
+    }
+    match failed {
+        Some(e) if lifecycle.is_empty() => Err(e.to_string()),
+        _ if lifecycle.is_empty() => Err("the platform branch list has not loaded yet".into()),
+        _ => Ok(lifecycle.clone()),
+    }
+}
+
 /// Everything a lint run takes from App, captured before the spawn.
 pub(crate) struct LintSnapshot {
     pub(crate) env: Environment,
@@ -106,6 +128,8 @@ pub(crate) struct LintSnapshot {
     user_disables: Vec<String>,
     pub(crate) required_tags: Vec<String>,
     pub(crate) platforms: Platforms,
+    /// EBL021's branch listing, or why it is missing.
+    pub(crate) lifecycle: Result<std::collections::HashMap<String, String>, String>,
     pub(crate) dlq: WorkerDlq,
 }
 
@@ -123,6 +147,12 @@ impl App {
                 // The row's own region, not a lookup by name: under a
                 // fan-out a same-named env in another region would
                 // answer for it.
+                &self.region_for(env),
+            ),
+            lifecycle: lifecycle_from_cache(
+                &self.caches.platform_lifecycle,
+                self.caches.platform_lifecycle_error.as_deref(),
+                &self.context.region,
                 &self.region_for(env),
             ),
             dlq: {
@@ -156,8 +186,20 @@ impl LintSnapshot {
             .coverage_warnings
             .extend(dlq_depth_gap(&self.env, disabled, &self.dlq));
         let rules = crate::lint::default_rules(disabled);
-        let issues =
+        let mut issues =
             crate::lint::inputs::run_rules_for_env(&rules, &self.env, &inputs, &self.required_tags);
+        // EBL021, outside the per-env registry: the listing, or the gap.
+        if crate::lint::inputs::ebl021_could_fire(disabled, std::iter::once(&self.env)) {
+            match &self.lifecycle {
+                Ok(lifecycle) => issues.extend(crate::lint::platform_lifecycle_issues(
+                    std::iter::once(&self.env),
+                    lifecycle,
+                )),
+                Err(why) => inputs.coverage_warnings.extend(
+                    ProbeOutcome::Unknown(why.clone()).coverage_warning("EBL021", &self.env.name),
+                ),
+            }
+        }
         LintRun {
             issues,
             coverage_warnings: inputs.coverage_warnings,

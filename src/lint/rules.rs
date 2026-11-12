@@ -1225,6 +1225,60 @@ pub(crate) fn stale_custom_platform_issues(
     out
 }
 
+/// EBL021 — the env runs on a platform branch AWS has deprecated (Warn)
+/// or retired (Error). EBL008 says a newer version exists in the same
+/// branch; this says the branch itself is ending, which is the one with
+/// a hard consequence: a retired branch gets no managed updates and no
+/// new environments, so a rebuild or clone onto it fails. Input is one
+/// `ListPlatformBranches` listing, so like EBL015 it is a pure pass
+/// outside the per-env registry, and callers honour `lint.disable`.
+/// The listing gives the state, not a date.
+pub(crate) fn platform_lifecycle_issues<'a>(
+    envs: impl IntoIterator<Item = &'a crate::aws::Environment>,
+    lifecycle: &std::collections::HashMap<String, String>,
+) -> Vec<Issue> {
+    envs.into_iter()
+        .filter_map(|env| {
+            let state = crate::aws::platform_lifecycle(env, lifecycle)?;
+            let branch = crate::aws::platform_branch_of_stack(&env.solution_stack)?;
+            let retired = state.eq_ignore_ascii_case("retired");
+            let mut fields = BTreeMap::new();
+            fields.insert("platform_branch".into(), branch.clone());
+            fields.insert("lifecycle".into(), state.to_string());
+            Some(Issue {
+                rule_id: "EBL021".into(),
+                severity: if retired {
+                    Severity::Error
+                } else {
+                    Severity::Warn
+                },
+                env_name: Some(env.name.clone()),
+                title: format!("Platform branch '{branch}' is {}", state.to_lowercase()),
+                detail: if retired {
+                    format!(
+                        "AWS has retired '{branch}': it gets no managed updates or security \
+                         patches, and no new environment can be created on it, so a rebuild \
+                         or clone of this one can fail. It keeps running until then."
+                    )
+                } else {
+                    format!(
+                        "AWS has deprecated '{branch}' and announced its retirement. It still \
+                         gets updates for now; after retirement it gets none, and new \
+                         environments on it are refused. AWS's platform retirement schedule \
+                         gives the date; this listing does not."
+                    )
+                },
+                suggestion: Some(
+                    ":upgrade  (no argument lists the compatible platforms; a different \
+                     branch can need application changes)"
+                        .into(),
+                ),
+                fields,
+            })
+        })
+        .collect()
+}
+
 /// EBL016 — the env's health-check URL fails a live HTTP probe.
 /// Detection input comes from the caller (CLI-only, behind
 /// `ebman lint --probe-live` — one curl HEAD per env is too slow

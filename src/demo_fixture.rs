@@ -207,6 +207,19 @@ pub(crate) fn canned_ssm_session(instance_id: &str) -> String {
 /// name prefix against the env name since the fixture-side alarms
 /// encode their owning env that way. Used by `spawn_detail_alarms`
 /// and `spawn_why_red_alarms` in demo mode.
+/// The demo region's platform branch lifecycle, as `ListPlatformBranches`
+/// reports it: the fleet's Node.js 20 branch is supported, and the
+/// relay's Go 1.4 on Amazon Linux 2018.03 long retired.
+pub(crate) fn platform_lifecycle() -> HashMap<String, String> {
+    [
+        ("Node.js 20 running on 64bit Amazon Linux 2023", "Supported"),
+        ("Go 1.4 running on 64bit Amazon Linux 2018.03", "Retired"),
+    ]
+    .into_iter()
+    .map(|(b, s)| (b.to_string(), s.to_string()))
+    .collect()
+}
+
 /// One demo environment's enhanced-health rollup, shaped by its colour
 /// so `:why` tells the story the fleet row does. An env the fixture
 /// does not have answers as live does for an unknown name.
@@ -730,6 +743,7 @@ pub(crate) fn install(app: &mut App) {
     for (name, alarms) in firing_alarms() {
         app.caches.firing_alarms.set(key(&name), alarms);
     }
+    app.caches.platform_lifecycle = platform_lifecycle();
     app.costs.set_enabled(true);
     app.costs.set_complete(
         costs().into_iter().map(|(name, usd)| (key(&name), usd)),

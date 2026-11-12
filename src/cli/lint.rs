@@ -781,6 +781,28 @@ where
             },
         );
 
+        // EBL021 — the branch each env is on, from one listing for the
+        // region. Lost coverage on failure, like EBL008 above: a run
+        // whose listing never happened is not a clean one.
+        if lint::inputs::ebl021_could_fire(disabled, targets.iter().copied()) {
+            match lint::inputs::fetch_platform_lifecycle_issues(&aws, targets.iter().copied()).await
+            {
+                Ok(mut issues) => {
+                    filter_issues(&mut issues, severity_filter, rule_filter);
+                    if let Some(region) = region_opt {
+                        for issue in &mut issues {
+                            issue.fields.insert("region".into(), region.clone());
+                        }
+                    }
+                    report.issues.extend(issues);
+                }
+                Err(e) => {
+                    let region_label = aws.context.region.as_str();
+                    report.degrade(format!("EBL021 skipped — region '{region_label}': {e}"));
+                }
+            }
+        }
+
         for env in targets {
             // Fetch + build + run via the shared assembly path
             // (`fetch_env_lint_inputs` / `run_rules_for_env`) —
@@ -2685,6 +2707,10 @@ pub(crate) mod cycle_wiring {
         pub(crate) stacks_rejected: bool,
         /// `DescribeEnvironments` is rejected: the region does not answer.
         pub(crate) listing_rejected: bool,
+        /// `ListPlatformBranches` is rejected: EBL021's input is lost.
+        pub(crate) branches_rejected: bool,
+        /// The fleet's branch is listed as retired, so EBL021 fires.
+        pub(crate) branch_retired: bool,
     }
 
     /// The branch whose platform dates the mock refuses to report.
@@ -2927,6 +2953,30 @@ pub(crate) mod cycle_wiring {
                             .build(),
                     )
                 });
+        // EBL021's branch listing: the fleet's branch is supported by
+        // default, so a clean cycle stays clean.
+        let branch_retired = faults.branch_retired;
+        let branches = if faults.branches_rejected {
+            aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::list_platform_branches)
+                .then_error(move || {
+                    aws_sdk_elasticbeanstalk::operation::list_platform_branches::ListPlatformBranchesError::generic(
+                        denied("elasticbeanstalk:ListPlatformBranches"),
+                    )
+                })
+        } else {
+            aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::list_platform_branches)
+                .then_output(move || {
+                    use aws_sdk_elasticbeanstalk::types::PlatformBranchSummary;
+                    aws_sdk_elasticbeanstalk::operation::list_platform_branches::ListPlatformBranchesOutput::builder()
+                        .platform_branch_summary_list(
+                            PlatformBranchSummary::builder()
+                                .branch_name("Corretto 17 running on 64bit Amazon Linux 2023")
+                                .lifecycle_state(if branch_retired { "Retired" } else { "Supported" })
+                                .build(),
+                        )
+                        .build()
+                })
+        };
         let mut rules: Vec<&aws_smithy_mocks::Rule> = vec![
             &listing,
             &stacks,
@@ -2935,6 +2985,7 @@ pub(crate) mod cycle_wiring {
             &health,
             &resources,
             &platforms,
+            &branches,
         ];
         if failing_update {
             rules.push(&update);
@@ -3177,6 +3228,63 @@ pub(crate) mod cycle_wiring {
             |_| async { Ok(stacks_rejected()) },
         )
         .await;
+        assert!(!report.degraded(), "{:?}", report.degrade_reasons);
+    }
+
+    /// A refused branch listing is lost EBL021 coverage: one degrade
+    /// line for the region, and none when EBL021 is switched off.
+    #[tokio::test]
+    async fn a_failed_branch_listing_degrades_the_cycle_unless_ebl021_is_off() {
+        let rejected = || {
+            mock_client_inner(
+                vec!["poly-prod-web".into(), "poly-prod-api".into()],
+                MockFaults {
+                    branches_rejected: true,
+                    ..MockFaults::default()
+                },
+            )
+        };
+        let report = run_with(vec![None], move |_| async move { Ok(rejected()) }).await;
+        let ebl021: Vec<_> = report
+            .degrade_reasons
+            .iter()
+            .filter(|r| r.contains("EBL021"))
+            .collect();
+        assert_eq!(ebl021.len(), 1, "{:?}", report.degrade_reasons);
+        assert!(ebl021[0].contains("ListPlatformBranches"), "{}", ebl021[0]);
+        let report = run_with_opts(
+            vec![None],
+            CycleOpts {
+                disabled: vec!["EBL021".into()],
+                ..CycleOpts::default()
+            },
+            move |_| async move { Ok(rejected()) },
+        )
+        .await;
+        assert!(!report.degraded(), "{:?}", report.degrade_reasons);
+    }
+
+    /// An env on a retired branch is an EBL021 error, once per env.
+    #[tokio::test]
+    async fn an_env_on_a_retired_branch_is_an_ebl021_error() {
+        let report = run_with(vec![None], |_| async {
+            Ok(mock_client_inner(
+                vec!["poly-prod-web".into()],
+                MockFaults {
+                    branch_retired: true,
+                    ..MockFaults::default()
+                },
+            ))
+        })
+        .await;
+        let found: Vec<_> = report
+            .issues
+            .iter()
+            .filter(|i| i.rule_id == "EBL021")
+            .collect();
+        assert_eq!(found.len(), 1, "{:?}", report.issues);
+        assert_eq!(found[0].severity, crate::lint::Severity::Error);
+        assert_eq!(found[0].env_name.as_deref(), Some("poly-prod-web"));
         assert!(!report.degraded(), "{:?}", report.degrade_reasons);
     }
 
