@@ -515,7 +515,74 @@ fn merged_regions_tag_every_row_and_name_the_failures() {
         None,
     );
     assert_eq!(lint["issues"][0]["region"], "eu-west-2", "{lint}");
+    let caveat = merge_region_answers(
+        "lint",
+        vec![(
+            "eu-west-2".into(),
+            Ok(json!({"issues": [], "skipped_envs": [], "rules_not_checked": ["EBL011"]})),
+        )],
+        None,
+    );
+    assert_eq!(
+        caveat["rules_not_checked"],
+        json!(["EBL011"]),
+        "kept through the merge"
+    );
     assert_eq!(lint["skipped_envs"][0], "[eu-west-2] x: denied", "{lint}");
+}
+
+/// A named env lives in one region: the others answering "not found"
+/// is absence, listed apart, not failure; a real failure stays one; and
+/// no region holding it is an error.
+#[test]
+fn a_named_env_missing_from_a_region_is_absence_not_failure() {
+    use super::tools::split_absent;
+    let nf = || Err::<Value, String>("env 'api' not found".into());
+    let (kept, absent) = split_absent(
+        vec![
+            ("us-east-1".into(), Ok(json!({"issues": []}))),
+            ("eu-west-2".into(), nf()),
+            ("ap-south-1".into(), Err("AccessDenied".into())),
+        ],
+        Some("api"),
+    )
+    .expect("found in one");
+    let kept: Vec<&str> = kept.iter().map(|(r, _)| r.as_str()).collect();
+    assert_eq!(kept, ["us-east-1", "ap-south-1"]);
+    assert_eq!(absent, ["eu-west-2"]);
+    let err = split_absent(vec![("eu-west-2".into(), nf())], Some("api")).expect_err("nowhere");
+    assert!(err.contains("not found in any of eu-west-2"), "{err}");
+    let (kept, absent) =
+        split_absent(vec![("eu-west-2".into(), nf())], None).expect("no env named");
+    assert_eq!(
+        (kept.len(), absent.len()),
+        (1, 0),
+        "without `env` nothing is absence"
+    );
+}
+
+/// On demo, a named env across regions: the region not holding it is
+/// listed as absence, not failure, and no region holding it is an error.
+#[tokio::test]
+async fn a_fanned_out_env_is_absent_not_failed_where_it_is_not() {
+    let s = demo_server();
+    // A named env: the region not holding it is absence, not failure.
+    let one = &demo_fixture::envs()[0].name;
+    let out = s
+        .call_tool(
+            "lint",
+            &json!({"regions": "us-east-1,eu-west-2", "env": one}),
+        )
+        .await
+        .expect("answers");
+    let v: Value = serde_json::from_str(&out).expect("json");
+    assert_eq!(v["env_not_in"], json!(["eu-west-2"]), "{v}");
+    assert_eq!(v["regions_failed"], json!([]), "{v}");
+    assert_eq!(v["regions"], json!(["us-east-1", "eu-west-2"]), "{v}");
+    assert!(s
+        .call_tool("lint", &json!({"regions": "eu-west-2", "env": one}))
+        .await
+        .is_err_and(|e| e.contains("not found in any of eu-west-2")));
 }
 
 /// On demo, `regions` fans a read out: the fleet answers from its one

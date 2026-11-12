@@ -541,6 +541,48 @@ pub(super) fn render_why_json(
     )
 }
 
+/// What a tool says of an env the region does not hold; the region
+/// fan-out reads it as absence.
+fn env_not_found(name: &str) -> String {
+    format!("env '{name}' not found")
+}
+
+/// One region's answer in a fan-out: the region, and what its call gave.
+pub(super) type RegionAnswer = (String, Result<Value, String>);
+
+/// A fan-out's answers, less the regions that do not hold the named
+/// `env` (absence, not failure: a name lives in one region), and those
+/// regions. An error when no region holds it. Pure.
+pub(super) fn split_absent(
+    answers: Vec<RegionAnswer>,
+    env: Option<&str>,
+) -> Result<(Vec<RegionAnswer>, Vec<String>), String> {
+    let Some(name) = env else {
+        return Ok((answers, Vec::new()));
+    };
+    let mut absent = Vec::new();
+    let mut kept = Vec::new();
+    for (region, answer) in answers {
+        match &answer {
+            Err(e) if *e == env_not_found(name) => absent.push(region),
+            _ => kept.push((region, answer)),
+        }
+    }
+    if kept.is_empty() {
+        return Err(format!(
+            "{} in any of {}",
+            env_not_found(name),
+            absent.join(", ")
+        ));
+    }
+    Ok((kept, absent))
+}
+
+/// How long one region of a fan-out may take, inside the call's own
+/// limit: the regions run together, so the slowest bounds the call.
+const REGION_TIMEOUT_SECS: u64 = 25;
+const _: () = assert!(REGION_TIMEOUT_SECS < TOOL_TIMEOUT_SECS);
+
 /// The region demo's fleet lives in.
 const DEMO_REGION: &str = "us-east-1";
 
@@ -561,13 +603,16 @@ pub(super) fn region_spec(spec: &str, home: &str, extra: &[String]) -> Result<Ve
 /// failed is in `regions_failed`. Pure.
 pub(super) fn merge_region_answers(
     tool: &str,
-    answers: Vec<(String, Result<Value, String>)>,
+    answers: Vec<RegionAnswer>,
     max: Option<u64>,
 ) -> Value {
     let mut rows: Vec<Value> = Vec::new();
     let mut skipped: Vec<Value> = Vec::new();
     let mut failed: Vec<Value> = Vec::new();
     let mut asked: Vec<String> = Vec::new();
+    // Lint's caveat on the rules it cannot run: the same in every region,
+    // and as easy to miss merged as it was alone.
+    let mut not_checked: Option<Value> = None;
     for (region, answer) in answers {
         asked.push(region.clone());
         let v = match answer {
@@ -577,6 +622,9 @@ pub(super) fn merge_region_answers(
                 continue;
             }
         };
+        if not_checked.is_none() {
+            not_checked = v.get("rules_not_checked").cloned();
+        }
         let (list, extra) = match tool {
             "lint" => (v.get("issues").cloned(), v.get("skipped_envs").cloned()),
             _ => (Some(v), None),
@@ -611,6 +659,9 @@ pub(super) fn merge_region_answers(
     let mut out = json!({key: rows, "regions": asked, "regions_failed": failed});
     if tool == "lint" {
         out["skipped_envs"] = json!(skipped);
+        if let Some(n) = not_checked {
+            out["rules_not_checked"] = n;
+        }
     }
     out
 }
@@ -1238,7 +1289,7 @@ impl Server {
                 let found = envs
                     .iter()
                     .find(|e| e.name == name)
-                    .ok_or_else(|| format!("env '{name}' not found"))?;
+                    .ok_or_else(|| env_not_found(name))?;
                 vec![found]
             }
             None => envs.iter().collect(),
@@ -2370,22 +2421,49 @@ impl Server {
             Backend::Aws => self.client(&single).await?.context.region.clone(),
         };
         let regions = region_spec(&spec, &home, &self.safety_cfg.extra_regions)?;
-        let mut answers: Vec<(String, Result<Value, String>)> = Vec::new();
-        for region in regions {
-            if matches!(self.backend, Backend::Demo) && region != home {
-                answers.push((region, Ok(Value::Null)));
-                continue;
-            }
+        // Every region at once, each under its own limit inside the
+        // call's: one slow region is named in `regions_failed` rather
+        // than timing out the call and losing every other answer.
+        let named = arg_str(args, "env");
+        let calls = regions.iter().map(|region| {
             let mut one = single.clone();
             one["region"] = json!(region);
-            let answer = Box::pin(self.call_tool(tool, &one))
+            let demo_elsewhere = matches!(self.backend, Backend::Demo) && *region != home;
+            let named = named.clone();
+            async move {
+                // Demo's fleet lives in one region; elsewhere holds none
+                // of it, and says so as a real empty region would.
+                if demo_elsewhere {
+                    return match named {
+                        Some(name) => Err(env_not_found(&name)),
+                        None => Ok(Value::Null),
+                    };
+                }
+                match tokio::time::timeout(
+                    std::time::Duration::from_secs(REGION_TIMEOUT_SECS),
+                    Box::pin(self.call_tool(tool, &one)),
+                )
                 .await
-                .and_then(|t| serde_json::from_str::<Value>(&t).map_err(|e| e.to_string()));
-            answers.push((region, answer));
-        }
+                {
+                    Err(_) => Err(format!("no answer within {REGION_TIMEOUT_SECS}s")),
+                    Ok(answer) => answer
+                        .and_then(|t| serde_json::from_str::<Value>(&t).map_err(|e| e.to_string())),
+                }
+            }
+        });
+        let results = futures::future::join_all(calls).await;
+        let env = named;
+        let asked = json!(regions);
+        let (answers, absent) =
+            split_absent(regions.into_iter().zip(results).collect(), env.as_deref())?;
         // The cap applies to the merged answer, as it does to one region's.
         let max = arg_u64(args, "max").or(Some(EVENTS_DEFAULT_MAX as u64));
-        Ok(merge_region_answers(tool, answers, max).to_string())
+        let mut merged = merge_region_answers(tool, answers, max);
+        merged["regions"] = asked;
+        if env.is_some() {
+            merged["env_not_in"] = json!(absent);
+        }
+        Ok(merged.to_string())
     }
 
     /// Wait for an env to leave Updating, Launching or Terminating, polling
