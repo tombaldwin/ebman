@@ -578,6 +578,11 @@ pub(super) fn split_absent(
     Ok((kept, absent))
 }
 
+/// How long a deploy or rollback plan's pre-deploy lint may take: the
+/// plan's own reads share the call's 30s with it.
+const PLAN_LINT_SECS: u64 = 10;
+const _: () = assert!(PLAN_LINT_SECS * 2 < TOOL_TIMEOUT_SECS);
+
 /// How long one region of a fan-out may take, inside the call's own
 /// limit: the regions run together, so the slowest bounds the call.
 const REGION_TIMEOUT_SECS: u64 = 25;
@@ -2513,35 +2518,49 @@ impl Server {
                     Vec::new(),
                 )
             }
-            Backend::Aws => match self.client(args).await {
-                Err(e) => (Vec::new(), vec![format!("lint could not run: {e}")]),
-                Ok(client) => {
-                    let platforms = lint::inputs::Platforms::from_listing(
-                        client.list_solution_stacks().await,
-                        |e| e.to_string(),
-                    );
-                    match fetch_env_lint_inputs(
-                        &client,
-                        env,
-                        &platforms,
-                        false,
-                        &disabled,
-                        &required_tags,
-                    )
-                    .await
-                    {
-                        Ok(inputs) => (
-                            run_rules_for_env(&rules, env, &inputs, &required_tags),
-                            inputs
-                                .coverage_warnings
-                                .iter()
-                                .map(ToString::to_string)
-                                .collect(),
-                        ),
+            // Bounded inside the plan's own call: a slow account's lint
+            // says it did not finish rather than timing the plan out.
+            Backend::Aws => {
+                match tokio::time::timeout(std::time::Duration::from_secs(PLAN_LINT_SECS), async {
+                    match self.client(args).await {
                         Err(e) => (Vec::new(), vec![format!("lint could not run: {e}")]),
+                        Ok(client) => {
+                            let platforms = lint::inputs::Platforms::from_listing(
+                                client.list_solution_stacks().await,
+                                |e| e.to_string(),
+                            );
+                            match fetch_env_lint_inputs(
+                                &client,
+                                env,
+                                &platforms,
+                                false,
+                                &disabled,
+                                &required_tags,
+                            )
+                            .await
+                            {
+                                Ok(inputs) => (
+                                    run_rules_for_env(&rules, env, &inputs, &required_tags),
+                                    inputs
+                                        .coverage_warnings
+                                        .iter()
+                                        .map(ToString::to_string)
+                                        .collect(),
+                                ),
+                                Err(e) => (Vec::new(), vec![format!("lint could not run: {e}")]),
+                            }
+                        }
                     }
+                })
+                .await
+                {
+                    Ok(done) => done,
+                    Err(_) => (
+                        Vec::new(),
+                        vec![format!("lint did not finish within {PLAN_LINT_SECS}s")],
+                    ),
                 }
-            },
+            }
         };
         let issues: Vec<Value> = issues
             .iter()
