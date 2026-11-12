@@ -7293,7 +7293,7 @@ async fn a_demo_plan_does_not_claim_the_role_is_assumed() {
         .await
         .pending
         .as_ref()
-        .and_then(|p| p.role().map(super::role::PlanRole::line))
+        .and_then(|p| p.role.as_ref().map(super::role::PlanRole::line))
         .expect("the plan's role");
     assert!(line.contains("on a live server it would go out"), "{line}");
     assert!(line.contains("this demo assumes nothing"), "{line}");

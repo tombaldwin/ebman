@@ -171,12 +171,6 @@ it a home (`mcp/refusal.rs`), so `WriteAudit` goes last rather than
 being built twice. Refilled 2026-11-06: the `scan.rs` split is done
 (archived, "PLAN.md items done 2026-11-06").*
 
-3. *(architecture)* **`PlanRole` embeds `MappedRole`.** It copies six of its fields;
-   `PlanRole { mapped, assumes }` removes the copy. `PendingWrite::role()`
-   is an accessor over a `pub role`, so there are two ways to read it;
-   nothing outside `role()` reads the field, so making it private ends
-   that. ~1 hour.
-
 4. *(architecture)* **Session plumbing helpers.** `Server::dispatch_client(profile,
    region, session)` for the session-or-base client (`writes.rs`
    dispatch, `undo.rs` restore); one function for "extras plus the

@@ -2114,14 +2114,24 @@ fn a_plan_resolves_the_role_its_verb_maps_to() {
     assert_eq!(
         plan_role(&cfg, WriteVerb::Restart),
         Some(PlanRole {
-            key: "deploys".into(),
-            arn: "arn:aws:iam::123456789012:role/team/EbmanAgentDeploy".into(),
-            account: "123456789012".into(),
-            name: "EbmanAgentDeploy".into(),
-            source_profile: Some("ops".into()),
-            external_id: Some("x-1".into()),
+            mapped: crate::config::MappedRole {
+                role: "deploys".into(),
+                arn: crate::config::RoleArn {
+                    arn: "arn:aws:iam::123456789012:role/team/EbmanAgentDeploy".into(),
+                    account: "123456789012".into(),
+                    name: "EbmanAgentDeploy".into(),
+                },
+                spec: cfg.mcp_roles["deploys"].clone(),
+            },
             assumes: true,
         })
+    );
+    // The entry the plan carries is the operator's, whole: confirm
+    // assumes from its `source_profile` with its `external_id`.
+    let spec = &cfg.mcp_roles["deploys"];
+    assert_eq!(
+        (spec.source_profile.as_deref(), spec.external_id.as_deref()),
+        (Some("ops"), Some("x-1"))
     );
     assert_eq!(plan_role(&cfg, WriteVerb::Terminate), None, "unmapped");
     assert_eq!(
@@ -2470,7 +2480,7 @@ fn a_long_identity_never_cuts_the_role_sentence() {
     cfg.mcp_roles.get_mut("deploys").unwrap().role_arn =
         format!("arn:aws:iam::123456789012:role/{path}EbmanAgentDeploy");
     p.role = plan_role(&cfg, WriteVerb::Restart);
-    let arn = p.role().expect("mapped").arn.clone();
+    let arn = p.role.as_ref().expect("mapped").mapped.arn.arn.clone();
     assert!(arn.len() > 120, "longer than a capped field");
     assert!(ask_summary(&p).contains(&arn), "{}", ask_summary(&p));
 }
@@ -2520,8 +2530,12 @@ async fn a_plan_picks_the_role_in_the_env_s_account() {
     assert_eq!(v["plan"]["role"]["config"], "mcp.role.here", "{plan}");
     assert_eq!(v["plan"]["role"]["account"], "123456789012", "{plan}");
     let st = s.writes.lock().await;
-    let role = st.pending.as_ref().and_then(|p| p.role()).expect("carried");
-    assert_eq!(role.key, "here");
+    let role = st
+        .pending
+        .as_ref()
+        .and_then(|p| p.role.as_ref())
+        .expect("carried");
+    assert_eq!(role.mapped.role, "here");
 }
 
 /// Every policy refusal is a `Refused`; nothing else is.
@@ -3031,7 +3045,7 @@ async fn a_mapped_verb_with_no_role_carried_is_refused() {
             },
         }],
     };
-    assert!(p.role().is_none());
+    assert!(p.role.as_ref().is_none());
     let refused = s
         .assume_role_for(&p, "claude-code")
         .await

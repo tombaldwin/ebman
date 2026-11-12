@@ -505,7 +505,7 @@ pub(super) fn ask_summary(p: &PendingWrite) -> String {
         // before destroying something.
         sanitize(&p.caller.line(), Shown::ASK),
         // Its own slot: see `PlanRole::line`.
-        p.role().map(PlanRole::line).unwrap_or_default(),
+        p.role.as_ref().map(PlanRole::line).unwrap_or_default(),
         // `dlq_visible` is carried on the plan so a purge dialog can
         // say how much it destroys. Passing `None` here rendered
         // "every message in the queue" with no number, while the plan
@@ -1297,13 +1297,6 @@ pub(super) struct PendingWrite {
     /// metadata included, which `audit_region` cannot read. `None` on
     /// demo.
     pub plan_region: Option<String>,
-}
-
-impl PendingWrite {
-    /// The role the plan picked (`mcp.role.NAME`), if the verb has one.
-    pub(super) fn role(&self) -> Option<&PlanRole> {
-        self.role.as_ref()
-    }
 }
 
 /// Token TTL — long enough for an agent round-trip, short enough

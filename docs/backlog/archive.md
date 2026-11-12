@@ -5877,3 +5877,10 @@ a `--read-only` server.
   protected names), crate-level and `cfg(test)`; the write-gate guard
   sits in `src/write_gate.rs`. 2,363 lib test names unchanged; the moved
   guards were each shown to fail against a planted violation.
+
+## PLAN.md items done 2026-11-12
+
+- **`PlanRole` embeds `MappedRole`.** `PlanRole { mapped, assumes }`;
+  the six copied fields are gone. The `PendingWrite::role()` accessor
+  went rather than the field going private: a sibling test module builds
+  a `PendingWrite` whole, so the field is the one way to read it.

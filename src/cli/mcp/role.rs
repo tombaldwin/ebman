@@ -84,7 +84,7 @@ impl Server {
         // client would have dispatched to; the audit lines' resolution
         // only when the plan recorded none.
         let region = self.pending_region(p).await;
-        let Some(role) = p.role() else {
+        let Some(role) = p.role.as_ref().map(|r| &r.mapped) else {
             // A verb that maps to a role never goes out without one: a
             // plan that carried none for it is refused, not sent as the
             // base identity. The plan refuses first today; this is the
@@ -106,13 +106,17 @@ impl Server {
         // otherwise be written in another, where the same name can be
         // another environment and the account check passes.
         let spec = crate::config::AccountSpec {
-            role_arn: role.arn.clone(),
+            role_arn: role.arn.arn.clone(),
             // With no source profile, from the write's own credentials.
-            source_profile: role.source_profile.clone().or_else(|| p.profile.clone()),
-            external_id: role.external_id.clone(),
+            source_profile: role
+                .spec
+                .source_profile
+                .clone()
+                .or_else(|| p.profile.clone()),
+            external_id: role.spec.external_id.clone(),
             region: (region != "-").then(|| region.clone()),
         };
-        let role_is = format!("role `{}` ({})", role.name, role.arn);
+        let role_is = format!("role `{}` ({})", role.arn.name, role.arn.arn);
         // The remedy follows the failure. It never suggests dropping
         // the verb from the role: that removes the ceiling.
         // The session name goes on the refusal only once an AssumeRole
@@ -130,14 +134,14 @@ impl Server {
         } else {
             match self.assume(&spec, &name).await {
                 Ok(client) => match client.context.account_id.as_deref() {
-                    Some(a) if a != role.account => (
+                    Some(a) if a != role.arn.account => (
                         format!(
                             "the session of {role_is} is in account {a}, not the role's {}",
-                            role.account
+                            role.arn.account
                         ),
                         format!(
                             "check mcp.role.{}.role_arn and the identity it is assumed from",
-                            role.key
+                            role.role
                         ),
                         true,
                     ),
@@ -157,7 +161,7 @@ impl Server {
                     Some(_) => {
                         return Ok(Some(RoleSession {
                             client: std::sync::Arc::new(client),
-                            arn: role.arn.clone(),
+                            arn: role.arn.arn.clone(),
                             name,
                         }));
                     }
@@ -168,7 +172,7 @@ impl Server {
                         "let {} assume {} (the role's trust policy, and sts:AssumeRole for \
                          the identity)",
                         name_of_base(&spec),
-                        role.arn
+                        role.arn.arn
                     ),
                     true,
                 ),
@@ -190,8 +194,8 @@ impl Server {
     ) -> Audited {
         let audit_profile = self.audit_profile(&p.profile);
         let mut extras: Vec<(&str, &str)> = Vec::new();
-        if let Some(role) = p.role() {
-            extras.push(("role", role.arn.as_str()));
+        if let Some(role) = p.role.as_ref() {
+            extras.push(("role", role.mapped.arn.arn.as_str()));
         }
         if let Some(session) = session {
             extras.push(("session", session));
@@ -395,17 +399,10 @@ impl Server {
 /// account, and assumed at confirm for this write alone.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct PlanRole {
-    /// The `mcp.role.KEY` that lists the verb.
-    pub key: String,
-    pub arn: String,
-    pub account: String,
-    /// The role's own name, from the ARN.
-    pub name: String,
-    /// Whose credentials the role is assumed from, and the external id
-    /// its trust policy asks for: carried so slice 3 assumes what the
-    /// operator approved, never a lookup at confirm.
-    pub source_profile: Option<String>,
-    pub external_id: Option<String>,
+    /// The `mcp.role.KEY` that lists the verb, its ARN read, and the
+    /// whole entry: `source_profile` and `external_id` are carried so
+    /// confirm assumes what the operator approved, never a lookup.
+    pub mapped: crate::config::MappedRole,
     /// Whether confirm will assume it: not on the demo backend, which
     /// assumes nothing (D8), so the plan and the dialog must not say it
     /// does.
@@ -418,7 +415,7 @@ impl PlanRole {
     /// as one with the identity, the cut fell on the half that says
     /// which credential the write uses.
     pub(super) fn line(&self) -> String {
-        let from = match &self.source_profile {
+        let from = match &self.mapped.spec.source_profile {
             Some(p) => format!("profile `{}`", sanitize(p, Shown::ASK)),
             None => "that identity".to_string(),
         };
@@ -432,10 +429,10 @@ impl PlanRole {
         };
         format!(
             "; {lead} as role `{}` ({}), assumed for this write alone from {from}{tail}",
-            sanitize(&self.name, Shown::ASK),
+            sanitize(&self.mapped.arn.name, Shown::ASK),
             // Whole: `parse_role_arn` bounds it by IAM's limits, and a
             // value the operator approves is shown whole or refused.
-            sanitize(&self.arn, Shown::Whole)
+            sanitize(&self.mapped.arn.arn, Shown::Whole)
         )
     }
 
@@ -443,10 +440,10 @@ impl PlanRole {
     pub(super) fn json(&self) -> String {
         format!(
             "{{\"config\":{},\"arn\":{},\"account\":{},\"name\":{},\"assumed\":{}}}",
-            util::json_string(&format!("mcp.role.{}", self.key)),
-            util::json_string(&self.arn),
-            util::json_string(&self.account),
-            util::json_string(&self.name),
+            util::json_string(&format!("mcp.role.{}", self.mapped.role)),
+            util::json_string(&self.mapped.arn.arn),
+            util::json_string(&self.mapped.arn.account),
+            util::json_string(&self.mapped.arn.name),
             self.assumes,
         )
     }
@@ -456,12 +453,7 @@ impl PlanRole {
     /// The plan's copy of one role that lists the verb.
     pub(super) fn from_mapped(m: &crate::config::MappedRole, assumes: bool) -> PlanRole {
         PlanRole {
-            key: m.role.clone(),
-            arn: m.arn.arn.clone(),
-            account: m.arn.account.clone(),
-            name: m.arn.name.clone(),
-            source_profile: m.spec.source_profile.clone(),
-            external_id: m.spec.external_id.clone(),
+            mapped: m.clone(),
             assumes,
         }
     }
