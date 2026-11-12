@@ -7507,6 +7507,64 @@ async fn the_lifecycle_verbs_dispatch_what_the_plan_named() {
     assert_eq!(rolled_back.num_calls(), 1, "build-1, from the events");
 }
 
+/// On AWS, `managed_updates` reads what is scheduled and what ran, the
+/// last ten, failures with EB's reason.
+#[tokio::test]
+async fn managed_updates_reads_both_halves_on_aws() {
+    use aws_sdk_elasticbeanstalk::operation as op;
+    use aws_sdk_elasticbeanstalk::types::{
+        ActionHistoryStatus, FailureType, ManagedActionHistoryItem,
+    };
+    let scheduled = aws_smithy_mocks::mock!(
+        aws_sdk_elasticbeanstalk::Client::describe_environment_managed_actions
+    )
+    .then_output(|| {
+        op::describe_environment_managed_actions::DescribeEnvironmentManagedActionsOutput::builder()
+            .build()
+    });
+    let history = aws_smithy_mocks::mock!(
+        aws_sdk_elasticbeanstalk::Client::describe_environment_managed_action_history
+    )
+    .match_requests(|r| {
+        r.environment_name() == Some("poly-history-probe")
+            && r.max_items() == Some(crate::aws::MANAGED_HISTORY_MAX)
+    })
+    .then_output(|| {
+        op::describe_environment_managed_action_history::DescribeEnvironmentManagedActionHistoryOutput::builder()
+            .managed_action_history_items(
+                ManagedActionHistoryItem::builder()
+                    .action_id("ma-old")
+                    .status(ActionHistoryStatus::Failed)
+                    .failure_type(FailureType::RollbackSuccessful)
+                    .failure_description("health checks failed")
+                    .build(),
+            )
+            .build()
+    });
+    let eb = aws_smithy_mocks::mock_client!(
+        aws_sdk_elasticbeanstalk,
+        aws_smithy_mocks::RuleMode::MatchAny,
+        [&scheduled, &history]
+    );
+    let s = Server::with_injected_client(
+        WriteScope::None,
+        crate::config::Config::default(),
+        test_client(eb),
+    );
+    let out = s
+        .call_tool("managed_updates", &json!({"env": "poly-history-probe"}))
+        .await
+        .expect("answers");
+    let v: Value = serde_json::from_str(&out).expect("json");
+    assert_eq!(v["scheduled"], json!([]), "{v}");
+    assert_eq!(v["history"][0]["id"], "ma-old", "{v}");
+    assert_eq!(v["history"][0]["failure_type"], "RollbackSuccessful", "{v}");
+    assert_eq!(
+        v["history"][0]["failure_description"], "health checks failed",
+        "{v}"
+    );
+}
+
 /// The session a role assume would give: a client whose restart works,
 /// in `account`.
 fn role_session(account: &str) -> crate::aws::AwsClient {

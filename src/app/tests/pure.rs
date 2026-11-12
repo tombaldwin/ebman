@@ -1673,6 +1673,18 @@ fn the_managed_updates_overlay_says_what_is_scheduled_and_what_failed() {
     );
     assert!(text.contains("(2d ago)"), "{text}");
 
+    // A time exactly now has happened: "ago", never "in 0s".
+    let at_now = format_managed_updates(
+        &Ok(vec![ManagedAction {
+            id: "ma-3".into(),
+            window_start: Some(now),
+            ..Default::default()
+        }]),
+        &Ok(Vec::new()),
+        now,
+    );
+    assert!(at_now.contains("(0s ago)"), "{at_now}");
+
     let none = format_managed_updates(&Ok(Vec::new()), &Ok(Vec::new()), now);
     assert!(
         none.contains("nothing scheduled") && none.contains(":managed-window"),
