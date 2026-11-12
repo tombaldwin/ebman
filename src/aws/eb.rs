@@ -174,8 +174,41 @@ pub(crate) struct ManagedActionRecord {
     pub finished: Option<DateTime<Utc>>,
 }
 
-/// An auto-scaling group's min and max, checked as the CLI and MCP take
-/// them: neither negative, min no more than max, and max within the
+/// Whether `env` has an update to abort: only while it is Updating.
+/// The TUI, the CLI and MCP all ask this before dispatching, rather than
+/// auditing a dispatch EB then refuses. Pure.
+pub(crate) fn abort_allowed(env: &Environment) -> std::result::Result<(), String> {
+    if env.status.eq_ignore_ascii_case("Updating") {
+        return Ok(());
+    }
+    Err(format!(
+        "'{}' is {}, not updating: there is no update to abort",
+        env.name, env.status
+    ))
+}
+
+/// Whether `env` and `other` can swap CNAMEs: two environments of one
+/// application (EB swaps within one, and in one region, which the caller
+/// has already matched). Asked by the TUI, the CLI and MCP. Pure.
+pub(crate) fn swap_allowed(
+    env: &Environment,
+    other: &Environment,
+) -> std::result::Result<(), String> {
+    if env.name == other.name {
+        return Err("an environment cannot swap CNAMEs with itself".into());
+    }
+    if env.application != other.application {
+        return Err(format!(
+            "'{}' is in application '{}' and '{}' in '{}': EB swaps CNAMEs \
+             within one application",
+            env.name, env.application, other.name, other.application
+        ));
+    }
+    Ok(())
+}
+
+/// An auto-scaling group's min and max, checked as the TUI, the CLI and
+/// MCP take them: neither negative, min no more than max, and max within the
 /// 10,000 instances EB allows. The error names what is wrong.
 pub(crate) fn scale_bounds(min: i64, max: i64) -> std::result::Result<(i32, i32), String> {
     if min < 0 || max < 0 {

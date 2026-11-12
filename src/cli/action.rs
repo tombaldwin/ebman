@@ -427,6 +427,10 @@ where
         }
     };
 
+    if let Err((code, why)) = precondition(&aws, &env, &route).await {
+        let _ = writeln!(err, "ebman action {action_name}: {why}");
+        return code;
+    }
     let verb = match route {
         Route::Deploy(flags) => return deploy(&aws, &env, flags, profile, out, err).await,
         Route::Rollback { to, flags } => {
@@ -540,6 +544,35 @@ where
     }
 }
 
+/// What must hold before a swap or an abort is dispatched, by the same
+/// checks the TUI and MCP make (`aws::swap_allowed`, `aws::abort_allowed`):
+/// refused (3) rather than audited as dispatched and then refused by EB.
+/// An env that is not there is a usage error (2), as for `lint`.
+async fn precondition(
+    aws: &aws::AwsClient,
+    env: &str,
+    route: &Route,
+) -> std::result::Result<(), (i32, String)> {
+    let needs = matches!(route, Route::Swap { .. } | Route::Verb(CliVerb::Abort));
+    if !needs {
+        return Ok(());
+    }
+    let envs = aws
+        .list_environments()
+        .await
+        .map_err(|e| (1, format!("list_environments: {e}")))?;
+    let find = |name: &str| {
+        envs.iter()
+            .find(|e| e.name == name)
+            .ok_or_else(|| (2, format!("env '{name}' not found")))
+    };
+    let this = find(env)?;
+    match route {
+        Route::Swap { with } => aws::swap_allowed(this, find(with)?).map_err(|e| (3, e)),
+        _ => aws::abort_allowed(this).map_err(|e| (3, e)),
+    }
+}
+
 /// `ebman action rollback`: the previous version, redeployed. `to` names
 /// it; otherwise the env's recent events do, as the TUI's event-scan
 /// fallback reads them (the TUI's in-memory pre-deploy snapshot does not
@@ -577,7 +610,7 @@ async fn rollback(
                         err,
                         "ebman action rollback: no earlier version in {env}'s recent events — name one with --to LABEL"
                     );
-                    return 1;
+                    return 3;
                 }
             },
             Err(e) => {
@@ -591,7 +624,7 @@ async fn rollback(
             err,
             "ebman action rollback: {target} is already the deployed version"
         );
-        return 2;
+        return 3;
     }
     let _ = writeln!(out, "rollback: {current} -> {target}");
     deploy(
@@ -1709,10 +1742,21 @@ mod body {
         let listing =
             aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::describe_environments)
                 .then_output(|| {
+                    // `api` mid-update, so it has one to abort; its swap
+                    // partner in the same application.
                     op::describe_environments::DescribeEnvironmentsOutput::builder()
                         .environments(
                             EnvironmentDescription::builder()
                                 .environment_name("api")
+                                .application_name("shop")
+                                .version_label("build-2")
+                                .status("Updating".into())
+                                .health("Green".into())
+                                .build(),
+                        )
+                        .environments(
+                            EnvironmentDescription::builder()
+                                .environment_name("api-green")
                                 .application_name("shop")
                                 .version_label("build-2")
                                 .status("Ready".into())
@@ -1843,7 +1887,46 @@ mod body {
             Some(f.client),
         )
         .await;
-        assert_eq!(r.code, 2, "already deployed: {}", r.err);
+        assert_eq!(r.code, 3, "already deployed is a refusal: {}", r.err);
+    }
+
+    /// Before a swap or an abort, the checks the TUI and MCP make:
+    /// refused (3) with nothing dispatched, and an env that is not there
+    /// a usage error (2).
+    #[tokio::test]
+    async fn a_swap_or_abort_that_cannot_happen_is_refused_before_dispatch() {
+        for (argv, code, says) in [
+            (
+                &["abort", "--env", "api-green"][..],
+                3,
+                "no update to abort",
+            ),
+            (
+                &["swap", "--env", "api", "--with", "api"][..],
+                2,
+                "swap with itself",
+            ),
+            (
+                &["swap", "--env", "api", "--with", "gone"][..],
+                2,
+                "'gone' not found",
+            ),
+            (&["abort", "--env", "gone"][..], 2, "'gone' not found"),
+        ] {
+            let f = lifecycle();
+            let before = crate::audit::delta::mark();
+            let r = action(argv, None, Some(f.client)).await;
+            assert_eq!(r.code, code, "{argv:?}: {}", r.err);
+            assert!(r.err.contains(says), "{argv:?}: {}", r.err);
+            assert_eq!(f.aborted.num_calls() + f.swapped.num_calls(), 0, "{argv:?}");
+            let env = argv[2];
+            assert!(
+                !crate::audit::delta::lines_for(&before, env)
+                    .iter()
+                    .any(|l| l.contains("stage=dispatched")),
+                "{argv:?}: nothing audited as dispatched"
+            );
+        }
     }
 
     #[test]

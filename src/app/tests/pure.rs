@@ -1948,3 +1948,22 @@ fn abort_swap_and_scale_audit_under_the_shared_labels() {
         assert_eq!(action.audit_label(), verb.audit_label());
     }
 }
+
+#[test]
+fn abort_needs_an_update_and_swap_one_application() {
+    use crate::aws::{abort_allowed, swap_allowed};
+    let env = |name: &str, app: &str, status: &str| {
+        let mut e = mk_env(name, app, "Web", "Green");
+        e.status = status.into();
+        e
+    };
+    assert!(abort_allowed(&env("a", "shop", "Updating")).is_ok());
+    assert!(abort_allowed(&env("a", "shop", "updating")).is_ok());
+    assert!(abort_allowed(&env("a", "shop", "Ready")).is_err_and(|e| e.contains("'a' is Ready")));
+    let a = env("a", "shop", "Ready");
+    assert!(swap_allowed(&a, &env("b", "shop", "Ready")).is_ok());
+    assert!(swap_allowed(&a, &env("a", "shop", "Ready")).is_err_and(|e| e.contains("itself")));
+    assert!(
+        swap_allowed(&a, &env("c", "blog", "Ready")).is_err_and(|e| e.contains("'c' in 'blog'"))
+    );
+}

@@ -365,8 +365,13 @@ impl App {
     }
 
     pub(crate) fn cmd_scale(&mut self, rest: &[&str]) {
-        match rest.first().copied().and_then(|s| s.parse::<i32>().ok()) {
-            Some(n) if n >= 0 => self.open_parameterised_action(
+        let bounds = rest
+            .first()
+            .and_then(|s| s.parse::<i64>().ok())
+            .map(|n| crate::aws::scale_bounds(n, n));
+        match bounds {
+            Some(Err(e)) => self.error_message = Some(format!("{e} — usage: :scale N")),
+            Some(Ok((n, _))) => self.open_parameterised_action(
                 Action::Scale,
                 ParameterisedAction {
                     scale_min: Some(n),
@@ -404,6 +409,15 @@ impl App {
     }
 
     pub(crate) fn cmd_abort(&mut self) {
+        // A refusal outranks it: the gate in the modal path says why
+        // nothing may be written before this says there is nothing to.
+        let gated = |app: &Self, name: &str| app.demo_mode || app.is_read_only_for(name);
+        if let Some(env) = self.pointed_env().filter(|e| !gated(self, &e.name)) {
+            if let Err(e) = crate::aws::abort_allowed(&env) {
+                self.error_message = Some(e);
+                return;
+            }
+        }
         self.open_parameterised_action(Action::AbortUpdate, ParameterisedAction::default());
     }
 
@@ -459,14 +473,19 @@ impl App {
             ));
             return;
         }
-        let target_exists = self.environments.iter().any(|e| {
-            e.name == name && e.application == env.application && self.region_for(e) == region
-        });
-        if !target_exists {
+        let Some(other) = self
+            .environments
+            .iter()
+            .find(|e| e.name == name && self.region_for(e) == region)
+        else {
             self.error_message = Some(format!(
                 "swap target '{name}' not found in app '{}' in {region}",
                 env.application
             ));
+            return;
+        };
+        if let Err(e) = crate::aws::swap_allowed(&env, other) {
+            self.error_message = Some(e);
             return;
         }
         let target = name.to_string();

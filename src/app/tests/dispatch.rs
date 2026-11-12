@@ -2426,7 +2426,9 @@ mod mutants_found_these {
     #[tokio::test]
     async fn abort_opens_a_confirm_modal() {
         let mut app = test_app();
-        app.environments = vec![mk_env("api-prod", "poly", "WebServer", "Updating")];
+        let mut env = mk_env("api-prod", "poly", "WebServer", "Green");
+        env.status = "Updating".into();
+        app.environments = vec![env];
         app.rebuild_view();
         app.table_state.select(Some(0));
 
@@ -2437,6 +2439,46 @@ mod mutants_found_these {
         };
         assert_eq!(modal.action, Action::AbortUpdate);
         assert_eq!(modal.target_env, "api-prod");
+    }
+
+    /// `:abort`, `:swap` and `:scale` refuse what the CLI and MCP refuse,
+    /// by the same checks, before a modal opens.
+    #[tokio::test]
+    async fn abort_swap_and_scale_refuse_what_the_other_surfaces_do() {
+        let mut app = test_app();
+        app.environments = vec![
+            mk_env("api-prod", "poly", "WebServer", "Green"),
+            mk_env("blog-prod", "blog", "WebServer", "Green"),
+        ];
+        app.rebuild_view();
+        let row = app
+            .view
+            .filtered()
+            .iter()
+            .position(|&i| app.environments[i].name == "api-prod")
+            .expect("listed");
+        for (cmd, says) in [
+            ("abort", "no update to abort"),
+            ("swap api-prod", "with itself"),
+            ("swap blog-prod", "within one application"),
+            ("scale 20000", "10000 instances"),
+        ] {
+            app.table_state.select(Some(row));
+            app.action_flow = None;
+            app.error_message = None;
+            app.execute_command(cmd);
+            assert!(app.action_flow.is_none(), ":{cmd} opened a modal");
+            assert!(
+                app.error_message
+                    .as_deref()
+                    .is_some_and(|e| e.contains(says)),
+                ":{cmd}: {:?}",
+                app.error_message
+            );
+        }
+        app.table_state.select(Some(row));
+        app.execute_command("scale 10000");
+        assert!(app.action_flow.is_some(), "the cap itself is allowed");
     }
 
     /// Lint begins only `if !self.demo_mode && action != Action::SsmRun`.

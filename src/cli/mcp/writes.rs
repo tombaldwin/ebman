@@ -1635,32 +1635,18 @@ impl Server {
             WriteVerb::AbortUpdate => {
                 // Nothing in flight, nothing to abort: refused here
                 // rather than approved and then refused by EB.
-                if !env.status.eq_ignore_ascii_case("Updating") {
-                    return Err(format!(
-                        "'{}' is {}, not updating: there is no update to abort",
-                        env.name, env.status
-                    ));
-                }
+                crate::aws::abort_allowed(env)?;
                 plan_extra = format!(",\"status\":{}", util::json_string(&env.status));
             }
             WriteVerb::SwapCnames => {
                 let with = arg_str(args, "with")
                     .ok_or("'with' is required — the environment to swap CNAMEs with")?;
-                if with == env.name {
-                    return Err("an environment cannot swap CNAMEs with itself".into());
-                }
                 let envs = self.fetch_envs(args).await?;
                 let other = envs
                     .iter()
                     .find(|e| e.name == with)
                     .ok_or_else(|| format!("env '{with}' not found"))?;
-                if other.application != env.application {
-                    return Err(format!(
-                        "'{}' is in application '{}' and '{with}' in '{}': EB swaps CNAMEs \
-                         within one application",
-                        env.name, env.application, other.application
-                    ));
-                }
+                crate::aws::swap_allowed(env, other)?;
                 plan_extra = format!(
                     ",\"swap\":{{\"env\":{},\"cname\":{},\"with\":{},\"with_cname\":{}}}",
                     util::json_string(&env.name),
