@@ -1885,3 +1885,18 @@ fn a_retention_policy_maps_only_the_rules_that_are_on() {
         super::VersionLifecycle::default()
     );
 }
+
+#[test]
+fn scale_bounds_takes_the_edges_and_refuses_past_them() {
+    use super::scale_bounds;
+    for (min, max) in [(0, 0), (0, 5), (2, 2), (0, 10_000), (10_000, 10_000)] {
+        assert_eq!(
+            scale_bounds(min, max),
+            Ok((min as i32, max as i32)),
+            "{min}..{max} is allowed"
+        );
+    }
+    for (min, max) in [(-1, 0), (0, -1), (3, 2), (0, 10_001)] {
+        assert!(scale_bounds(min, max).is_err(), "{min}..{max} is refused");
+    }
+}

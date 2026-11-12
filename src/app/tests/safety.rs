@@ -2742,17 +2742,25 @@ fn redrive_app(running: bool) -> (App, aws_smithy_mocks::Rule, aws_smithy_mocks:
     .then_output(|| {
         aws_sdk_elasticbeanstalk::operation::describe_configuration_settings::DescribeConfigurationSettingsOutput::builder().build()
     });
-    let attrs =
-        aws_smithy_mocks::mock!(aws_sdk_sqs::Client::get_queue_attributes).then_output(|| {
-            GetQueueAttributesOutput::builder()
-                .attributes(QueueAttributeName::ApproximateNumberOfMessages, "5")
-                .attributes(
-                    QueueAttributeName::QueueArn,
-                    "arn:aws:sqs:us-east-1:123456789012:q",
-                )
-                .build()
-        });
+    // Each queue its own ARN, so a start naming them the wrong way round
+    // matches no rule.
+    let attrs = |url: &'static str| {
+        aws_smithy_mocks::mock!(aws_sdk_sqs::Client::get_queue_attributes)
+            .match_requests(move |r| r.queue_url() == Some(url))
+            .then_output(move || {
+                let name = url.rsplit('/').next().unwrap_or_default();
+                GetQueueAttributesOutput::builder()
+                    .attributes(QueueAttributeName::ApproximateNumberOfMessages, "5")
+                    .attributes(
+                        QueueAttributeName::QueueArn,
+                        format!("arn:aws:sqs:us-east-1:123456789012:{name}"),
+                    )
+                    .build()
+            })
+    };
+    let (main_attrs, dlq_attrs) = (attrs("https://sqs/main"), attrs("https://sqs/main-dlq"));
     let tasks = aws_smithy_mocks::mock!(aws_sdk_sqs::Client::list_message_move_tasks)
+        .match_requests(|r| r.source_arn() == Some("arn:aws:sqs:us-east-1:123456789012:main-dlq"))
         .then_output(move || {
             let mut b = aws_sdk_sqs::operation::list_message_move_tasks::ListMessageMoveTasksOutput::builder();
             if running {
@@ -2761,13 +2769,18 @@ fn redrive_app(running: bool) -> (App, aws_smithy_mocks::Rule, aws_smithy_mocks:
                         .task_handle("task-running")
                         .status("RUNNING")
                         .approximate_number_of_messages_moved(3)
+                        .approximate_number_of_messages_to_move(5)
                         .build(),
                 );
             }
             b.build()
         });
-    let start =
-        aws_smithy_mocks::mock!(aws_sdk_sqs::Client::start_message_move_task).then_output(|| {
+    let start = aws_smithy_mocks::mock!(aws_sdk_sqs::Client::start_message_move_task)
+        .match_requests(|r| {
+            r.source_arn() == Some("arn:aws:sqs:us-east-1:123456789012:main-dlq")
+                && r.destination_arn() == Some("arn:aws:sqs:us-east-1:123456789012:main")
+        })
+        .then_output(|| {
             aws_sdk_sqs::operation::start_message_move_task::StartMessageMoveTaskOutput::builder()
                 .task_handle("task-new")
                 .build()
@@ -2787,7 +2800,7 @@ fn redrive_app(running: bool) -> (App, aws_smithy_mocks::Rule, aws_smithy_mocks:
     let sqs = aws_smithy_mocks::mock_client!(
         aws_sdk_sqs,
         aws_smithy_mocks::RuleMode::MatchAny,
-        [&attrs, &tasks, &start, &cancel]
+        [&main_attrs, &dlq_attrs, &tasks, &start, &cancel]
     );
     let sdk = aws_config::SdkConfig::builder()
         .region(aws_config::Region::new("us-east-1"))
@@ -2844,6 +2857,18 @@ async fn dlq_redrive_starts_refuses_and_cancels() {
     );
 
     let (mut app, start, cancel) = redrive_app(true);
+    // `status` lists the running task, from the dead-letter queue's ARN.
+    app.execute_command("dlq-redrive status");
+    let body = loop {
+        let msg = tokio::time::timeout(std::time::Duration::from_secs(10), app.msg_rx.recv())
+            .await
+            .expect("an overlay within 10s")
+            .expect("a message");
+        if let AppMsg::TextOverlay { body, .. } = msg {
+            break body;
+        }
+    };
+    assert!(body.contains("RUNNING  3 of 5 moved"), "{body}");
     app.execute_command("dlq-redrive");
     let toasts = next_redrive_toast(&mut app).await;
     assert!(toasts.contains("already running"), "{toasts}");

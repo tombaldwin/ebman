@@ -1921,3 +1921,19 @@ fn the_listeners_overlay_names_each_certificates_expiry() {
         "{text}"
     );
 }
+
+/// Abort, swap and scale audit under the shared labels the CLI and MCP
+/// use, so `ebman audit --action` finds every surface's.
+#[test]
+fn abort_swap_and_scale_audit_under_the_shared_labels() {
+    use crate::mode_action::Action;
+    use crate::verb::Verb;
+    for (action, verb) in [
+        (Action::AbortUpdate, Verb::AbortUpdate),
+        (Action::SwapCnames, Verb::SwapCnames),
+        (Action::Scale, Verb::Scale),
+    ] {
+        assert_eq!(action.shared_verb(), Some(verb), "{action:?}");
+        assert_eq!(action.audit_label(), verb.audit_label());
+    }
+}

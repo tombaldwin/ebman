@@ -1841,6 +1841,47 @@ mod body {
         assert_eq!(r.code, 2, "already deployed: {}", r.err);
     }
 
+    #[test]
+    fn durations_parse_to_seconds_for_deploy_and_rollback() {
+        let argv = |a: &[&str]| -> Vec<String> {
+            std::iter::once("action")
+                .chain(a.iter().copied())
+                .map(String::from)
+                .collect()
+        };
+        let parsed = parse_action_args(&argv(&[
+            "deploy",
+            "--env",
+            "api",
+            "--version",
+            "v2",
+            "--wait-for-green",
+            "5m",
+            "--auto-rollback",
+            "1h",
+        ]))
+        .expect("parses");
+        let Route::Deploy(flags) = parsed.route else {
+            panic!("a deploy");
+        };
+        assert_eq!(
+            (flags.wait_for_green_secs, flags.auto_rollback_secs),
+            (Some(300), Some(3600))
+        );
+        let parsed = parse_action_args(&argv(&[
+            "rollback",
+            "--env",
+            "api",
+            "--wait-for-green",
+            "2m",
+        ]))
+        .expect("parses");
+        let Route::Rollback { flags, to } = parsed.route else {
+            panic!("a rollback");
+        };
+        assert_eq!((flags.wait_for_green_secs, to), (Some(120), None));
+    }
+
     /// A swap changes both environments, so a pin on the other one
     /// refuses it; and the new verbs' malformed forms are usage errors
     /// before the gate or a client.
