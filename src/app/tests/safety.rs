@@ -2988,6 +2988,11 @@ async fn version_lifecycle_sets_says_what_it_replaced_and_undoes() {
         mk_env("lifecycle-probe", "shop", "Web", "Green"),
         mk_env("lifecycle-prod", "shop", "Web", "Green"),
         mk_env("lifecycle-other", "blog", "Web", "Green"),
+        {
+            let mut eu = mk_env("lifecycle-eu", "shop", "Web", "Green");
+            eu.region = Some("eu-west-2".into());
+            eu
+        },
     ];
     app.rebuild_view();
     let probe_row = app
@@ -3063,8 +3068,10 @@ async fn version_lifecycle_sets_says_what_it_replaced_and_undoes() {
         app.error_message
     );
 
-    // A pin on another application's env does not refuse it...
+    // A pin on another application's env does not refuse it, nor one on
+    // this application's env in another region, whose policy is its own...
     app.cfg.safety_envs.insert("lifecycle-other".into(), true);
+    app.cfg.safety_envs.insert("lifecycle-eu".into(), true);
     let pending_before = app.pending_actions.len();
     app.execute_command("version-lifecycle off");
     assert_eq!(

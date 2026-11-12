@@ -648,6 +648,11 @@ fn a_tail_answer_names_its_source_and_caps_each_instance() {
         json!(["/var/log/web.stdout.log"]),
         "a file-less line names no group"
     );
+    let exact = render_tail_logs_json("api", &samples[1..], None, 1);
+    assert_eq!(
+        exact["truncated_by_limit"], false,
+        "exactly `limit` lines: {exact}"
+    );
     let v = render_tail_logs_json("api", &samples, Some("ERROR"), 50);
     assert_eq!(v["events"].as_array().unwrap().len(), 1, "{v}");
     assert_eq!(v["truncated_by_limit"], false, "{v}");

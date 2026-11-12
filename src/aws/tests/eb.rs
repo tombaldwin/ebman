@@ -1953,6 +1953,13 @@ fn a_tail_bundle_splits_by_log_file() {
         ]
     );
     assert!(parse_tail_bundle("").is_empty());
+    // A rule two lines from the end has no closing rule to read.
+    let tail = format!("start\n{rule}\n/var/log/cut.log");
+    assert_eq!(
+        parse_tail_bundle(&tail).len(),
+        3,
+        "kept as lines, not a header"
+    );
 }
 
 /// The tail driver polls until a sample is on file, reports each poll,
