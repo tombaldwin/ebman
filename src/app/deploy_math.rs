@@ -6,21 +6,32 @@
 
 use super::*;
 
-/// Compact age formatter — "3s", "12s", "2m", "1h", "4d". Used for the
-/// pending-actions overlay so ages stay short and uniform.
-/// Pure: the version label deployed *before* `current`, found by
-/// scanning `events` (newest-first, as `DescribeEvents` returns)
-/// for the first `version_label` that differs from `current`. EB
-/// tags each event with the version current at the time, so walking
-/// back, the first label ≠ `current` is the one the env ran before
-/// this deploy. `None` when no prior version appears in the window.
+/// Pure: the version an env ran before the current one, for a
+/// rollback: scanning `events` (newest-first, as `DescribeEvents`
+/// returns) for the first version that differs from `current` on an
+/// event saying a deploy or update SUCCEEDED. EB tags every event with
+/// a version, including a failed deploy's ("Failed to deploy
+/// application" carries the version that failed while the env stays on
+/// the old one), so any-label-but-current would roll back onto the
+/// broken build. `None` when no earlier successful version appears in
+/// the window: refusing is the safe failure here.
 pub(crate) fn previous_version_label(events: &[EbEvent], current: &str) -> Option<String> {
     events
         .iter()
+        .filter(|e| is_success_event(&e.message))
         .filter_map(|e| e.version_label.as_deref())
         .filter(|v| !v.is_empty())
         .find(|v| *v != current)
         .map(|v| v.to_string())
+}
+
+/// Pure: an event saying a deploy or environment update finished well:
+/// "New application version was deployed to running EC2 instances.",
+/// "Environment update completed successfully.", or an immutable /
+/// traffic-split deploy's "Deployment completed successfully".
+fn is_success_event(message: &str) -> bool {
+    let m = message.to_ascii_lowercase();
+    m.contains("new application version was deployed") || m.contains("completed successfully")
 }
 
 /// Pure: whether an event message looks like a deploy or a

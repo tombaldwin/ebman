@@ -7762,7 +7762,12 @@ async fn the_lifecycle_verbs_dispatch_what_the_plan_named() {
         });
     let events = aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::describe_events)
         .then_output(|| {
-            let ev = |v: &str| EventDescription::builder().version_label(v).build();
+            let ev = |v: &str| {
+                EventDescription::builder()
+                    .version_label(v)
+                    .message("Environment update completed successfully.")
+                    .build()
+            };
             op::describe_events::DescribeEventsOutput::builder()
                 .events(ev("build-2"))
                 .events(ev("build-1"))

@@ -223,7 +223,7 @@ fn previous_version_label_finds_prior_deploy() {
         at: None,
         env: "e".into(),
         application: "a".into(),
-        message: String::new(),
+        message: "Environment update completed successfully.".into(),
         severity: "INFO".into(),
         version_label: vl.map(String::from),
     };
@@ -256,6 +256,56 @@ fn previous_version_label_finds_prior_deploy() {
     // Empty-string labels are skipped.
     assert_eq!(
         crate::app::previous_version_label(&[ev(Some("")), ev(Some("build-1"))], "build-3"),
+        Some("build-1".into())
+    );
+}
+
+/// A failed deploy's events carry the version that failed while the env
+/// stays on the old one: rolling back must step over it to the last
+/// version that deployed, never onto the broken build.
+#[test]
+fn a_rollback_never_targets_a_version_that_failed_to_deploy() {
+    let ev = |msg: &str, vl: &str| crate::aws::Event {
+        at: None,
+        env: "e".into(),
+        application: "a".into(),
+        message: msg.into(),
+        severity: "INFO".into(),
+        version_label: Some(vl.into()),
+    };
+    // Newest-first: build-3 failed and the env is back on build-2.
+    let events = vec![
+        ev("Failed to deploy application.", "build-3"),
+        ev("Environment update completed unsuccessfully.", "build-3"),
+        ev(
+            "Updating environment api's configuration settings.",
+            "build-3",
+        ),
+        ev(
+            "New application version was deployed to running EC2 instances.",
+            "build-2",
+        ),
+        ev("Deployment completed successfully.", "build-1"),
+    ];
+    assert_eq!(
+        crate::app::previous_version_label(&events, "build-2"),
+        Some("build-1".into())
+    );
+    assert_eq!(
+        crate::app::previous_version_label(&events[..4], "build-2"),
+        None,
+        "no earlier success in the window: refuse rather than guess"
+    );
+    // A rolling deploy's own success line counts too.
+    let rolling = vec![
+        ev("Failed to deploy application.", "build-3"),
+        ev(
+            "New application version was deployed to running EC2 instances.",
+            "build-1",
+        ),
+    ];
+    assert_eq!(
+        crate::app::previous_version_label(&rolling, "build-2"),
         Some("build-1".into())
     );
 }

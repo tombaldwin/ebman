@@ -944,7 +944,7 @@ async fn a_rollback_result_does_not_target_whatever_env_is_selected_now() {
         at: None,
         env: "api-prod".into(),
         application: "shop".into(),
-        message: "Deploying new version".into(),
+        message: "New application version was deployed to running EC2 instances.".into(),
         severity: "INFO".into(),
         version_label: vl.map(String::from),
     };
@@ -989,7 +989,7 @@ async fn a_rollback_result_opens_the_modal_when_the_cursor_stayed_put() {
         at: None,
         env: "api-prod".into(),
         application: "shop".into(),
-        message: "Deploying new version".into(),
+        message: "New application version was deployed to running EC2 instances.".into(),
         severity: "INFO".into(),
         version_label: vl.map(String::from),
     };

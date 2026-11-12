@@ -2035,7 +2035,7 @@ async fn a_rollback_result_is_cancelled_when_the_cursor_moved_to_a_same_named_en
         at: None,
         env: "api-prod".into(),
         application: "poly".into(),
-        message: "Deploying new version".into(),
+        message: "New application version was deployed to running EC2 instances.".into(),
         severity: "INFO".into(),
         version_label: Some(vl.into()),
     };
