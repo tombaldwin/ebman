@@ -92,6 +92,22 @@ pub(super) fn ask_summary(p: &PendingWrite) -> String {
             let (min, max) = p.scale.unwrap_or_default();
             format!("{} to min {min}, max {max}", p.verb.label())
         }
+        // Which queue empties into which: the queue names, from the URLs
+        // the plan resolved.
+        [] if matches!(p.verb, WriteVerb::DlqRedrive) => {
+            let name = |u: Option<&str>| {
+                sanitize(
+                    u.and_then(|u| u.rsplit('/').next()).unwrap_or("?"),
+                    Shown::ASK,
+                )
+            };
+            format!(
+                "{} — {} → {}",
+                p.verb.label(),
+                name(p.dlq_url.as_deref()),
+                name(p.dlq_main_url.as_deref())
+            )
+        }
         [] => match (p.version.as_deref(), &p.managed_action) {
             (Some(v), _) => format!("{} to {}", p.verb.label(), sanitize(v, Shown::ASK)),
             // EB's own description of what the update installs, beside

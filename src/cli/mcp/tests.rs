@@ -2293,6 +2293,12 @@ mod orchestration {
         let v: Value = serde_json::from_str(&out).expect("json");
         assert_eq!(v["plan"]["destination"], "https://sqs/main", "{v}");
         assert_eq!(v["plan"]["messages_now"], 12, "{v}");
+        {
+            // The person asked sees which queue empties into which.
+            let st = s.writes.lock().await;
+            let dialog = writes_dialog(st.pending.as_ref().expect("planned"));
+            assert!(dialog.contains("main-dlq → main"), "{dialog}");
+        }
         assert!(
             v["plan"]["forecloses"]
                 .as_str()
