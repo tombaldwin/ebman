@@ -1140,6 +1140,40 @@ fn compatible_platform_filters(branch: &str) -> Vec<(&'static str, &'static str,
     filters
 }
 
+/// Where `collect_env_tail` has got to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TailProgress {
+    /// Waiting for a sample; the number is the poll just made (0 before
+    /// the first).
+    Polling(u32),
+    Fetching,
+}
+
+/// Split one instance's tail bundle into `(log file, line)`. EB heads
+/// each file with its path between two rules of dashes; lines before the
+/// first header belong to no file (`""`), and blank lines are dropped.
+/// Pure.
+pub(crate) fn parse_tail_bundle(text: &str) -> Vec<(String, String)> {
+    let rule = |l: &str| l.len() >= 10 && l.trim().chars().all(|c| c == '-');
+    let lines: Vec<&str> = text.lines().collect();
+    let mut file = String::new();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        let l = lines[i];
+        if rule(l) && i + 2 < lines.len() && rule(lines[i + 2]) && !lines[i + 1].trim().is_empty() {
+            file = lines[i + 1].trim().to_string();
+            i += 3;
+            continue;
+        }
+        if !l.trim().is_empty() {
+            out.push((file.clone(), l.to_string()));
+        }
+        i += 1;
+    }
+    out
+}
+
 impl AwsClient {
     pub(crate) async fn list_events(&self, max: i32) -> Result<Vec<Event>> {
         Ok(self.list_events_inner(None, None, None, max, 1).await?.0)
@@ -2506,6 +2540,52 @@ impl AwsClient {
             }
         }
         Ok(out)
+    }
+
+    /// EB's own tail of each instance's logs, for an env that streams
+    /// none to CloudWatch: `RequestEnvironmentInfo`, then
+    /// `RetrieveEnvironmentInfo` every `interval` up to `attempts` times
+    /// until a sample is on file, then each pre-signed URL through
+    /// `fetch`, together. `(instance_id, text)`; a fetch that failed
+    /// keeps its instance, with the failure as its text. An error when no
+    /// instance uploaded in time. `progress` hears each poll and the start
+    /// of the fetch. Shared by the TUI's Logs tab and MCP `recent_logs`.
+    pub(crate) async fn collect_env_tail<F, Fut>(
+        &self,
+        env_name: &str,
+        attempts: u32,
+        interval: std::time::Duration,
+        mut progress: impl FnMut(TailProgress),
+        fetch: F,
+    ) -> Result<Vec<(String, String)>>
+    where
+        F: Fn(String) -> Fut,
+        Fut: std::future::Future<Output = Result<String>>,
+    {
+        self.request_env_info_tail(env_name).await?;
+        progress(TailProgress::Polling(0));
+        let mut urls: Vec<(String, String)> = Vec::new();
+        for attempt in 1..=attempts {
+            tokio::time::sleep(interval).await;
+            urls = self.retrieve_env_info_tail(env_name).await?;
+            if !urls.is_empty() {
+                break;
+            }
+            progress(TailProgress::Polling(attempt));
+        }
+        if urls.is_empty() {
+            return Err(eyre!(
+                "no tail samples uploaded after {}s — instance role may lack s3:PutObject on the EB info bucket",
+                u64::from(attempts) * interval.as_secs()
+            ));
+        }
+        progress(TailProgress::Fetching);
+        let texts = futures::future::join_all(urls.iter().map(|(_, url)| fetch(url.clone()))).await;
+        Ok(urls
+            .into_iter()
+            .zip(texts)
+            .map(|((id, _), text)| (id, text.unwrap_or_else(|e| format!("(fetch failed: {e})"))))
+            .collect())
     }
 
     /// `DescribeEnvironmentHealth` summarised down to a `(healthy, total)`

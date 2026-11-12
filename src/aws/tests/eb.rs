@@ -1900,3 +1900,127 @@ fn scale_bounds_takes_the_edges_and_refuses_past_them() {
         assert!(scale_bounds(min, max).is_err(), "{min}..{max} is refused");
     }
 }
+
+#[test]
+fn a_tail_bundle_splits_by_log_file() {
+    use super::parse_tail_bundle;
+    let rule = "-".repeat(40);
+    let text = format!(
+        "stray\n{rule}\n/var/log/web.stdout.log\n{rule}\nstarted\n\nlistening\n{rule}\n/var/log/eb-engine.log\n{rule}\n---- not a header\ndeployed\n{rule}\nan app's own banner\nbelow it\n"
+    );
+    let lines = parse_tail_bundle(&text);
+    let pairs: Vec<(&str, &str)> = lines
+        .iter()
+        .map(|(f, l)| (f.as_str(), l.as_str()))
+        .collect();
+    assert_eq!(
+        pairs,
+        [
+            ("", "stray"),
+            ("/var/log/web.stdout.log", "started"),
+            ("/var/log/web.stdout.log", "listening"),
+            ("/var/log/eb-engine.log", "---- not a header"),
+            ("/var/log/eb-engine.log", "deployed"),
+            // A rule with no closing rule two lines on is the log's own.
+            ("/var/log/eb-engine.log", rule.as_str()),
+            ("/var/log/eb-engine.log", "an app's own banner"),
+            ("/var/log/eb-engine.log", "below it"),
+        ]
+    );
+    assert!(parse_tail_bundle("").is_empty());
+}
+
+/// The tail driver polls until a sample is on file, reports each poll,
+/// fetches every instance's URL, and keeps an instance whose fetch
+/// failed, with the failure as its text.
+#[tokio::test(start_paused = true)]
+async fn the_tail_driver_polls_then_fetches_each_instance() {
+    use aws_sdk_elasticbeanstalk::operation::request_environment_info::RequestEnvironmentInfoOutput;
+    use aws_sdk_elasticbeanstalk::operation::retrieve_environment_info::RetrieveEnvironmentInfoOutput;
+    use aws_sdk_elasticbeanstalk::types::EnvironmentInfoDescription;
+    let request = mock!(Client::request_environment_info)
+        .match_requests(|r| r.environment_name() == Some("api"))
+        .then_output(|| RequestEnvironmentInfoOutput::builder().build());
+    let info = |id: &str, url: &str| {
+        EnvironmentInfoDescription::builder()
+            .ec2_instance_id(id)
+            .message(url)
+            .build()
+    };
+    let retrieve = mock!(Client::retrieve_environment_info)
+        .sequence()
+        .output(|| RetrieveEnvironmentInfoOutput::builder().build())
+        .output(move || {
+            RetrieveEnvironmentInfoOutput::builder()
+                .environment_info(info("i-1", "https://s3/one"))
+                .environment_info(info("i-2", "https://s3/two"))
+                .build()
+        })
+        .build();
+    let client = client_with_eb(mock_client!(
+        aws_sdk_elasticbeanstalk,
+        aws_smithy_mocks::RuleMode::MatchAny,
+        [&request, &retrieve]
+    ));
+    let mut heard = Vec::new();
+    let out = client
+        .collect_env_tail(
+            "api",
+            5,
+            std::time::Duration::from_secs(2),
+            |p| heard.push(p),
+            |url| async move {
+                match url.as_str() {
+                    "https://s3/one" => Ok("line one".to_string()),
+                    _ => Err(color_eyre::eyre::eyre!("403")),
+                }
+            },
+        )
+        .await
+        .expect("collects");
+    use super::TailProgress::{Fetching, Polling};
+    assert_eq!(heard, [Polling(0), Polling(1), Fetching]);
+    assert_eq!(
+        out,
+        [
+            ("i-1".to_string(), "line one".to_string()),
+            ("i-2".to_string(), "(fetch failed: 403)".to_string()),
+        ]
+    );
+    assert_eq!(
+        retrieve.num_calls(),
+        2,
+        "stops polling once a sample is on file"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_tail_driver_gives_up_after_its_attempts() {
+    use aws_sdk_elasticbeanstalk::operation::request_environment_info::RequestEnvironmentInfoOutput;
+    use aws_sdk_elasticbeanstalk::operation::retrieve_environment_info::RetrieveEnvironmentInfoOutput;
+    let request = mock!(Client::request_environment_info)
+        .then_output(|| RequestEnvironmentInfoOutput::builder().build());
+    let retrieve = mock!(Client::retrieve_environment_info)
+        .then_output(|| RetrieveEnvironmentInfoOutput::builder().build());
+    let client = client_with_eb(mock_client!(
+        aws_sdk_elasticbeanstalk,
+        aws_smithy_mocks::RuleMode::MatchAny,
+        [&request, &retrieve]
+    ));
+    let err = client
+        .collect_env_tail(
+            "api",
+            3,
+            std::time::Duration::from_secs(2),
+            |_| {},
+            |_| async { Ok(String::new()) },
+        )
+        .await
+        .expect_err("nothing uploaded");
+    assert!(
+        err.to_string()
+            .contains("no tail samples uploaded after 6s"),
+        "{err}"
+    );
+    assert_eq!(retrieve.num_calls(), 3);
+}

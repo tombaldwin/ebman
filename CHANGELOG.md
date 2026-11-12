@@ -77,6 +77,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   `extra_regions`. Each row names its region, and a region that does not
   answer is named (`regions_failed` on MCP; a warning and exit 1 from
   `ebman envs`, after the rest print) rather than dropped.
+- **`recent_logs` without CloudWatch streaming.** For an env that
+  streams no logs, MCP `recent_logs` falls back to EB's own tail of each
+  instance (the same capture as the TUI's Logs tab, now one shared
+  driver), split by log file. Every answer carries `source`
+  (`cloudwatch` or `eb_tail`); tail lines have no timestamp, so the
+  window does not apply.
 
 ### Fixed
 

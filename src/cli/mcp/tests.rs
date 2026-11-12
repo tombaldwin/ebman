@@ -553,6 +553,135 @@ async fn a_read_fans_out_over_regions_on_demo() {
         .is_err());
 }
 
+#[test]
+fn a_tail_answer_names_its_source_and_caps_each_instance() {
+    use super::tools::render_tail_logs_json;
+    let rule = "-".repeat(30);
+    let bundle =
+        format!("{rule}\n/var/log/web.stdout.log\n{rule}\nGET /a\nGET /b\nERROR boom\nGET /c\n");
+    let samples = vec![
+        ("i-1".to_string(), bundle.clone()),
+        ("i-2".to_string(), "only line\n".to_string()),
+    ];
+    let v = render_tail_logs_json("api", &samples, None, 2);
+    assert_eq!(v["source"], "eb_tail");
+    assert_eq!(v["truncated_by_limit"], true, "{v}");
+    let msgs: Vec<&str> = v["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|e| e["message"].as_str())
+        .collect();
+    assert_eq!(
+        msgs,
+        ["ERROR boom", "GET /c", "only line"],
+        "the last lines of each instance"
+    );
+    assert_eq!(v["events"][0]["group"], "/var/log/web.stdout.log");
+    assert_eq!(v["events"][0]["stream"], "i-1");
+    assert!(v["events"][0]["timestamp"].is_null());
+    assert_eq!(
+        v["groups"],
+        json!(["/var/log/web.stdout.log"]),
+        "a file-less line names no group"
+    );
+    let v = render_tail_logs_json("api", &samples, Some("ERROR"), 50);
+    assert_eq!(v["events"].as_array().unwrap().len(), 1, "{v}");
+    assert_eq!(v["truncated_by_limit"], false, "{v}");
+    assert!(v["note"].as_str().unwrap().contains("no timestamp"));
+}
+
+/// `recent_logs` falls back to EB's tail only for an env with no
+/// CloudWatch groups: with groups it reads them and never asks EB, and
+/// without any it asks, and a tail that never arrives is a tool error
+/// naming both halves.
+#[tokio::test(start_paused = true)]
+async fn recent_logs_falls_back_to_the_tail_only_without_groups() {
+    use aws_sdk_cloudwatchlogs::operation::describe_log_groups::DescribeLogGroupsOutput;
+    use aws_sdk_cloudwatchlogs::operation::filter_log_events::FilterLogEventsOutput;
+    use aws_sdk_cloudwatchlogs::types::{FilteredLogEvent, LogGroup};
+    use aws_sdk_elasticbeanstalk::operation::request_environment_info::RequestEnvironmentInfoOutput;
+    use aws_sdk_elasticbeanstalk::operation::retrieve_environment_info::RetrieveEnvironmentInfoOutput;
+    let server = |with_group: bool| {
+        let groups = aws_smithy_mocks::mock!(aws_sdk_cloudwatchlogs::Client::describe_log_groups)
+            .then_output(move || {
+                let mut b = DescribeLogGroupsOutput::builder();
+                if with_group {
+                    b = b.log_groups(
+                        LogGroup::builder()
+                            .log_group_name("/aws/elasticbeanstalk/api/var/log/web.stdout.log")
+                            .build(),
+                    );
+                }
+                b.build()
+            });
+        let events = aws_smithy_mocks::mock!(aws_sdk_cloudwatchlogs::Client::filter_log_events)
+            .then_output(|| {
+                FilterLogEventsOutput::builder()
+                    .events(
+                        FilteredLogEvent::builder()
+                            .timestamp(1_700_000_000_000)
+                            .log_stream_name("i-1")
+                            .message("from cloudwatch")
+                            .build(),
+                    )
+                    .build()
+            });
+        let request =
+            aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::request_environment_info)
+                .then_output(|| RequestEnvironmentInfoOutput::builder().build());
+        let retrieve =
+            aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::retrieve_environment_info)
+                .then_output(|| RetrieveEnvironmentInfoOutput::builder().build());
+        let sdk = aws_config::SdkConfig::builder()
+            .region(aws_config::Region::new("us-east-1"))
+            .behavior_version(aws_config::BehaviorVersion::latest())
+            .build();
+        let client = crate::aws::AwsClient::for_tests(
+            aws_smithy_mocks::mock_client!(
+                aws_sdk_elasticbeanstalk,
+                aws_smithy_mocks::RuleMode::MatchAny,
+                [&request, &retrieve]
+            ),
+            aws_sdk_sqs::Client::new(&sdk),
+            aws_sdk_cloudwatch::Client::new(&sdk),
+            aws_smithy_mocks::mock_client!(
+                aws_sdk_cloudwatchlogs,
+                aws_smithy_mocks::RuleMode::MatchAny,
+                [&groups, &events]
+            ),
+            aws_sdk_s3::Client::new(&sdk),
+            aws_sdk_ec2::Client::new(&sdk),
+        );
+        (
+            Server::with_injected_client(WriteScope::None, Default::default(), client),
+            request,
+        )
+    };
+    let (streaming, asked) = server(true);
+    let out = streaming
+        .call_tool("recent_logs", &json!({"env": "api"}))
+        .await
+        .expect("reads cloudwatch");
+    let v: Value = serde_json::from_str(&out).expect("json");
+    assert_eq!(v["source"], "cloudwatch", "{v}");
+    assert_eq!(v["events"][0]["message"], "from cloudwatch", "{v}");
+    assert_eq!(
+        asked.num_calls(),
+        0,
+        "a streaming env never asks EB for its tail"
+    );
+
+    let (silent, asked) = server(false);
+    let err = silent
+        .call_tool("recent_logs", &json!({"env": "api"}))
+        .await
+        .expect_err("no tail arrives");
+    assert!(err.contains("streams no logs to CloudWatch"), "{err}");
+    assert!(err.contains("no tail samples uploaded after 8s"), "{err}");
+    assert_eq!(asked.num_calls(), 1);
+}
+
 fn writes_dialog(p: &writes::PendingWrite) -> String {
     super::dialog::ask_summary(p)
 }

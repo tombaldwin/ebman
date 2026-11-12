@@ -5997,3 +5997,10 @@ a `--read-only` server.
   rows tagged, `regions_failed`, events re-sorted and capped. `ebman envs
   --regions` renders each region with its own alarm and branch data (env
   names repeat across regions) and exits 1 when one did not answer.
+- **`recent_logs` fallback without CloudWatch streaming.**
+  `AwsClient::collect_env_tail` (request, bounded poll, parallel
+  fetch, progress callback) now drives both the TUI Logs tab and MCP;
+  `parse_tail_bundle` splits a bundle by file; `render_tail_logs_json`
+  shapes the answer with `source: "eb_tail"`, and the CloudWatch and
+  demo answers carry `source` too. The poll budget is a const assert
+  against the 30s tool timeout.

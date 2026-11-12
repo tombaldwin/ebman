@@ -244,7 +244,7 @@ Tier definitions:
 - [ ] **Breadth vs the daily core.** 131 commands; two unrelated
   "freezes" (`f` pauses auto-refresh; `:freeze-deploys` locks writes —
   rename the first to "pause"); consider a `?` "top 15" view. (The
-  `recent_logs` CloudWatch-only gap moved to PLAN item 16, 2026-11-12.)
+  `recent_logs` CloudWatch-only gap shipped as its EB-tail fallback.)
 
 - [ ] **`draw_table`'s `DisplayRow::Env` arm is still inline** (165
   lines of what is now a 408-line function (`ui/table.rs:594`, re-measured 2026-09-25; 389 on 2026-08-28), it was recorded

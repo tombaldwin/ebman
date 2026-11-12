@@ -228,7 +228,7 @@ fn read_tool_table() -> Value {
         },
         {
             "name": "recent_logs",
-            "description": "The NEWEST log lines for an environment from CloudWatch Logs. NOT REDACTED: log lines are free text and this tool returns them verbatim, so anything an application logged — tokens, connection strings, customer data — reaches the client. ebman's redaction is namespace-and-key based (`get_option_settings`, `drift`, `audit_log`) and cannot apply here; use `filter` to narrow what you pull rather than relying on it being scrubbed. CAVEATS: returns the newest in the window, not the oldest — `FilterLogEvents` itself returns matches oldest-first, so a naive query answers \"is this still running?\" with lines from hours ago and looks plausible doing it. If `complete` is false the SCAN stopped early and what you have is the OLDEST part of the window: narrow `since_minutes` rather than trusting the result. `complete` is about the scan, NOT about the result — `truncated_by_limit` is the other half, and says the window held more than `limit` so you have the newest slice of a larger set. Both can be true at once: a complete scan of two hours returning the newest 5 of thousands is `complete: true, truncated_by_limit: true`, and reading the first without the second gives you \"that is all there was\". When `complete` is FALSE and `truncated_by_limit` is true, what you hold is the newest slice of the OLDEST scanned prefix — a middle slice, not the newest overall; narrow the window before reading anything into the ordering. `log_group` defaults to the environment's own groups (`/aws/elasticbeanstalk/<env>/…`); if the env has none, the result says so rather than erroring. `filter` is CloudWatch Logs filter-pattern syntax, not a regex.",
+            "description": "The NEWEST log lines for an environment, from CloudWatch Logs or EB's own tail. NOT REDACTED: log lines are free text and this tool returns them verbatim, so anything an application logged — tokens, connection strings, customer data — reaches the client. ebman's redaction is namespace-and-key based (`get_option_settings`, `drift`, `audit_log`) and cannot apply here; use `filter` to narrow what you pull rather than relying on it being scrubbed. CAVEATS: returns the newest in the window, not the oldest — `FilterLogEvents` itself returns matches oldest-first, so a naive query answers \"is this still running?\" with lines from hours ago and looks plausible doing it. If `complete` is false the SCAN stopped early and what you have is the OLDEST part of the window: narrow `since_minutes` rather than trusting the result. `complete` is about the scan, NOT about the result — `truncated_by_limit` is the other half, and says the window held more than `limit` so you have the newest slice of a larger set. Both can be true at once: a complete scan of two hours returning the newest 5 of thousands is `complete: true, truncated_by_limit: true`, and reading the first without the second gives you \"that is all there was\". When `complete` is FALSE and `truncated_by_limit` is true, what you hold is the newest slice of the OLDEST scanned prefix — a middle slice, not the newest overall; narrow the window before reading anything into the ordering. `log_group` defaults to the environment's own groups (`/aws/elasticbeanstalk/<env>/…`). `source` says where the lines came from: `cloudwatch`, or `eb_tail` when the env streams no logs — then ebman asks EB for its own tail of each instance (RequestEnvironmentInfo, which uploads a sample to EB's S3 bucket; it changes nothing on the env), up to ~25s; those lines have no timestamp, `group` is the log file and `stream` the instance, `since_minutes` does not apply, `filter` is a plain substring and `limit` is per instance. `filter` is CloudWatch Logs filter-pattern syntax, not a regex.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -875,13 +875,61 @@ fn render_recent_logs_json(
         })
         .collect();
     format!(
-        "{{\"env\":\"{}\",\"groups\":[{}],\"complete\":{},\"truncated_by_limit\":{},\"events\":[{}]}}",
+        "{{\"env\":\"{}\",\"source\":\"cloudwatch\",\"groups\":[{}],\"complete\":{},\"truncated_by_limit\":{},\"events\":[{}]}}",
         esc(env),
         gs.join(","),
         complete,
         truncated_by_limit,
         evs.join(",")
     )
+}
+
+/// How long `recent_logs` waits for EB's tail: four polls two seconds
+/// apart, leaving each pre-signed fetch (15s at most, together) inside
+/// the 30s a tool call is given.
+const TAIL_POLL_ATTEMPTS: u32 = 4;
+const TAIL_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+const _: () = assert!(TAIL_POLL_ATTEMPTS as u64 * 2 + 15 < TOOL_TIMEOUT_SECS);
+
+/// A `recent_logs` answer from EB's tail: each instance's bundle split
+/// by log file, `filter` as a plain substring, the last `limit` lines
+/// per instance. The lines carry no timestamp (`null`), so the window
+/// does not apply; `note` says all of it. Pure.
+pub(super) fn render_tail_logs_json(
+    env: &str,
+    samples: &[(String, String)],
+    filter: Option<&str>,
+    limit: usize,
+) -> Value {
+    let mut groups: Vec<String> = Vec::new();
+    let mut events: Vec<Value> = Vec::new();
+    let mut truncated = false;
+    for (instance, text) in samples {
+        let lines: Vec<(String, String)> = aws::parse_tail_bundle(text)
+            .into_iter()
+            .filter(|(_, line)| filter.is_none_or(|f| line.contains(f)))
+            .collect();
+        truncated |= lines.len() > limit;
+        for (file, line) in lines.iter().skip(lines.len().saturating_sub(limit)) {
+            if !file.is_empty() && !groups.contains(file) {
+                groups.push(file.clone());
+            }
+            events.push(
+                json!({"timestamp": null, "group": file, "stream": instance, "message": line}),
+            );
+        }
+    }
+    json!({
+        "env": env,
+        "source": "eb_tail",
+        "groups": groups,
+        "complete": true,
+        "truncated_by_limit": truncated,
+        "events": events,
+        "note": "this env streams no logs to CloudWatch: these are EB's own tail of each instance's \
+                 log files (`group` is the file, `stream` the instance). Lines carry no timestamp, \
+                 so since_minutes does not apply; filter is a plain substring; limit is per instance",
+    })
 }
 
 /// Render worker queue state as JSON.
@@ -2020,7 +2068,7 @@ impl Server {
                 // the field the tool description promises got a
                 // missing key in demo. Both flags, both false, because
                 // nothing was read and nothing was cut.
-                "{{\"env\":\"{}\",\"groups\":[],\"complete\":true,\"truncated_by_limit\":false,\"events\":[],\"note\":\"demo mode reads no logs\"}}",
+                "{{\"env\":\"{}\",\"source\":\"none\",\"groups\":[],\"complete\":true,\"truncated_by_limit\":false,\"events\":[],\"note\":\"demo mode reads no logs\"}}",
                 crate::util::json_escape(&env_name)
             ));
         }
@@ -2034,6 +2082,32 @@ impl Server {
                 .await
                 .map_err(|e| tool_error(&profile, "discover_env_log_groups", &e.to_string()))?,
         };
+
+        // An env that streams nothing to CloudWatch still has logs on its
+        // instances: EB's own tail is the fallback, and says it is one.
+        if groups.is_empty() && arg_str(args, "log_group").is_none() {
+            let samples = client
+                .collect_env_tail(
+                    &env_name,
+                    TAIL_POLL_ATTEMPTS,
+                    TAIL_POLL_INTERVAL,
+                    |_| {},
+                    |url| async move { aws::AwsClient::fetch_url_text(&url).await },
+                )
+                .await
+                .map_err(|e| {
+                    tool_error(
+                        &profile,
+                        "collect_env_tail",
+                        &format!(
+                            "{env_name} streams no logs to CloudWatch, and EB's own tail failed: {e}"
+                        ),
+                    )
+                })?;
+            return Ok(
+                render_tail_logs_json(&env_name, &samples, filter.as_deref(), limit).to_string(),
+            );
+        }
 
         let since_ms = (chrono::Utc::now() - chrono::Duration::minutes(since_minutes as i64))
             .timestamp_millis();

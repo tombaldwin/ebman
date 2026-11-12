@@ -2277,12 +2277,8 @@ pub(crate) enum DisplayRow {
     Separator,
 }
 
-/// Drive the tail-log capture pipeline end-to-end:
-/// 1. `RequestEnvironmentInfo` to kick EB into producing samples.
-/// 2. Poll `RetrieveEnvironmentInfo` until pre-signed S3 URLs appear or we
-///    hit the attempt cap.
-/// 3. Fetch each URL (sequentially — typically only 1-3 instances; serial
-///    keeps error handling simple and avoids hammering S3).
+/// Drive the tail-log capture pipeline (`AwsClient::collect_env_tail`)
+/// for the Logs tab: up to 24s of polling, then each instance's sample.
 ///
 /// Progress messages are emitted via `tx` so the UI advances through the
 /// Requesting → Polling → Fetching → Ready states while this future runs.
@@ -2295,55 +2291,27 @@ async fn collect_tail_logs(
 ) -> std::result::Result<Vec<(String, String)>, String> {
     const POLL_ATTEMPTS: u32 = 12;
     const POLL_INTERVAL: Duration = Duration::from_secs(2);
-
-    aws.request_env_info_tail(&env_name)
-        .await
-        .map_err(|e| flatten_err("request_env_info_tail", e))?;
-    let _ = tx.send(AppMsg::DetailLogsProgress {
-        gen,
-        ticket,
-        stage: LogTailStage::Polling,
-        attempt: 0,
-    });
-
-    let mut urls: Vec<(String, String)> = Vec::new();
-    for attempt in 1..=POLL_ATTEMPTS {
-        tokio::time::sleep(POLL_INTERVAL).await;
-        urls = aws
-            .retrieve_env_info_tail(&env_name)
-            .await
-            .map_err(|e| flatten_err("retrieve_env_info_tail", e))?;
-        if !urls.is_empty() {
-            break;
-        }
+    let progress = |p: crate::aws::TailProgress| {
+        let (stage, attempt) = match p {
+            crate::aws::TailProgress::Polling(n) => (LogTailStage::Polling, n),
+            crate::aws::TailProgress::Fetching => (LogTailStage::Fetching, 0),
+        };
         let _ = tx.send(AppMsg::DetailLogsProgress {
             gen,
             ticket,
-            stage: LogTailStage::Polling,
+            stage,
             attempt,
         });
-    }
-    if urls.is_empty() {
-        return Err(format!(
-            "no tail samples uploaded after {}s — instance role may lack s3:PutObject on the EB info bucket",
-            POLL_ATTEMPTS as u64 * POLL_INTERVAL.as_secs()
-        ));
-    }
-    let _ = tx.send(AppMsg::DetailLogsProgress {
-        gen,
-        ticket,
-        stage: LogTailStage::Fetching,
-        attempt: 0,
-    });
-
-    let mut out = Vec::with_capacity(urls.len());
-    for (instance_id, url) in urls {
-        match AwsClient::fetch_url_text(&url).await {
-            Ok(text) => out.push((instance_id, text)),
-            Err(e) => out.push((instance_id, format!("(fetch failed: {e})"))),
-        }
-    }
-    Ok(out)
+    };
+    aws.collect_env_tail(
+        &env_name,
+        POLL_ATTEMPTS,
+        POLL_INTERVAL,
+        progress,
+        |url| async move { AwsClient::fetch_url_text(&url).await },
+    )
+    .await
+    .map_err(|e| flatten_err("collect_env_tail", e))
 }
 
 /// Pre-flight signal for the confirm modal: looks at the env's current state

@@ -172,11 +172,6 @@ it as one release. Ranked by operator value; each is a feature item
 the shared gate, two-phase on MCP, audited, with an undo where one
 exists.*
 
-16. **A `recent_logs` fallback without CloudWatch streaming.** EB's own
-    tail (`RequestEnvironmentInfo` / `RetrieveEnvironmentInfo`) when an
-    env streams no logs, with `source` in the answer. From BACKLOG
-    "Breadth vs the daily core", which keeps its other two points.
-
 ### Released
 
 **0.49.0 (2026-11-06)**: MCP writes can go out under a narrower role
