@@ -49,8 +49,11 @@ src/lib.rs       module list + the `Tui` / `LogReloadHandle` aliases
 ├── cli/         headless subcommands (`ebman envs`, `action`, `ctl`, `mcp`);
 │                `cli/mcp/` is the MCP server: `tools.rs` the reads,
 │                `writes.rs` the two-phase write path (plan, confirm,
-│                dispatch), `role.rs` the role a write goes out under,
-│                `undo.rs` `dlq_undo`'s buffer, `freeze.rs` `freeze_fleet`
+│                dispatch), `refusal.rs` the audited refusal and the
+│                audit identity a write files under, `dialog.rs` the
+│                approval sentence and its sanitising, `role.rs` the role
+│                a write goes out under, `undo.rs` `dlq_undo`'s buffer,
+│                `freeze.rs` `freeze_fleet`
 ├── freeze/      the cross-process fleet freeze: `marker` (the file),
 │                `store` (holder files, declare / thaw), `liveness` (is
 │                a holder still alive), `record` (ended and thawed

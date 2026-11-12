@@ -2,7 +2,7 @@
 //! write verb (it only takes writes away, so every server offers it and
 //! no grant covers it), which is why it is not in `writes.rs`.
 
-use super::writes::*;
+use super::dialog::{sanitize, Shown};
 use super::*;
 
 /// The tool that declares a fleet freeze. Not a verb: it only takes

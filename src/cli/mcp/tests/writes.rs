@@ -17,6 +17,7 @@
 //! So: same parent, same `use super::*`, different file.
 
 use super::*;
+use crate::cli::mcp::dialog::{sanitize, Shown};
 
 #[test]
 fn write_gate_refuses_under_freeze_and_pin() {
@@ -2606,7 +2607,7 @@ async fn a_verb_outside_the_grant_is_a_typed_refusal() {
 /// alongside `record`.
 #[test]
 fn a_refusal_cannot_be_constructed_without_recording_it() {
-    let body = crate::tests::scan::production_source("cli/mcp/writes.rs");
+    let body = crate::tests::scan::production_source("cli/mcp/refusal.rs");
     let start = body
         .find("mod audited {")
         .expect("the audited module must exist");

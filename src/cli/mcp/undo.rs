@@ -3,8 +3,9 @@
 //! [`UNDO_WINDOW_SECS`] so "that was the wrong one" can put it back.
 //! Moved out of `writes.rs`, which it was self-contained inside of.
 
+use super::refusal::WriteError;
 use super::role::{with_session, RoleSession};
-use super::writes::*;
+use super::writes::{dlq_audit_line, extras_refs, DlqTarget, PendingWrite, WriteVerb};
 use super::*;
 
 /// Does this verb destroy something that can be handed back?

@@ -4,7 +4,9 @@
 //! Slice 3: the role assumed at confirm, after the yes, and the session
 //! it is named for (D4, D5).
 
-use super::writes::*;
+use super::dialog::{sanitize, Shown};
+use super::refusal::Audited;
+use super::writes::{write_verb_names, CallerIdentity, PendingWrite, WriteVerb};
 use super::*;
 
 /// A role session for one approved write (D4): the client built from

@@ -813,7 +813,7 @@ impl Server {
             "dlq_undo" => self
                 .tool_dlq_undo(args)
                 .await
-                .map_err(writes::WriteError::into_message),
+                .map_err(refusal::WriteError::into_message),
             "doctor" => Ok(self.tool_doctor()),
             "freeze_fleet" => self.tool_freeze_fleet(args),
             "audit_log" => self.tool_audit_log(args),
@@ -826,39 +826,39 @@ impl Server {
             "deploy" => self
                 .tool_write_plan(writes::WriteVerb::Deploy, args)
                 .await
-                .map_err(writes::WriteError::into_message),
+                .map_err(refusal::WriteError::into_message),
             "restart" => self
                 .tool_write_plan(writes::WriteVerb::Restart, args)
                 .await
-                .map_err(writes::WriteError::into_message),
+                .map_err(refusal::WriteError::into_message),
             "rebuild" => self
                 .tool_write_plan(writes::WriteVerb::Rebuild, args)
                 .await
-                .map_err(writes::WriteError::into_message),
+                .map_err(refusal::WriteError::into_message),
             "dlq_resend" => self
                 .tool_write_plan(writes::WriteVerb::DlqResend, args)
                 .await
-                .map_err(writes::WriteError::into_message),
+                .map_err(refusal::WriteError::into_message),
             "dlq_delete" => self
                 .tool_write_plan(writes::WriteVerb::DlqDelete, args)
                 .await
-                .map_err(writes::WriteError::into_message),
+                .map_err(refusal::WriteError::into_message),
             "dlq_purge" => self
                 .tool_write_plan(writes::WriteVerb::DlqPurge, args)
                 .await
-                .map_err(writes::WriteError::into_message),
+                .map_err(refusal::WriteError::into_message),
             "terminate" => self
                 .tool_write_plan(writes::WriteVerb::Terminate, args)
                 .await
-                .map_err(writes::WriteError::into_message),
+                .map_err(refusal::WriteError::into_message),
             "set_option" => self
                 .tool_write_plan(writes::WriteVerb::SetOption, args)
                 .await
-                .map_err(writes::WriteError::into_message),
+                .map_err(refusal::WriteError::into_message),
             "confirm_action" => self
                 .tool_confirm_action(args)
                 .await
-                .map_err(writes::WriteError::into_message),
+                .map_err(refusal::WriteError::into_message),
             // Belt-and-braces: the RPC layer already 32602s names not
             // in tool_table(), so this is unreachable unless the table
             // and this match drift — in which case failing loud here

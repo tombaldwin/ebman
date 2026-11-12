@@ -5890,3 +5890,14 @@ a `--read-only` server.
   `Server::can_ask` as the one reader of the elicitation flag (ten
   reads before, across four files). `freeze.rs` keeps its own refs
   loop: it drops `via=`, so it is not the same conversion.
+- **The MCP write family's glob imports.** `mcp/refusal.rs` (`Audited`,
+  `WriteError`, the scope and gate refusals, `audit_profile` /
+  `audit_region` / `pending_region`) and `mcp/dialog.rs` (`sanitize`,
+  `Shown`, `ask_summary`, `forecloses`) split out; `writes.rs` 2,722 →
+  2,180 lines. `role.rs`, `undo.rs` and `freeze.rs` import by name, and
+  `freeze.rs` no longer needs `writes` at all. `writes.rs` still globs
+  `role` and `undo`, and they still name `PendingWrite` and `WriteVerb`
+  from it: the types are shared, so the modules reference each other,
+  but no longer by glob. The refusal-funnel and `Audited` guards follow
+  the code to `refusal.rs`, same entry, same count; the `Audited` guard
+  was shown to fail there against a widened field.

@@ -171,17 +171,6 @@ it a home (`mcp/refusal.rs`), so `WriteAudit` goes last rather than
 being built twice. Refilled 2026-11-06: the `scan.rs` split is done
 (archived, "PLAN.md items done 2026-11-06").*
 
-5. *(architecture)* **The MCP write family's glob-import cycle.** `role.rs`, `undo.rs`
-   and `mcp/freeze.rs` `use super::writes::*` to reach shared primitives,
-   and `writes.rs` globs `role` and `undo` back. Split `mcp/refusal.rs`
-   (`audited`, `WriteError`: file-level privacy for the one constructor)
-   and `mcp/dialog.rs` (`sanitize`, `Shown`, `ask_summary`, `forecloses`),
-   optionally `writes/dlq.rs` (~500 lines); `writes.rs` drops to ~1600.
-   The `#[path]` test children and `scan::production_source` guards move
-   with them. Half a day to a day. 0.49.0 architecture review; moved
-   from BACKLOG 2026-11-12, because `WriteAudit` needs `refusal.rs` as
-   its home.
-
 6. *(architecture)* **One `WriteAudit` per MCP write** (absorbs `Audited::record`'s
    separate profile and region arguments):
    resolve profile, region, label and env once, at plan time after

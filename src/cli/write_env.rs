@@ -393,7 +393,7 @@ mod write_gate_guard {
                  of writes that were never going to happen is noise",
             ),
             (
-                "src/cli/mcp/writes.rs",
+                "src/cli/mcp/refusal.rs",
                 1,
                 "`Server::gate_refusal` uses the unaudited half for BOTH \
                  backends and records through `Audited::record`, so this \
