@@ -43,7 +43,7 @@ These don't need a running TUI — they connect to AWS, do their thing, and exit
 ```bash
 ebman envs                                                                 # env table; ALARMS is comma-joined for reading (names may contain commas: split --json instead)
 ebman envs --json                                                          # print env list as JSON (incl. firing alarms)
-ebman envs --regions all                                                   # every region: home + `extra_regions`, or a list (r1,r2); each row names its region, and a region that does not answer fails the run (exit 1) after the rest print
+ebman envs --regions all                                                   # every region: home + `extra_regions`, or a list (r1,r2); each row names its region (a trailing REGION column in the table), and a region that does not answer fails the run (exit 1) after the rest print
 ebman action rebuild --env myenv --yes                                     # dispatch a rebuild
 ebman action terminate --env myenv --yes                                   # terminate: --yes is the confirmation here (no typed name; pins and freezes still refuse)
 ebman action rollback --env myenv [--to LABEL]                             # redeploy the previous version (from events unless --to); deploy's --wait-for-green / --auto-rollback apply

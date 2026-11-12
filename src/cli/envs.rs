@@ -288,16 +288,25 @@ pub(crate) async fn envs_with(
             }
         } else {
             for e in &envs {
-                text_rows.push(envs_text_row(e, firing.as_ref(), lifecycle.as_ref()));
+                let mut row = envs_text_row(e, firing.as_ref(), lifecycle.as_ref());
+                // Env names repeat across regions: a multi-region table
+                // names each row's, last so a single-region script's
+                // columns stay where they were.
+                if multi {
+                    row.push('\t');
+                    row.push_str(e.region.as_deref().unwrap_or(&aws.context.region));
+                }
+                text_rows.push(row);
             }
         }
     }
     if json {
         writeln!(out, "{}", serde_json::Value::Array(json_rows))?;
     } else {
+        let region_col = if multi { "\tREGION" } else { "" };
         writeln!(
             out,
-            "NAME\tAPPLICATION\tSTATUS\tHEALTH\tPLATFORM\tCNAME\tVERSION\tALARMS"
+            "NAME\tAPPLICATION\tSTATUS\tHEALTH\tPLATFORM\tCNAME\tVERSION\tALARMS{region_col}"
         )?;
         for row in text_rows {
             writeln!(out, "{row}")?;
@@ -617,35 +626,50 @@ mod run_tests {
     /// the run fails so a script does not take a partial fleet as whole.
     #[tokio::test]
     async fn several_regions_print_together_and_a_dead_one_fails_the_run() {
-        let mut eu = client(firing());
-        eu.context.region = "eu-west-2".into();
-        let dead_listing =
-            aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::describe_environments)
-                .then_error(|| {
-                    aws_sdk_elasticbeanstalk::operation::describe_environments::DescribeEnvironmentsError::generic(
-                        aws_smithy_types::error::ErrorMetadata::builder()
-                            .code("AccessDenied")
-                            .message("REGIONDENIED")
-                            .build(),
-                    )
-                });
-        let sdk = aws_config::SdkConfig::builder()
-            .region(aws_config::Region::new("ap-south-1"))
-            .behavior_version(aws_config::BehaviorVersion::latest())
-            .build();
-        let mut dead = aws::AwsClient::for_tests(
-            aws_smithy_mocks::mock_client!(aws_sdk_elasticbeanstalk, [&dead_listing]),
-            aws_sdk_sqs::Client::new(&sdk),
-            aws_sdk_cloudwatch::Client::new(&sdk),
-            aws_sdk_cloudwatchlogs::Client::new(&sdk),
-            aws_sdk_s3::Client::new(&sdk),
-            aws_sdk_ec2::Client::new(&sdk),
-        );
-        dead.context.region = "ap-south-1".into();
-        let home = client(firing());
+        // Three regions, rebuilt per run: a mocked rule answers once.
+        let fleet = || {
+            let mut eu = client(firing());
+            eu.context.region = "eu-west-2".into();
+            let dead_listing =
+                aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::describe_environments)
+                    .then_error(|| {
+                        aws_sdk_elasticbeanstalk::operation::describe_environments::DescribeEnvironmentsError::generic(
+                            aws_smithy_types::error::ErrorMetadata::builder()
+                                .code("AccessDenied")
+                                .message("REGIONDENIED")
+                                .build(),
+                        )
+                    });
+            let sdk = aws_config::SdkConfig::builder()
+                .region(aws_config::Region::new("ap-south-1"))
+                .behavior_version(aws_config::BehaviorVersion::latest())
+                .build();
+            let mut dead = aws::AwsClient::for_tests(
+                aws_smithy_mocks::mock_client!(aws_sdk_elasticbeanstalk, [&dead_listing]),
+                aws_sdk_sqs::Client::new(&sdk),
+                aws_sdk_cloudwatch::Client::new(&sdk),
+                aws_sdk_cloudwatchlogs::Client::new(&sdk),
+                aws_sdk_s3::Client::new(&sdk),
+                aws_sdk_ec2::Client::new(&sdk),
+            );
+            dead.context.region = "ap-south-1".into();
+            [client(firing()), eu, dead]
+        };
         let live = crate::config::LiveConfig::of(&crate::config::Config::default());
         let (mut out, mut err) = (Vec::new(), Vec::new());
-        let result = envs_with(&[home, eu, dead], true, &live, &mut out, &mut err).await;
+        let (mut text, mut text_err) = (Vec::new(), Vec::new());
+        let _ = envs_with(&fleet(), false, &live, &mut text, &mut text_err).await;
+        let text = String::from_utf8(text).unwrap();
+        let mut lines = text.lines();
+        assert!(
+            lines
+                .next()
+                .is_some_and(|h| h.ends_with("\tALARMS\tREGION")),
+            "{text}"
+        );
+        let regions: Vec<&str> = lines.filter_map(|l| l.rsplit('\t').next()).collect();
+        assert_eq!(regions, ["us-east-1", "eu-west-2"], "{text}");
+        let result = envs_with(&fleet(), true, &live, &mut out, &mut err).await;
         let out = String::from_utf8(out).unwrap();
         let err = String::from_utf8(err).unwrap();
         let v: serde_json::Value = serde_json::from_str(out.trim()).expect("valid JSON");
