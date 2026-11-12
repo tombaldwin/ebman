@@ -1149,6 +1149,35 @@ pub(crate) enum TailProgress {
     Fetching,
 }
 
+/// One tail sample EB has on file: instance, pre-signed URL, when taken.
+pub(crate) type TailSample = (String, String, Option<DateTime<Utc>>);
+
+/// How far a sample may predate our request and still be its answer:
+/// slack for a clock behind EB's, far short of an earlier request's.
+const TAIL_CLOCK_SLACK_SECS: i64 = 30;
+
+/// This request's samples, newest per instance: one taken before
+/// `requested` (less the clock slack), or with no time, is an earlier
+/// request's — the pre-deploy tail, read as the newest lines. Pure.
+pub(crate) fn fresh_samples(
+    samples: Vec<TailSample>,
+    requested: DateTime<Utc>,
+) -> Vec<(String, String)> {
+    let since = requested - chrono::Duration::seconds(TAIL_CLOCK_SLACK_SECS);
+    let mut newest: Vec<(String, String, DateTime<Utc>)> = Vec::new();
+    for (id, url, taken) in samples {
+        let Some(taken) = taken.filter(|t| *t >= since) else {
+            continue;
+        };
+        match newest.iter_mut().find(|(i, _, _)| *i == id) {
+            Some(slot) if slot.2 < taken => *slot = (id, url, taken),
+            Some(_) => {}
+            None => newest.push((id, url, taken)),
+        }
+    }
+    newest.into_iter().map(|(id, url, _)| (id, url)).collect()
+}
+
 /// Split one instance's tail bundle into `(log file, line)`. EB heads
 /// each file with its path between two rules of dashes; lines before the
 /// first header belong to no file (`""`), and blank lines are dropped.
@@ -2519,11 +2548,10 @@ impl AwsClient {
 
     /// Read whatever tail-log samples EB has on file for the env, mapped to
     /// pre-signed S3 URLs. Empty vec means no samples have been uploaded yet —
-    /// poll again. Each entry is `(ec2_instance_id, pre_signed_url)`.
-    pub(crate) async fn retrieve_env_info_tail(
-        &self,
-        env_name: &str,
-    ) -> Result<Vec<(String, String)>> {
+    /// poll again. Each entry is `(ec2_instance_id, pre_signed_url, taken)`:
+    /// EB keeps earlier requests' samples too, so `taken` is what tells
+    /// this request's from a stale one.
+    pub(crate) async fn retrieve_env_info_tail(&self, env_name: &str) -> Result<Vec<TailSample>> {
         use aws_sdk_elasticbeanstalk::types::EnvironmentInfoType;
         let resp = self
             .client
@@ -2535,8 +2563,11 @@ impl AwsClient {
             .aws_ctx("RetrieveEnvironmentInfo failed")?;
         let mut out = Vec::new();
         for info in resp.environment_info.unwrap_or_default() {
+            let taken = info
+                .sample_timestamp
+                .and_then(|t| DateTime::from_timestamp(t.secs(), t.subsec_nanos()));
             if let (Some(id), Some(url)) = (info.ec2_instance_id, info.message) {
-                out.push((id, url));
+                out.push((id, url, taken));
             }
         }
         Ok(out)
@@ -2562,12 +2593,13 @@ impl AwsClient {
         F: Fn(String) -> Fut,
         Fut: std::future::Future<Output = Result<String>>,
     {
+        let requested = Utc::now();
         self.request_env_info_tail(env_name).await?;
         progress(TailProgress::Polling(0));
         let mut urls: Vec<(String, String)> = Vec::new();
         for attempt in 1..=attempts {
             tokio::time::sleep(interval).await;
-            urls = self.retrieve_env_info_tail(env_name).await?;
+            urls = fresh_samples(self.retrieve_env_info_tail(env_name).await?, requested);
             if !urls.is_empty() {
                 break;
             }

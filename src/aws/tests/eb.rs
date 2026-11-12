@@ -1966,10 +1966,14 @@ async fn the_tail_driver_polls_then_fetches_each_instance() {
     let request = mock!(Client::request_environment_info)
         .match_requests(|r| r.environment_name() == Some("api"))
         .then_output(|| RequestEnvironmentInfoOutput::builder().build());
-    let info = |id: &str, url: &str| {
+    // Taken `ago` seconds before this read: EB keeps earlier requests'.
+    let info = |id: &str, url: &str, ago: i64| {
         EnvironmentInfoDescription::builder()
             .ec2_instance_id(id)
             .message(url)
+            .sample_timestamp(aws_smithy_types::DateTime::from_secs(
+                chrono::Utc::now().timestamp() - ago,
+            ))
             .build()
     };
     let retrieve = mock!(Client::retrieve_environment_info)
@@ -1977,8 +1981,9 @@ async fn the_tail_driver_polls_then_fetches_each_instance() {
         .output(|| RetrieveEnvironmentInfoOutput::builder().build())
         .output(move || {
             RetrieveEnvironmentInfoOutput::builder()
-                .environment_info(info("i-1", "https://s3/one"))
-                .environment_info(info("i-2", "https://s3/two"))
+                .environment_info(info("i-1", "https://s3/stale", 3600))
+                .environment_info(info("i-1", "https://s3/one", 0))
+                .environment_info(info("i-2", "https://s3/two", 0))
                 .build()
         })
         .build();
@@ -2048,4 +2053,32 @@ async fn the_tail_driver_gives_up_after_its_attempts() {
         "{err}"
     );
     assert_eq!(retrieve.num_calls(), 3);
+}
+
+#[test]
+fn only_this_requests_tail_samples_count_newest_per_instance() {
+    use super::fresh_samples;
+    let requested = chrono::DateTime::parse_from_rfc3339("2026-11-12T12:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    let at = |s: i64| Some(requested + chrono::Duration::seconds(s));
+    let sample = |id: &str, url: &str, t| (id.to_string(), url.to_string(), t);
+    let fresh = fresh_samples(
+        vec![
+            sample("i-1", "pre-deploy", at(-3600)),
+            sample("i-1", "first", at(5)),
+            sample("i-1", "newer", at(9)),
+            sample("i-2", "skewed", at(-20)),
+            sample("i-3", "untimed", None),
+            sample("i-4", "too-old", at(-31)),
+        ],
+        requested,
+    );
+    assert_eq!(
+        fresh,
+        [
+            ("i-1".to_string(), "newer".to_string()),
+            ("i-2".to_string(), "skewed".to_string()),
+        ]
+    );
 }
