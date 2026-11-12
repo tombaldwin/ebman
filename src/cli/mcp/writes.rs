@@ -27,7 +27,7 @@
 //! HUMAN reading the agent's transcript).
 
 use super::dialog::{ask_summary, forecloses};
-use super::refusal::{Audited, WriteError};
+use super::refusal::{Audited, WriteAudit, WriteError};
 use super::role::*;
 use super::undo::*;
 use super::*;
@@ -778,11 +778,10 @@ pub(super) struct PendingWrite {
     /// the verb: what the confirmation names and what slice 3 assumes,
     /// never picked again at confirm. `None` for a verb no role lists.
     pub role: Option<PlanRole>,
-    /// The region the plan's client resolved, which found the env: a
-    /// role session is assumed in it. Resolved by the SDK, so instance
-    /// metadata included, which `audit_region` cannot read. `None` on
-    /// demo.
-    pub plan_region: Option<String>,
+    /// Who and where every line of this write files under, resolved at
+    /// plan time: the region is the one the plan's client found the env
+    /// in, and a role session is assumed in it.
+    pub audit: WriteAudit,
 }
 
 /// Token TTL — long enough for an agent round-trip, short enough
@@ -1399,14 +1398,14 @@ impl Server {
         // otherwise reach the body. Belt-and-braces, and the braces are
         // the ones that matter after a scope is narrowed.
         if !self.effective_scope().allows(verb.tool_name()) {
-            return Err(self
-                .refused_out_of_scope(
-                    verb,
-                    arg_str(args, "env").as_deref(),
-                    arg_str(args, "region").as_deref(),
+            let audit = self
+                .write_audit(
                     &arg_str(args, "profile"),
+                    None,
+                    arg_str(args, "region").as_deref(),
                 )
-                .await);
+                .await;
+            return Err(self.refused_out_of_scope(verb, arg_str(args, "env").as_deref(), &audit));
         }
         if self.dispatching.load(std::sync::atomic::Ordering::SeqCst) {
             return Err("another write is in flight — wait for it to complete".into());
@@ -1424,16 +1423,12 @@ impl Server {
         // not seen until restart. This comment used to claim it was.
         let profile = arg_str(args, "profile");
         let role_check = self.role_check(verb);
-        if let Some(refused) = self
-            .gate_refusal(
-                &env_name,
-                &profile,
-                arg_str(args, "region").as_deref(),
-                verb.label(),
-                &role_check,
-            )
-            .await
-        {
+        // Before the env is found or a client built, so from the call
+        // and the profile file: a refusal here costs no AWS call.
+        let early = self
+            .write_audit(&profile, None, arg_str(args, "region").as_deref())
+            .await;
+        if let Some(refused) = self.gate_refusal(&env_name, &early, verb.label(), &role_check) {
             return Err(WriteError::Refused(refused));
         }
 
@@ -1450,16 +1445,19 @@ impl Server {
         let caller = self.caller_identity(args).await;
 
         // The plan's client, and the region it found the env in, which
-        // every line of this write files under (`pending_region`): read
-        // by the SDK, instance metadata included.
+        // every line of this write files under: read by the SDK,
+        // instance metadata included.
         let plan_client = match self.backend {
             Backend::Demo => None,
             Backend::Aws => Some(self.client(args).await?),
         };
-        let plan_region = plan_client
-            .as_ref()
-            .map(|c| c.context.region.clone())
-            .filter(|r| !r.is_empty() && r != "unknown");
+        let audit = self
+            .write_audit(
+                &profile,
+                plan_client.as_ref().map(|c| c.context.region.as_str()),
+                arg_str(args, "region").as_deref(),
+            )
+            .await;
 
         // The role the verb maps to, and whether it is in the env's
         // account. Before anything verb-specific is read: a DLQ plan
@@ -1471,17 +1469,8 @@ impl Server {
                 match role_for_env(roles, &env, &caller, !matches!(self.backend, Backend::Demo)) {
                     Ok(r) => Some(r),
                     Err(refusal) => {
-                        let audit_profile = self.audit_profile(&profile);
-                        let region = match &plan_region {
-                            Some(r) => r.clone(),
-                            None => {
-                                self.audit_region(&profile, arg_str(args, "region").as_deref())
-                                    .await
-                            }
-                        };
                         return Err(WriteError::Refused(Audited::record(
-                            audit_profile.as_deref(),
-                            &region,
+                            &audit,
                             &crate::audit::Refused {
                                 action_label: verb.label(),
                                 target: &env.name,
@@ -1562,7 +1551,7 @@ impl Server {
                 dlq_main_url: dlq_main_url.clone(),
                 role_check: role_check.clone(),
                 role: role.clone(),
-                plan_region: plan_region.clone(),
+                audit: audit.clone(),
             });
         }
 
@@ -1626,13 +1615,15 @@ impl Server {
             // probing, which is worth seeing and invisible any other
             // way. Reachable exactly as that one is — via a cached
             // tool list from a wider grant.
-            let profile = arg_str(args, "profile");
-            let region = self
-                .audit_region(&profile, arg_str(args, "region").as_deref())
+            let audit = self
+                .write_audit(
+                    &arg_str(args, "profile"),
+                    None,
+                    arg_str(args, "region").as_deref(),
+                )
                 .await;
             return Err(WriteError::Refused(Audited::record(
-                self.audit_profile(&profile).as_deref(),
-                &region,
+                &audit,
                 &crate::audit::Refused {
                     action_label: "confirm",
                     target: "-",
@@ -1669,16 +1660,9 @@ impl Server {
             // a scope that held at plan time but not at confirm is a
             // bug worth failing on rather than dispatching through.
             if !self.effective_scope().allows(p.verb.tool_name()) {
-                // The plan's region, so this line files with the
-                // write's others.
-                let region = p.plan_region.clone().or_else(|| p.region.clone());
-                let (verb, env, profile) = (p.verb, p.env.clone(), p.profile.clone());
+                let refused = self.refused_out_of_scope(p.verb, Some(&p.env), &p.audit);
                 st.pending = None;
-                drop(st);
-                return Err(self
-                    .refused_out_of_scope(verb, Some(&env), region.as_deref(), &profile)
-                    .await
-                    .with_context(|m| format!("{m} — plan dropped")));
+                return Err(refused.with_context(|m| format!("{m} — plan dropped")));
             }
             if p.verb == WriteVerb::Terminate {
                 let supplied = arg_str(args, "confirm_name").unwrap_or_default();
@@ -1700,17 +1684,8 @@ impl Server {
             // were checked at plan time, but the token window is long
             // enough for an incident to be declared since. A refusal
             // here drops the plan — reality changed, re-plan required.
-            if let Some(refused) = self
-                .gate_refusal(
-                    &p.env,
-                    &p.profile,
-                    // The plan's region, so this line files with the
-                    // write's others.
-                    p.plan_region.as_deref().or(p.region.as_deref()),
-                    p.verb.label(),
-                    &p.role_check,
-                )
-                .await
+            if let Some(refused) =
+                self.gate_refusal(&p.env, &p.audit, p.verb.label(), &p.role_check)
             {
                 st.pending = None;
                 return Err(WriteError::Refused(refused));
@@ -1787,11 +1762,10 @@ impl Server {
         let was_actually_asked =
             !matches!(outcome, AskOutcome::NotAsked | AskOutcome::Undeliverable);
         if was_actually_asked && !matches!(self.backend, Backend::Demo) {
-            let region = self.pending_region(&pending).await;
             crate::audit::append_action_asked(
                 None,
-                self.audit_profile(&pending.profile).as_deref(),
-                &region,
+                pending.audit.profile.as_deref(),
+                pending.audit.region_label(),
                 pending.verb.label(),
                 &pending.env,
                 outcome.answer_label(),
@@ -1819,10 +1793,8 @@ impl Server {
             // The remedy names no control, deliberately. The control
             // is a person who has just said no, and an agent that
             // retries a decline is the failure mode here.
-            let region = self.pending_region(&pending).await;
             return Err(WriteError::Refused(Audited::record(
-                self.audit_profile(&pending.profile).as_deref(),
-                &region,
+                &pending.audit,
                 &crate::audit::Refused {
                     action_label: pending.verb.label(),
                     target: &pending.env,
@@ -1841,16 +1813,12 @@ impl Server {
         // to win, and `safety-and-privacy.md` promises exactly that.
         // The freeze is re-read from disk here, so this is the check
         // that catches it.
-        if let Some(refused) = self
-            .gate_refusal(
-                &pending.env,
-                &pending.profile,
-                pending.plan_region.as_deref().or(pending.region.as_deref()),
-                pending.verb.label(),
-                &pending.role_check,
-            )
-            .await
-        {
+        if let Some(refused) = self.gate_refusal(
+            &pending.env,
+            &pending.audit,
+            pending.verb.label(),
+            &pending.role_check,
+        ) {
             return Err(WriteError::Refused(refused.map_message(|m| {
                 format!("{m} (declared while the confirmation was open — nothing was dispatched)")
             })));
@@ -2067,7 +2035,7 @@ impl Server {
         }
         let client = self.dispatch_client(&p.profile, &p.region, session).await?;
         let client_name = self.client_name();
-        let audit_profile = self.audit_profile(&p.profile);
+        let audit_profile = p.audit.profile.clone();
         // Resend and delete take the batch path, which audits per
         // MESSAGE. The generic path below writes one dispatched line
         // and one completed line for the whole action, and for a batch

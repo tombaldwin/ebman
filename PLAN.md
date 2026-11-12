@@ -165,28 +165,58 @@ it.*
 
 ### Next
 
-*Reordered 2026-11-12 after the Fable review: `PlanRole` and the session
-helpers shrink what `WriteAudit` carries, and the glob-cycle split gives
-it a home (`mcp/refusal.rs`), so `WriteAudit` goes last rather than
-being built twice. Refilled 2026-11-06: the `scan.rs` split is done
-(archived, "PLAN.md items done 2026-11-06").*
+*Refilled 2026-11-12 from the Fable review (fixes and refactors 3–6
+done, archived "PLAN.md items done 2026-11-12"). Tom asked for all of
+it as one release. Ranked by operator value; each is a feature item
+(build, self-review, tests, mutation-proven guards). Writes go through
+the shared gate, two-phase on MCP, audited, with an undo where one
+exists.*
 
-6. *(architecture)* **One `WriteAudit` per MCP write** (absorbs `Audited::record`'s
-   separate profile and region arguments):
-   resolve profile, region, label and env once, at plan time after
-   `fetch_envs`, store it on `PendingWrite` and copy it onto
-   `DeletedMessage`, and route asked / refused / dispatched / completed
-   through it, with `Option<String>` in place of the `"-"` / `"unknown"`
-   sentinels (`role.rs` makes a control decision on `region != "-"`).
-   The 0.49.0 review fixed every site that disagreed (788d432:
-   `Server::audit_profile`, the plan client built before the role check,
-   `DeletedMessage::plan_region`), which proves the sites agree today, not
-   that the next one will. `gate_refusal`'s pin profile is the audit
-   profile (`write_refusal_unaudited`, in `src/cli/write_env.rs`, returns
-   the profile it was given):
-   keep them one value. ~1 day, `writes.rs` / `role.rs` /
-   `undo.rs`. From the 2026-10-31 design review and the 0.49.0
-   architecture review.
+7. **Env-level health in `:why` and MCP `why`.** `DescribeEnvironmentHealth`
+   with every attribute: the console's banner causes, enhanced status,
+   request rate, status mix and latency. ebman asks only for instance
+   counts today (`aws/eb.rs` `fetch_env_instance_counts`). Read-only.
+
+8. **Platform branch lifecycle.** `ListPlatformBranches` per region:
+   a deprecated or retired branch on the fleet row, a lint rule (Warn
+   deprecated, Error retired), and a field on `list_environments` /
+   `ebman envs --json`. The API gives the state, not a date. Read-only.
+
+9. **Managed platform updates.** What is scheduled and what happened
+   (`DescribeEnvironmentManagedActions`, `...History`) as reads, and
+   apply-now (`ApplyEnvironmentManagedAction`) as a gated write with no
+   undo (it is an immutable update; `:abort` stops it).
+
+10. **Server-side DLQ redrive.** SQS `StartMessageMoveTask` /
+    `ListMessageMoveTasks` / `CancelMessageMoveTask`: the whole DLQ back
+    to its source queue with no body leaving AWS. A write, cancellable,
+    not undoable.
+
+11. **Rollback, swap, abort and scale off the TUI.** CLI and MCP verbs;
+    from BACKLOG "Surface parity", whose CLI reads and naming half stays
+    there. `swap` names both environments in its plan.
+
+12. **Deploy follow-up for agents.** A bounded wait on an env settling
+    after a write; `since` and `min_severity` on `recent_events`; the
+    pre-deploy lint in the MCP deploy plan, which the TUI runs.
+
+13. **Application-version retention.** The lifecycle policy per app
+    (`UpdateApplicationResourceLifecycle`) as a gated write with an undo
+    (previous policy captured), and lint for no policy and for an account
+    near its version quota (`DescribeAccountAttributes`).
+
+14. **Listener certificate expiry.** `acm:DescribeCertificate` for each
+    listener's certificate: expiry and renewal status in `:listeners`,
+    and a lint rule. Read-only.
+
+15. **Every region at once for MCP reads and `ebman envs`.** `regions`
+    on `list_environments`, `lint`, `recent_events`; `ebman envs
+    --regions`. Read-only.
+
+16. **A `recent_logs` fallback without CloudWatch streaming.** EB's own
+    tail (`RequestEnvironmentInfo` / `RetrieveEnvironmentInfo`) when an
+    env streams no logs, with `source` in the answer. From BACKLOG
+    "Breadth vs the daily core", which keeps its other two points.
 
 ### Released
 

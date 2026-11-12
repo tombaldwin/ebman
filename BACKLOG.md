@@ -236,17 +236,15 @@ Tier definitions:
   CHANGELOG entries name internal tests. Split each page into reference
   (what is true now) and rationale.
 
-- [ ] **Surface parity.** `:rollback` — the README's headline fix — is
-  TUI-only, so it cannot be scripted or proposed by an agent; `why`,
-  events and logs exist in the TUI and MCP but not the CLI; names differ
-  (`:versions` / `versions` / `list_versions`, `envs` /
-  `list_environments`).
+- [ ] **Surface parity.** `why`, events and logs exist in the TUI and
+  MCP but not the CLI; names differ (`:versions` / `versions` /
+  `list_versions`, `envs` / `list_environments`). (Rollback, swap, abort
+  and scale moved to PLAN item 11, 2026-11-12.)
 
 - [ ] **Breadth vs the daily core.** 131 commands; two unrelated
   "freezes" (`f` pauses auto-refresh; `:freeze-deploys` locks writes —
-  rename the first to "pause"); consider a `?` "top 15" view. Also:
-  MCP `recent_logs` reads CloudWatch only, so an env without log
-  streaming may return nothing — say so in the tool description.
+  rename the first to "pause"); consider a `?` "top 15" view. (The
+  `recent_logs` CloudWatch-only gap moved to PLAN item 16, 2026-11-12.)
 
 - [ ] **`draw_table`'s `DisplayRow::Env` arm is still inline** (165
   lines of what is now a 408-line function (`ui/table.rs:594`, re-measured 2026-09-25; 389 on 2026-08-28), it was recorded

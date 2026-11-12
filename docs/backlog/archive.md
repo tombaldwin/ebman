@@ -5901,3 +5901,15 @@ a `--read-only` server.
   but no longer by glob. The refusal-funnel and `Audited` guards follow
   the code to `refusal.rs`, same entry, same count; the `Audited` guard
   was shown to fail there against a widened field.
+- **One `WriteAudit` per MCP write.** `refusal::WriteAudit { profile,
+  region: Option<String> }`, resolved once by `Server::write_audit` (the
+  region the plan's client resolved, else the call's or the profile
+  file's; `""`, `unknown` and `-` are no region), stored on
+  `PendingWrite` in place of `plan_region` and copied onto
+  `DeletedMessage`. `Audited::record`, `gate_refusal` and
+  `refused_out_of_scope` take it (the last two are no longer async);
+  `pending_region` is gone, and `role.rs` assumes in `audit.region`
+  rather than deciding on `region != "-"`. `gate_refusal` pins against
+  `audit.profile` and records the same value. Six mutations each fail a
+  test, two of them only after `a_write_s_audit_region_prefers_what_its_client_resolved`
+  was added (accepting `-` as a region; ignoring the resolved one).

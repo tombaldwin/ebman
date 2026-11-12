@@ -2899,10 +2899,10 @@ mod orchestration {
                 // Recorded by the delete, from its plan's client: the
                 // call named no region.
                 assert_eq!(d.region, None);
-                assert_eq!(d.plan_region.as_deref(), Some("us-east-1"));
+                assert_eq!(d.audit.region.as_deref(), Some("us-east-1"));
                 // A region no client here reports, so the refusal below
                 // can only have taken it from the entry.
-                d.plan_region = Some("poly-undo-plan-region".into());
+                d.audit.region = Some("poly-undo-plan-region".into());
             }
         }
         s.freeze_store()
@@ -4394,7 +4394,10 @@ async fn a_role_refusal_at_confirm_asks_no_one() {
             dlq_main_url: None,
             role_check: crate::config::RoleCheck::Unmapped { required: true },
             role: None,
-            plan_region: None,
+            audit: crate::cli::mcp::refusal::WriteAudit {
+                profile: None,
+                region: None,
+            },
         });
     }
     let (err, out) = call(
@@ -6762,9 +6765,9 @@ async fn a_role_session_is_assumed_in_the_plan_s_region() {
     {
         let mut st = s.writes.lock().await;
         let p = st.pending.as_mut().expect("installed");
-        assert_eq!(p.plan_region.as_deref(), Some("poly-role-1"), "recorded");
+        assert_eq!(p.audit.region.as_deref(), Some("poly-role-1"), "recorded");
         // As if instance metadata had named it and nothing else could.
-        p.plan_region = Some("poly-role-3".into());
+        p.audit.region = Some("poly-role-3".into());
     }
     s.tool_confirm_action(&json!({"confirm_token": token}))
         .await
@@ -6794,7 +6797,8 @@ async fn a_declined_write_files_under_the_plan_s_region() {
         .pending
         .as_mut()
         .expect("installed")
-        .plan_region = Some("poly-role-3".into());
+        .audit
+        .region = Some("poly-role-3".into());
     let before = crate::audit::delta::mark();
     let _ = s
         .tool_confirm_action(&json!({"confirm_token": token}))
@@ -6829,7 +6833,7 @@ async fn an_unresolved_region_is_not_the_plan_s() {
             .unwrap_or_else(|e| panic!("{e}"));
         let writes = s.writes.lock().await;
         let pending = writes.pending.as_ref().expect("installed");
-        assert_eq!(pending.plan_region.as_deref(), held, "{reported:?}");
+        assert_eq!(pending.audit.region.as_deref(), held, "{reported:?}");
     }
 }
 
@@ -6888,7 +6892,8 @@ async fn a_write_frozen_at_confirm_files_under_the_plan_s_region() {
         .pending
         .as_mut()
         .expect("installed")
-        .plan_region = Some("poly-role-3".into());
+        .audit
+        .region = Some("poly-role-3".into());
     s.freeze_store()
         .declare_persistent("incident #91", true)
         .expect("frozen");
@@ -7049,7 +7054,8 @@ async fn a_role_refused_before_assuming_names_no_session() {
         .pending
         .as_mut()
         .expect("installed")
-        .plan_region = Some("-".into());
+        .audit
+        .region = None;
     let before = crate::audit::delta::mark();
     let err = s
         .tool_confirm_action(&json!({"confirm_token": token}))

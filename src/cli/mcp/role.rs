@@ -93,10 +93,6 @@ impl Server {
         if matches!(self.backend, Backend::Demo) {
             return Ok(None);
         }
-        // The region the plan's client found the env in, which the base
-        // client would have dispatched to; the audit lines' resolution
-        // only when the plan recorded none.
-        let region = self.pending_region(p).await;
         let Some(role) = p.role.as_ref().map(|r| &r.mapped) else {
             // A verb that maps to a role never goes out without one: a
             // plan that carried none for it is refused, not sent as the
@@ -105,7 +101,6 @@ impl Server {
             if matches!(p.role_check, crate::config::RoleCheck::Mapped { .. }) {
                 return Err(self.role_refusal(
                     p,
-                    &region,
                     "its verb maps to a role and the plan carried none",
                     "plan the write again",
                     None,
@@ -114,7 +109,8 @@ impl Server {
             return Ok(None);
         };
         let name = session_name(client_name, &p.token);
-        // The session is assumed in `region`, never left to the role's
+        // The session is assumed in the plan's region (the one its client
+        // found the env in, `WriteAudit::region`), never left to the role's
         // `source_profile`: an env approved in one region could
         // otherwise be written in another, where the same name can be
         // another environment and the account check passes.
@@ -127,7 +123,7 @@ impl Server {
                 .clone()
                 .or_else(|| p.profile.clone()),
             external_id: role.spec.external_id.clone(),
-            region: (region != "-").then(|| region.clone()),
+            region: p.audit.region.clone(),
         };
         let role_is = format!("role `{}` ({})", role.arn.name, role.arn.arn);
         // The remedy follows the failure. It never suggests dropping
@@ -135,17 +131,16 @@ impl Server {
         // The session name goes on the refusal only once an AssumeRole
         // went out under it: CloudTrail then holds a call by that name,
         // and this line is what it joins to.
-        let (why, remedy, assumed) = if spec.region.is_none() {
-            (
+        let (why, remedy, assumed) = match spec.region.as_deref() {
+            None => (
                 format!(
                     "{role_is} was not assumed: the region the plan read the environment in \
                      is unknown"
                 ),
                 "name the environment's region on the call (`region`)".to_string(),
                 false,
-            )
-        } else {
-            match self.assume(&spec, &name).await {
+            ),
+            Some(region) => match self.assume(&spec, &name).await {
                 Ok(client) => match client.context.account_id.as_deref() {
                     Some(a) if a != role.arn.account => (
                         format!(
@@ -189,9 +184,9 @@ impl Server {
                     ),
                     true,
                 ),
-            }
+            },
         };
-        Err(self.role_refusal(p, &region, &why, &remedy, assumed.then_some(name.as_str())))
+        Err(self.role_refusal(p, &why, &remedy, assumed.then_some(name.as_str())))
     }
 
     /// The `role_unassumable` refusal of an approved write (D7), audited
@@ -200,12 +195,10 @@ impl Server {
     fn role_refusal(
         &self,
         p: &PendingWrite,
-        region: &str,
         why: &str,
         remedy: &str,
         session: Option<&str>,
     ) -> Audited {
-        let audit_profile = self.audit_profile(&p.profile);
         let mut extras: Vec<(&str, &str)> = Vec::new();
         if let Some(role) = p.role.as_ref() {
             extras.push(("role", role.mapped.arn.arn.as_str()));
@@ -214,8 +207,7 @@ impl Server {
             extras.push(("session", session));
         }
         Audited::record(
-            audit_profile.as_deref(),
-            region,
+            &p.audit,
             &crate::audit::Refused {
                 action_label: p.verb.label(),
                 target: &p.env,

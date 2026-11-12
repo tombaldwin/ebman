@@ -6,7 +6,7 @@
 //! field is private there, so a `WriteError::Refused` can only come from
 //! [`Audited::record`], which writes the `stage=refused` line.
 
-use super::writes::{PendingWrite, WriteVerb};
+use super::writes::WriteVerb;
 use super::*;
 
 /// A refusal you can only hold if it has been recorded.
@@ -40,12 +40,16 @@ mod audited {
         /// server reads the real cross-process freeze marker, so its
         /// verdict is genuine while its fleet is not.
         pub(in crate::cli::mcp) fn record(
-            profile: Option<&str>,
-            region: &str,
+            audit: &super::WriteAudit,
             refused: &crate::audit::Refused<'_>,
             message: String,
         ) -> Self {
-            crate::audit::append_refused(None, profile, region, refused);
+            crate::audit::append_refused(
+                None,
+                audit.profile.as_deref(),
+                audit.region_label(),
+                refused,
+            );
             Audited(message)
         }
 
@@ -131,6 +135,30 @@ impl From<String> for WriteError {
     }
 }
 
+/// Who and where every audit line of one MCP write names: resolved once
+/// (`Server::write_audit`), at plan time once the env is found, carried
+/// on the plan and onto a deleted message, so its asked, refused,
+/// dispatched and undo lines cannot disagree. They used to resolve it
+/// at each line, from three helpers and a `"-"` / `"unknown"` sentinel,
+/// and a review found four sites that disagreed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct WriteAudit {
+    /// The call's profile, else the one the server runs under.
+    pub profile: Option<String>,
+    /// `None` when nothing names one. The lines then say `-`, and no
+    /// role session is assumed: one would land in whatever region the
+    /// role's profile defaults to, where the same name can be another
+    /// environment.
+    pub region: Option<String>,
+}
+
+impl WriteAudit {
+    /// The region as an audit line writes it.
+    pub(super) fn region_label(&self) -> &str {
+        self.region.as_deref().unwrap_or("-")
+    }
+}
+
 impl Server {
     /// Record a scope refusal, and render it.
     ///
@@ -143,16 +171,13 @@ impl Server {
     ///
     /// Demo writes nothing real, matching `gate_refusal`: the refusal
     /// is genuine, the fleet is not.
-    pub(super) async fn refused_out_of_scope(
+    pub(super) fn refused_out_of_scope(
         &self,
         verb: WriteVerb,
         env: Option<&str>,
-        region: Option<&str>,
-        profile: &Option<String>,
+        audit: &WriteAudit,
     ) -> WriteError {
         let name = verb.tool_name();
-        let region = self.audit_region(profile, region).await;
-        let audit_profile = self.audit_profile(profile);
         // On a `--read-only` server, "start it with --allow-writes" is
         // advice that produces a startup error: the two contradict and
         // are refused together. The control the operator actually has
@@ -164,8 +189,7 @@ impl Server {
             .load(std::sync::atomic::Ordering::Relaxed)
         {
             return WriteError::Refused(Audited::record(
-                audit_profile.as_deref(),
-                &region,
+                audit,
                 &crate::audit::Refused {
                     action_label: verb.label(),
                     target: env.unwrap_or("-"),
@@ -184,8 +208,7 @@ impl Server {
             ));
         }
         WriteError::Refused(Audited::record(
-            audit_profile.as_deref(),
-            &region,
+            audit,
             &crate::audit::Refused {
                 action_label: verb.label(),
                 target: env.unwrap_or("-"),
@@ -208,11 +231,10 @@ impl Server {
     /// appending a real line to the real audit log. This module's own
     /// docs promise demo writes none, and a refusal being genuine does
     /// not make the fleet genuine.
-    pub(super) async fn gate_refusal(
+    pub(super) fn gate_refusal(
         &self,
         env: &str,
-        profile: &Option<String>,
-        region: Option<&str>,
+        audit: &WriteAudit,
         action_label: &str,
         // What the role config says of the write's verb
         // (`Server::role_check`); `NotAsked` for `dlq_undo`, which goes
@@ -227,13 +249,19 @@ impl Server {
         // there instead, and a `Refused` would then exist that this
         // module had not recorded — which is the whole property the
         // type carries.
-        let profile = self.audit_profile(profile);
-        let (refusal, message, pin_profile) =
-            crate::cli::write_refusal_unaudited(&self.safety_cfg, env, &profile, freeze, role)?;
-        let region = self.audit_region(&profile, region).await;
+        // Pinned against the audit profile, so the line names the
+        // profile the pin was checked against: one value, not two that
+        // happen to agree (`write_refusal_unaudited` hands back the one
+        // it was given).
+        let (refusal, message, _) = crate::cli::write_refusal_unaudited(
+            &self.safety_cfg,
+            env,
+            &audit.profile,
+            freeze,
+            role,
+        )?;
         Some(Audited::record(
-            pin_profile.as_deref(),
-            &region,
+            audit,
             &crate::audit::Refused {
                 action_label,
                 target: env,
@@ -255,17 +283,29 @@ impl Server {
         profile.clone().or_else(|| self.ambient_profile.clone())
     }
 
-    /// The region every line of a planned write files under: the one the
-    /// plan's client found the env in, so the ask, any refusal and the
-    /// session's dispatch agree, and `ebman audit` pairs them. Read by
-    /// the SDK, instance metadata included, which `audit_region` cannot
-    /// read: on an EC2 host it answered `-` while the dispatch named the
-    /// region. `audit_region` only when the plan recorded none (demo).
-    pub(super) async fn pending_region(&self, p: &PendingWrite) -> String {
-        match &p.plan_region {
-            Some(r) => r.clone(),
-            None => self.audit_region(&p.profile, p.region.as_deref()).await,
-        }
+    /// Who and where every audit line of one write names, resolved
+    /// once. `resolved` is the region the plan's client found the env
+    /// in, read by the SDK with instance metadata included, which
+    /// `audit_region` cannot read (on an EC2 host it answered `-` while
+    /// the dispatch named the region); `named` is the call's `region`,
+    /// the fallback when no client resolved one (demo, or a refusal
+    /// before the plan built its client).
+    pub(super) async fn write_audit(
+        &self,
+        profile: &Option<String>,
+        resolved: Option<&str>,
+        named: Option<&str>,
+    ) -> WriteAudit {
+        // One test for both sources: the SDK reports `unknown` or an
+        // empty string for a region it never resolved, and `audit_region`
+        // answers `-` for none. None of them is a region.
+        let a_region = |r: &str| !r.is_empty() && r != "unknown" && r != "-";
+        let profile = self.audit_profile(profile);
+        let region = match resolved.filter(|r| a_region(r)) {
+            Some(r) => Some(r.to_string()),
+            None => Some(self.audit_region(&profile, named).await).filter(|r| a_region(r)),
+        };
+        WriteAudit { profile, region }
     }
 
     /// The region a refusal or ask line records: the one the write's

@@ -91,7 +91,10 @@ fn a_superseded_token_says_so_rather_than_unknown() {
         dlq_main_url: None,
         role_check: crate::config::RoleCheck::Unmapped { required: false },
         role: None,
-        plan_region: None,
+        audit: crate::cli::mcp::refusal::WriteAudit {
+            profile: None,
+            region: None,
+        },
     };
     st.install(plan("tok-a"));
     assert!(st.retired.is_empty(), "the first plan replaces nothing");
@@ -614,7 +617,10 @@ async fn the_confirm_gate_refuses_a_plan_outside_the_scope() {
             dlq_main_url: None,
             role_check: crate::config::RoleCheck::Unmapped { required: false },
             role: None,
-            plan_region: None,
+            audit: crate::cli::mcp::refusal::WriteAudit {
+                profile: None,
+                region: None,
+            },
         });
     }
 
@@ -1250,6 +1256,31 @@ fn audit_delta_for(before: &str, env: &str) -> Vec<String> {
 /// dispatched and completed lines do, when the call named none. Every
 /// MCP gate refusal wrote `region=-` then, so the log could not put a
 /// refused undo and the delete it would have reversed side by side.
+/// The region a write files under: the one its client resolved, then
+/// the one the call or profile names; never a placeholder for none. A
+/// `-` or `unknown` held as a region would have a role session assumed
+/// in a region of that name.
+#[tokio::test]
+async fn a_write_s_audit_region_prefers_what_its_client_resolved() {
+    let s = Server::with_scope(true, false, crate::cli::mcp::WriteScope::All);
+    let at = |r: Option<&str>| r.map(str::to_string);
+    let audit = s
+        .write_audit(&None, Some("poly-resolved-1"), Some("poly-named-1"))
+        .await;
+    assert_eq!(audit.region, at(Some("poly-resolved-1")), "resolved first");
+    for unresolved in ["", "unknown", "-"] {
+        let audit = s
+            .write_audit(&None, Some(unresolved), Some("poly-named-1"))
+            .await;
+        assert_eq!(audit.region, at(Some("poly-named-1")), "{unresolved:?}");
+    }
+    // Demo resolves nothing from the profile file: `audit_region` says
+    // `-`, which is no region.
+    let audit = s.write_audit(&None, None, None).await;
+    assert_eq!(audit.region, None);
+    assert_eq!(audit.region_label(), "-");
+}
+
 #[tokio::test]
 async fn a_refusal_records_the_resolved_region_when_none_was_named() {
     let env = "mcp-refusal-region-probe-env";
@@ -1265,12 +1296,11 @@ async fn a_refusal_records_the_resolved_region_when_none_was_named() {
         .next()
         .expect("fixture");
     let id = msg.id.clone();
-    s.remember_deleted(
-        &deleted_from(env, Some("https://q/undo-dlq".into())),
-        msg,
-        None,
-    )
-    .await;
+    // The delete's plan resolves its audit identity once, from its
+    // client, and the undo carries it rather than resolving again.
+    let mut delete = deleted_from(env, Some("https://q/undo-dlq".into()));
+    delete.audit = s.write_audit(&None, None, None).await;
+    s.remember_deleted(&delete, msg, None).await;
     s.freeze_store()
         .declare_persistent("poly-refusal-freeze", false)
         .unwrap();
@@ -1909,7 +1939,10 @@ fn a_batch_ask_enumerates_the_messages() {
         dlq_main_url: None,
         role_check: crate::config::RoleCheck::Unmapped { required: false },
         role: None,
-        plan_region: None,
+        audit: crate::cli::mcp::refusal::WriteAudit {
+            profile: None,
+            region: None,
+        },
     };
     let summary = ask_summary(&p);
     for i in 1..=3 {
@@ -2063,7 +2096,10 @@ fn the_ask_says_whose_credentials_it_would_use() {
         dlq_main_url: None,
         role_check: crate::config::RoleCheck::Unmapped { required: false },
         role: None,
-        plan_region: None,
+        audit: crate::cli::mcp::refusal::WriteAudit {
+            profile: None,
+            region: None,
+        },
     };
     let s = ask_summary(&p);
     assert!(
@@ -2845,7 +2881,10 @@ fn pending_for(verb: WriteVerb) -> PendingWrite {
         dlq_main_url: None,
         role_check: crate::config::RoleCheck::Unmapped { required: false },
         role: None,
-        plan_region: None,
+        audit: crate::cli::mcp::refusal::WriteAudit {
+            profile: None,
+            region: None,
+        },
     }
 }
 

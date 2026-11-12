@@ -3,7 +3,7 @@
 //! [`UNDO_WINDOW_SECS`] so "that was the wrong one" can put it back.
 //! Moved out of `writes.rs`, which it was self-contained inside of.
 
-use super::refusal::WriteError;
+use super::refusal::{WriteAudit, WriteError};
 use super::role::{with_session, RoleSession};
 use super::writes::{dlq_audit_line, extras_refs, DlqTarget, PendingWrite, WriteVerb};
 use super::*;
@@ -54,10 +54,10 @@ pub(super) struct DeletedMessage {
     /// non-default region was restored against the default one.
     pub profile: Option<String>,
     pub region: Option<String>,
-    /// The region the delete's plan found the env in
-    /// (`PendingWrite::plan_region`), so a refusal of the undo files with
-    /// the delete's lines; `region` alone is usually `None`.
-    pub plan_region: Option<String>,
+    /// The delete's audit identity (`PendingWrite::audit`), so the
+    /// undo's lines, a refusal included, file with the delete's;
+    /// `region` alone is usually `None`.
+    pub audit: WriteAudit,
     /// The role session the delete went out under, if its verb mapped
     /// to one. The undo goes out under the SAME session (D4): it is the
     /// delete's reversal, so CloudTrail files both under one session
@@ -196,7 +196,7 @@ impl Server {
             queue_url,
             profile: p.profile.clone(),
             region: p.region.clone(),
-            plan_region: p.plan_region.clone(),
+            audit: p.audit.clone(),
             session: session.cloned(),
             original_id: msg.id,
             task: msg.task.as_ref().and_then(|t| t.name.clone()),
@@ -360,16 +360,12 @@ impl Server {
             }
         };
 
-        if let Some(refused) = self
-            .gate_refusal(
-                &d.env,
-                &d.profile,
-                d.plan_region.as_deref().or(d.region.as_deref()),
-                UNDO_LABEL,
-                &crate::config::RoleCheck::NotAsked,
-            )
-            .await
-        {
+        if let Some(refused) = self.gate_refusal(
+            &d.env,
+            &d.audit,
+            UNDO_LABEL,
+            &crate::config::RoleCheck::NotAsked,
+        ) {
             // A refusal is decided before anything is sent, well
             // inside the window: nothing to add to it.
             let _ = self.finish_restore(&d.original_id, false).await;
@@ -407,7 +403,7 @@ impl Server {
                 d.session.as_ref(),
             );
             let refs = extras_refs(&extras);
-            let audit_profile = self.audit_profile(&d.profile);
+            let audit_profile = &d.audit.profile;
             let region = client.context.region.clone();
             crate::audit::append_action_dispatched(
                 None,
