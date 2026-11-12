@@ -827,7 +827,7 @@ pub(crate) struct EnvVpcContext {
 /// Extracted so the branch decision is testable: `list_compatible_platforms`
 /// needs AWS to reach, so both directions of `if !branch.is_empty()`
 /// survived the whole suite. Dropping the branch filter lists EVERY
-/// ready platform — the `:upgrade-platform` picker would offer targets
+/// ready platform — the `:upgrade` picker would offer targets
 /// the environment cannot run — and applying it with an empty branch
 /// sends `begins_with ""`, which is a filter that matches nothing in
 /// some regions and everything in others.
@@ -2349,7 +2349,7 @@ mod paging_tests {
     /// suite because `list_compatible_platforms` needs AWS to reach.
     ///
     /// Dropping the filter lists EVERY ready platform, so the
-    /// `:upgrade-platform` picker offers targets the environment cannot
+    /// `:upgrade` picker offers targets the environment cannot
     /// run. Applying it with an empty branch sends `begins_with ""`,
     /// which is not a filter anyone meant to send.
     #[test]

@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- **Two lint rules suggested commands that do not exist.** EBL008
+  (stale platform) named `:upgrade-platform` and EBL012 (Green with no
+  healthy instances) named `:health`; they now name `:upgrade` and
+  `:why`, and a test fails any rule that names a command ebman lacks.
+
 ### Security
 
 - **`:batch-set-option` no longer writes a secret value to the audit

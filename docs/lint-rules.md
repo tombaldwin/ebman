@@ -121,7 +121,7 @@ Why it matters: stale platforms miss security patches and language-runtime updat
 
 Fix: `:upgrade <new-platform-arn>` — operator picks the target.
 
-TUI-live: 0.17+. CLI-live: 0.18+.
+Live in the TUI, `ebman lint` and MCP `lint`.
 
 ### EBL009 — ASG missing health-check grace period
 

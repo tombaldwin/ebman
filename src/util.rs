@@ -677,7 +677,7 @@ mod compare_versions_tests {
         use std::cmp::Ordering;
         // The bug: cores tie, so the old code fell through to `a.cmp(b)`,
         // and lexicographically "1.0.0-rc1" > "1.0.0" because it's a prefix
-        // extension. `:upgrade-platform` then offered an rc as the newest.
+        // extension. `:upgrade` then offered an rc as the newest.
         assert_eq!(compare_versions("1.0.0-rc1", "1.0.0"), Ordering::Less);
         assert_eq!(compare_versions("1.0.0", "1.0.0-rc1"), Ordering::Greater);
     }

@@ -494,16 +494,11 @@ fn ebl008_skips_when_newer_unknown() {
 }
 
 #[test]
-fn ebl008_currently_stub_does_not_fire_in_cli() {
-    // SHIP NOTE pin: CLI lint / explain don't have an App,
-    // so they can't compute newer_stack_available. The rule
-    // no-ops there until the CLI grows its own
-    // ListAvailableSolutionStacks fetch (tracked for 0.18).
-    // This test documents the gap.
+fn ebl008_is_silent_without_a_stack_listing() {
+    // A caller that listed no stacks leaves `newer_stack_available`
+    // unset, and the rule must not guess.
     let env = mk_env("prod", "Web", "Green");
     let opts: Vec<(String, String, String)> = vec![];
-    // `ctx()` helper mirrors the CLI-side path which doesn't
-    // populate newer_stack_available.
     assert!(StalePlatformVersion.applies(&ctx(&env, &opts)).is_none());
 }
 
@@ -1441,4 +1436,35 @@ fn report_json_is_valid_json_and_keeps_the_issues() {
     assert_eq!(parsed["issues"][0]["rule_id"], "EBL001");
     assert_eq!(parsed["degraded"], true);
     assert_eq!(parsed["degraded_reasons"][0], r#"a "quoted" reason"#);
+}
+
+#[test]
+fn every_command_a_rule_names_is_one_ebman_has() {
+    // A rule's fix text and suggestion are read by operators and, through
+    // MCP `lint`, by agents; EBL008 named `:upgrade-platform` and another
+    // rule `:health`, neither ever a command. A `:name` opening a backtick or a string literal
+    // is a command reference; `ns:name` option paths are not.
+    let src = crate::tests::scan::production_source("src/lint/rules.rs");
+    let known = crate::commands::all_names();
+    let mut named = Vec::new();
+    for opener in ["`:", "\":"] {
+        for (at, _) in src.match_indices(opener) {
+            let name: String = src[at + opener.len()..]
+                .chars()
+                .take_while(|c| c.is_ascii_lowercase() || *c == '-')
+                .collect();
+            if !name.is_empty() {
+                named.push(name);
+            }
+        }
+    }
+    assert!(named.len() > 5, "the scan sees the references: {named:?}");
+    let unknown: Vec<&String> = named
+        .iter()
+        .filter(|n| !known.contains(&n.as_str()))
+        .collect();
+    assert!(
+        unknown.is_empty(),
+        "rules name commands ebman lacks: {unknown:?}"
+    );
 }

@@ -431,8 +431,8 @@ impl Rule for StalePlatformVersion {
         self.applies(ctx)?;
         Some(FixAction::Manual {
             instructions: "Upgrade the platform to a current solution stack. In the EB console: \
-                 Configuration → Platform → Change. Or via `:upgrade-platform` in ebman \
-                 (select the new platform ARN from the picker). The target version is \
+                 Configuration → Platform → Change. Or via `:upgrade` in ebman \
+                 (no argument lists the compatible platforms; pass one's ARN). The target version is \
                  platform-family-specific — `--fix` won't guess. Consider enabling \
                  managed-updates so future patches apply automatically."
                 .into(),
@@ -448,14 +448,8 @@ impl Rule for StalePlatformVersion {
         // with the result. If `Some(version)`, the env is stale and
         // we fire. If `None`, the env is current OR the latest-stacks
         // data isn't loaded.
-        //
-        // 0.17 STATE: live in the TUI (`:lint`, `:explain`,
-        // confirm-modal) — those paths plumb `App.latest_stacks`
-        // via `aws::newer_stack_version()`. CLI (`ebman lint`,
-        // `ebman explain`) still no-ops — the CLI doesn't have an
-        // App, so it'd need its own `ListAvailableSolutionStacks`
-        // fetch. Tracked for 0.18. CLI no-op pinned by
-        // `ebl008_currently_stub_does_not_fire_in_cli` below.
+        // The TUI fills it from `App.latest_stacks`; `ebman lint` and MCP
+        // `lint` list the stacks themselves (`cli::lint`).
         let newer = ctx.newer_stack_available?;
         let mut fields = BTreeMap::new();
         fields.insert("current_stack".into(), stack.clone());
@@ -470,7 +464,7 @@ impl Rule for StalePlatformVersion {
                  ship security + runtime patches; staying on the old one defers known \
                  vulnerability fixes."
             ),
-            suggestion: Some(":upgrade-platform  (pick the latest from the picker)".into()),
+            suggestion: Some(":upgrade  (no argument lists the compatible platforms)".into()),
             fields,
         })
     }
@@ -743,7 +737,7 @@ impl Rule for GreenButZeroInstances {
                  misconfig, OOMKilled instances pre-launch, security-group blocks. Drill \
                  into Detail/Health + Detail/Instances to triage."
                 .into(),
-            suggestion: Some(":health  (drill into EB's health detail)".into()),
+            suggestion: Some(":why  (health causes, events, alarms and instances together)".into()),
             fields,
         })
     }
