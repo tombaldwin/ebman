@@ -763,6 +763,52 @@ pub(crate) fn install(app: &mut App) {
 mod tests {
     use super::*;
 
+    /// `:why` in demo tells each colour's story whole: status, colour,
+    /// causes, when EB refreshed it, and the request mix where there is
+    /// traffic. An env the fixture lacks errors as live would.
+    #[test]
+    fn each_demo_colour_has_its_whole_health_rollup() {
+        let red = env_health_for("poly-staging-api").expect("red");
+        assert_eq!(
+            (red.health_status.as_str(), red.color.as_str()),
+            ("Severe", "Red")
+        );
+        assert!(red.causes.iter().any(|c| c.contains("5xx")), "{red:?}");
+        assert!(red.refreshed_at.is_some() && red.requests_per_sec.is_some());
+        assert_eq!(red.pct_5xx, Some(38));
+
+        let yellow = env_health_for("poly-batch").expect("yellow");
+        assert_eq!(
+            (yellow.health_status.as_str(), yellow.color.as_str()),
+            ("Warning", "Yellow")
+        );
+        assert_eq!(yellow.causes.len(), 1, "{yellow:?}");
+        assert!(yellow.refreshed_at.is_some());
+        assert!(
+            yellow.requests_per_sec.is_none(),
+            "a worker serves no requests"
+        );
+
+        let green = env_health_for("poly-prod-api").expect("green");
+        assert_eq!(
+            (green.health_status.as_str(), green.color.as_str()),
+            ("Ok", "Green")
+        );
+        assert!(green.causes.is_empty());
+        assert!(green.refreshed_at.is_some());
+        assert_eq!(green.requests_per_sec, Some(42.0));
+        assert_eq!(green.pct_2xx, Some(99));
+
+        let grey = env_health_for("poly-dev-api").expect("grey");
+        assert_eq!(
+            (grey.health_status.as_str(), grey.color.as_str()),
+            ("Unknown", "Grey")
+        );
+        assert!(grey.causes.is_empty() && grey.requests_per_sec.is_none());
+
+        assert!(env_health_for("no-such-env").is_err());
+    }
+
     #[test]
     fn fixture_contains_one_of_every_health_tier() {
         let envs = envs();
