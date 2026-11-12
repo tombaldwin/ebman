@@ -52,6 +52,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   two applications; scale bounds are checked (0 ≤ min ≤ max ≤ 10000).
   Abort, swap and scale now audit under one shared label on every
   surface (`AbortUpdate`, `SwapCnames`, `Scale`, the TUI's spellings).
+- **Following a write, for agents.** MCP `recent_events` takes `since`
+  (a window) and `min_severity`, passed to EB; the new read
+  `wait_for_env` waits up to 25 seconds for an env to leave Updating,
+  Launching or Terminating and says whether it settled. A `deploy` or
+  `rollback` plan carries the pre-deploy lint the TUI's confirm runs:
+  `lint.issues`, and `lint.not_run` for checks that could not run.
 
 ### Fixed
 

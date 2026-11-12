@@ -5968,3 +5968,11 @@ a `--read-only` server.
   `#[allow(clippy::too_many_arguments)]` and now takes an `AuditedAs`
   struct; a demo test of all four overflowed the debug test stack and
   became four.
+- **Deploy follow-up for agents.** `aws::event_severity_rank` /
+  `event_passes`; `list_events_filtered` hands EB `start_time` and
+  `severity`. MCP `recent_events` `since` / `min_severity` (checked again
+  on the answer); `wait_for_env` (5s polls, 25s cap pinned below the
+  call's 30s by a const assert; demo answers at once); deploy and
+  rollback plans carry `deploy_plan_lint`. Self-review: inlining the
+  lint twice into `resolve_plan_details` overflowed a debug test
+  thread's stack, so the plan-detail futures are boxed.

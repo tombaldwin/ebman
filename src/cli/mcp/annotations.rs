@@ -99,6 +99,7 @@ pub(super) const TOOL_ATTRS: &[(&str, ToolAttrs)] = &[
     ("recent_logs", ToolAttrs::read()),
     ("why", ToolAttrs::read()),
     ("managed_updates", ToolAttrs::read()),
+    ("wait_for_env", ToolAttrs::read()),
     ("app_metrics", ToolAttrs::read()),
     ("lint", ToolAttrs::read()),
     ("drift", ToolAttrs::read()),

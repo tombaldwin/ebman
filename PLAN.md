@@ -172,10 +172,6 @@ it as one release. Ranked by operator value; each is a feature item
 the shared gate, two-phase on MCP, audited, with an undo where one
 exists.*
 
-12. **Deploy follow-up for agents.** A bounded wait on an env settling
-    after a write; `since` and `min_severity` on `recent_events`; the
-    pre-deploy lint in the MCP deploy plan, which the TUI runs.
-
 13. **Application-version retention.** The lifecycle policy per app
     (`UpdateApplicationResourceLifecycle`) as a gated write with an undo
     (previous policy captured), and lint for no policy and for an account

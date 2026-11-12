@@ -1793,3 +1793,37 @@ fn a_move_task_maps_whole_and_knows_whether_it_runs() {
     );
     assert!(unstarted.started.is_none());
 }
+
+#[test]
+fn an_event_passes_a_window_and_a_severity_floor() {
+    use super::{event_passes, event_severity_rank};
+    assert_eq!(event_severity_rank("warn"), event_severity_rank("WARN"));
+    assert!(event_severity_rank("ERROR") > event_severity_rank("WARN"));
+    assert!(event_severity_rank("TRACE") < event_severity_rank("DEBUG"));
+    assert_eq!(event_severity_rank("LOUD"), None);
+    let now = chrono::Utc::now();
+    let ev = |mins: i64, sev: &str| super::Event {
+        at: Some(now - chrono::Duration::minutes(mins)),
+        env: "e".into(),
+        application: "a".into(),
+        message: "m".into(),
+        severity: sev.into(),
+        version_label: None,
+    };
+    let cut = Some(now - chrono::Duration::minutes(5));
+    let warn = event_severity_rank("WARN");
+    assert!(event_passes(&ev(2, "ERROR"), cut, warn));
+    assert!(event_passes(&ev(5, "WARN"), cut, warn), "the edge is in");
+    assert!(!event_passes(&ev(6, "ERROR"), cut, warn), "too old");
+    assert!(!event_passes(&ev(2, "INFO"), cut, warn), "too quiet");
+    assert!(
+        !event_passes(&ev(2, "LOUD"), None, warn),
+        "unknown severity"
+    );
+    assert!(event_passes(&ev(2, "LOUD"), None, None), "no floor");
+    let undated = super::Event {
+        at: None,
+        ..ev(0, "INFO")
+    };
+    assert!(event_passes(&undated, cut, None), "cannot be shown older");
+}

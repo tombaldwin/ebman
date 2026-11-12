@@ -315,15 +315,31 @@ fn read_tool_table() -> Value {
         },
         {
             "name": "recent_events",
-            "description": "Recent Elastic Beanstalk events, fleet-wide or for one env, newest first.",
+            "description": "Recent Elastic Beanstalk events, fleet-wide or for one env, newest first. After a write, pass `since` (e.g. \"5m\") to read only what happened since, and `min_severity` (\"WARN\") to skip the routine lines; `wait_for_env` waits for the env to settle.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "env": {"type": "string", "description": "Limit to one environment"},
                     "max": {"type": "integer", "description": "Max events (default 50, cap 200)"},
+                    "since": {"type": "string", "description": "Only events in this window, e.g. 5m, 1h, 2d"},
+                    "min_severity": {"type": "string", "description": "TRACE | DEBUG | INFO | WARN | ERROR | FATAL: this and above"},
                     "profile": {"type": "string"},
                     "region": {"type": "string"}
                 }
+            }
+        },
+        {
+            "name": "wait_for_env",
+            "description": "Wait, up to `timeout_secs` (default 20, cap 25), for an environment to settle: to leave Updating, Launching or Terminating. Returns its status, health and deployed version, `settled`, and how long it waited. Not settled is not a failure: call again to keep waiting, and read `recent_events` with `since` for what happened. CAVEATS: settled says the operation ended, not that it succeeded — read `health` and `version_label`.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "env": {"type": "string", "description": "Environment name (required)"},
+                    "timeout_secs": {"type": "integer", "description": "How long to wait (default 20, cap 25)"},
+                    "profile": {"type": "string"},
+                    "region": {"type": "string"}
+                },
+                "required": ["env"]
             }
         },
         {
@@ -520,6 +536,44 @@ pub(super) fn render_why_json(
         versions,
         errs.join(",")
     )
+}
+
+/// `wait_for_env`'s defaults: inside the 30s each call is given.
+pub(super) const WAIT_DEFAULT_SECS: u64 = 20;
+pub(super) const WAIT_MAX_SECS: u64 = 25;
+// A wait that ran into the call's own limit would answer nothing.
+const _: () = assert!(WAIT_MAX_SECS + 5 <= TOOL_TIMEOUT_SECS);
+const WAIT_POLL: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Whether an env's operation has ended: it is not Updating, Launching or
+/// Terminating. Says nothing of whether it went well.
+pub(super) fn env_settled(status: &str) -> bool {
+    !["Updating", "Launching", "Terminating"]
+        .iter()
+        .any(|s| s.eq_ignore_ascii_case(status))
+}
+
+pub(super) fn render_wait_json(
+    env: &aws::Environment,
+    settled: bool,
+    waited: std::time::Duration,
+) -> String {
+    let secs = waited.as_secs();
+    let mut v = json!({
+        "env": env.name,
+        "status": env.status,
+        "health": env.health,
+        "version_label": env.version_label,
+        "settled": settled,
+        "waited_secs": secs,
+    });
+    if !settled {
+        v["note"] = json!(format!(
+            "still {} after {secs}s — call again to keep waiting",
+            env.status
+        ));
+    }
+    v.to_string()
 }
 
 /// `managed_updates`'s answer. A half that failed is `null` with its
@@ -935,6 +989,7 @@ impl Server {
             "audit_log" => self.tool_audit_log(args),
             "recent_events" => self.tool_recent_events(args).await,
             "managed_updates" => self.tool_managed_updates(args).await,
+            "wait_for_env" => self.tool_wait_for_env(args).await,
             "list_versions" => self.tool_list_versions(args).await,
             "fleet_cost" => self.tool_fleet_cost(args).await,
             // Write surface (only reachable under --allow-writes — the
@@ -2020,6 +2075,29 @@ impl Server {
             .unwrap_or(EVENTS_DEFAULT_MAX)
             .max(1);
         let env = arg_str(args, "env");
+        let since = match arg_str(args, "since") {
+            None => None,
+            Some(s) => {
+                let ms = aws::parse_window_ms(&s).ok_or_else(|| {
+                    format!("'since' expects a window like 5m / 1h / 2d, not '{s}'")
+                })?;
+                Some(
+                    chrono::Utc::now()
+                        .checked_sub_signed(chrono::Duration::milliseconds(ms))
+                        .ok_or_else(|| format!("'since' window '{s}' is out of range"))?,
+                )
+            }
+        };
+        let min_severity = match arg_str(args, "min_severity") {
+            None => None,
+            Some(s) => Some((
+                aws::event_severity_rank(&s).ok_or_else(|| {
+                    format!("'min_severity' is one of TRACE, DEBUG, INFO, WARN, ERROR, FATAL, not '{s}'")
+                })?,
+                s.to_ascii_uppercase(),
+            )),
+        };
+        let rank = min_severity.as_ref().map(|(r, _)| *r);
         let events: Vec<aws::Event> = match self.backend {
             Backend::Demo => {
                 let mut all: Vec<aws::Event> = match env.as_deref() {
@@ -2032,16 +2110,25 @@ impl Server {
                 // The fleet-wide concat is grouped by env; sort so the
                 // cap keeps the globally newest (the promised order).
                 all.sort_by_key(|e| std::cmp::Reverse(e.at));
+                all.retain(|e| aws::event_passes(e, since, rank));
                 all.into_iter().take(max as usize).collect()
             }
             Backend::Aws => {
                 let profile = arg_str(args, "profile");
                 let client = self.client(args).await?;
-                match env.as_deref() {
-                    Some(name) => client.list_events_for_env(name, max).await,
-                    None => client.list_events(max).await,
-                }
-                .map_err(|e| tool_error(&profile, "describe_events", &e.to_string()))?
+                let mut events = client
+                    .list_events_filtered(
+                        env.as_deref(),
+                        since.map(|t| t.timestamp_millis()),
+                        min_severity.as_ref().map(|(_, s)| s.as_str()),
+                        max,
+                    )
+                    .await
+                    .map_err(|e| tool_error(&profile, "describe_events", &e.to_string()))?;
+                // EB filters both server-side; checked again here so the
+                // answer means what the arguments said whatever came back.
+                events.retain(|e| aws::event_passes(e, since, rank));
+                events
             }
         };
         Ok(render_events_json(&events))
@@ -2093,6 +2180,99 @@ impl Server {
         };
         crate::cli::envs::render_envs_json(&envs, firing.as_ref(), lifecycle.as_ref())
             .map_err(|e| e.to_string())
+    }
+
+    /// Wait for an env to leave Updating, Launching or Terminating, polling
+    /// every few seconds, bounded inside the call's own time limit. Demo
+    /// answers at once: its fleet never moves.
+    async fn tool_wait_for_env(&self, args: &Value) -> Result<String, String> {
+        let env_name = arg_str(args, "env").ok_or("'env' is required")?;
+        let timeout = arg_u64(args, "timeout_secs")
+            .unwrap_or(WAIT_DEFAULT_SECS)
+            .clamp(1, WAIT_MAX_SECS);
+        let started = tokio::time::Instant::now();
+        let deadline = started + std::time::Duration::from_secs(timeout);
+        loop {
+            let envs = self.fetch_envs(args).await?;
+            let env = envs
+                .into_iter()
+                .find(|e| e.name == env_name)
+                .ok_or_else(|| format!("env '{env_name}' not found"))?;
+            let settled = env_settled(&env.status);
+            let now = tokio::time::Instant::now();
+            if settled || now >= deadline || matches!(self.backend, Backend::Demo) {
+                return Ok(render_wait_json(&env, settled, now - started));
+            }
+            tokio::time::sleep(WAIT_POLL.min(deadline - now)).await;
+        }
+    }
+
+    /// The pre-deploy lint a deploy plan carries, as the TUI's confirm
+    /// modal runs it: the env's findings, and the checks that could not
+    /// run, so a clean list is never read as a clean bill when it is not.
+    /// Spliced into the plan as `,"lint":{...}`.
+    pub(super) async fn deploy_plan_lint(&self, env: &aws::Environment, args: &Value) -> String {
+        let (disabled, required_tags) = match self.backend {
+            Backend::Demo => (Vec::new(), Vec::new()),
+            Backend::Aws => {
+                let (mut disabled, required_tags) = self.lint_config();
+                disabled.extend(crate::project::load_lint_disables_from_cwd());
+                (disabled, required_tags)
+            }
+        };
+        let rules = lint::default_rules(&disabled);
+        let (issues, not_run): (Vec<lint::Issue>, Vec<String>) = match self.backend {
+            Backend::Demo => {
+                let inputs = EnvLintInputs::bare(demo_fixture::option_settings_for(&env.name));
+                (
+                    run_rules_for_env(&rules, env, &inputs, &required_tags),
+                    Vec::new(),
+                )
+            }
+            Backend::Aws => match self.client(args).await {
+                Err(e) => (Vec::new(), vec![format!("lint could not run: {e}")]),
+                Ok(client) => {
+                    let platforms = lint::inputs::Platforms::from_listing(
+                        client.list_solution_stacks().await,
+                        |e| e.to_string(),
+                    );
+                    match fetch_env_lint_inputs(
+                        &client,
+                        env,
+                        &platforms,
+                        false,
+                        &disabled,
+                        &required_tags,
+                    )
+                    .await
+                    {
+                        Ok(inputs) => (
+                            run_rules_for_env(&rules, env, &inputs, &required_tags),
+                            inputs
+                                .coverage_warnings
+                                .iter()
+                                .map(ToString::to_string)
+                                .collect(),
+                        ),
+                        Err(e) => (Vec::new(), vec![format!("lint could not run: {e}")]),
+                    }
+                }
+            },
+        };
+        let issues: Vec<Value> = issues
+            .iter()
+            .map(|i| {
+                json!({
+                    "rule_id": i.rule_id,
+                    "severity": i.severity.as_str(),
+                    "title": i.title,
+                })
+            })
+            .collect();
+        format!(
+            ",\"lint\":{}",
+            json!({"issues": issues, "not_run": not_run})
+        )
     }
 
     /// What EB has scheduled for one env, and what it ran. Each half

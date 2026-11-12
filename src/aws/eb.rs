@@ -195,6 +195,36 @@ pub(crate) fn scale_bounds(min: i64, max: i64) -> std::result::Result<(i32, i32)
     Ok((min as i32, max as i32))
 }
 
+/// An EB event severity's rank, lowest first, or `None` for a word EB
+/// does not use. `DescribeEvents` returns events at or above the
+/// severity asked for; this is the same order, for demo and for a
+/// second check of what came back.
+pub(crate) fn event_severity_rank(severity: &str) -> Option<u8> {
+    ["TRACE", "DEBUG", "INFO", "WARN", "ERROR", "FATAL"]
+        .iter()
+        .position(|s| s.eq_ignore_ascii_case(severity))
+        .and_then(|p| u8::try_from(p).ok())
+}
+
+/// Whether `e` is no older than `since` and at or above `min_severity`.
+/// An event with no time passes a `since` (it cannot be shown older),
+/// and one with a severity EB never uses passes nothing but `None`.
+pub(crate) fn event_passes(
+    e: &Event,
+    since: Option<DateTime<Utc>>,
+    min_severity: Option<u8>,
+) -> bool {
+    let recent = match (since, e.at) {
+        (Some(cut), Some(at)) => at >= cut,
+        _ => true,
+    };
+    let severe = match min_severity {
+        None => true,
+        Some(min) => event_severity_rank(&e.severity).is_some_and(|r| r >= min),
+    };
+    recent && severe
+}
+
 /// How many past managed updates the TUI and MCP show: enough for "what
 /// happened the last few times", one page.
 pub(crate) const MANAGED_HISTORY_MAX: i32 = 10;
@@ -1046,12 +1076,12 @@ fn compatible_platform_filters(branch: &str) -> Vec<(&'static str, &'static str,
 
 impl AwsClient {
     pub(crate) async fn list_events(&self, max: i32) -> Result<Vec<Event>> {
-        Ok(self.list_events_inner(None, None, max, 1).await?.0)
+        Ok(self.list_events_inner(None, None, None, max, 1).await?.0)
     }
 
     pub(crate) async fn list_events_for_env(&self, env_name: &str, max: i32) -> Result<Vec<Event>> {
         Ok(self
-            .list_events_inner(Some(env_name.to_string()), None, max, 1)
+            .list_events_inner(Some(env_name.to_string()), None, None, max, 1)
             .await?
             .0)
     }
@@ -1065,11 +1095,27 @@ impl AwsClient {
         since_ms: i64,
         max: i32,
     ) -> Result<(Vec<Event>, bool)> {
-        self.list_events_inner(None, Some(since_ms), max, EVENT_TAIL_MAX_PAGES)
+        self.list_events_inner(None, Some(since_ms), None, max, EVENT_TAIL_MAX_PAGES)
             .await
     }
 
-    /// Shared body for the three `list_events*` entry points.
+    /// The newest `max` events, for one env or the fleet, no older than
+    /// `since_ms` and at or above `min_severity` (EB's filter: `DEBUG`,
+    /// `INFO`, `WARN`, `ERROR`, `FATAL`). MCP `recent_events`' cursor.
+    pub(crate) async fn list_events_filtered(
+        &self,
+        env_name: Option<&str>,
+        since_ms: Option<i64>,
+        min_severity: Option<&str>,
+        max: i32,
+    ) -> Result<Vec<Event>> {
+        Ok(self
+            .list_events_inner(env_name.map(str::to_string), since_ms, min_severity, max, 1)
+            .await?
+            .0)
+    }
+
+    /// Shared body for the `list_events*` entry points.
     ///
     /// `max_pages` is what separates them. `DescribeEvents` returns
     /// newest-first, so a single page is exactly right for the two
@@ -1086,6 +1132,7 @@ impl AwsClient {
         &self,
         env_name: Option<String>,
         since_ms: Option<i64>,
+        min_severity: Option<&str>,
         max: i32,
         max_pages: usize,
     ) -> Result<(Vec<Event>, bool)> {
@@ -1102,6 +1149,9 @@ impl AwsClient {
                 req = req.start_time(aws_sdk_elasticbeanstalk::primitives::DateTime::from_millis(
                     ms,
                 ));
+            }
+            if let Some(sev) = min_severity {
+                req = req.severity(aws_sdk_elasticbeanstalk::types::EventSeverity::from(sev));
             }
             if let Some(t) = next_token.take() {
                 req = req.next_token(t);

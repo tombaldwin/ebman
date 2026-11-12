@@ -1400,9 +1400,11 @@ impl Server {
                     ));
                 }
                 plan_extra = format!(
-                    ",\"current_version\":{},\"target_version\":{}",
+                    ",\"current_version\":{},\"target_version\":{}{}",
                     util::json_string(&env.version_label),
                     util::json_string(&label),
+                    // The check the TUI's confirm runs before a deploy.
+                    Box::pin(self.deploy_plan_lint(env, args)).await,
                 );
                 version = Some(label);
             }
@@ -1711,10 +1713,12 @@ impl Server {
                     ));
                 }
                 plan_extra = format!(
-                    ",\"current_version\":{},\"target_version\":{},\"target_from\":{}",
+                    ",\"current_version\":{},\"target_version\":{},\"target_from\":{}{}",
                     util::json_string(&current),
                     util::json_string(&target),
                     util::json_string(source),
+                    // A rollback is a deploy, and gets its check.
+                    Box::pin(self.deploy_plan_lint(env, args)).await,
                 );
                 version = Some(target);
             }
@@ -1837,6 +1841,8 @@ impl Server {
             _ => None,
         };
 
+        // Boxed: each verb's arm is its own few awaits, and together they
+        // made this future large enough to overflow a debug test thread.
         let PlanDetails {
             version,
             settings,
@@ -1848,9 +1854,7 @@ impl Server {
             managed_action,
             swap_with,
             scale,
-        } = self
-            .resolve_plan_details(verb, args, &env, &profile)
-            .await?;
+        } = Box::pin(self.resolve_plan_details(verb, args, &env, &profile)).await?;
 
         // A swap changes the other environment as much as this one: it
         // passes the same gate, now that the plan knows which it is.

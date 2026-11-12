@@ -355,6 +355,90 @@ async fn a_swap_is_refused_by_a_pin_on_either_environment() {
     );
 }
 
+/// After a write: `recent_events` narrows by severity, refuses words EB
+/// does not use, and `wait_for_env` answers at once on demo (its fleet
+/// never moves) with whether the env has settled.
+#[tokio::test]
+async fn the_deploy_follow_up_tools_on_demo() {
+    let s = demo_server();
+    let (err, loud) = call(
+        &s,
+        "recent_events",
+        json!({"env": "poly-staging-api", "min_severity": "warn"}),
+    )
+    .await;
+    assert!(!err, "{loud}");
+    let sevs: Vec<&str> = loud
+        .as_array()
+        .expect("events")
+        .iter()
+        .filter_map(|e| e["severity"].as_str())
+        .collect();
+    assert!(
+        !sevs.is_empty() && sevs.iter().all(|s| *s == "WARN" || *s == "ERROR"),
+        "{sevs:?}"
+    );
+    for bad in [json!({"min_severity": "LOUD"}), json!({"since": "soon"})] {
+        let (err, _) = call(&s, "recent_events", bad.clone()).await;
+        assert!(err, "{bad}");
+    }
+
+    let (err, updating) = call(&s, "wait_for_env", json!({"env": "poly-canary-api"})).await;
+    assert!(!err, "{updating}");
+    assert_eq!(updating["settled"], false, "{updating}");
+    assert_eq!(
+        updating["waited_secs"], 0,
+        "demo's fleet never moves, so it never waits: {updating}"
+    );
+    assert!(
+        updating["note"]
+            .as_str()
+            .is_some_and(|n| n.contains("call again")),
+        "{updating}"
+    );
+    let (_, ready) = call(&s, "wait_for_env", json!({"env": "poly-prod-api"})).await;
+    assert_eq!(ready["settled"], true, "{ready}");
+    assert!(ready.get("note").is_none(), "{ready}");
+    let (err, _) = call(&s, "wait_for_env", json!({"env": "no-such-env"})).await;
+    assert!(err);
+}
+
+/// A deploy plan carries the pre-deploy lint, as the TUI's confirm runs
+/// it: findings, and what could not run.
+#[tokio::test]
+async fn a_deploy_plan_carries_the_pre_deploy_lint_on_demo() {
+    let s = demo_writes_server();
+    let (err, plan) = call(
+        &s,
+        "deploy",
+        json!({"env": "poly-prod-api", "version": "build-820"}),
+    )
+    .await;
+    assert!(!err, "{plan}");
+    let lint = &plan["plan"]["lint"];
+    assert!(
+        lint["issues"].is_array() && lint["not_run"].is_array(),
+        "{plan}"
+    );
+    assert!(
+        lint["issues"].as_array().is_some_and(|i| i
+            .iter()
+            .all(|x| x["rule_id"].is_string() && x["severity"].is_string())),
+        "{plan}"
+    );
+}
+
+#[test]
+fn an_env_settles_when_its_operation_ends() {
+    use super::tools::env_settled;
+    for busy in ["Updating", "Launching", "Terminating", "updating"] {
+        assert!(!env_settled(busy), "{busy}");
+    }
+    for done in ["Ready", "Terminated", "Aborting-is-not-a-status"] {
+        assert!(env_settled(done), "{done}");
+    }
+}
+
 fn writes_dialog(p: &writes::PendingWrite) -> String {
     super::dialog::ask_summary(p)
 }
@@ -677,6 +761,7 @@ async fn golden_tools_list_frame() {
             "doctor",
             "audit_log",
             "recent_events",
+            "wait_for_env",
             "managed_updates",
             "list_versions",
             "app_metrics",
@@ -7447,6 +7532,24 @@ async fn the_lifecycle_verbs_dispatch_what_the_plan_named() {
     let rolled_back = aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::update_environment)
         .match_requests(|r| r.version_label() == Some("build-1"))
         .then_output(|| op::update_environment::UpdateEnvironmentOutput::builder().build());
+    // The rollback plan's pre-deploy lint reads these; answered empty.
+    let stacks =
+        aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::list_available_solution_stacks)
+            .then_output(|| {
+                op::list_available_solution_stacks::ListAvailableSolutionStacksOutput::builder()
+                    .build()
+            });
+    let settings =
+        aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::describe_configuration_settings)
+            .then_output(|| {
+                op::describe_configuration_settings::DescribeConfigurationSettingsOutput::builder()
+                    .build()
+            });
+    let health =
+        aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::describe_environment_health)
+            .then_output(|| {
+                op::describe_environment_health::DescribeEnvironmentHealthOutput::builder().build()
+            });
     let eb = aws_smithy_mocks::mock_client!(
         aws_sdk_elasticbeanstalk,
         aws_smithy_mocks::RuleMode::MatchAny,
@@ -7457,7 +7560,10 @@ async fn the_lifecycle_verbs_dispatch_what_the_plan_named() {
             &swapped,
             &aborted,
             &scaled,
-            &rolled_back
+            &rolled_back,
+            &stacks,
+            &settings,
+            &health
         ]
     );
     let s = Server::with_injected_client(
@@ -7562,6 +7668,124 @@ async fn managed_updates_reads_both_halves_on_aws() {
     assert_eq!(
         v["history"][0]["failure_description"], "health checks failed",
         "{v}"
+    );
+}
+
+/// On AWS: `recent_events` hands EB the window and the severity floor;
+/// `wait_for_env` polls until the env settles; and a deploy plan whose
+/// lint could not read the env's settings says so in `lint.not_run`.
+#[tokio::test(start_paused = true)]
+async fn the_deploy_follow_up_tools_on_aws() {
+    use aws_sdk_elasticbeanstalk::operation as op;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let polls = std::sync::Arc::new(AtomicUsize::new(0));
+    let seen = std::sync::Arc::clone(&polls);
+    let listing = aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::describe_environments)
+        .then_output(move || {
+            // Updating for the first two polls, then Ready.
+            let n = seen.fetch_add(1, Ordering::SeqCst);
+            op::describe_environments::DescribeEnvironmentsOutput::builder()
+                .environments(
+                    aws_sdk_elasticbeanstalk::types::EnvironmentDescription::builder()
+                        .environment_name("poly-follow-up")
+                        .application_name("poly")
+                        .version_label("build-1")
+                        .status(if n < 2 { "Updating" } else { "Ready" }.into())
+                        .build(),
+                )
+                .build()
+        });
+    let events = aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::describe_events)
+        .match_requests(|r| {
+            r.severity() == Some(&aws_sdk_elasticbeanstalk::types::EventSeverity::Warn)
+                && r.start_time().is_some()
+        })
+        .then_output(|| op::describe_events::DescribeEventsOutput::builder().build());
+    let versions =
+        aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::describe_application_versions)
+            .then_output(|| {
+                op::describe_application_versions::DescribeApplicationVersionsOutput::builder()
+                    .application_versions(
+                        aws_sdk_elasticbeanstalk::types::ApplicationVersionDescription::builder()
+                            .version_label("build-2")
+                            .build(),
+                    )
+                    .build()
+            });
+    let stacks =
+        aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::list_available_solution_stacks)
+            .then_output(|| {
+                op::list_available_solution_stacks::ListAvailableSolutionStacksOutput::builder()
+                    .build()
+            });
+    let settings_denied =
+        aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::describe_configuration_settings)
+            .then_error(|| {
+                op::describe_configuration_settings::DescribeConfigurationSettingsError::generic(
+                    aws_smithy_types::error::ErrorMetadata::builder()
+                        .code("AccessDenied")
+                        .message("SETTINGSDENIED")
+                        .build(),
+                )
+            });
+    let any_events = aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::describe_events)
+        .then_output(|| op::describe_events::DescribeEventsOutput::builder().build());
+    let health =
+        aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::describe_environment_health)
+            .then_output(|| {
+                op::describe_environment_health::DescribeEnvironmentHealthOutput::builder().build()
+            });
+    let eb = aws_smithy_mocks::mock_client!(
+        aws_sdk_elasticbeanstalk,
+        aws_smithy_mocks::RuleMode::MatchAny,
+        [
+            &listing,
+            &events,
+            &versions,
+            &stacks,
+            &settings_denied,
+            &any_events,
+            &health
+        ]
+    );
+    let s = Server::with_injected_client(
+        WriteScope::All,
+        crate::config::Config::default(),
+        test_client(eb),
+    );
+    s.call_tool(
+        "recent_events",
+        &json!({"env": "poly-follow-up", "since": "10m", "min_severity": "WARN"}),
+    )
+    .await
+    .expect("answers");
+    assert_eq!(events.num_calls(), 1, "the window and the floor reach EB");
+
+    let out = s
+        .call_tool(
+            "wait_for_env",
+            &json!({"env": "poly-follow-up", "timeout_secs": 25}),
+        )
+        .await
+        .expect("answers");
+    let v: Value = serde_json::from_str(&out).expect("json");
+    assert_eq!(v["settled"], true, "{v}");
+    assert_eq!(v["status"], "Ready", "{v}");
+    assert_eq!(v["waited_secs"], 10, "two five-second polls: {v}");
+
+    let plan = s
+        .tool_write_plan(
+            writes::WriteVerb::Deploy,
+            &json!({"env": "poly-follow-up", "version": "build-2"}),
+        )
+        .await
+        .unwrap_or_else(|e| panic!("{e}"));
+    let p: Value = serde_json::from_str(&plan).expect("json");
+    assert!(
+        p["plan"]["lint"]["not_run"][0]
+            .as_str()
+            .is_some_and(|w| w.contains("lint could not run") && w.contains("SETTINGSDENIED")),
+        "{p}"
     );
 }
 
