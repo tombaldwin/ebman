@@ -1566,3 +1566,59 @@ fn ebl021_runs_only_when_on_and_some_env_has_a_branch() {
         [&managed].into_iter()
     ));
 }
+
+#[test]
+fn ebl021_for_one_env_is_the_issue_the_gap_or_nothing() {
+    use crate::lint::inputs::ebl021_for_env;
+    let managed = Environment {
+        solution_stack: "64bit Amazon Linux 2 v3.5.1 running Docker".into(),
+        ..mk_env("managed", "Web", "Green")
+    };
+    let custom = mk_env("custom", "Web", "Green");
+    let listing: Result<std::collections::HashMap<String, String>, String> = Ok([(
+        "Docker running on 64bit Amazon Linux 2".to_string(),
+        "Retired".to_string(),
+    )]
+    .into_iter()
+    .collect());
+    let failed: Result<std::collections::HashMap<String, String>, String> =
+        Err("ListPlatformBranches failed: AccessDenied".into());
+
+    let (issues, gap) = ebl021_for_env(&managed, &[], &listing);
+    assert_eq!(issues.len(), 1);
+    assert!(gap.is_none());
+    let (issues, gap) = ebl021_for_env(&managed, &[], &failed);
+    assert!(issues.is_empty());
+    assert!(gap.is_some_and(|g| g.to_string().contains("AccessDenied")));
+    // A custom platform names no branch: a failed listing costs it nothing.
+    let (issues, gap) = ebl021_for_env(&custom, &[], &failed);
+    assert!(issues.is_empty() && gap.is_none(), "{gap:?}");
+    // Switched off: neither.
+    let (issues, gap) = ebl021_for_env(&managed, &["EBL021".into()], &failed);
+    assert!(issues.is_empty() && gap.is_none());
+}
+
+#[test]
+fn explain_fetches_the_branch_listing_only_for_ebl021() {
+    use crate::lint::inputs::explain_needs_branch_listing;
+    let managed = Environment {
+        solution_stack: "64bit Amazon Linux 2 v3.5.1 running Docker".into(),
+        ..mk_env("managed", "Web", "Green")
+    };
+    let custom = mk_env("custom", "Web", "Green");
+    assert!(explain_needs_branch_listing(
+        "EBL021",
+        &[],
+        [&managed].into_iter()
+    ));
+    assert!(!explain_needs_branch_listing(
+        "EBL001",
+        &[],
+        [&managed].into_iter()
+    ));
+    assert!(!explain_needs_branch_listing(
+        "EBL021",
+        &[],
+        [&custom].into_iter()
+    ));
+}

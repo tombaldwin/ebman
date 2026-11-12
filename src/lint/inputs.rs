@@ -610,6 +610,41 @@ pub(crate) fn ebl021_could_fire<'a>(
         && envs.any(|e| aws::platform_branch_of_stack(&e.solution_stack).is_some())
 }
 
+/// EBL021 for one env from a listing or why there is none: the issue
+/// when its branch is ending, or the gap when the listing is missing and
+/// the rule could have judged this env. A custom platform names no
+/// branch, so a failed listing costs it nothing. Shared by the TUI's
+/// `:lint` / `:explain` and `ebman explain`, which run per env.
+pub(crate) fn ebl021_for_env(
+    env: &aws::Environment,
+    disabled: &[String],
+    lifecycle: &Result<std::collections::HashMap<String, String>, String>,
+) -> (Vec<lint::Issue>, Option<CoverageGap>) {
+    if !ebl021_could_fire(disabled, std::iter::once(env)) {
+        return (Vec::new(), None);
+    }
+    match lifecycle {
+        Ok(listing) => (
+            lint::platform_lifecycle_issues(std::iter::once(env), listing),
+            None,
+        ),
+        Err(why) => (
+            Vec::new(),
+            ProbeOutcome::Unknown(why.clone()).coverage_warning("EBL021", &env.name),
+        ),
+    }
+}
+
+/// Whether `ebman explain ISSUE` needs the branch listing: only to
+/// explain EBL021, and only when some env in scope could fire it.
+pub(crate) fn explain_needs_branch_listing<'a>(
+    issue_id: &str,
+    disabled: &[String],
+    envs: impl Iterator<Item = &'a aws::Environment>,
+) -> bool {
+    issue_id == "EBL021" && ebl021_could_fire(disabled, envs)
+}
+
 /// EBL021's assembly, shared by `ebman lint` and the MCP `lint` tool:
 /// one `ListPlatformBranches` for the region, then the pure pass over
 /// the envs in scope. `Err` is the listing's failure, which each caller

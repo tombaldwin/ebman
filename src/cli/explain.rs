@@ -209,9 +209,11 @@ where
         });
     // EBL021 is outside the per-env registry: one branch listing, asked
     // for only when that is the rule being explained.
-    let lifecycle = if issue_id == "EBL021"
-        && lint::inputs::ebl021_could_fire(disabled, targets.iter().copied())
-    {
+    let lifecycle = if lint::inputs::explain_needs_branch_listing(
+        issue_id,
+        disabled,
+        targets.iter().copied(),
+    ) {
         Some(
             aws_client
                 .list_platform_lifecycle()
@@ -243,17 +245,10 @@ where
         };
         let mut issues = lint::inputs::run_rules_for_env(&rules, env, &inputs, required_tags);
         let mut gaps = inputs.coverage_warnings;
-        match &lifecycle {
-            Some(Ok(listing)) => issues.extend(lint::platform_lifecycle_issues(
-                std::iter::once(env),
-                listing,
-            )),
-            Some(Err(why)) if aws::platform_branch_of_stack(&env.solution_stack).is_some() => gaps
-                .extend(
-                    lint::inputs::ProbeOutcome::Unknown(why.clone())
-                        .coverage_warning("EBL021", &env.name),
-                ),
-            _ => {}
+        if let Some(lifecycle) = &lifecycle {
+            let (lifecycle_issues, gap) = lint::inputs::ebl021_for_env(env, disabled, lifecycle);
+            issues.extend(lifecycle_issues);
+            gaps.extend(gap);
         }
         match lint::inputs::explain_verdict(issue_id, &issues, &gaps) {
             lint::inputs::ExplainVerdict::Fires(issue) => matched.push(issue.clone()),

@@ -189,17 +189,10 @@ impl LintSnapshot {
         let mut issues =
             crate::lint::inputs::run_rules_for_env(&rules, &self.env, &inputs, &self.required_tags);
         // EBL021, outside the per-env registry: the listing, or the gap.
-        if crate::lint::inputs::ebl021_could_fire(disabled, std::iter::once(&self.env)) {
-            match &self.lifecycle {
-                Ok(lifecycle) => issues.extend(crate::lint::platform_lifecycle_issues(
-                    std::iter::once(&self.env),
-                    lifecycle,
-                )),
-                Err(why) => inputs.coverage_warnings.extend(
-                    ProbeOutcome::Unknown(why.clone()).coverage_warning("EBL021", &self.env.name),
-                ),
-            }
-        }
+        let (lifecycle_issues, lifecycle_gap) =
+            crate::lint::inputs::ebl021_for_env(&self.env, disabled, &self.lifecycle);
+        issues.extend(lifecycle_issues);
+        inputs.coverage_warnings.extend(lifecycle_gap);
         LintRun {
             issues,
             coverage_warnings: inputs.coverage_warnings,
