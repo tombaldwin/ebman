@@ -61,7 +61,7 @@ fn parse_versions_args(args: &[String]) -> Result<VersionsArgs, String> {
 
 /// `ebman versions` — list an application's versions.
 ///
-/// Exit 2 on a usage error. The thin shell over [`versions_with`].
+/// Exit 2 on a usage error. The thin shell over `versions_with`.
 pub async fn run(args: &[String]) -> Result<()> {
     let args = match parse_versions_args(args) {
         Ok(parsed) => parsed,

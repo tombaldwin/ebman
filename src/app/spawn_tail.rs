@@ -310,7 +310,7 @@ impl App {
     }
 
     /// Key handling while the `:event-tail` overlay is open — the
-    /// same surface as [`handle_log_tail_key`] minus the log-group
+    /// same surface as [`Self::handle_log_tail_key`] minus the log-group
     /// picker (there's no group to switch; the tail is fleet-wide).
     pub(crate) fn handle_event_tail_key(&mut self, key: KeyEvent) {
         let Some(Overlay::EventTail { view, events, .. }) = self.current_overlay.as_mut() else {

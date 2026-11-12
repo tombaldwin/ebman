@@ -23,7 +23,7 @@
 //! ebman older than 0.47, which reads only that file, and every read
 //! puts it right. A mirror is marked so; one without the mark was
 //! written by an older TUI and is a holder in its own right. Everything
-//! goes through a [`FreezeStore`] the surface holds: a TUI's `App`, an
+//! goes through a `FreezeStore` the surface holds: a TUI's `App`, an
 //! MCP `Server`, a CLI write's `WriteEnv`. Deleting `freeze.d/` and `freeze.json` is
 //! the manual unfreeze of last resort. See
 //! `docs/design/persistent-freeze.md`.

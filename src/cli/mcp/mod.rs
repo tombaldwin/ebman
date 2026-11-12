@@ -902,7 +902,7 @@ pub(crate) struct Server {
     /// the default (hermetic).
     safety_cfg: crate::config::Config,
     /// Where the `app.` lines are re-read from on each call that uses
-    /// them ([`Server::app_tabs`]): the operator edits them while the
+    /// them ([`Server::live_config`]): the operator edits them while the
     /// server runs, often through the TUI's App tab editor, and a server
     /// that kept its startup copy answered for config that was gone.
     /// `None` (demo, tests) uses `safety_cfg`'s.

@@ -11,7 +11,7 @@
 //! - 3 issues found; under `--fix --yes`, a fix refused (a pin, or a
 //!   freeze up front or mid-run). Not for findings under `--fix`: the
 //!   operator's intent is "see issues then fix them", so a clean apply
-//!   stays exit 0. See [`lint_exit_code`].
+//!   stays exit 0. See `lint_exit_code`.
 //!
 //! `--fix` dispatches each rule's auto-remediation through the same
 //! `update_env_option_settings` path the TUI uses. Respects
@@ -951,7 +951,7 @@ pub(crate) fn env_not_found_anywhere(
 
 /// `ebman lint` — run the diagnostic rule engine over the fleet.
 ///
-/// Exit codes are [`lint_exit_code`]'s: 0 clean, 3 issues found, 1 a
+/// Exit codes are `lint_exit_code`'s: 0 clean, 3 issues found, 1 a
 /// degraded run (a region, env, input fetch or probe failed — so a
 /// "clean" result is not full coverage) or a failed `--fix` dispatch,
 /// and 2 a usage error. `--baseline` also exits 1 rather than snapshot

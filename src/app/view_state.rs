@@ -19,7 +19,7 @@
 //!   is now a loud assertion on the next read rather than a silently wrong
 //!   table.
 //!
-//! [`App::rebuild_view`] is the only caller of [`ViewState::store`], which
+//! [`crate::app::App::rebuild_view`] is the only caller of [`ViewState::store`], which
 //! is the only thing that can clear the stale flag.
 
 use std::collections::{BTreeSet, HashMap};

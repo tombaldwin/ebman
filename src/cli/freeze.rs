@@ -237,7 +237,7 @@ pub(crate) fn thaw_body<G>(
     }
 }
 
-/// `ebman freeze`: the process entry, exiting with [`freeze_body`]'s code.
+/// `ebman freeze`: the process entry, exiting with `freeze_body`'s code.
 pub async fn run_freeze(args: &[String]) -> Result<()> {
     let code = freeze_body(
         args,
@@ -254,7 +254,7 @@ pub async fn run_freeze(args: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// `ebman thaw`: the process entry, exiting with [`thaw_body`]'s code.
+/// `ebman thaw`: the process entry, exiting with `thaw_body`'s code.
 pub async fn run_thaw(args: &[String]) -> Result<()> {
     let code = thaw_body(
         args,

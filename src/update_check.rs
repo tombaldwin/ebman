@@ -127,7 +127,7 @@ impl InstallChannel {
     ///
     /// Not always `upgrade_command()`. For Homebrew and cargo that
     /// string IS a runnable command, but for a standalone install it is
-    /// the sentence "download the latest binary from <url>" — and the
+    /// the sentence "download the latest binary from `<url>`" — and the
     /// overlay tells the operator a URL was copied. Pasting a sentence
     /// into an address bar gets them nothing, so the standalone arm
     /// hands over the bare URL the message promises.

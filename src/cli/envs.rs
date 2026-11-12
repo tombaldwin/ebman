@@ -120,7 +120,7 @@ impl<'a> EnvRow<'a> {
 
 /// `ebman envs` — list environments, optionally as JSON.
 ///
-/// Exit 2 on a usage error. The thin shell over [`envs_with`]: parse,
+/// Exit 2 on a usage error. The thin shell over `envs_with`: parse,
 /// build the real client and config, write to the real stdout/stderr.
 pub async fn run(args: &[String]) -> Result<()> {
     let json = match parse_envs_args(args) {

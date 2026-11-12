@@ -155,7 +155,7 @@ pub(crate) fn humanize_age(d: chrono::Duration) -> String {
 }
 
 /// Render an event timestamp according to the operator's chosen
-/// [`EventTimeFormat`]. `Utc` / `Local` produce a full
+/// [`crate::app::EventTimeFormat`]. `Utc` / `Local` produce a full
 /// `YYYY-MM-DD HH:MM:SS` stamp (UTC suffixed with `Z`); `Age` keeps
 /// the compact relative form. `None` timestamps render as `—`.
 /// Pure — `now` is passed in so the Age branch is testable.

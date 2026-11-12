@@ -788,6 +788,7 @@ pub(crate) fn coarse_age(secs: i64) -> String {
 /// Replaces the previous flat-section dump. The hierarchy mirrors
 /// the conceptual graph an operator builds in their head:
 ///
+/// ```text
 ///   env  (Tier)
 ///   ├─ ASGs
 ///   │  └─ <asg-name>
@@ -801,6 +802,7 @@ pub(crate) fn coarse_age(secs: i64) -> String {
 ///      │     https://sqs.../...
 ///      └─ WorkerDeadLetterQueue
 ///            https://sqs.../...
+/// ```
 ///
 /// Instances are nested under ASGs because EB envs typically have
 /// one ASG that owns every instance. The first ASG in the list

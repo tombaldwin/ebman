@@ -108,8 +108,8 @@ fn parse_audit_args(args: &[String]) -> Result<AuditArgs, String> {
 ///
 /// Local only: the log records what THIS installation dispatched, so
 /// it answers "what did we do" and never "what happened to the
-/// fleet". Exit 2 on a usage error. The thin shell over [`audit_body`]
-/// and, for `--tail`, [`follow`].
+/// fleet". Exit 2 on a usage error. The thin shell over `audit_body`
+/// and, for `--tail`, `follow`.
 pub async fn run(args: &[String]) -> Result<()> {
     if args.get(1).map(String::as_str) == Some("replay") {
         return crate::cli::audit_replay::run_replay(args).await;

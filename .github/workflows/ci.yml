@@ -142,6 +142,22 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --locked --all-targets -- -D warnings
 
+  # The rustdoc build, warnings as errors. Nothing built the docs, and
+  # 19 broken intra-doc links and stray `<placeholder>` tags piled up
+  # unseen: docs.rs renders the public half for every release. Private
+  # items too, because the module docs are where this repo explains
+  # itself. Pinned with fmt and clippy, for the same reason.
+  docs:
+    name: rustdoc
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.96.0
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo doc --locked --no-deps --document-private-items
+        env:
+          RUSTDOCFLAGS: -D warnings
+
   msrv:
     name: msrv (rust 1.94.1)
     runs-on: ubuntu-latest
