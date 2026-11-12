@@ -2648,8 +2648,18 @@ async fn managed_apply_is_gated_dispatched_and_reported() {
     app.cfg
         .safety_envs
         .insert("managed-apply-probe".into(), true);
+    let refused_at = crate::audit::delta::mark();
     app.execute_command("managed-apply ma-1");
     assert!(app.pending_actions.is_empty(), "a pin refuses");
+    // Under the label the dispatch would have used, so the refusal and
+    // the writes that went through sit side by side in `ebman audit`.
+    let refusals = crate::audit::delta::lines_for(&refused_at, "managed-apply-probe");
+    assert!(
+        refusals
+            .iter()
+            .any(|l| l.contains("stage=refused") && l.contains("action=ApplyManagedAction")),
+        "{refusals:#?}"
+    );
     assert!(
         app.error_message
             .as_deref()
@@ -2846,9 +2856,19 @@ async fn dlq_redrive_starts_refuses_and_cancels() {
 
     let (mut app, start, cancel) = redrive_app(true);
     app.cfg.safety_envs.insert("redrive-probe-wk".into(), true);
+    let refused_at = crate::audit::delta::mark();
     app.execute_command("dlq-redrive");
     app.execute_command("dlq-redrive cancel");
     assert!(app.pending_actions.is_empty(), "a pin refuses both");
+    let refusals = crate::audit::delta::lines_for(&refused_at, "redrive-probe-wk");
+    for label in ["action=DlqRedrive", "action=dlq-redrive-cancel"] {
+        assert!(
+            refusals
+                .iter()
+                .any(|l| l.contains("stage=refused") && l.contains(label)),
+            "{label}: {refusals:#?}"
+        );
+    }
     assert_eq!((start.num_calls(), cancel.num_calls()), (0, 0));
 
     app.environments = vec![mk_env("web-probe", "shop", "Web", "Green")];
