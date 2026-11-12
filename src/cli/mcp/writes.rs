@@ -832,6 +832,24 @@ pub(super) struct PendingWrite {
     pub audit: WriteAudit,
 }
 
+/// What a write aimed at beyond its env, under the keys the CLI and the
+/// TUI file the same writes with: a swap's `with`, a scale's `min` and
+/// `max`, a managed action's `action_id`. Pure.
+pub(super) fn target_extras(p: &PendingWrite) -> Vec<(&'static str, String)> {
+    let mut out = Vec::new();
+    if let Some(with) = &p.swap_with {
+        out.push(("with", with.clone()));
+    }
+    if let Some((min, max)) = p.scale {
+        out.push(("min", min.to_string()));
+        out.push(("max", max.to_string()));
+    }
+    if let Some((id, _)) = &p.managed_action {
+        out.push(("action_id", id.clone()));
+    }
+    out
+}
+
 impl PendingWrite {
     /// Every environment the write changes, each gated at confirm: the
     /// env, and a swap's other one.
@@ -2416,16 +2434,15 @@ impl Server {
                 .dispatch_dlq_and_audit(&client, p, &client_name, audit_profile.as_deref(), session)
                 .await;
         }
-        let extras = with_session(
-            self.write_extras(
-                &client_name,
-                p.version.as_deref(),
-                p.settings.len(),
-                None,
-                None,
-            ),
-            session,
+        let mut extras = self.write_extras(
+            &client_name,
+            p.version.as_deref(),
+            p.settings.len(),
+            None,
+            None,
         );
+        extras.extend(target_extras(p));
+        let extras = with_session(extras, session);
         let extras_ref = extras_refs(&extras);
         crate::audit::append_action_dispatched(
             None,

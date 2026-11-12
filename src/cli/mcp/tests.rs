@@ -7724,9 +7724,9 @@ async fn apply_managed_action_dispatches_the_scheduled_id() {
     assert_eq!(apply.num_calls(), 1, "the scheduled id, dispatched once");
     let lines = crate::audit::delta::lines_for(&before, env);
     assert!(
-        lines
-            .iter()
-            .any(|l| l.contains("stage=completed") && l.contains("action=ApplyManagedAction")),
+        lines.iter().any(|l| l.contains("stage=completed")
+            && l.contains("action=ApplyManagedAction")
+            && l.contains("action_id=ma-live-1")),
         "{lines:#?}"
     );
 }
@@ -7866,6 +7866,7 @@ async fn the_lifecycle_verbs_dispatch_what_the_plan_named() {
         ),
         (writes::WriteVerb::Rollback, json!({"env": "poly-live-a"})),
     ] {
+        let before = crate::audit::delta::mark();
         let plan = s
             .tool_write_plan(verb, &args)
             .await
@@ -7875,6 +7876,23 @@ async fn the_lifecycle_verbs_dispatch_what_the_plan_named() {
         s.tool_confirm_action(&json!({"confirm_token": token}))
             .await
             .unwrap_or_else(|e| panic!("{verb:?}: {e}"));
+        // Both lines name what the write aimed at, under the keys the CLI
+        // and the TUI use for the same writes.
+        let want: &[&str] = match verb {
+            writes::WriteVerb::SwapCnames => &["with=poly-live-b"],
+            writes::WriteVerb::Scale => &["min=1", "max=3"],
+            _ => &[],
+        };
+        let lines = crate::audit::delta::lines_for(&before, "poly-live-a");
+        for stage in ["stage=dispatched", "stage=completed"] {
+            let line = lines
+                .iter()
+                .find(|l| l.contains(stage))
+                .unwrap_or_else(|| panic!("{verb:?} {stage}: {lines:#?}"));
+            for w in want {
+                assert!(line.contains(w), "{verb:?} {stage} names {w}: {line}");
+            }
+        }
     }
     // Another application's env: EB swaps within one, so the plan refuses.
     let other_app = s
