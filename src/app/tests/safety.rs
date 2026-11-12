@@ -2934,6 +2934,17 @@ async fn version_lifecycle_sets_says_what_it_replaced_and_undoes() {
                                             MaxCountRule::builder()
                                                 .enabled(true)
                                                 .max_count(100)
+                                                .delete_source_from_s3(false)
+                                                .build()
+                                                .unwrap(),
+                                        )
+                                        // Off, but holding a value and its
+                                        // own source flag: an undo keeps both.
+                                        .max_age_rule(
+                                            aws_sdk_elasticbeanstalk::types::MaxAgeRule::builder()
+                                                .enabled(false)
+                                                .max_age_in_days(90)
+                                                .delete_source_from_s3(true)
                                                 .build()
                                                 .unwrap(),
                                         )
@@ -2960,7 +2971,26 @@ async fn version_lifecycle_sets_says_what_it_replaced_and_undoes() {
             op::update_application_resource_lifecycle::UpdateApplicationResourceLifecycleOutput::builder().build()
         })
     };
-    let (set_200, back_to_100) = (count_of(200), count_of(100));
+    let set_200 = count_of(200);
+    // The undo sends both rules back exactly as they were read.
+    let back_to_100 = aws_smithy_mocks::mock!(
+        aws_sdk_elasticbeanstalk::Client::update_application_resource_lifecycle
+    )
+    .match_requests(|r| {
+        let v = r
+            .resource_lifecycle_config()
+            .and_then(|c| c.version_lifecycle_config());
+        let count = v.and_then(|v| v.max_count_rule());
+        let age = v.and_then(|v| v.max_age_rule());
+        count.is_some_and(|m| {
+            m.enabled() && m.max_count() == Some(100) && m.delete_source_from_s3() == Some(false)
+        }) && age.is_some_and(|a| {
+            !a.enabled() && a.max_age_in_days() == Some(90) && a.delete_source_from_s3() == Some(true)
+        })
+    })
+    .then_output(|| {
+        op::update_application_resource_lifecycle::UpdateApplicationResourceLifecycleOutput::builder().build()
+    });
     let quota =
         aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::describe_account_attributes)
             .then_output(|| {

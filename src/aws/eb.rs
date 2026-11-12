@@ -269,6 +269,20 @@ pub(crate) struct VersionLifecycle {
     pub delete_source: bool,
     /// The role EB deletes versions under.
     pub service_role: Option<String>,
+    /// Both rules exactly as EB reported them, when this policy was read
+    /// rather than built: a disabled rule's value and each rule's own
+    /// source-deletion flag, which the fields above fold away. Setting a
+    /// read policy back (an undo) sends these, so it restores what was
+    /// there rather than an approximation of it.
+    pub as_read: Option<[LifecycleRule; 2]>,
+}
+
+/// One retention rule as EB holds it: count (`[0]`) or age (`[1]`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct LifecycleRule {
+    pub enabled: bool,
+    pub value: Option<i32>,
+    pub delete_source: Option<bool>,
 }
 
 impl VersionLifecycle {
@@ -304,6 +318,21 @@ pub(crate) struct AppRetention {
     pub policy: VersionLifecycle,
 }
 
+/// The two rules a policy sets, count then age: exactly as read when it
+/// was read, otherwise from its fields (an unset rule off, each sharing
+/// the one source-deletion flag). Pure.
+pub(crate) fn policy_rules(policy: &VersionLifecycle) -> [LifecycleRule; 2] {
+    if let Some(rules) = policy.as_read {
+        return rules;
+    }
+    let rule = |value: Option<i32>| LifecycleRule {
+        enabled: value.is_some(),
+        value,
+        delete_source: Some(policy.delete_source),
+    };
+    [rule(policy.max_count), rule(policy.max_age_days)]
+}
+
 pub(crate) fn version_lifecycle_from(
     c: Option<&aws_sdk_elasticbeanstalk::types::ApplicationResourceLifecycleConfig>,
 ) -> VersionLifecycle {
@@ -311,9 +340,26 @@ pub(crate) fn version_lifecycle_from(
         return VersionLifecycle::default();
     };
     let v = c.version_lifecycle_config();
+    let as_read = [
+        v.and_then(|v| v.max_count_rule())
+            .map(|r| LifecycleRule {
+                enabled: r.enabled(),
+                value: r.max_count(),
+                delete_source: r.delete_source_from_s3(),
+            })
+            .unwrap_or_default(),
+        v.and_then(|v| v.max_age_rule())
+            .map(|r| LifecycleRule {
+                enabled: r.enabled(),
+                value: r.max_age_in_days(),
+                delete_source: r.delete_source_from_s3(),
+            })
+            .unwrap_or_default(),
+    ];
     let count = v.and_then(|v| v.max_count_rule()).filter(|r| r.enabled());
     let age = v.and_then(|v| v.max_age_rule()).filter(|r| r.enabled());
     VersionLifecycle {
+        as_read: Some(as_read),
         max_count: count.and_then(|r| r.max_count()),
         max_age_days: age.and_then(|r| r.max_age_in_days()),
         delete_source: count
@@ -2781,16 +2827,17 @@ impl AwsClient {
             ApplicationResourceLifecycleConfig, ApplicationVersionLifecycleConfig, MaxAgeRule,
             MaxCountRule,
         };
+        let [count, age] = policy_rules(policy);
         let count = MaxCountRule::builder()
-            .enabled(policy.max_count.is_some())
-            .set_max_count(policy.max_count)
-            .delete_source_from_s3(policy.delete_source)
+            .enabled(count.enabled)
+            .set_max_count(count.value)
+            .set_delete_source_from_s3(count.delete_source)
             .build()
             .map_err(|e| color_eyre::eyre::eyre!("MaxCountRule: {e}"))?;
         let age = MaxAgeRule::builder()
-            .enabled(policy.max_age_days.is_some())
-            .set_max_age_in_days(policy.max_age_days)
-            .delete_source_from_s3(policy.delete_source)
+            .enabled(age.enabled)
+            .set_max_age_in_days(age.value)
+            .set_delete_source_from_s3(age.delete_source)
             .build()
             .map_err(|e| color_eyre::eyre::eyre!("MaxAgeRule: {e}"))?;
         let config = ApplicationResourceLifecycleConfig::builder()

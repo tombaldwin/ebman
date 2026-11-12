@@ -86,6 +86,7 @@ pub(crate) fn next_policy(
             max_age_days: None,
             delete_source: *delete_source,
             service_role: role(),
+            as_read: None,
         }),
         LifecycleCommand::MaxAge {
             days,
@@ -95,6 +96,7 @@ pub(crate) fn next_policy(
             max_age_days: Some(*days),
             delete_source: *delete_source,
             service_role: role(),
+            as_read: None,
         }),
     }
 }
