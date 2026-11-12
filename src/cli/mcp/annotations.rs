@@ -98,6 +98,7 @@ pub(super) const TOOL_ATTRS: &[(&str, ToolAttrs)] = &[
     ("worker_queues", ToolAttrs::read()),
     ("recent_logs", ToolAttrs::read()),
     ("why", ToolAttrs::read()),
+    ("managed_updates", ToolAttrs::read()),
     ("app_metrics", ToolAttrs::read()),
     ("lint", ToolAttrs::read()),
     ("drift", ToolAttrs::read()),
@@ -141,6 +142,13 @@ pub(super) const TOOL_ATTRS: &[(&str, ToolAttrs)] = &[
     // destructive. Deploying the same label twice lands in the same
     // place.
     ("deploy", ToolAttrs::write(Verb::Deploy.destructive(), true)),
+    // A managed update replaces instances as a deploy does, and EB rolls
+    // a failed one back: not destructive. Not idempotent: the first call
+    // consumes the scheduled action, and a second is refused.
+    (
+        "apply_managed_action",
+        ToolAttrs::write(Verb::ApplyManagedAction.destructive(), false),
+    ),
     // Same reasoning: a setting can be set back.
     (
         "set_option",

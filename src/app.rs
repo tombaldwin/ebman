@@ -105,6 +105,7 @@ mod cmd_alarms; // CloudWatch alarm CRUD
 mod cmd_config_template; // saved-configuration template CRUD
 mod cmd_cost; // cost + promotion reports
 mod cmd_inspect; // read-only overlays: secrets, diff, listeners, explain
+pub(crate) mod cmd_managed; // managed platform updates: what is scheduled, apply now
 mod cmd_misc; // custom platforms, versions, metrics
 mod cmd_nav; // region / profile / sort / group / redact
 mod cmd_ops; // rollback, SSM run, SSH, `$EDITOR` env edit
@@ -1088,6 +1089,14 @@ pub(crate) enum AppMsg {
         result: Result<(), String>,
     },
     /// Result of a `DeleteApplicationVersion` call from `:delete-version`.
+    /// `:managed-apply` finished: the managed update started, or did not.
+    ManagedApplied {
+        gen: u64,
+        pending: PendingId,
+        env_name: String,
+        action_id: String,
+        result: Result<(), String>,
+    },
     DeleteAppVersion {
         gen: u64,
         pending: PendingId,

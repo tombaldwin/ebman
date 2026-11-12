@@ -1634,3 +1634,60 @@ fn a_finished_request_has_no_latest_ticket() {
     assert!(r.finish(second));
     assert!(!r.is_latest(second), "finished, so no report is current");
 }
+
+#[test]
+fn the_managed_updates_overlay_says_what_is_scheduled_and_what_failed() {
+    use crate::app::cmd_managed::format_managed_updates;
+    use crate::aws::{ManagedAction, ManagedActionRecord};
+    let now = chrono::Utc::now();
+    let scheduled = Ok(vec![ManagedAction {
+        id: "ma-2".into(),
+        action_type: "PlatformUpdate".into(),
+        description: "New platform version: 6.1.1".into(),
+        status: "Scheduled".into(),
+        window_start: Some(now + chrono::Duration::hours(5)),
+    }]);
+    let history = Ok(vec![ManagedActionRecord {
+        id: "ma-1".into(),
+        action_type: "PlatformUpdate".into(),
+        description: "New platform version: 6.1.0".into(),
+        status: "Failed".into(),
+        failure_type: "RollbackSuccessful".into(),
+        failure_description: "Health checks failed".into(),
+        executed: Some(now - chrono::Duration::days(2)),
+        finished: Some(now - chrono::Duration::days(2)),
+    }]);
+    let text = format_managed_updates(&scheduled, &history, now);
+    assert!(
+        text.contains("ma-2") && text.contains("Scheduled"),
+        "{text}"
+    );
+    assert!(
+        text.contains("(in 5h)") || text.contains("(in 4h)"),
+        "{text}"
+    );
+    assert!(text.contains(":managed-apply"), "{text}");
+    assert!(
+        text.contains("FAILED: RollbackSuccessful — Health checks failed"),
+        "{text}"
+    );
+    assert!(text.contains("(2d ago)"), "{text}");
+
+    let none = format_managed_updates(&Ok(Vec::new()), &Ok(Vec::new()), now);
+    assert!(
+        none.contains("nothing scheduled") && none.contains(":managed-window"),
+        "{none}"
+    );
+    assert!(none.contains("no managed update has run"), "{none}");
+    let failed =
+        format_managed_updates(&Err("AccessDenied".into()), &Err("Throttling".into()), now);
+    assert!(
+        failed.contains("could not read: AccessDenied")
+            && failed.contains("could not read: Throttling"),
+        "{failed}"
+    );
+    assert!(
+        !failed.contains("nothing scheduled"),
+        "a failure is not none: {failed}"
+    );
+}

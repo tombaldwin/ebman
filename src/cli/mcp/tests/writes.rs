@@ -89,6 +89,7 @@ fn a_superseded_token_says_so_rather_than_unknown() {
         dlq_targets: Vec::new(),
         dlq_url: None,
         dlq_main_url: None,
+        managed_action: None,
         role_check: crate::config::RoleCheck::Unmapped { required: false },
         role: None,
         audit: crate::cli::mcp::refusal::WriteAudit {
@@ -615,6 +616,7 @@ async fn the_confirm_gate_refuses_a_plan_outside_the_scope() {
             dlq_targets: Vec::new(),
             dlq_url: None,
             dlq_main_url: None,
+            managed_action: None,
             role_check: crate::config::RoleCheck::Unmapped { required: false },
             role: None,
             audit: crate::cli::mcp::refusal::WriteAudit {
@@ -1937,6 +1939,7 @@ fn a_batch_ask_enumerates_the_messages() {
         dlq_targets: targets,
         dlq_url: Some("https://sqs/q-dlq".into()),
         dlq_main_url: None,
+        managed_action: None,
         role_check: crate::config::RoleCheck::Unmapped { required: false },
         role: None,
         audit: crate::cli::mcp::refusal::WriteAudit {
@@ -2104,6 +2107,7 @@ fn the_ask_says_whose_credentials_it_would_use() {
         dlq_targets: Vec::new(),
         dlq_url: None,
         dlq_main_url: None,
+        managed_action: None,
         role_check: crate::config::RoleCheck::Unmapped { required: false },
         role: None,
         audit: crate::cli::mcp::refusal::WriteAudit {
@@ -2889,6 +2893,7 @@ fn pending_for(verb: WriteVerb) -> PendingWrite {
         dlq_targets: Vec::new(),
         dlq_url: None,
         dlq_main_url: None,
+        managed_action: None,
         role_check: crate::config::RoleCheck::Unmapped { required: false },
         role: None,
         audit: crate::cli::mcp::refusal::WriteAudit {

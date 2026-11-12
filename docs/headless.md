@@ -287,6 +287,7 @@ Whether the write tools appear depends on your client: one that can put a questi
 | `freeze_fleet` | declare a fleet freeze: every ebman write refuses, the TUI's and the CLI's included, until you run `ebman thaw` | one step, no plan and no confirm, because it only takes writes away. On every server, `--read-only` included and with no write grant: it is the one tool that changes something without one, because the only thing it can change is to take writes away. `reason` is required (a line, at most 200 characters) and shown wherever the freeze refuses; `incident: true` declares it as one. Persistent: it outlives the connection, as `ebman freeze` does, and nothing on this surface lifts it. With an `ebman freeze` already standing it changes nothing and answers `already: true` with that freeze's reason, so it never rewrites yours. The reason is one line: control characters, line separators and direction overrides are refused. If an earlier freeze had lifted with its TUI session, declaring clears that note, so the answer carries it as `ended_before` for you to pass on. Does not stop changes made outside ebman. The freeze records your client's name (as it sent it at initialize, sanitised and cut at 64 characters), so a refusal, `ebman freeze --status` and `ebman thaw` say an agent declared it. For 30 minutes after the operator lifts a freeze (`ebman thaw`, `:thaw-deploys`) it refuses, `incident: true` included, so it cannot reverse that decision: the error says until when and to ask the operator, who can still `ebman freeze`; each refusal is audited `stage=refused rule=thawed_recently`, and `doctor` notes the hold while it lasts. An operator's own freeze ends the hold. Audited `FreezeDeploys` / `IncidentStart` with `via=mcp`. Declared by an exclusive hard link, so on a cache directory whose filesystem has no hard links (exFAT, some network or FUSE mounts) it cannot declare and says the fleet is NOT frozen, while `ebman freeze` still can. A demo server freezes nothing |
 | `audit_log` | local audit entries | this machine's log only; default 100, cap 500 |
 | `recent_events` | EB events, newest first | default 50, cap 200 |
+| `managed_updates` | one env's managed platform updates: what EB has scheduled (id, type, status, window) and the last ten it ran, with each failure's type and reason | `apply_managed_action` takes a scheduled id. A half that could not be read is `null` with its reason in `errors`; `scheduled: []` with managed updates off means nothing will be scheduled |
 | `list_versions` | app versions for an env's app | default 50 |
 | `app_metrics` | the TUI's App tab for one env: your own metrics and the RDS / ElastiCache resources named under `app.ENV.*` (latest, `latest_at`, min, max, and each instance's latest), enhanced health per instance, the env's alarms ALARM first, and with `top_errors: true` the Logs Insights top errors | reads only what config names, so `configured: false` (and empty `metrics`) means no config, not a clean bill. Reads go to the `region` argument, not the env's own region: a wrong region answers with empty series (`latest: null`), not an error. A metric is only as fresh as the app publishes it: read `latest_at`. `top_errors` is **not redacted** (each fingerprint is the raw text of the app's ERROR lines), is billed per GB scanned, and runs only when asked AND `app.ENV.log_group` is set. The sections run concurrently (the fleet listing a prefix needs is part of the alarms section); the query is bounded at 20s inside the 30s call and stopped on the server past it, failing only its own section. A failed section is `null` with its reason in `errors`; `notes` carries a short CloudWatch answer; `config_errors` the env's config lines that did not apply. The `app.` lines are read from `config.toml` on each call, so an edit (by hand or in the TUI's App tab editor) is answered for without restarting the server; `why`'s alarm match reads them the same way |
 | `fleet_cost` | cached $/month per env, keyed `NAME@REGION` | cache-only; never calls Cost Explorer |
@@ -676,7 +677,8 @@ verb you granted is missing from `tools/list`, restart before
 concluding anything.
 
 The nameable verbs are `deploy`, `restart`, `rebuild`, `terminate`,
-`set_option`, `dlq_resend`, `dlq_delete`, `dlq_purge`. `confirm_action`
+`set_option`, `dlq_resend`, `dlq_delete`, `dlq_purge`,
+`apply_managed_action`. `confirm_action`
 is not one — it is the second phase of every write and rides along with
 any grant.
 
@@ -704,7 +706,7 @@ to widen it rather than reporting a capability gap.
 `ebman mcp setup --allow-writes=dlq_resend,dlq_delete` prints the
 matching `.mcp.json`.
 
-**Every write is two-phase.** The verb tool (`deploy` / `restart` / `rebuild` / `terminate` / `set_option` / `dlq_resend` / `dlq_delete` / `dlq_purge`) validates and returns a plan — it dispatches nothing:
+**Every write is two-phase.** The verb tool (`deploy` / `restart` / `rebuild` / `terminate` / `set_option` / `dlq_resend` / `dlq_delete` / `dlq_purge` / `apply_managed_action`) validates and returns a plan — it dispatches nothing:
 
 ```json
 {"pending":true,"confirm_token":"…","expires_in_secs":60,

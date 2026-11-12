@@ -220,6 +220,41 @@ pub(crate) fn platform_lifecycle() -> HashMap<String, String> {
     .collect()
 }
 
+/// One demo environment's managed updates: the fleet's API env has a
+/// platform update in tonight's window, and its last one rolled back.
+pub(crate) fn managed_actions_for(
+    env_name: &str,
+) -> (
+    Vec<crate::aws::ManagedAction>,
+    Vec<crate::aws::ManagedActionRecord>,
+) {
+    if env_name != "poly-prod-api" {
+        return (Vec::new(), Vec::new());
+    }
+    let now = fixture_now();
+    (
+        vec![crate::aws::ManagedAction {
+            id: "demo-ma-0001".into(),
+            action_type: "PlatformUpdate".into(),
+            description:
+                "New platform version: Node.js 20 running on 64bit Amazon Linux 2023/6.1.1".into(),
+            status: "Scheduled".into(),
+            window_start: Some(now + chrono::Duration::hours(6)),
+        }],
+        vec![crate::aws::ManagedActionRecord {
+            id: "demo-ma-0000".into(),
+            action_type: "PlatformUpdate".into(),
+            description:
+                "New platform version: Node.js 20 running on 64bit Amazon Linux 2023/6.1.0".into(),
+            status: "Failed".into(),
+            failure_type: "RollbackSuccessful".into(),
+            failure_description: "Health checks failed on the new instances; rolled back.".into(),
+            executed: Some(now - chrono::Duration::days(7)),
+            finished: Some(now - chrono::Duration::days(7) + chrono::Duration::minutes(25)),
+        }],
+    )
+}
+
 /// One demo environment's enhanced-health rollup, shaped by its colour
 /// so `:why` tells the story the fleet row does. An env the fixture
 /// does not have answers as live does for an unknown name.

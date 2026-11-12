@@ -685,6 +685,18 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         Category::EnvConfig,
         CommandKind::Prefill("managed-window "),
     ),
+    cmd(
+        "managed-updates",
+        ":managed-updates — scheduled managed platform updates and how the last ones went",
+        Category::EnvConfig,
+        CommandKind::ZeroArg,
+    ),
+    cmd(
+        "managed-apply",
+        ":managed-apply ACTION_ID — run a scheduled managed update now (`:abort` stops it)",
+        Category::EnvConfig,
+        CommandKind::Prefill("managed-apply "),
+    ),
     // ── Versions / configs / alarms / platforms ──────────────────────────
     cmd(
         "delete-version",

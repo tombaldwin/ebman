@@ -31,6 +31,8 @@ pub(crate) enum Verb {
     DlqResend,
     DlqDelete,
     DlqPurge,
+    /// Run a scheduled managed platform update now.
+    ApplyManagedAction,
 }
 
 impl Verb {
@@ -44,6 +46,7 @@ impl Verb {
         Verb::DlqResend,
         Verb::DlqDelete,
         Verb::DlqPurge,
+        Verb::ApplyManagedAction,
     ];
 
     /// The `action=` label every surface writes for this verb. `const`
@@ -59,6 +62,7 @@ impl Verb {
             Verb::DlqResend => "dlq-resend",
             Verb::DlqDelete => "sqs-delete",
             Verb::DlqPurge => "dlq-purge",
+            Verb::ApplyManagedAction => "ApplyManagedAction",
         }
     }
 

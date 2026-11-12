@@ -430,6 +430,10 @@ pub(super) enum WriteVerb {
     /// configuration, and a purged message is gone. It also takes
     /// anything that arrived AFTER the plan was made.
     DlqPurge,
+    /// Run a scheduled managed platform update now, rather than in its
+    /// maintenance window. No undo: a platform update is an immutable
+    /// deployment, and `:abort` in the TUI stops one in flight.
+    ApplyManagedAction,
 }
 
 impl WriteVerb {
@@ -438,7 +442,7 @@ impl WriteVerb {
     /// this against the descriptor table, so a variant added to one
     /// and not the other fails the build.
     #[cfg(test)]
-    pub(super) const ALL: [WriteVerb; 8] = [
+    pub(super) const ALL: [WriteVerb; 9] = [
         WriteVerb::Deploy,
         WriteVerb::Restart,
         WriteVerb::Rebuild,
@@ -447,6 +451,7 @@ impl WriteVerb {
         WriteVerb::DlqResend,
         WriteVerb::DlqDelete,
         WriteVerb::DlqPurge,
+        WriteVerb::ApplyManagedAction,
     ];
 
     /// The MCP tool name this verb is advertised as.
@@ -466,6 +471,7 @@ impl WriteVerb {
             WriteVerb::DlqResend => "dlq_resend",
             WriteVerb::DlqDelete => "dlq_delete",
             WriteVerb::DlqPurge => "dlq_purge",
+            WriteVerb::ApplyManagedAction => "apply_managed_action",
         }
     }
 
@@ -481,6 +487,7 @@ impl WriteVerb {
             WriteVerb::DlqResend => Verb::DlqResend,
             WriteVerb::DlqDelete => Verb::DlqDelete,
             WriteVerb::DlqPurge => Verb::DlqPurge,
+            WriteVerb::ApplyManagedAction => Verb::ApplyManagedAction,
         }
     }
 
@@ -654,6 +661,8 @@ struct PlanDetails {
     dlq_main_url: Option<String>,
     /// SQS's `ApproximateNumberOfMessages`, for the foreclosure line.
     dlq_visible: Option<i64>,
+    /// `apply_managed_action`'s action: its id and EB's description.
+    managed_action: Option<(String, String)>,
 }
 
 /// The longest `set_option` namespace, name or value a plan may carry.
@@ -771,6 +780,9 @@ pub(super) struct PendingWrite {
     /// original, and reported success. The work never reached the
     /// worker. The TUI always used the reported main queue.
     pub dlq_main_url: Option<String>,
+    /// `apply_managed_action`'s action, as the plan found it scheduled:
+    /// the id dispatched and EB's description, which the dialog names.
+    pub managed_action: Option<(String, String)>,
     /// What the role config said of the verb at plan time. Confirm
     /// re-gates on THIS, so plan and confirm agree by construction.
     pub role_check: crate::config::RoleCheck,
@@ -874,6 +886,20 @@ pub(super) fn write_tool_descriptors() -> Vec<Value> {
                     "region": {"type": "string"}
                 },
                 "required": ["env"]
+            }
+        }),
+        json!({
+            "name": "apply_managed_action",
+            "description": format!("Run a managed platform update EB has scheduled for an environment now, instead of in its maintenance window. `action_id` is a scheduled one from `managed_updates`; the plan refuses any other. A platform update replaces every instance, and has no undo. {confirm_note}"),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "env": {"type": "string", "description": "Environment name (required)"},
+                    "action_id": {"type": "string", "description": "A scheduled action's id, from `managed_updates` (required)"},
+                    "profile": {"type": "string"},
+                    "region": {"type": "string"}
+                },
+                "required": ["env", "action_id"]
             }
         }),
         json!({
@@ -1231,6 +1257,7 @@ impl Server {
         // Captured for the foreclosure line, which needs to say how
         // much else is in the queue. Only the DLQ branch resolves it.
         let mut dlq_visible: Option<i64> = None;
+        let mut managed_action: Option<(String, String)> = None;
 
         match verb {
             WriteVerb::Deploy => {
@@ -1361,6 +1388,7 @@ impl Server {
                     dlq_url: None,
                     dlq_main_url: None,
                     dlq_visible: None,
+                    managed_action: None,
                 };
                 self.resolve_dlq_plan(verb, args, env, &profile, &mut out)
                     .await?;
@@ -1369,6 +1397,43 @@ impl Server {
                 dlq_url = out.dlq_url;
                 dlq_main_url = out.dlq_main_url;
                 dlq_visible = out.dlq_visible;
+            }
+            WriteVerb::ApplyManagedAction => {
+                let id = arg_str(args, "action_id").ok_or(
+                    "'action_id' is required — `managed_updates` lists the scheduled ones",
+                )?;
+                // Only an action EB still has scheduled for this env:
+                // one that ran, or never existed, is not approved here.
+                let scheduled = match self.backend {
+                    Backend::Demo => demo_fixture::managed_actions_for(&env.name).0,
+                    Backend::Aws => self
+                        .client(args)
+                        .await?
+                        .list_managed_actions(&env.name)
+                        .await
+                        .map_err(|e| {
+                            tool_error(&profile, "list_managed_actions", &e.to_string())
+                        })?,
+                };
+                let action = scheduled.into_iter().find(|a| a.id == id).ok_or_else(|| {
+                    format!(
+                        "no managed update '{id}' is scheduled for '{}' — call \
+                             `managed_updates` for the ones that are",
+                        env.name
+                    )
+                })?;
+                plan_extra = format!(
+                    ",\"managed_action\":{{\"id\":{},\"type\":{},\"status\":{},\"description\":{},\"window_start\":{}}}",
+                    util::json_string(&action.id),
+                    util::json_string(&action.action_type),
+                    util::json_string(&action.status),
+                    util::json_string(&action.description),
+                    action
+                        .window_start
+                        .map(|t| util::json_string(&t.to_rfc3339()))
+                        .unwrap_or_else(|| "null".into()),
+                );
+                managed_action = Some((action.id, action.description));
             }
             WriteVerb::Restart | WriteVerb::Rebuild | WriteVerb::Terminate => {}
         }
@@ -1381,6 +1446,7 @@ impl Server {
             dlq_url,
             dlq_main_url,
             dlq_visible,
+            managed_action,
         })
     }
 
@@ -1494,6 +1560,7 @@ impl Server {
             dlq_url,
             dlq_main_url,
             dlq_visible,
+            managed_action,
         } = self
             .resolve_plan_details(verb, args, &env, &profile)
             .await?;
@@ -1549,6 +1616,7 @@ impl Server {
                 dlq_targets: dlq_targets.clone(),
                 dlq_url: dlq_url.clone(),
                 dlq_main_url: dlq_main_url.clone(),
+                managed_action: managed_action.clone(),
                 role_check: role_check.clone(),
                 role: role.clone(),
                 audit: audit.clone(),
@@ -2090,6 +2158,15 @@ impl Server {
                 .await
                 .map(|()| None)
                 .map_err(|e| e.to_string()),
+            WriteVerb::ApplyManagedAction => match &p.managed_action {
+                Some((id, _)) => client
+                    .apply_managed_action(&p.env, id)
+                    .await
+                    .map(|()| None)
+                    .map_err(|e| e.to_string()),
+                // The plan refuses without one; this is the ceiling.
+                None => Err("the plan carried no managed action".into()),
+            },
             WriteVerb::SetOption => client
                 .update_env_option_settings(&p.env, &p.settings, &[])
                 .await

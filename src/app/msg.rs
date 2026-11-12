@@ -44,6 +44,7 @@ impl AppMsg {
             | Alarms { gen, .. }
             | WhyRedEvents { gen, .. }
             | WhyRedHealth { gen, .. }
+            | ManagedApplied { gen, .. }
             | WhyRedAlarms { gen, .. }
             | WhyRedInstances { gen, .. }
             | WhyRedDeploys { gen, .. }
@@ -309,6 +310,13 @@ impl App {
                 result,
                 ..
             } => self.handle_tag_update(pending, env_name, region, summary, result),
+            AppMsg::ManagedApplied {
+                pending,
+                env_name,
+                action_id,
+                result,
+                ..
+            } => self.handle_managed_applied(pending, env_name, action_id, result),
             AppMsg::DetailQueues { ticket, result, .. } => {
                 self.handle_detail_queues(ticket, result)
             }

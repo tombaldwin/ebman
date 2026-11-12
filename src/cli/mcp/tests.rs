@@ -102,6 +102,95 @@ async fn call(server: &Server, name: &str, args: Value) -> (bool, Value) {
     (is_error, parsed)
 }
 
+/// `managed_updates` shows what is scheduled and what ran, and
+/// `apply_managed_action` plans only an id EB has scheduled, names EB's
+/// description of it in the dialog, and dispatches it on confirm.
+#[tokio::test]
+async fn managed_updates_read_plan_and_apply_on_demo() {
+    let s = demo_writes_server();
+    let (err, read) = call(&s, "managed_updates", json!({"env": "poly-prod-api"})).await;
+    assert!(!err, "{read}");
+    assert_eq!(read["scheduled"][0]["id"], "demo-ma-0001", "{read}");
+    assert_eq!(
+        read["history"][0]["failure_type"], "RollbackSuccessful",
+        "{read}"
+    );
+    assert_eq!(read["errors"], json!([]), "{read}");
+    let (_, quiet) = call(&s, "managed_updates", json!({"env": "poly-batch"})).await;
+    assert_eq!(quiet["scheduled"], json!([]), "{quiet}");
+    let (err, _) = call(&s, "managed_updates", json!({"env": "no-such-env"})).await;
+    assert!(err, "an unknown env errors");
+
+    let (err, refused) = call(
+        &s,
+        "apply_managed_action",
+        json!({"env": "poly-prod-api", "action_id": "not-scheduled"}),
+    )
+    .await;
+    assert!(err, "an id EB has not scheduled is refused: {refused}");
+    let (err, _) = call(&s, "apply_managed_action", json!({"env": "poly-prod-api"})).await;
+    assert!(err, "an action id is required");
+
+    let (err, plan) = call(
+        &s,
+        "apply_managed_action",
+        json!({"env": "poly-prod-api", "action_id": "demo-ma-0001"}),
+    )
+    .await;
+    assert!(!err, "{plan}");
+    assert_eq!(
+        plan["plan"]["managed_action"]["id"], "demo-ma-0001",
+        "{plan}"
+    );
+    assert!(
+        plan["plan"]["forecloses"]
+            .as_str()
+            .is_some_and(|f| f.contains("no undo")),
+        "{plan}"
+    );
+    {
+        let st = s.writes.lock().await;
+        let pending = st.pending.as_ref().expect("planned");
+        let dialog = writes_dialog(pending);
+        assert!(dialog.contains("demo-ma-0001"), "{dialog}");
+        assert!(
+            dialog.contains("6.1.1"),
+            "EB's description is named: {dialog}"
+        );
+    }
+    let token = plan["confirm_token"].as_str().expect("token").to_string();
+    let (err, done) = call(&s, "confirm_action", json!({"confirm_token": token})).await;
+    assert!(!err, "{done}");
+    assert_eq!(done["dispatched"], true, "{done}");
+    assert_eq!(done["action"], "ApplyManagedAction", "{done}");
+}
+
+#[test]
+fn a_managed_updates_half_that_failed_is_null_with_its_reason() {
+    let out = super::tools::render_managed_updates_json(
+        "poly-api",
+        Err("AccessDenied".into()),
+        Ok(vec![crate::aws::ManagedActionRecord {
+            id: "ma-0".into(),
+            status: "Completed".into(),
+            ..Default::default()
+        }]),
+    );
+    let v: Value = serde_json::from_str(&out).expect("json");
+    assert!(v["scheduled"].is_null(), "{v}");
+    assert_eq!(v["errors"][0]["section"], "scheduled", "{v}");
+    assert_eq!(v["errors"][0]["error"], "AccessDenied", "{v}");
+    assert_eq!(v["history"][0]["id"], "ma-0", "{v}");
+    assert!(
+        v["history"][0]["failure_type"].is_null(),
+        "no failure, no type: {v}"
+    );
+}
+
+fn writes_dialog(p: &writes::PendingWrite) -> String {
+    super::dialog::ask_summary(p)
+}
+
 #[tokio::test]
 async fn write_tools_appear_only_under_allow_writes() {
     let list = |s: &Server| {
@@ -420,6 +509,7 @@ async fn golden_tools_list_frame() {
             "doctor",
             "audit_log",
             "recent_events",
+            "managed_updates",
             "list_versions",
             "app_metrics",
             "fleet_cost",
@@ -4628,6 +4718,7 @@ async fn a_role_refusal_at_confirm_asks_no_one() {
             dlq_targets: Vec::new(),
             dlq_url: None,
             dlq_main_url: None,
+            managed_action: None,
             role_check: crate::config::RoleCheck::Unmapped { required: true },
             role: None,
             audit: crate::cli::mcp::refusal::WriteAudit {
@@ -6846,6 +6937,91 @@ fn test_client(eb: aws_sdk_elasticbeanstalk::Client) -> crate::aws::AwsClient {
         aws_sdk_s3::Client::new(&cfg),
         aws_sdk_ec2::Client::new(&cfg),
     )
+}
+
+/// On AWS, `apply_managed_action` plans against what EB has scheduled
+/// and dispatches exactly that id, audited with its action.
+#[tokio::test]
+async fn apply_managed_action_dispatches_the_scheduled_id() {
+    use aws_sdk_elasticbeanstalk::operation as op;
+    let env = "poly-managed-apply-probe";
+    let listing = aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::describe_environments)
+        .then_output(move || {
+            op::describe_environments::DescribeEnvironmentsOutput::builder()
+                .environments(
+                    aws_sdk_elasticbeanstalk::types::EnvironmentDescription::builder()
+                        .environment_name(env)
+                        .application_name("poly")
+                        .build(),
+                )
+                .build()
+        });
+    let scheduled = aws_smithy_mocks::mock!(
+        aws_sdk_elasticbeanstalk::Client::describe_environment_managed_actions
+    )
+    .then_output(|| {
+        op::describe_environment_managed_actions::DescribeEnvironmentManagedActionsOutput::builder()
+            .managed_actions(
+                aws_sdk_elasticbeanstalk::types::ManagedAction::builder()
+                    .action_id("ma-live-1")
+                    .action_description("New platform version: 6.1.1")
+                    .action_type(aws_sdk_elasticbeanstalk::types::ActionType::PlatformUpdate)
+                    .status(aws_sdk_elasticbeanstalk::types::ActionStatus::Scheduled)
+                    .build(),
+            )
+            .build()
+    });
+    let events = aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::describe_events)
+        .then_output(|| op::describe_events::DescribeEventsOutput::builder().build());
+    let apply =
+        aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::apply_environment_managed_action)
+            .match_requests(move |req| {
+                req.action_id() == Some("ma-live-1") && req.environment_name() == Some(env)
+            })
+            .then_output(|| {
+                op::apply_environment_managed_action::ApplyEnvironmentManagedActionOutput::builder()
+                    .build()
+            });
+    let eb = aws_smithy_mocks::mock_client!(
+        aws_sdk_elasticbeanstalk,
+        aws_smithy_mocks::RuleMode::MatchAny,
+        [&listing, &scheduled, &events, &apply]
+    );
+    let s = Server::with_injected_client(
+        WriteScope::All,
+        crate::config::Config::default(),
+        test_client(eb),
+    );
+    let refused = s
+        .tool_write_plan(
+            writes::WriteVerb::ApplyManagedAction,
+            &json!({"env": env, "action_id": "ma-gone"}),
+        )
+        .await;
+    assert!(refused.is_err(), "an id EB has not scheduled");
+    let before = crate::audit::delta::mark();
+    let plan = s
+        .tool_write_plan(
+            writes::WriteVerb::ApplyManagedAction,
+            &json!({"env": env, "action_id": "ma-live-1"}),
+        )
+        .await
+        .unwrap_or_else(|e| panic!("{e}"));
+    let v: Value = serde_json::from_str(&plan).expect("json");
+    let token = v["confirm_token"].as_str().expect("token").to_string();
+    let out = s
+        .tool_confirm_action(&json!({"confirm_token": token}))
+        .await
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert!(out.contains("\"dispatched\":true"), "{out}");
+    assert_eq!(apply.num_calls(), 1, "the scheduled id, dispatched once");
+    let lines = crate::audit::delta::lines_for(&before, env);
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("stage=completed") && l.contains("action=ApplyManagedAction")),
+        "{lines:#?}"
+    );
 }
 
 /// The session a role assume would give: a client whose restart works,

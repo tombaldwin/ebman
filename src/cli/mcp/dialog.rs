@@ -82,9 +82,17 @@ impl Shown {
 /// which the operator remembers what it does not contain.
 pub(super) fn ask_summary(p: &PendingWrite) -> String {
     let what = match p.dlq_targets.as_slice() {
-        [] => match p.version.as_deref() {
-            Some(v) => format!("{} to {}", p.verb.label(), sanitize(v, Shown::ASK)),
-            None => p.verb.label().to_string(),
+        [] => match (p.version.as_deref(), &p.managed_action) {
+            (Some(v), _) => format!("{} to {}", p.verb.label(), sanitize(v, Shown::ASK)),
+            // EB's own description of what the update installs, beside
+            // the id that dispatches: the id alone says nothing.
+            (None, Some((id, description))) => format!(
+                "{} {} — {}",
+                p.verb.label(),
+                sanitize(id, Shown::ASK),
+                sanitize(description, Shown::ASK)
+            ),
+            (None, None) => p.verb.label().to_string(),
         },
         [one] => format!(
             "{} — {} ({})",
@@ -250,6 +258,12 @@ pub(super) fn forecloses(verb: WriteVerb, dlq_visible: Option<i64>, named: usize
             .to_string(),
         WriteVerb::Restart => "In-flight requests on the instances are dropped. Nothing else — \
              no state is lost and nothing here needs undoing."
+            .to_string(),
+        WriteVerb::ApplyManagedAction => "The update runs now instead of in its maintenance \
+             window, as EB deploys it: a platform update replaces every instance \
+             (immutable), so anything written to instance-local storage is gone. There is \
+             no undo; `:abort` in the TUI stops it while it is still running, and EB rolls \
+             a failed one back."
             .to_string(),
         WriteVerb::SetOption => "The previous values are replaced. ebman does not keep them: \
              read them back with `get_option_settings` before approving if you need \

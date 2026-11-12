@@ -24,6 +24,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   reported as lost coverage. EBL008 said a newer version existed in the
   same branch; this says the branch itself is ending. The API gives the
   state, not a retirement date.
+- **Managed platform updates: what is scheduled, what happened, and
+  apply now.** `:managed-updates` and MCP `managed_updates` show what
+  EB has scheduled for an env (and the window each runs in) and the
+  last ten it ran, with each failure's type and reason.
+  `:managed-apply ACTION_ID` and the MCP write verb
+  `apply_managed_action` run a scheduled one now; the MCP plan refuses
+  an id EB does not have scheduled, and the confirmation names EB's
+  description of what it installs. Gated and audited like every write,
+  with no undo (`:abort` stops one in flight).
 
 ### Fixed
 

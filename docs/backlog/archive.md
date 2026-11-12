@@ -5934,3 +5934,15 @@ a `--read-only` server.
   rather than joining `HOME_CLIENT_IS_CORRECT_BECAUSE`. A self-review
   found `ebman explain EBL021` would always have said "no env has it";
   fixed and tested before commit.
+- **Managed platform updates.** `aws::ManagedAction` /
+  `ManagedActionRecord` with pure mappings; `list_managed_actions`,
+  `managed_action_history` (one page, `MANAGED_HISTORY_MAX`),
+  `apply_managed_action`. TUI `:managed-updates` (text overlay, each
+  half failing on its own) and `:managed-apply ACTION_ID` (gated,
+  audited with `action_id`, pending pill, refresh on success). Shared
+  verb `ApplyManagedAction`, not destructive; MCP read
+  `managed_updates` and two-phase write `apply_managed_action`, whose
+  plan refuses an id EB does not have scheduled and whose dialog names
+  EB's description. Self-review removed a demo branch in the TUI spawn
+  that `deny_write` made unreachable, and found the apply test's
+  refresh hitting a mock with no listing rule.

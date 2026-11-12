@@ -2600,3 +2600,106 @@ async fn the_tui_s_freeze_lines_name_what_every_declare_names() {
         lines[0]
     );
 }
+
+/// `:managed-apply` is a write like any other: refused in demo and by
+/// a pin before anything is dispatched; otherwise the named action goes
+/// out, both its lines carry its id, and the pending pill and toast say
+/// what to do next.
+#[tokio::test]
+async fn managed_apply_is_gated_dispatched_and_reported() {
+    let apply = aws_smithy_mocks::mock!(
+        aws_sdk_elasticbeanstalk::Client::apply_environment_managed_action
+    )
+    .match_requests(|req| req.action_id() == Some("ma-1"))
+    .then_output(|| {
+        aws_sdk_elasticbeanstalk::operation::apply_environment_managed_action::ApplyEnvironmentManagedActionOutput::builder().build()
+    });
+    // The refresh a started update asks for, answered.
+    let listing = aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::describe_environments)
+        .then_output(|| {
+            aws_sdk_elasticbeanstalk::operation::describe_environments::DescribeEnvironmentsOutput::builder().build()
+        });
+    let eb = aws_smithy_mocks::mock_client!(
+        aws_sdk_elasticbeanstalk,
+        aws_smithy_mocks::RuleMode::MatchAny,
+        [&apply, &listing]
+    );
+    let sdk = aws_config::SdkConfig::builder()
+        .region(aws_config::Region::new("us-east-1"))
+        .behavior_version(aws_config::BehaviorVersion::latest())
+        .build();
+    let client = crate::aws::AwsClient::for_tests(
+        eb,
+        aws_sdk_sqs::Client::new(&sdk),
+        aws_sdk_cloudwatch::Client::new(&sdk),
+        aws_sdk_cloudwatchlogs::Client::new(&sdk),
+        aws_sdk_s3::Client::new(&sdk),
+        aws_sdk_ec2::Client::new(&sdk),
+    );
+    let mut app = App::for_tests(client, crate::config::Config::default());
+    app.environments = vec![mk_env("managed-apply-probe", "shop", "Web", "Green")];
+    app.rebuild_view();
+    app.table_state.select(Some(0));
+
+    app.demo_mode = true;
+    app.execute_command("managed-apply ma-1");
+    assert!(app.pending_actions.is_empty(), "demo refuses");
+    app.demo_mode = false;
+    app.cfg
+        .safety_envs
+        .insert("managed-apply-probe".into(), true);
+    app.execute_command("managed-apply ma-1");
+    assert!(app.pending_actions.is_empty(), "a pin refuses");
+    assert!(
+        app.error_message
+            .as_deref()
+            .is_some_and(|e| e.contains("safety.envs.managed-apply-probe")),
+        "{:?}",
+        app.error_message
+    );
+    assert_eq!(apply.num_calls(), 0, "nothing dispatched");
+
+    app.cfg.safety_envs.clear();
+    while app.msg_rx.try_recv().is_ok() {}
+    let before = crate::audit::delta::mark();
+    app.execute_command("managed-apply ma-1");
+    assert_eq!(app.pending_actions.len(), 1, "tracked while it runs");
+    let msg = loop {
+        let msg = tokio::time::timeout(std::time::Duration::from_secs(10), app.msg_rx.recv())
+            .await
+            .expect("a result within 10s")
+            .expect("a message");
+        if matches!(msg, AppMsg::ManagedApplied { .. }) {
+            break msg;
+        }
+    };
+    app.handle_msg(msg);
+    assert_eq!(apply.num_calls(), 1, "the named action, once");
+    assert!(
+        matches!(app.load_state, crate::app::LoadState::Loading),
+        "the env goes to Updating: the fleet is refreshed to show it"
+    );
+    let toasts: String = app.toasts.iter().map(|t| t.text.clone()).collect();
+    assert!(
+        toasts.contains("ma-1") && toasts.contains(":abort"),
+        "{toasts}"
+    );
+    let lines = crate::audit::delta::lines_for(&before, "managed-apply-probe");
+    for stage in ["stage=dispatched", "stage=completed"] {
+        assert!(
+            lines.iter().any(|l| l.contains(stage)
+                && l.contains("action=ApplyManagedAction")
+                && l.contains("action_id=ma-1")),
+            "{stage}: {lines:#?}"
+        );
+    }
+
+    app.execute_command("managed-apply");
+    assert!(
+        app.error_message
+            .as_deref()
+            .is_some_and(|e| e.contains("usage")),
+        "{:?}",
+        app.error_message
+    );
+}

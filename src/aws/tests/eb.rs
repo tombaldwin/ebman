@@ -1706,3 +1706,50 @@ fn only_a_deprecated_or_retired_branch_is_worth_saying() {
     );
     assert_eq!(state(""), None);
 }
+
+#[test]
+fn managed_actions_and_their_history_map_whole() {
+    use aws_sdk_elasticbeanstalk::types::{
+        ActionHistoryStatus, ActionStatus, ActionType, FailureType, ManagedAction,
+        ManagedActionHistoryItem,
+    };
+    let a = super::managed_action_from(
+        &ManagedAction::builder()
+            .action_id("ma-1")
+            .action_type(ActionType::PlatformUpdate)
+            .action_description("New platform version")
+            .status(ActionStatus::Scheduled)
+            .window_start_time(aws_smithy_types::DateTime::from_secs(1_700_000_000))
+            .build(),
+    );
+    assert_eq!(
+        (a.id.as_str(), a.action_type.as_str(), a.status.as_str()),
+        ("ma-1", "PlatformUpdate", "Scheduled")
+    );
+    assert_eq!(a.description, "New platform version");
+    assert_eq!(a.window_start.map(|t| t.timestamp()), Some(1_700_000_000));
+
+    let r = super::managed_action_record_from(
+        &ManagedActionHistoryItem::builder()
+            .action_id("ma-0")
+            .action_type(ActionType::InstanceRefresh)
+            .action_description("Instance refresh")
+            .status(ActionHistoryStatus::Failed)
+            .failure_type(FailureType::RollbackSuccessful)
+            .failure_description("rolled back")
+            .executed_time(aws_smithy_types::DateTime::from_secs(1_700_000_000))
+            .finished_time(aws_smithy_types::DateTime::from_secs(1_700_000_600))
+            .build(),
+    );
+    assert_eq!(
+        (r.id.as_str(), r.action_type.as_str(), r.status.as_str()),
+        ("ma-0", "InstanceRefresh", "Failed")
+    );
+    assert_eq!(
+        (r.failure_type.as_str(), r.failure_description.as_str()),
+        ("RollbackSuccessful", "rolled back")
+    );
+    assert_eq!(r.description, "Instance refresh");
+    assert_eq!(r.executed.map(|t| t.timestamp()), Some(1_700_000_000));
+    assert_eq!(r.finished.map(|t| t.timestamp()), Some(1_700_000_600));
+}

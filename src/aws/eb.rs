@@ -141,6 +141,91 @@ pub(crate) fn env_health_from(
     }
 }
 
+/// A managed platform update EB has scheduled or is running for one
+/// environment (`DescribeEnvironmentManagedActions`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct ManagedAction {
+    pub id: String,
+    /// `PlatformUpdate`, `InstanceRefresh`, `Unknown`.
+    pub action_type: String,
+    pub description: String,
+    /// `Scheduled`, `Pending`, `Running`, `Unknown`.
+    pub status: String,
+    /// When the maintenance window that will run it opens. `None` for one
+    /// that is already running, or that EB gave no window for.
+    pub window_start: Option<DateTime<Utc>>,
+}
+
+/// One managed update EB ran, or tried to
+/// (`DescribeEnvironmentManagedActionHistory`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct ManagedActionRecord {
+    pub id: String,
+    pub action_type: String,
+    pub description: String,
+    /// `Completed`, `Failed`, `Unknown`.
+    pub status: String,
+    /// Empty when it did not fail. `UpdateCancelled`, `CancellationFailed`,
+    /// `RollbackFailed`, `RollbackSuccessful`, `InternalFailure`,
+    /// `InvalidEnvironmentState`, `PermissionsError`.
+    pub failure_type: String,
+    pub failure_description: String,
+    pub executed: Option<DateTime<Utc>>,
+    pub finished: Option<DateTime<Utc>>,
+}
+
+/// How many past managed updates the TUI and MCP show: enough for "what
+/// happened the last few times", one page.
+pub(crate) const MANAGED_HISTORY_MAX: i32 = 10;
+
+fn smithy_time(
+    d: Option<&aws_sdk_elasticbeanstalk::primitives::DateTime>,
+) -> Option<DateTime<Utc>> {
+    d.and_then(|d| DateTime::from_timestamp(d.secs(), d.subsec_nanos()))
+}
+
+pub(crate) fn managed_action_from(
+    a: &aws_sdk_elasticbeanstalk::types::ManagedAction,
+) -> ManagedAction {
+    ManagedAction {
+        id: a.action_id().unwrap_or_default().to_string(),
+        action_type: a
+            .action_type()
+            .map(|t| t.as_str().to_string())
+            .unwrap_or_default(),
+        description: a.action_description().unwrap_or_default().to_string(),
+        status: a
+            .status()
+            .map(|s| s.as_str().to_string())
+            .unwrap_or_default(),
+        window_start: smithy_time(a.window_start_time()),
+    }
+}
+
+pub(crate) fn managed_action_record_from(
+    h: &aws_sdk_elasticbeanstalk::types::ManagedActionHistoryItem,
+) -> ManagedActionRecord {
+    ManagedActionRecord {
+        id: h.action_id().unwrap_or_default().to_string(),
+        action_type: h
+            .action_type()
+            .map(|t| t.as_str().to_string())
+            .unwrap_or_default(),
+        description: h.action_description().unwrap_or_default().to_string(),
+        status: h
+            .status()
+            .map(|s| s.as_str().to_string())
+            .unwrap_or_default(),
+        failure_type: h
+            .failure_type()
+            .map(|f| f.as_str().to_string())
+            .unwrap_or_default(),
+        failure_description: h.failure_description().unwrap_or_default().to_string(),
+        executed: smithy_time(h.executed_time()),
+        finished: smithy_time(h.finished_time()),
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct Application {
     pub name: String,
@@ -1929,6 +2014,57 @@ impl AwsClient {
             .into_iter()
             .filter_map(|b| Some((b.branch_name?, b.lifecycle_state?)))
             .collect())
+    }
+
+    /// The managed updates EB has scheduled or is running for `env_name`.
+    pub(crate) async fn list_managed_actions(&self, env_name: &str) -> Result<Vec<ManagedAction>> {
+        let resp = self
+            .client
+            .describe_environment_managed_actions()
+            .environment_name(env_name)
+            .send()
+            .await
+            .aws_ctx("DescribeEnvironmentManagedActions failed")?;
+        Ok(resp
+            .managed_actions()
+            .iter()
+            .map(managed_action_from)
+            .collect())
+    }
+
+    /// The newest `max` managed updates EB ran for `env_name`, newest
+    /// first as EB returns them. One page: history is for "what
+    /// happened last time", not an archive.
+    pub(crate) async fn managed_action_history(
+        &self,
+        env_name: &str,
+        max: i32,
+    ) -> Result<Vec<ManagedActionRecord>> {
+        let resp = self
+            .client
+            .describe_environment_managed_action_history()
+            .environment_name(env_name)
+            .max_items(max)
+            .send()
+            .await
+            .aws_ctx("DescribeEnvironmentManagedActionHistory failed")?;
+        Ok(resp
+            .managed_action_history_items()
+            .iter()
+            .map(managed_action_record_from)
+            .collect())
+    }
+
+    /// Run a scheduled managed update now rather than in its window.
+    pub(crate) async fn apply_managed_action(&self, env_name: &str, action_id: &str) -> Result<()> {
+        self.client
+            .apply_environment_managed_action()
+            .environment_name(env_name)
+            .action_id(action_id)
+            .send()
+            .await
+            .aws_ctx("ApplyEnvironmentManagedAction failed")?;
+        Ok(())
     }
 
     pub(crate) async fn list_custom_platforms(&self) -> Result<Vec<CustomPlatform>> {

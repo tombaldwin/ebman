@@ -295,6 +295,19 @@ fn read_tool_table() -> Value {
             }
         },
         {
+            "name": "managed_updates",
+            "description": "One environment's managed platform updates: what EB has scheduled (id, type, status, the maintenance window it runs in) and the last ten it ran, with each failure's type and EB's reason. `apply_managed_action` takes a scheduled id. CAVEATS: `scheduled: []` with managed updates off means nothing will ever be scheduled (`get_option_settings` on `aws:elasticbeanstalk:managedactions` says which); a half that could not be read is null with its reason in `errors`, never an empty list.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "env": {"type": "string", "description": "Environment name (required)"},
+                    "profile": {"type": "string"},
+                    "region": {"type": "string"}
+                },
+                "required": ["env"]
+            }
+        },
+        {
             "name": "list_versions",
             "description": "Application versions for an environment's application, newest first.",
             "inputSchema": {
@@ -475,6 +488,53 @@ pub(super) fn render_why_json(
         versions,
         errs.join(",")
     )
+}
+
+/// `managed_updates`'s answer. A half that failed is `null` with its
+/// reason in `errors`, never `[]`: "could not look" and "none" differ.
+pub(super) fn render_managed_updates_json(
+    env: &str,
+    scheduled: Result<Vec<aws::ManagedAction>, String>,
+    history: Result<Vec<aws::ManagedActionRecord>, String>,
+) -> String {
+    let time = |t: Option<chrono::DateTime<chrono::Utc>>| t.map(|t| t.to_rfc3339());
+    let mut errors: Vec<Value> = Vec::new();
+    let scheduled = match scheduled {
+        Ok(a) => json!(a
+            .iter()
+            .map(|a| json!({
+                "id": a.id,
+                "type": a.action_type,
+                "status": a.status,
+                "description": a.description,
+                "window_start": time(a.window_start),
+            }))
+            .collect::<Vec<_>>()),
+        Err(e) => {
+            errors.push(json!({"section": "scheduled", "error": e}));
+            Value::Null
+        }
+    };
+    let history = match history {
+        Ok(h) => json!(h
+            .iter()
+            .map(|r| json!({
+                "id": r.id,
+                "type": r.action_type,
+                "status": r.status,
+                "description": r.description,
+                "failure_type": (!r.failure_type.is_empty()).then_some(&r.failure_type),
+                "failure_description": (!r.failure_description.is_empty()).then_some(&r.failure_description),
+                "executed": time(r.executed),
+                "finished": time(r.finished),
+            }))
+            .collect::<Vec<_>>()),
+        Err(e) => {
+            errors.push(json!({"section": "history", "error": e}));
+            Value::Null
+        }
+    };
+    json!({"env": env, "scheduled": scheduled, "history": history, "errors": errors}).to_string()
 }
 
 /// The `why` bundle's `health` section: enhanced health's own status
@@ -842,6 +902,7 @@ impl Server {
             "freeze_fleet" => self.tool_freeze_fleet(args),
             "audit_log" => self.tool_audit_log(args),
             "recent_events" => self.tool_recent_events(args).await,
+            "managed_updates" => self.tool_managed_updates(args).await,
             "list_versions" => self.tool_list_versions(args).await,
             "fleet_cost" => self.tool_fleet_cost(args).await,
             // Write surface (only reachable under --allow-writes — the
@@ -857,6 +918,10 @@ impl Server {
                 .map_err(refusal::WriteError::into_message),
             "rebuild" => self
                 .tool_write_plan(writes::WriteVerb::Rebuild, args)
+                .await
+                .map_err(refusal::WriteError::into_message),
+            "apply_managed_action" => self
+                .tool_write_plan(writes::WriteVerb::ApplyManagedAction, args)
                 .await
                 .map_err(refusal::WriteError::into_message),
             "dlq_resend" => self
@@ -1957,6 +2022,34 @@ impl Server {
         };
         crate::cli::envs::render_envs_json(&envs, firing.as_ref(), lifecycle.as_ref())
             .map_err(|e| e.to_string())
+    }
+
+    /// What EB has scheduled for one env, and what it ran. Each half
+    /// fails on its own: null with its reason, never `[]`.
+    async fn tool_managed_updates(&self, args: &Value) -> Result<String, String> {
+        let env_name = arg_str(args, "env").ok_or("'env' is required")?;
+        let (scheduled, history) = match self.backend {
+            Backend::Demo => {
+                if !demo_fixture::envs().iter().any(|e| e.name == env_name) {
+                    return Err(format!("env '{env_name}' not found"));
+                }
+                let (s, h) = demo_fixture::managed_actions_for(&env_name);
+                (Ok(s), Ok(h))
+            }
+            Backend::Aws => {
+                let profile = arg_str(args, "profile");
+                let client = self.client(args).await?;
+                let (s, h) = tokio::join!(
+                    client.list_managed_actions(&env_name),
+                    client.managed_action_history(&env_name, aws::MANAGED_HISTORY_MAX),
+                );
+                (
+                    s.map_err(|e| tool_error(&profile, "list_managed_actions", &e.to_string())),
+                    h.map_err(|e| tool_error(&profile, "managed_action_history", &e.to_string())),
+                )
+            }
+        };
+        Ok(render_managed_updates_json(&env_name, scheduled, history))
     }
 
     async fn tool_list_versions(&self, args: &Value) -> Result<String, String> {
