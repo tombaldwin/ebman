@@ -1090,7 +1090,6 @@ pub(crate) enum AppMsg {
         alarm_name: String,
         result: Result<(), String>,
     },
-    /// Result of a `DeleteApplicationVersion` call from `:delete-version`.
     /// A `:version-lifecycle` change finished: (the policy replaced, the
     /// policy set), or why not.
     LifecycleSet {
@@ -1117,6 +1116,7 @@ pub(crate) enum AppMsg {
         action_id: String,
         result: Result<(), String>,
     },
+    /// Result of a `DeleteApplicationVersion` call from `:delete-version`.
     DeleteAppVersion {
         gen: u64,
         pending: PendingId,
