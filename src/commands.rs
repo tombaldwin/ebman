@@ -705,6 +705,12 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
     ),
     // ── Versions / configs / alarms / platforms ──────────────────────────
     cmd(
+        "version-lifecycle",
+        ":version-lifecycle [max-count N | max-age DAYS] [--delete-source] | off | undo — app version retention",
+        Category::VersionsConfigsAlarms,
+        CommandKind::Prefill("version-lifecycle "),
+    ),
+    cmd(
         "delete-version",
         ":delete-version LABEL [--force] — drop an app version (--force also nukes the S3 bundle)",
         Category::VersionsConfigsAlarms,

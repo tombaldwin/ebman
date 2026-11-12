@@ -225,6 +225,72 @@ pub(crate) fn event_passes(
     recent && severe
 }
 
+/// An application's version retention policy, the rules that are on.
+/// EB deletes the oldest versions past `max_count`, and those older than
+/// `max_age_days`, as each new version is created.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct VersionLifecycle {
+    pub max_count: Option<i32>,
+    pub max_age_days: Option<i32>,
+    /// Delete each version's source bundle from S3 along with it.
+    pub delete_source: bool,
+    /// The role EB deletes versions under.
+    pub service_role: Option<String>,
+}
+
+impl VersionLifecycle {
+    /// Whether any rule is on: an app with none keeps every version.
+    pub(crate) fn retains_any(&self) -> bool {
+        self.max_count.is_some() || self.max_age_days.is_some()
+    }
+
+    /// One line: `max 200 versions, delete source from S3`, `none`.
+    pub(crate) fn describe(&self) -> String {
+        let mut parts = Vec::new();
+        if let Some(n) = self.max_count {
+            parts.push(format!("max {n} versions"));
+        }
+        if let Some(d) = self.max_age_days {
+            parts.push(format!("max {d} days old"));
+        }
+        if parts.is_empty() {
+            return "none — every version is kept".into();
+        }
+        if self.delete_source {
+            parts.push("delete source from S3".into());
+        }
+        parts.join(", ")
+    }
+}
+
+/// One application's versions and what keeps them in check.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct AppRetention {
+    pub app: String,
+    pub versions: usize,
+    pub policy: VersionLifecycle,
+}
+
+pub(crate) fn version_lifecycle_from(
+    c: Option<&aws_sdk_elasticbeanstalk::types::ApplicationResourceLifecycleConfig>,
+) -> VersionLifecycle {
+    let Some(c) = c else {
+        return VersionLifecycle::default();
+    };
+    let v = c.version_lifecycle_config();
+    let count = v.and_then(|v| v.max_count_rule()).filter(|r| r.enabled());
+    let age = v.and_then(|v| v.max_age_rule()).filter(|r| r.enabled());
+    VersionLifecycle {
+        max_count: count.and_then(|r| r.max_count()),
+        max_age_days: age.and_then(|r| r.max_age_in_days()),
+        delete_source: count
+            .and_then(|r| r.delete_source_from_s3())
+            .unwrap_or(false)
+            || age.and_then(|r| r.delete_source_from_s3()).unwrap_or(false),
+        service_role: c.service_role().map(str::to_string),
+    }
+}
+
 /// How many past managed updates the TUI and MCP show: enough for "what
 /// happened the last few times", one page.
 pub(crate) const MANAGED_HISTORY_MAX: i32 = 10;
@@ -2522,6 +2588,83 @@ impl AwsClient {
             })
             .collect();
         Ok(instances)
+    }
+
+    /// Every application's version count and retention policy, one
+    /// `DescribeApplications`.
+    pub(crate) async fn list_version_retention(&self) -> Result<Vec<AppRetention>> {
+        let resp = self
+            .client
+            .describe_applications()
+            .send()
+            .await
+            .aws_ctx("DescribeApplications failed")?;
+        Ok(resp
+            .applications()
+            .iter()
+            .map(|a| AppRetention {
+                app: a.application_name().unwrap_or_default().to_string(),
+                versions: a.versions().len(),
+                policy: version_lifecycle_from(a.resource_lifecycle_config()),
+            })
+            .collect())
+    }
+
+    /// The account's application-version quota in this region; `None`
+    /// when EB does not say.
+    pub(crate) async fn version_quota(&self) -> Result<Option<i32>> {
+        let resp = self
+            .client
+            .describe_account_attributes()
+            .send()
+            .await
+            .aws_ctx("DescribeAccountAttributes failed")?;
+        Ok(resp
+            .resource_quotas()
+            .and_then(|q| q.application_version_quota())
+            .and_then(|q| q.maximum()))
+    }
+
+    /// Set an application's version retention policy. Both rules are
+    /// sent, the unset one disabled, so the result is exactly `policy`.
+    pub(crate) async fn set_version_lifecycle(
+        &self,
+        app: &str,
+        policy: &VersionLifecycle,
+    ) -> Result<()> {
+        use aws_sdk_elasticbeanstalk::types::{
+            ApplicationResourceLifecycleConfig, ApplicationVersionLifecycleConfig, MaxAgeRule,
+            MaxCountRule,
+        };
+        let count = MaxCountRule::builder()
+            .enabled(policy.max_count.is_some())
+            .set_max_count(policy.max_count)
+            .delete_source_from_s3(policy.delete_source)
+            .build()
+            .map_err(|e| color_eyre::eyre::eyre!("MaxCountRule: {e}"))?;
+        let age = MaxAgeRule::builder()
+            .enabled(policy.max_age_days.is_some())
+            .set_max_age_in_days(policy.max_age_days)
+            .delete_source_from_s3(policy.delete_source)
+            .build()
+            .map_err(|e| color_eyre::eyre::eyre!("MaxAgeRule: {e}"))?;
+        let config = ApplicationResourceLifecycleConfig::builder()
+            .set_service_role(policy.service_role.clone())
+            .version_lifecycle_config(
+                ApplicationVersionLifecycleConfig::builder()
+                    .max_count_rule(count)
+                    .max_age_rule(age)
+                    .build(),
+            )
+            .build();
+        self.client
+            .update_application_resource_lifecycle()
+            .application_name(app)
+            .resource_lifecycle_config(config)
+            .send()
+            .await
+            .aws_ctx("UpdateApplicationResourceLifecycle failed")?;
+        Ok(())
     }
 
     pub(crate) async fn list_applications(&self) -> Result<Vec<Application>> {

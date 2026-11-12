@@ -50,6 +50,7 @@ pub(crate) const REFUSAL_ACTION_LABELS: &[(&str, &str)] = &[
     ),
     ("dlq-redrive", crate::verb::Verb::DlqRedrive.audit_label()),
     ("dlq-redrive cancel", "dlq-redrive-cancel"),
+    ("version-lifecycle", "VersionLifecycle"),
     ("form submit", crate::verb::Verb::SetOption.audit_label()),
     // The DLQ verbs are bare words because that is what the toast says;
     // `spawn_dlq.rs` dispatches them under the `dlq-*` / `sqs-*` names.

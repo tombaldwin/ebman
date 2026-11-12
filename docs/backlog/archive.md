@@ -5976,3 +5976,11 @@ a `--read-only` server.
   rollback plans carry `deploy_plan_lint`. Self-review: inlining the
   lint twice into `resolve_plan_details` overflowed a debug test
   thread's stack, so the plan-detail futures are boxed.
+- **Application-version retention.** `aws::VersionLifecycle` /
+  `AppRetention`, `list_version_retention`, `version_quota`,
+  `set_version_lifecycle` (both rules sent, the unset one off). EBL022 /
+  EBL023 as an account pass (`fetch_version_retention_issues`) in
+  `ebman lint` and MCP `lint`. TUI `:version-lifecycle` with a
+  per-context undo record (`caches.lifecycle_undo`) and a pure
+  `next_policy`. The PLAN entry offered MCP exposure via lint only, and
+  that is what shipped.

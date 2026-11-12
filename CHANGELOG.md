@@ -58,6 +58,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   Launching or Terminating and says whether it settled. A `deploy` or
   `rollback` plan carries the pre-deploy lint the TUI's confirm runs:
   `lint.issues`, and `lint.not_run` for checks that could not run.
+- **Application-version retention.** `:version-lifecycle` shows an
+  application's retention policy, version count and the region's version
+  quota, sets a max count or age (under the app's own service role) or
+  turns retention off, and `undo` restores what the last change in this
+  session replaced. New account-level lint rules in `ebman lint` and MCP
+  `lint`: **EBL022** (an application keeping every version past 200)
+  and **EBL023** (the region's versions at 80% of the quota, Warn; 95%,
+  Error) — at the quota, a deploy that creates a version fails.
 
 ### Fixed
 

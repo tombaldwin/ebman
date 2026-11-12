@@ -22,8 +22,8 @@
 use color_eyre::eyre::Result;
 
 use crate::lint::inputs::{
-    build_lint_context, fetch_env_lint_inputs, fetch_stale_platform_issues, run_rules_for_env,
-    EnvLintInputs,
+    build_lint_context, fetch_env_lint_inputs, fetch_stale_platform_issues,
+    fetch_version_retention_issues, run_rules_for_env, EnvLintInputs,
 };
 use crate::{audit, aws, config, lint, project};
 
@@ -932,6 +932,29 @@ where
                     // which DO degrade use the helper, and cannot
                     // see a site that should and does not.
                     report.degrade(format!("EBL015 skipped — ListPlatformVersions: {e}"));
+                }
+            }
+        }
+        // EBL022 / EBL023 — the region's version retention and quota, an
+        // account pass like EBL015: skipped for a single --env, and lost
+        // coverage degrades the cycle as EBL015's does.
+        if env_name.is_none() {
+            match fetch_version_retention_issues(&aws, disabled).await {
+                None => {}
+                Some(Ok((mut issues, gaps))) => {
+                    for g in gaps {
+                        report.degrade(g.to_string());
+                    }
+                    filter_issues(&mut issues, severity_filter, rule_filter);
+                    if let Some(region) = region_opt {
+                        for issue in &mut issues {
+                            issue.fields.insert("region".into(), region.clone());
+                        }
+                    }
+                    report.issues.extend(issues);
+                }
+                Some(Err(e)) => {
+                    report.degrade(format!("EBL022/EBL023 skipped — DescribeApplications: {e}"))
                 }
             }
         }
@@ -2711,6 +2734,11 @@ pub(crate) mod cycle_wiring {
         pub(crate) branches_rejected: bool,
         /// The fleet's branch is listed as retired, so EBL021 fires.
         pub(crate) branch_retired: bool,
+        /// The application keeps 900 versions with no retention policy,
+        /// against a quota of 1000: EBL022 and EBL023 (Warn) fire.
+        pub(crate) versions_piling_up: bool,
+        /// `DescribeAccountAttributes` is refused: EBL023's input is lost.
+        pub(crate) quota_rejected: bool,
     }
 
     /// The branch whose platform dates the mock refuses to report.
@@ -2977,6 +3005,43 @@ pub(crate) mod cycle_wiring {
                         .build()
                 })
         };
+        // EBL022 / EBL023's inputs: one app, and the region's quota.
+        let piling = faults.versions_piling_up;
+        let applications =
+            aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::describe_applications)
+                .then_output(move || {
+                    let versions: Vec<String> = (0..if piling { 900 } else { 3 })
+                        .map(|n| format!("build-{n}"))
+                        .collect();
+                    aws_sdk_elasticbeanstalk::operation::describe_applications::DescribeApplicationsOutput::builder()
+                        .applications(
+                            aws_sdk_elasticbeanstalk::types::ApplicationDescription::builder()
+                                .application_name("poly")
+                                .set_versions(Some(versions))
+                                .build(),
+                        )
+                        .build()
+                });
+        let quota = if faults.quota_rejected {
+            aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::describe_account_attributes)
+                .then_error(move || {
+                    aws_sdk_elasticbeanstalk::operation::describe_account_attributes::DescribeAccountAttributesError::generic(
+                        denied("elasticbeanstalk:DescribeAccountAttributes"),
+                    )
+                })
+        } else {
+            aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::describe_account_attributes)
+                .then_output(|| {
+                    use aws_sdk_elasticbeanstalk::types::{ResourceQuota, ResourceQuotas};
+                    aws_sdk_elasticbeanstalk::operation::describe_account_attributes::DescribeAccountAttributesOutput::builder()
+                        .resource_quotas(
+                            ResourceQuotas::builder()
+                                .application_version_quota(ResourceQuota::builder().maximum(1000).build())
+                                .build(),
+                        )
+                        .build()
+                })
+        };
         let mut rules: Vec<&aws_smithy_mocks::Rule> = vec![
             &listing,
             &stacks,
@@ -2986,6 +3051,8 @@ pub(crate) mod cycle_wiring {
             &resources,
             &platforms,
             &branches,
+            &applications,
+            &quota,
         ];
         if failing_update {
             rules.push(&update);
@@ -3286,6 +3353,83 @@ pub(crate) mod cycle_wiring {
         assert_eq!(found[0].severity, crate::lint::Severity::Error);
         assert_eq!(found[0].env_name.as_deref(), Some("poly-prod-web"));
         assert!(!report.degraded(), "{:?}", report.degrade_reasons);
+    }
+
+    /// The retention pass: a kept pile and a nearly spent quota fire,
+    /// a refused quota read degrades for EBL023 alone, and a single
+    /// `--env` skips the account pass.
+    #[tokio::test]
+    async fn the_retention_pass_fires_degrades_and_skips_a_scoped_run() {
+        let client = |faults: MockFaults| {
+            move |_| async move { Ok(mock_client_inner(vec!["poly-prod-web".into()], faults)) }
+        };
+        let report = run_with(
+            vec![None],
+            client(MockFaults {
+                versions_piling_up: true,
+                ..MockFaults::default()
+            }),
+        )
+        .await;
+        let ids: Vec<&str> = report.issues.iter().map(|i| i.rule_id.as_str()).collect();
+        assert!(
+            ids.contains(&"EBL022") && ids.contains(&"EBL023"),
+            "{ids:?}"
+        );
+        assert!(!report.degraded(), "{:?}", report.degrade_reasons);
+
+        let report = run_with(
+            vec![None],
+            client(MockFaults {
+                quota_rejected: true,
+                ..MockFaults::default()
+            }),
+        )
+        .await;
+        assert!(
+            report
+                .degrade_reasons
+                .iter()
+                .any(|r| r.contains("EBL023") && r.contains("DescribeAccountAttributes")),
+            "{:?}",
+            report.degrade_reasons
+        );
+
+        // Switched off, a rule is not run however the fleet looks.
+        let report = run_with_opts(
+            vec![None],
+            CycleOpts {
+                disabled: vec!["EBL022".into()],
+                ..CycleOpts::default()
+            },
+            client(MockFaults {
+                versions_piling_up: true,
+                ..MockFaults::default()
+            }),
+        )
+        .await;
+        let ids: Vec<&str> = report.issues.iter().map(|i| i.rule_id.as_str()).collect();
+        assert!(
+            !ids.contains(&"EBL022") && ids.contains(&"EBL023"),
+            "{ids:?}"
+        );
+
+        let report = run_with_opts(
+            vec![None],
+            CycleOpts {
+                env_name: Some("poly-prod-web".into()),
+                ..CycleOpts::default()
+            },
+            client(MockFaults {
+                versions_piling_up: true,
+                ..MockFaults::default()
+            }),
+        )
+        .await;
+        assert!(
+            report.issues.iter().all(|i| i.rule_id != "EBL022"),
+            "an account pass is not run for one env"
+        );
     }
 
     /// EBL015 coverage that PARTLY failed degrades the cycle.

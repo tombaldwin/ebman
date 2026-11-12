@@ -86,6 +86,12 @@ pub(crate) struct ContextCaches {
     /// Why the last lifecycle listing failed, if it did, so `:lint` can
     /// say EBL021 did not run rather than reading empty as clean.
     pub(crate) platform_lifecycle_error: Option<String>,
+    /// The version retention policy each `:version-lifecycle` change
+    /// replaced, by (region, application): what `undo` restores. Per
+    /// context, so a switch cannot restore one account's policy onto
+    /// another's application of the same name.
+    pub(crate) lifecycle_undo:
+        std::collections::HashMap<(String, String), crate::aws::VersionLifecycle>,
     /// The App tab's discovery, kept for the session.
     pub(crate) app_tab_discovery: app_tab_form::AppTabDiscovery,
     pub(crate) prev_alerts: usize,

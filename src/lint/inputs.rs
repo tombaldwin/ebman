@@ -660,6 +660,43 @@ pub(crate) async fn fetch_platform_lifecycle_issues<'a>(
     Ok(lint::platform_lifecycle_issues(envs, &lifecycle))
 }
 
+/// EBL022 / EBL023's assembly, shared by `ebman lint` and the MCP
+/// `lint` tool: the region's applications and its version quota, then
+/// the pure pass. A failed quota read loses EBL023 alone, reported as a
+/// gap; a failed application listing loses both. `disabled` drops a rule
+/// the operator switched off. `None` when both are off: nothing fetched.
+pub(crate) async fn fetch_version_retention_issues(
+    aws: &aws::AwsClient,
+    disabled: &[String],
+) -> Option<Result<(Vec<lint::Issue>, Vec<CoverageGap>), String>> {
+    let off = |id: &str| disabled.iter().any(|d| d == id);
+    if off("EBL022") && off("EBL023") {
+        return None;
+    }
+    let apps = match aws.list_version_retention().await {
+        Ok(apps) => apps,
+        Err(e) => return Some(Err(e.to_string())),
+    };
+    let mut gaps = Vec::new();
+    let quota = if off("EBL023") {
+        None
+    } else {
+        match aws.version_quota().await {
+            Ok(q) => q,
+            Err(e) => {
+                gaps.extend(
+                    ProbeOutcome::Unknown(format!("DescribeAccountAttributes: {e}"))
+                        .coverage_warning("EBL023", "the account"),
+                );
+                None
+            }
+        }
+    };
+    let mut issues = lint::version_retention_issues(&apps, quota);
+    issues.retain(|i| !off(&i.rule_id));
+    Some(Ok((issues, gaps)))
+}
+
 /// Pure: assemble a borrowing `LintContext` over fetched inputs.
 /// Shared by [`run_rules_for_env`] and `run`'s `--fix` path (which
 /// needs the context again for `rule.fix(&ctx)`).

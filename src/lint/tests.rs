@@ -1622,3 +1622,42 @@ fn explain_fetches_the_branch_listing_only_for_ebl021() {
         [&custom].into_iter()
     ));
 }
+
+#[test]
+fn version_retention_fires_on_a_kept_pile_and_a_spent_quota() {
+    use crate::aws::{AppRetention, VersionLifecycle};
+    let app = |name: &str, versions: usize, max_count: Option<i32>| AppRetention {
+        app: name.into(),
+        versions,
+        policy: VersionLifecycle {
+            max_count,
+            ..Default::default()
+        },
+    };
+    let ids = |issues: &[Issue]| issues.iter().map(|i| i.rule_id.clone()).collect::<Vec<_>>();
+    // At the threshold: nothing; past it with no policy: EBL022.
+    assert!(version_retention_issues(&[app("a", EBL022_VERSIONS, None)], None).is_empty());
+    let pile = version_retention_issues(&[app("a", EBL022_VERSIONS + 1, None)], None);
+    assert_eq!(ids(&pile), ["EBL022"]);
+    assert_eq!(pile[0].severity, Severity::Warn);
+    assert_eq!(
+        pile[0].fields.get("application").map(String::as_str),
+        Some("a")
+    );
+    // A policy, however many versions: nothing.
+    assert!(version_retention_issues(&[app("a", 900, Some(500))], None).is_empty());
+    // The quota: under 80% nothing, 80% Warn, 95% Error.
+    let used = |n: usize| version_retention_issues(&[app("a", n, Some(1000))], Some(1000));
+    assert!(used(799).is_empty());
+    assert_eq!(used(800)[0].severity, Severity::Warn);
+    assert_eq!(used(950)[0].severity, Severity::Error);
+    assert_eq!(ids(&used(950)), ["EBL023"]);
+    // Summed across the region's applications.
+    let two = version_retention_issues(
+        &[app("a", 450, Some(1)), app("b", 450, Some(1))],
+        Some(1000),
+    );
+    assert_eq!(ids(&two), ["EBL023"], "900 of 1000");
+    // No quota reported, or a zero one: no claim.
+    assert!(version_retention_issues(&[app("a", 950, Some(1))], Some(0)).is_empty());
+}

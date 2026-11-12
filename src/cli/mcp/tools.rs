@@ -257,7 +257,7 @@ fn read_tool_table() -> Value {
         },
         {
             "name": "lint",
-            "description": "Run ebman's diagnostic rule engine over the fleet (or one env). CAVEATS: EBL011 (worker DLQ) never fires here — the lint path does not poll queues; call `worker_queues` for depth, and with `peek` for which task dead-lettered; EBL016 (live health probe) does not run in this tool. A clean result does NOT clear those rules. EBL015 (stale custom platforms, account-level) runs only when not scoped to a single env. Anything that could not be checked is skipped, not fatal, and listed in a `skipped_envs` array: an env whose inputs failed, a probe or input fetch that errored (e.g. EBL010 tags, EBL012 health), and a failed account-level pass (EBL008 stack listing, EBL015). Check it before treating the run as full coverage.",
+            "description": "Run ebman's diagnostic rule engine over the fleet (or one env). CAVEATS: EBL011 (worker DLQ) never fires here — the lint path does not poll queues; call `worker_queues` for depth, and with `peek` for which task dead-lettered; EBL016 (live health probe) does not run in this tool. A clean result does NOT clear those rules. EBL015 (stale custom platforms), EBL022 (an app keeping every version) and EBL023 (version quota) are account-level and run only when not scoped to a single env. Anything that could not be checked is skipped, not fatal, and listed in a `skipped_envs` array: an env whose inputs failed, a probe or input fetch that errored (e.g. EBL010 tags, EBL012 health), and a failed account-level pass (EBL008 stack listing, EBL015). Check it before treating the run as full coverage.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1240,6 +1240,23 @@ impl Server {
                             );
                         }
                         Err(e) => skipped.push(rule_skipped(&profile, "EBL015", &e.to_string())),
+                    }
+                }
+                // EBL022 / EBL023 — version retention and quota, the same
+                // account-level shape: not when scoped to one env.
+                if env_filter.is_none() {
+                    match fetch_version_retention_issues(&client, &disabled).await {
+                        None => {}
+                        Some(Ok((issues, gaps))) => {
+                            all_issues.extend(issues);
+                            skipped.extend(
+                                gaps.iter()
+                                    .map(|g| with_credential_fix(&profile, &g.to_string())),
+                            );
+                        }
+                        Some(Err(e)) => {
+                            skipped.push(rule_skipped(&profile, "EBL022/EBL023", &e));
+                        }
                     }
                 }
             }

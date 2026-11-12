@@ -1279,6 +1279,82 @@ pub(crate) fn platform_lifecycle_issues<'a>(
         .collect()
 }
 
+/// How many versions an app may keep without a retention policy before
+/// EBL022 says so.
+pub(crate) const EBL022_VERSIONS: usize = 200;
+
+/// EBL022 — an application with no version retention policy and more
+/// than [`EBL022_VERSIONS`] versions (Warn); EBL023 — the region's
+/// versions near the account's quota, 80% (Warn) or 95% (Error). Past
+/// the quota every deploy that creates a version fails, which is the
+/// worst moment to find out. Account-level passes like EBL015: one
+/// `DescribeApplications` and one `DescribeAccountAttributes`, issues
+/// with no env, callers honouring `lint.disable`.
+pub(crate) fn version_retention_issues(
+    apps: &[crate::aws::AppRetention],
+    quota: Option<i32>,
+) -> Vec<Issue> {
+    let mut out: Vec<Issue> = apps
+        .iter()
+        .filter(|a| !a.policy.retains_any() && a.versions > EBL022_VERSIONS)
+        .map(|a| {
+            let mut fields = BTreeMap::new();
+            fields.insert("application".into(), a.app.clone());
+            fields.insert("versions".into(), a.versions.to_string());
+            Issue {
+                rule_id: "EBL022".into(),
+                severity: Severity::Warn,
+                env_name: None,
+                title: format!(
+                    "Application '{}' keeps every version ({} so far)",
+                    a.app, a.versions
+                ),
+                detail: "No version retention policy is set, so every deploy adds a version \
+                         and none is removed. They count against the account's per-region \
+                         version quota, and a deploy that would pass it fails."
+                    .into(),
+                suggestion: Some(
+                    ":version-lifecycle max-count 200  (on an env of the application)".into(),
+                ),
+                fields,
+            }
+        })
+        .collect();
+    let total: usize = apps.iter().map(|a| a.versions).sum();
+    if let Some(quota) = quota.filter(|q| *q > 0) {
+        let used = total as f64 / f64::from(quota);
+        if used >= 0.8 {
+            let mut fields = BTreeMap::new();
+            fields.insert("versions".into(), total.to_string());
+            fields.insert("quota".into(), quota.to_string());
+            out.push(Issue {
+                rule_id: "EBL023".into(),
+                severity: if used >= 0.95 {
+                    Severity::Error
+                } else {
+                    Severity::Warn
+                },
+                env_name: None,
+                title: format!(
+                    "{total} of {quota} application versions used ({:.0}%)",
+                    used * 100.0
+                ),
+                detail: "The account's application-version quota for this region is nearly \
+                         spent; at the quota a deploy that creates a version fails. Retention \
+                         policies (EBL022) free versions as new ones arrive."
+                    .into(),
+                suggestion: Some(
+                    "set a retention policy on the applications with the most versions \
+                     (`:version-lifecycle`), or ask AWS to raise the quota"
+                        .into(),
+                ),
+                fields,
+            });
+        }
+    }
+    out
+}
+
 /// EBL016 — the env's health-check URL fails a live HTTP probe.
 /// Detection input comes from the caller (CLI-only, behind
 /// `ebman lint --probe-live` — one curl HEAD per env is too slow

@@ -105,6 +105,7 @@ mod cmd_alarms; // CloudWatch alarm CRUD
 mod cmd_config_template; // saved-configuration template CRUD
 mod cmd_cost; // cost + promotion reports
 mod cmd_inspect; // read-only overlays: secrets, diff, listeners, explain
+pub(crate) mod cmd_lifecycle; // application version retention policy
 pub(crate) mod cmd_managed; // managed platform updates: what is scheduled, apply now
 mod cmd_misc; // custom platforms, versions, metrics
 mod cmd_nav; // region / profile / sort / group / redact
@@ -1090,6 +1091,16 @@ pub(crate) enum AppMsg {
         result: Result<(), String>,
     },
     /// Result of a `DeleteApplicationVersion` call from `:delete-version`.
+    /// A `:version-lifecycle` change finished: (the policy replaced, the
+    /// policy set), or why not.
+    LifecycleSet {
+        gen: u64,
+        pending: PendingId,
+        region: String,
+        app: String,
+        undoing: bool,
+        result: Result<(crate::aws::VersionLifecycle, crate::aws::VersionLifecycle), String>,
+    },
     /// A `:dlq-redrive` start or cancel finished: what to tell the
     /// operator, or why it did not happen.
     RedriveDone {

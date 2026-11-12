@@ -29,7 +29,8 @@ use color_eyre::eyre::Result;
 use serde_json::{json, Value};
 
 use crate::lint::inputs::{
-    fetch_env_lint_inputs, fetch_stale_platform_issues, run_rules_for_env, EnvLintInputs,
+    fetch_env_lint_inputs, fetch_stale_platform_issues, fetch_version_retention_issues,
+    run_rules_for_env, EnvLintInputs,
 };
 use crate::{audit as audit_log, aws, cost_cache, demo_fixture, lint, terraform, util};
 

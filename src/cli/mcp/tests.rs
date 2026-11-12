@@ -2249,6 +2249,8 @@ mod orchestration {
         branches: bool,
         /// The env's branch is listed as retired, so EBL021 fires.
         retired: bool,
+        /// `DescribeApplications` is refused: EBL022 / EBL023 are lost.
+        applications: bool,
     }
 
     /// One Ready/Green web env, every lint input answering except the
@@ -2383,6 +2385,21 @@ mod orchestration {
         } else {
             branch_listing()
         };
+        let applications = if f.applications {
+            aws_smithy_mocks::mock!(EbClient::describe_applications).then_error(move || {
+                op::describe_applications::DescribeApplicationsError::generic(denied(
+                    "elasticbeanstalk:DescribeApplications",
+                ))
+            })
+        } else {
+            aws_smithy_mocks::mock!(EbClient::describe_applications).then_output(|| {
+                op::describe_applications::DescribeApplicationsOutput::builder().build()
+            })
+        };
+        let quota =
+            aws_smithy_mocks::mock!(EbClient::describe_account_attributes).then_output(|| {
+                op::describe_account_attributes::DescribeAccountAttributesOutput::builder().build()
+            });
         let eb = aws_smithy_mocks::mock_client!(
             aws_sdk_elasticbeanstalk,
             aws_smithy_mocks::RuleMode::MatchAny,
@@ -2393,7 +2410,9 @@ mod orchestration {
                 &health,
                 &platforms,
                 &platform_date,
-                &branches
+                &branches,
+                &applications,
+                &quota
             ]
         );
         let sqs =
@@ -2447,6 +2466,23 @@ mod orchestration {
             skipped
                 .iter()
                 .any(|s| s.contains("EBL008") && s.contains("ListAvailableSolutionStacks")),
+            "{skipped:?}"
+        );
+    }
+
+    /// A refused application listing is lost EBL022 / EBL023 coverage,
+    /// in `skipped_envs`.
+    #[tokio::test]
+    async fn lint_reports_a_failed_retention_pass() {
+        let skipped = lint_skipped(LintFaults {
+            applications: true,
+            ..LintFaults::default()
+        })
+        .await;
+        assert!(
+            skipped
+                .iter()
+                .any(|s| s.contains("EBL022/EBL023") && s.contains("DescribeApplications")),
             "{skipped:?}"
         );
     }

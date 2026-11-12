@@ -289,6 +289,24 @@ Also shown on the fleet row (`(deprecated)` / `(retired)` beside the platform), 
 
 ---
 
+### EBL022 — Application keeps every version
+
+**Severity:** Warn · **Auto-fix:** none (`:version-lifecycle max-count N`)
+
+Detection: an application has no version retention rule on and more than 200 versions. Account-level, like EBL015: one `DescribeApplications` per region, issues with no env, skipped when lint is scoped to one `--env`, `lint.disable = ["EBL022"]` honoured at its call sites (`ebman lint`, MCP `lint`).
+
+Why it matters: every deploy adds a version and none is removed, and versions count against the account's per-region quota (EBL023).
+
+### EBL023 — Application versions near the account's quota
+
+**Severity:** Warn (80%) · Error (95%) · **Auto-fix:** none
+
+Detection: the region's application versions, summed across applications, against the application-version quota `DescribeAccountAttributes` reports. Same account-level shape as EBL022. A failed quota read is lost coverage for EBL023 alone (the run degrades; MCP lists it in `skipped_envs`).
+
+Why it matters: at the quota, a deploy that creates a version fails — usually mid-incident, when the fix has to ship.
+
+---
+
 ## Roadmap
 
 The 0.25-held rules (EBL015, EBL018) shipped in 0.26 — the roadmap is currently empty.

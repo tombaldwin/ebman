@@ -172,11 +172,6 @@ it as one release. Ranked by operator value; each is a feature item
 the shared gate, two-phase on MCP, audited, with an undo where one
 exists.*
 
-13. **Application-version retention.** The lifecycle policy per app
-    (`UpdateApplicationResourceLifecycle`) as a gated write with an undo
-    (previous policy captured), and lint for no policy and for an account
-    near its version quota (`DescribeAccountAttributes`).
-
 14. **Listener certificate expiry.** `acm:DescribeCertificate` for each
     listener's certificate: expiry and renewal status in `:listeners`,
     and a lint rule. Read-only.

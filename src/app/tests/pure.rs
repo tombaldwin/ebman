@@ -1746,3 +1746,123 @@ fn the_redrive_status_says_how_far_and_how_to_stop_it() {
     assert!(format_redrives(&Ok(Vec::new()), now).contains("no redrive has run"));
     assert!(format_redrives(&Err("Throttling".into()), now).contains("could not read"));
 }
+
+#[test]
+fn version_lifecycle_parses_and_shows() {
+    use crate::app::cmd_lifecycle::{
+        format_version_lifecycle, parse_lifecycle_command, LifecycleCommand,
+    };
+    assert_eq!(parse_lifecycle_command(&[]), Ok(LifecycleCommand::Show));
+    assert_eq!(
+        parse_lifecycle_command(&["max-count", "200", "--delete-source"]),
+        Ok(LifecycleCommand::MaxCount {
+            count: 200,
+            delete_source: true
+        })
+    );
+    assert_eq!(
+        parse_lifecycle_command(&["--delete-source", "max-age", "90"]),
+        Ok(LifecycleCommand::MaxAge {
+            days: 90,
+            delete_source: true
+        })
+    );
+    assert_eq!(parse_lifecycle_command(&["off"]), Ok(LifecycleCommand::Off));
+    assert_eq!(
+        parse_lifecycle_command(&["undo"]),
+        Ok(LifecycleCommand::Undo)
+    );
+    for bad in [
+        &["max-count"][..],
+        &["max-count", "0"][..],
+        &["max-count", "1001"][..],
+        &["max-age", "181"][..],
+        &["max-age", "x"][..],
+        &["sometimes"][..],
+    ] {
+        assert!(parse_lifecycle_command(bad).is_err(), "{bad:?}");
+    }
+
+    let text = format_version_lifecycle(
+        "poly",
+        &Ok(Some(crate::aws::AppRetention {
+            app: "poly".into(),
+            versions: 412,
+            policy: crate::aws::VersionLifecycle {
+                max_count: Some(500),
+                service_role: Some("eb-role".into()),
+                ..Default::default()
+            },
+        })),
+        &Ok(Some((1000, 800))),
+    );
+    assert!(text.contains("versions:  412"), "{text}");
+    assert!(text.contains("retention: max 500 versions"), "{text}");
+    assert!(text.contains("role:      eb-role"), "{text}");
+    assert!(text.contains("800 of 1000 versions"), "{text}");
+    let failed = format_version_lifecycle(
+        "poly",
+        &Err("Throttling".into()),
+        &Err("AccessDenied".into()),
+    );
+    assert!(
+        failed.contains("could not read poly: Throttling") && failed.contains("AccessDenied"),
+        "{failed}"
+    );
+    assert!(format_version_lifecycle("poly", &Ok(None), &Ok(None)).contains("not found"));
+}
+
+#[test]
+fn the_next_retention_policy_keeps_the_role_and_undo_restores_whole() {
+    use crate::app::cmd_lifecycle::{next_policy, LifecycleCommand};
+    use crate::aws::VersionLifecycle;
+    let roled = VersionLifecycle {
+        max_count: Some(100),
+        service_role: Some("app-role".into()),
+        ..Default::default()
+    };
+    let bare = VersionLifecycle::default();
+    let count = LifecycleCommand::MaxCount {
+        count: 200,
+        delete_source: true,
+    };
+    let set = next_policy(&count, None, &roled).expect("a policy");
+    assert_eq!(
+        (set.max_count, set.max_age_days, set.delete_source),
+        (Some(200), None, true)
+    );
+    assert_eq!(
+        set.service_role.as_deref(),
+        Some("app-role"),
+        "the app's own role"
+    );
+    let defaulted = next_policy(&count, None, &bare).expect("a policy");
+    assert_eq!(
+        defaulted.service_role.as_deref(),
+        Some("aws-elasticbeanstalk-service-role"),
+        "EB needs a role to delete under"
+    );
+    let age = next_policy(
+        &LifecycleCommand::MaxAge {
+            days: 30,
+            delete_source: false,
+        },
+        None,
+        &roled,
+    )
+    .expect("a policy");
+    assert_eq!(
+        (age.max_count, age.max_age_days),
+        (None, Some(30)),
+        "one rule at a time"
+    );
+    let off = next_policy(&LifecycleCommand::Off, None, &roled).expect("a policy");
+    assert!(!off.retains_any());
+    assert_eq!(off.service_role.as_deref(), Some("app-role"));
+    assert_eq!(
+        next_policy(&LifecycleCommand::Undo, Some(roled.clone()), &bare),
+        Some(roled)
+    );
+    assert_eq!(next_policy(&LifecycleCommand::Undo, None, &bare), None);
+    assert_eq!(next_policy(&LifecycleCommand::Show, None, &bare), None);
+}

@@ -46,6 +46,7 @@ impl AppMsg {
             | WhyRedHealth { gen, .. }
             | ManagedApplied { gen, .. }
             | RedriveDone { gen, .. }
+            | LifecycleSet { gen, .. }
             | WhyRedAlarms { gen, .. }
             | WhyRedInstances { gen, .. }
             | WhyRedDeploys { gen, .. }
@@ -311,6 +312,14 @@ impl App {
                 result,
                 ..
             } => self.handle_tag_update(pending, env_name, region, summary, result),
+            AppMsg::LifecycleSet {
+                pending,
+                region,
+                app,
+                undoing,
+                result,
+                ..
+            } => self.handle_lifecycle_set(pending, region, app, undoing, result),
             AppMsg::RedriveDone {
                 pending,
                 env_name,

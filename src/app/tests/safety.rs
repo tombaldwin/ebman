@@ -2883,3 +2883,148 @@ async fn dlq_redrive_starts_refuses_and_cancels() {
         app.error_message
     );
 }
+
+/// `:version-lifecycle` sets the policy under the app's own role, says
+/// what it replaced, and `undo` puts that back; a pin refuses it under
+/// the label the dispatch uses.
+#[tokio::test]
+async fn version_lifecycle_sets_says_what_it_replaced_and_undoes() {
+    use aws_sdk_elasticbeanstalk::operation as op;
+    use aws_sdk_elasticbeanstalk::types::{
+        ApplicationDescription, ApplicationResourceLifecycleConfig,
+        ApplicationVersionLifecycleConfig, MaxCountRule,
+    };
+    let apps = aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::describe_applications)
+        .then_output(|| {
+            op::describe_applications::DescribeApplicationsOutput::builder()
+                .applications(
+                    ApplicationDescription::builder()
+                        .application_name("shop")
+                        .resource_lifecycle_config(
+                            ApplicationResourceLifecycleConfig::builder()
+                                .service_role("shop-role")
+                                .version_lifecycle_config(
+                                    ApplicationVersionLifecycleConfig::builder()
+                                        .max_count_rule(
+                                            MaxCountRule::builder()
+                                                .enabled(true)
+                                                .max_count(100)
+                                                .build()
+                                                .unwrap(),
+                                        )
+                                        .build(),
+                                )
+                                .build(),
+                        )
+                        .build(),
+                )
+                .build()
+        });
+    let count_of = |n: i32| {
+        aws_smithy_mocks::mock!(
+            aws_sdk_elasticbeanstalk::Client::update_application_resource_lifecycle
+        )
+        .match_requests(move |r| {
+            let c = r.resource_lifecycle_config();
+            c.and_then(|c| c.service_role()) == Some("shop-role")
+                && c.and_then(|c| c.version_lifecycle_config())
+                    .and_then(|v| v.max_count_rule())
+                    .is_some_and(|m| m.enabled() && m.max_count() == Some(n))
+        })
+        .then_output(|| {
+            op::update_application_resource_lifecycle::UpdateApplicationResourceLifecycleOutput::builder().build()
+        })
+    };
+    let (set_200, back_to_100) = (count_of(200), count_of(100));
+    let eb = aws_smithy_mocks::mock_client!(
+        aws_sdk_elasticbeanstalk,
+        aws_smithy_mocks::RuleMode::MatchAny,
+        [&apps, &set_200, &back_to_100]
+    );
+    let sdk = aws_config::SdkConfig::builder()
+        .region(aws_config::Region::new("us-east-1"))
+        .behavior_version(aws_config::BehaviorVersion::latest())
+        .build();
+    let client = crate::aws::AwsClient::for_tests(
+        eb,
+        aws_sdk_sqs::Client::new(&sdk),
+        aws_sdk_cloudwatch::Client::new(&sdk),
+        aws_sdk_cloudwatchlogs::Client::new(&sdk),
+        aws_sdk_s3::Client::new(&sdk),
+        aws_sdk_ec2::Client::new(&sdk),
+    );
+    let mut app = App::for_tests(client, crate::config::Config::default());
+    app.environments = vec![mk_env("lifecycle-probe", "shop", "Web", "Green")];
+    app.rebuild_view();
+    app.table_state.select(Some(0));
+    while app.msg_rx.try_recv().is_ok() {}
+    async fn next_set(app: &mut App) -> String {
+        loop {
+            let msg = tokio::time::timeout(std::time::Duration::from_secs(10), app.msg_rx.recv())
+                .await
+                .expect("a result within 10s")
+                .expect("a message");
+            let done = matches!(msg, AppMsg::LifecycleSet { .. });
+            app.handle_msg(msg);
+            if done {
+                return app.toasts.iter().map(|t| t.text.clone()).collect();
+            }
+        }
+    }
+
+    app.execute_command("version-lifecycle undo");
+    assert!(
+        app.error_message
+            .as_deref()
+            .is_some_and(|e| e.contains("nothing") || e.contains("no retention change")),
+        "nothing to undo yet: {:?}",
+        app.error_message
+    );
+    let before = crate::audit::delta::mark();
+    app.execute_command("version-lifecycle max-count 200");
+    let toasts = next_set(&mut app).await;
+    assert!(
+        toasts.contains("max 200 versions") && toasts.contains("was max 100 versions"),
+        "{toasts}"
+    );
+    assert_eq!(set_200.num_calls(), 1, "under the app's own role");
+    let lines = crate::audit::delta::lines_for(&before, "shop");
+    assert!(
+        lines.iter().any(|l| l.contains("action=VersionLifecycle")
+            && l.contains("stage=completed")
+            && l.contains("max 100 versions")),
+        "{lines:#?}"
+    );
+
+    app.toasts.clear();
+    app.execute_command("version-lifecycle undo");
+    let toasts = next_set(&mut app).await;
+    assert!(toasts.contains("restored: max 100 versions"), "{toasts}");
+    assert_eq!(back_to_100.num_calls(), 1);
+    app.error_message = None;
+    app.execute_command("version-lifecycle undo");
+    assert!(
+        app.error_message
+            .as_deref()
+            .is_some_and(|e| e.contains("no retention change")),
+        "one undo per change: {:?}",
+        app.error_message
+    );
+
+    app.cfg.safety_envs.insert("lifecycle-probe".into(), true);
+    let refused_at = crate::audit::delta::mark();
+    let pending_before = app.pending_actions.len();
+    app.execute_command("version-lifecycle off");
+    assert_eq!(
+        app.pending_actions.len(),
+        pending_before,
+        "nothing dispatched"
+    );
+    let refusals = crate::audit::delta::lines_for(&refused_at, "lifecycle-probe");
+    assert!(
+        refusals
+            .iter()
+            .any(|l| l.contains("stage=refused") && l.contains("action=VersionLifecycle")),
+        "{refusals:#?}"
+    );
+}

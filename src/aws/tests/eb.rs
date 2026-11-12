@@ -1827,3 +1827,61 @@ fn an_event_passes_a_window_and_a_severity_floor() {
     };
     assert!(event_passes(&undated, cut, None), "cannot be shown older");
 }
+
+#[test]
+fn a_retention_policy_maps_only_the_rules_that_are_on() {
+    use aws_sdk_elasticbeanstalk::types::{
+        ApplicationResourceLifecycleConfig, ApplicationVersionLifecycleConfig, MaxAgeRule,
+        MaxCountRule,
+    };
+    let config = |count_on: bool, age_on: bool| {
+        ApplicationResourceLifecycleConfig::builder()
+            .service_role("arn:aws:iam::123456789012:role/eb")
+            .version_lifecycle_config(
+                ApplicationVersionLifecycleConfig::builder()
+                    .max_count_rule(
+                        MaxCountRule::builder()
+                            .enabled(count_on)
+                            .max_count(200)
+                            .delete_source_from_s3(true)
+                            .build()
+                            .unwrap(),
+                    )
+                    .max_age_rule(
+                        MaxAgeRule::builder()
+                            .enabled(age_on)
+                            .max_age_in_days(90)
+                            .build()
+                            .unwrap(),
+                    )
+                    .build(),
+            )
+            .build()
+    };
+    let p = super::version_lifecycle_from(Some(&config(true, false)));
+    assert_eq!(
+        (p.max_count, p.max_age_days),
+        (Some(200), None),
+        "a rule that is off is no rule"
+    );
+    assert!(p.delete_source && p.retains_any());
+    assert_eq!(
+        p.service_role.as_deref(),
+        Some("arn:aws:iam::123456789012:role/eb")
+    );
+    assert_eq!(p.describe(), "max 200 versions, delete source from S3");
+    let p = super::version_lifecycle_from(Some(&config(false, true)));
+    assert_eq!((p.max_count, p.max_age_days), (None, Some(90)));
+    assert!(
+        !p.delete_source,
+        "only the age rule is on, and it keeps the source"
+    );
+    assert_eq!(p.describe(), "max 90 days old");
+    let none = super::version_lifecycle_from(Some(&config(false, false)));
+    assert!(!none.retains_any());
+    assert!(none.describe().starts_with("none"));
+    assert_eq!(
+        super::version_lifecycle_from(None),
+        super::VersionLifecycle::default()
+    );
+}

@@ -124,6 +124,7 @@ Type `:` to open the command bar. `Tab` / `Shift-Tab` complete the command name,
 
 ## Write — application versions / configs / alarms / platforms
 
+- `:version-lifecycle [max-count N | max-age DAYS] [--delete-source] | off | undo` — the selected env's application's version retention: with no argument, its policy, its version count and the region's version quota; otherwise set one rule (count 1–1000, age 1–180 days) under the application's own service role (EB's default `aws-elasticbeanstalk-service-role` when it has none), or turn retention off. `undo` restores the policy the last change in this session replaced. Gated and audited, with the policy set and the one replaced.
 - `:delete-version LABEL [--force]` — delete an application version (`--force` also nukes the S3 bundle).
 - `:config-save NAME` — save current env as a config template.
 - `:config-apply NAME` — apply a saved template to selected env (Y/N confirm).

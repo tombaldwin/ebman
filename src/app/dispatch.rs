@@ -378,6 +378,7 @@ impl App {
             "managed-window" => self.cmd_managed_window(&rest),
             "managed-updates" => self.cmd_managed_updates(),
             "dlq-redrive" => self.cmd_dlq_redrive(&rest),
+            "version-lifecycle" => self.cmd_version_lifecycle(&rest),
             "managed-apply" => self.cmd_managed_apply(&rest),
             "alarm-create" => self.cmd_alarm_create(&rest),
             "alarm-delete" => self.cmd_alarm_delete(&rest),
