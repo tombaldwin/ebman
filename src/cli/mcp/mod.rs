@@ -1163,6 +1163,15 @@ impl Server {
             .load(std::sync::atomic::Ordering::Relaxed)
     }
 
+    /// Whether this connection's client declared elicitation at
+    /// `initialize`, so a write can be put to the operator. False until
+    /// then. The one reader: the flag decides the write surface, the ask,
+    /// the call budget and the audit line, which must not disagree.
+    pub(super) fn can_ask(&self) -> bool {
+        self.client_supports_elicitation
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     /// The client's name from `initialize` (`"unknown"` until then, and
     /// if the lock was poisoned), for the audit lines and session names
     /// that carry it.
@@ -1237,11 +1246,7 @@ impl Server {
         {
             return WriteScope::None;
         }
-        if matches!(self.write_scope, WriteScope::None)
-            && self
-                .client_supports_elicitation
-                .load(std::sync::atomic::Ordering::Relaxed)
-        {
+        if matches!(self.write_scope, WriteScope::None) && self.can_ask() {
             return WriteScope::All;
         }
         self.write_scope.clone()
@@ -1291,10 +1296,7 @@ impl Server {
     /// refusal says plainly what happened instead of leaving an
     /// operator wondering why terminate stopped working.
     pub(crate) async fn ask_operator(&self, summary: &str, typed: Option<&str>) -> AskOutcome {
-        if !self
-            .client_supports_elicitation
-            .load(std::sync::atomic::Ordering::Relaxed)
-        {
+        if !self.can_ask() {
             return AskOutcome::NotAsked;
         }
         // No channel on a client that CAN elicit is a dead ask, not an
@@ -1526,9 +1528,7 @@ impl Server {
                     None
                 };
                 // Recorded from this same `initialize` request above.
-                let can_ask = self
-                    .client_supports_elicitation
-                    .load(std::sync::atomic::Ordering::Relaxed);
+                let can_ask = self.can_ask();
                 // Opened by the ask alone: no flag was given, so
                 // `effective_scope` widened `None` on capability.
                 let opened_by_ask = !self.write_scope.any() && can_ask;
@@ -1603,11 +1603,7 @@ impl Server {
                         "error": {"code": -32602, "message": format!("unknown tool '{name}'")}
                     }));
                 }
-                let budget = call_timeout_secs(
-                    &name,
-                    self.client_supports_elicitation
-                        .load(std::sync::atomic::Ordering::Relaxed),
-                );
+                let budget = call_timeout_secs(&name, self.can_ask());
                 let outcome = tokio::time::timeout(
                     std::time::Duration::from_secs(budget),
                     self.call_tool(&name, &args),

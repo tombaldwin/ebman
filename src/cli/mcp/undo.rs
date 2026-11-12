@@ -3,7 +3,7 @@
 //! [`UNDO_WINDOW_SECS`] so "that was the wrong one" can put it back.
 //! Moved out of `writes.rs`, which it was self-contained inside of.
 
-use super::role::RoleSession;
+use super::role::{with_session, RoleSession};
 use super::writes::*;
 use super::*;
 
@@ -378,29 +378,21 @@ impl Server {
         if !matches!(self.backend, Backend::Demo) {
             // The delete's session if it had one (D4), otherwise the
             // profile and region the DELETE used, not this call's.
-            let client = match &d.session {
-                Some(s) => std::sync::Arc::clone(&s.client),
-                None => {
-                    let client_args = json!({
-                        "profile": d.profile.clone().unwrap_or_default(),
-                        "region": d.region.clone().unwrap_or_default(),
-                    });
-                    match self.client(&client_args).await {
-                        Ok(c) => c,
-                        Err(e) => {
-                            let held = self.finish_restore(&d.original_id, false).await;
-                            return Err(restore_failed(&e.to_string(), held).into());
-                        }
-                    }
+            let client = match self
+                .dispatch_client(&d.profile, &d.region, d.session.as_ref())
+                .await
+            {
+                Ok(c) => c,
+                Err(e) => {
+                    let held = self.finish_restore(&d.original_id, false).await;
+                    return Err(restore_failed(&e, held).into());
                 }
             };
             // Audited like every other write. A restore is a real
             // `SendMessage`, and it left no line at all — so the log
             // said a message was deleted and never that it came back.
             let client_name = self.client_name();
-            let can_ask = self
-                .client_supports_elicitation
-                .load(std::sync::atomic::Ordering::Relaxed);
+            let can_ask = self.can_ask();
             // The label the DELETE's audit line used, so the two lines
             // correlate by task. `unwrap_or_default()` wrote `task=""`
             // here for a non-worker message, while the delete had
@@ -409,15 +401,11 @@ impl Server {
                 id: d.original_id.clone(),
                 task: d.task.clone().unwrap_or_else(|| NOT_A_WORKER_TASK.into()),
             };
-            let mut extras = dlq_audit_line(&client_name, can_ask, &target);
-            extras.extend(
-                d.session
-                    .as_ref()
-                    .map(RoleSession::extras)
-                    .into_iter()
-                    .flatten(),
+            let extras = with_session(
+                dlq_audit_line(&client_name, can_ask, &target),
+                d.session.as_ref(),
             );
-            let refs: Vec<(&str, &str)> = extras.iter().map(|(k, v)| (*k, v.as_str())).collect();
+            let refs = extras_refs(&extras);
             let audit_profile = self.audit_profile(&d.profile);
             let region = client.context.region.clone();
             crate::audit::append_action_dispatched(

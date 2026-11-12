@@ -1204,9 +1204,7 @@ impl Server {
     /// Deliberately AWS-free and synchronous: a diagnostic that can
     /// fail for the reasons it exists to diagnose is not one.
     fn tool_doctor(&self) -> String {
-        let elicits = self
-            .client_supports_elicitation
-            .load(std::sync::atomic::Ordering::Relaxed);
+        let elicits = self.can_ask();
         let client = self.client_name();
 
         let writes = match &self.effective_scope() {
@@ -1439,9 +1437,7 @@ impl Server {
         // and the instructions (sent once, at connect) point
         // here for the remedy whatever the freeze is doing now.
         if self.effective_scope().any() && !(self.safety_cfg.safety_read_only || unreadable) {
-            let can_ask = self
-                .client_supports_elicitation
-                .load(std::sync::atomic::Ordering::Relaxed);
+            let can_ask = self.can_ask();
             notes.push(format!(
                 "{} ebman cannot see that layer: MCP carries no signal for it, so nothing \
                  in this report reflects it.",

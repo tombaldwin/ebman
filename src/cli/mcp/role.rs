@@ -37,6 +37,17 @@ impl RoleSession {
     }
 }
 
+/// A write's audit extras with its session's `role=` and `session=`
+/// added, when it went out under one: every line of the write carries
+/// them, dispatched, completed and undone alike.
+pub(super) fn with_session(
+    mut extras: Vec<(&'static str, String)>,
+    session: Option<&RoleSession>,
+) -> Vec<(&'static str, String)> {
+    extras.extend(session.map(RoleSession::extras).into_iter().flatten());
+    extras
+}
+
 /// `ebman-mcp-<client>-<plan>` (D5): STS allows 2–64 characters of
 /// `[\w+=,.@-]`. The client's declared name, mapped to that alphabet and
 /// cut to 24 characters; and the first 12 hex digits of the plan token's

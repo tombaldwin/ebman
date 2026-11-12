@@ -5884,3 +5884,9 @@ a `--read-only` server.
   the six copied fields are gone. The `PendingWrite::role()` accessor
   went rather than the field going private: a sibling test module builds
   a `PendingWrite` whole, so the field is the one way to read it.
+- **Session plumbing helpers.** `Server::dispatch_client` (session, else
+  the base identity for the plan's profile and region; dispatch and
+  undo), `role::with_session`, `writes::extras_refs`, and
+  `Server::can_ask` as the one reader of the elicitation flag (ten
+  reads before, across four files). `freeze.rs` keeps its own refs
+  loop: it drops `via=`, so it is not the same conversion.

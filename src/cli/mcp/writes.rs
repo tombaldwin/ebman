@@ -163,6 +163,13 @@ fn dlq_audit_lines(
         .collect()
 }
 
+/// The `(key, value)` borrows the audit writers take.
+pub(super) fn extras_refs<'a>(
+    extras: &'a [(&'static str, String)],
+) -> Vec<(&'static str, &'a str)> {
+    extras.iter().map(|(k, v)| (*k, v.as_str())).collect()
+}
+
 impl Server {
     /// Audit extras for an MCP-dispatched write.
     ///
@@ -182,13 +189,32 @@ impl Server {
     ) -> Vec<(&'static str, String)> {
         write_extras_parts(
             client_name,
-            self.client_supports_elicitation
-                .load(std::sync::atomic::Ordering::Relaxed),
+            self.can_ask(),
             version,
             settings_len,
             dlq_message_id,
             dlq_task,
         )
+    }
+
+    /// The client a confirmed write goes out on: its role session's
+    /// when it has one (D3, and an undo reuses its delete's, D4),
+    /// otherwise the base identity's for the profile and region the plan
+    /// recorded, never the confirming call's.
+    pub(super) async fn dispatch_client(
+        &self,
+        profile: &Option<String>,
+        region: &Option<String>,
+        session: Option<&RoleSession>,
+    ) -> Result<std::sync::Arc<crate::aws::AwsClient>, String> {
+        if let Some(s) = session {
+            return Ok(std::sync::Arc::clone(&s.client));
+        }
+        self.client(&json!({
+            "profile": profile.clone().unwrap_or_default(),
+            "region": region.clone().unwrap_or_default(),
+        }))
+        .await
     }
 }
 
@@ -2094,9 +2120,7 @@ impl Server {
         // user as an ERROR rather than as a person's decision. The
         // server instructions say this; the plan did not, and the plan
         // is what an agent reads at the moment it matters.
-        let asked = self
-            .client_supports_elicitation
-            .load(std::sync::atomic::Ordering::Relaxed);
+        let asked = self.can_ask();
         let gate = if asked {
             " — the OPERATOR is asked to approve it and may decline or not answer, so \
              this is a request, not a formality"
@@ -2408,21 +2432,15 @@ impl Server {
     ) -> Result<String, String> {
         let verb_label = p.verb.label();
         let region = &client.context.region;
-        let can_ask = self
-            .client_supports_elicitation
-            .load(std::sync::atomic::Ordering::Relaxed);
-        let with_session = |mut extras: Vec<(&'static str, String)>| {
-            extras.extend(session.map(RoleSession::extras).into_iter().flatten());
-            extras
-        };
+        let can_ask = self.can_ask();
         let lines: Vec<_> = dlq_audit_lines(client_name, can_ask, &p.dlq_targets)
             .into_iter()
-            .map(with_session)
+            .map(|extras| with_session(extras, session))
             .collect();
         // One line per message BEFORE acting: a dispatched line with no
         // completed line is how a crash mid-batch stays visible.
         for extras in &lines {
-            let refs: Vec<(&str, &str)> = extras.iter().map(|(k, v)| (*k, v.as_str())).collect();
+            let refs = extras_refs(extras);
             crate::audit::append_action_dispatched(
                 None,
                 audit_profile,
@@ -2441,8 +2459,7 @@ impl Server {
             Ok(o) => o,
             Err(e) => {
                 for extras in &lines {
-                    let refs: Vec<(&str, &str)> =
-                        extras.iter().map(|(k, v)| (*k, v.as_str())).collect();
+                    let refs = extras_refs(extras);
                     crate::audit::append_action_completed(
                         None,
                         audit_profile,
@@ -2469,8 +2486,8 @@ impl Server {
         // it belongs to; using it removes the coupling rather than
         // documenting it.
         for o in outcomes {
-            let extras = with_session(dlq_audit_line(client_name, can_ask, &o.target));
-            let refs: Vec<(&str, &str)> = extras.iter().map(|(k, v)| (*k, v.as_str())).collect();
+            let extras = with_session(dlq_audit_line(client_name, can_ask, &o.target), session);
+            let refs = extras_refs(&extras);
             crate::audit::append_action_completed(
                 None,
                 audit_profile,
@@ -2588,14 +2605,7 @@ impl Server {
                 util::json_string(&p.env),
             ));
         }
-        let args = json!({
-            "profile": p.profile.clone().unwrap_or_default(),
-            "region": p.region.clone().unwrap_or_default(),
-        });
-        let client = match session {
-            Some(s) => std::sync::Arc::clone(&s.client),
-            None => self.client(&args).await?,
-        };
+        let client = self.dispatch_client(&p.profile, &p.region, session).await?;
         let client_name = self.client_name();
         let audit_profile = self.audit_profile(&p.profile);
         // Resend and delete take the batch path, which audits per
@@ -2609,15 +2619,17 @@ impl Server {
                 .dispatch_dlq_and_audit(&client, p, &client_name, audit_profile.as_deref(), session)
                 .await;
         }
-        let mut extras = self.write_extras(
-            &client_name,
-            p.version.as_deref(),
-            p.settings.len(),
-            None,
-            None,
+        let extras = with_session(
+            self.write_extras(
+                &client_name,
+                p.version.as_deref(),
+                p.settings.len(),
+                None,
+                None,
+            ),
+            session,
         );
-        extras.extend(session.map(RoleSession::extras).into_iter().flatten());
-        let extras_ref: Vec<(&str, &str)> = extras.iter().map(|(k, v)| (*k, v.as_str())).collect();
+        let extras_ref = extras_refs(&extras);
         crate::audit::append_action_dispatched(
             None,
             audit_profile.as_deref(),

@@ -171,13 +171,6 @@ it a home (`mcp/refusal.rs`), so `WriteAudit` goes last rather than
 being built twice. Refilled 2026-11-06: the `scan.rs` split is done
 (archived, "PLAN.md items done 2026-11-06").*
 
-4. *(architecture)* **Session plumbing helpers.** `Server::dispatch_client(profile,
-   region, session)` for the session-or-base client (`writes.rs`
-   dispatch, `undo.rs` restore); one function for "extras plus the
-   session's `role=`/`session=`" and the `(&str, &str)` refs conversion
-   (three and five copies); `undo.rs` and `dispatch_dlq_and_audit` read
-   `can_ask` directly where `write_extras` exists so callers don't. ~2 hours.
-
 5. *(architecture)* **The MCP write family's glob-import cycle.** `role.rs`, `undo.rs`
    and `mcp/freeze.rs` `use super::writes::*` to reach shared primitives,
    and `writes.rs` globs `role` and `undo` back. Split `mcp/refusal.rs`
