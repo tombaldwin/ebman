@@ -478,10 +478,13 @@ impl App {
             }
         }
 
-        // Branches AWS has deprecated or retired, from the branch listing.
+        // Branches AWS has deprecated or retired, from the home region's
+        // branch listing: states are kept per region, so a row elsewhere
+        // is not marked from here (`:lint` says the same of it).
         let retiring_platforms = self
             .environments
             .iter()
+            .filter(|e| self.region_for(e) == self.context.region)
             .filter_map(|e| {
                 let state = crate::aws::platform_lifecycle(e, &self.caches.platform_lifecycle)?;
                 Some((

@@ -1044,7 +1044,11 @@ async fn the_platform_catalogues_are_fetched_until_they_land() {
     let mut app = App::for_tests(client, crate::config::Config::default());
     let mut env = mk_env("relay", "poly", "WebServer", "Grey");
     env.solution_stack = "64bit Amazon Linux 2018.03 v2.7.0 running Go 1.4".into();
-    app.environments = vec![env];
+    // The same branch in another region: the home listing does not
+    // answer for it.
+    let mut elsewhere = env.clone();
+    elsewhere.region = Some("eu-west-2".into());
+    app.environments = vec![env, elsewhere];
     app.rebuild_view();
     while app.msg_rx.try_recv().is_ok() {}
 
@@ -1068,6 +1072,12 @@ async fn the_platform_catalogues_are_fetched_until_they_land() {
         app.view.retiring_platforms().get(&key).map(String::as_str),
         Some("Retired")
     );
+    let other = app.env_key(&app.environments[1].clone());
+    assert_ne!(key, other);
+    assert!(
+        !app.view.retiring_platforms().contains_key(&other),
+        "another region's row is not marked from the home listing"
+    );
 
     // Both loaded: nothing more is asked for.
     app.spawn_catalogues();
@@ -1077,6 +1087,30 @@ async fn the_platform_catalogues_are_fetched_until_they_land() {
             .await
             .is_err(),
         "a loaded catalogue is not fetched again"
+    );
+}
+
+/// A listing that named no branches has loaded: it is not fetched again
+/// on every refresh as though it were still missing.
+#[tokio::test]
+async fn an_empty_branch_listing_is_loaded_not_missing() {
+    let mut app = test_app();
+    // The version catalogue loaded too, so only the listing is in question.
+    app.caches
+        .latest_stacks
+        .insert("Node.js 20".into(), "6.1.0".into());
+    app.handle_msg(AppMsg::PlatformLifecycle {
+        gen: app.generation,
+        result: Ok(std::collections::HashMap::new()),
+    });
+    while app.msg_rx.try_recv().is_ok() {}
+    app.spawn_catalogues();
+    tokio::task::yield_now().await;
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(300), app.msg_rx.recv())
+            .await
+            .is_err(),
+        "an empty listing is not refetched"
     );
 }
 

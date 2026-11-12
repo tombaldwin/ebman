@@ -422,6 +422,7 @@ impl App {
             Ok(lifecycle) => {
                 self.caches.platform_lifecycle = lifecycle;
                 self.caches.platform_lifecycle_error = None;
+                self.caches.platform_lifecycle_loaded = true;
                 // The fleet's retiring-branch markers are derived from it.
                 self.view.invalidate();
                 self.rebuild_view();

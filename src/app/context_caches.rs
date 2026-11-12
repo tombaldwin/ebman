@@ -86,6 +86,10 @@ pub(crate) struct ContextCaches {
     /// Why the last lifecycle listing failed, if it did, so `:lint` can
     /// say EBL021 did not run rather than reading empty as clean.
     pub(crate) platform_lifecycle_error: Option<String>,
+    /// Whether a lifecycle listing has landed: one that named no
+    /// branches is loaded, not missing, and is not fetched again on every
+    /// refresh.
+    pub(crate) platform_lifecycle_loaded: bool,
     /// The version retention policy each `:version-lifecycle` change
     /// replaced, by (region, application): what `undo` restores. Per
     /// context, so a switch cannot restore one account's policy onto

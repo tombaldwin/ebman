@@ -349,7 +349,7 @@ impl App {
         if self.caches.latest_stacks.is_empty() {
             self.spawn_solution_stacks();
         }
-        if self.caches.platform_lifecycle.is_empty() {
+        if !self.caches.platform_lifecycle_loaded {
             self.spawn_platform_lifecycle();
         }
     }
