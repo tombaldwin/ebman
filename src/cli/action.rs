@@ -1737,17 +1737,23 @@ mod body {
     }
 
     fn lifecycle() -> Lifecycle {
+        lifecycle_for("api", "api-green")
+    }
+
+    /// The fixture under other names, for a test whose audit lines must
+    /// not meet another test's dispatches to `api`.
+    fn lifecycle_for(name: &'static str, partner: &'static str) -> Lifecycle {
         use aws_sdk_elasticbeanstalk::operation as op;
         use aws_sdk_elasticbeanstalk::types::{EnvironmentDescription, EventDescription};
         let listing =
             aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::describe_environments)
-                .then_output(|| {
+                .then_output(move || {
                     // `api` mid-update, so it has one to abort; its swap
                     // partner in the same application.
                     op::describe_environments::DescribeEnvironmentsOutput::builder()
                         .environments(
                             EnvironmentDescription::builder()
-                                .environment_name("api")
+                                .environment_name(name)
                                 .application_name("shop")
                                 .version_label("build-2")
                                 .status("Updating".into())
@@ -1756,7 +1762,7 @@ mod body {
                         )
                         .environments(
                             EnvironmentDescription::builder()
-                                .environment_name("api-green")
+                                .environment_name(partner)
                                 .application_name("shop")
                                 .version_label("build-2")
                                 .status("Ready".into())
@@ -1766,7 +1772,7 @@ mod body {
                         .build()
                 });
         let events = aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::describe_events)
-            .then_output(|| {
+            .then_output(move || {
                 let ev = |v: &str| {
                     EventDescription::builder()
                         .version_label(v)
@@ -1780,21 +1786,21 @@ mod body {
             });
         let aborted =
             aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::abort_environment_update)
-                .match_requests(|r| r.environment_name() == Some("api"))
-                .then_output(|| {
+                .match_requests(move |r| r.environment_name() == Some(name))
+                .then_output(move || {
                     op::abort_environment_update::AbortEnvironmentUpdateOutput::builder().build()
                 });
         let swapped =
             aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::swap_environment_cnames)
-                .match_requests(|r| {
-                    r.source_environment_name() == Some("api")
-                        && r.destination_environment_name() == Some("api-green")
+                .match_requests(move |r| {
+                    r.source_environment_name() == Some(name)
+                        && r.destination_environment_name() == Some(partner)
                 })
-                .then_output(|| {
+                .then_output(move || {
                     op::swap_environment_cnames::SwapEnvironmentCnamEsOutput::builder().build()
                 });
         let scaled = aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::update_environment)
-            .match_requests(|r| {
+            .match_requests(move |r| {
                 let has = |name: &str, v: &str| {
                     r.option_settings()
                         .iter()
@@ -1805,7 +1811,7 @@ mod body {
             .then_output(|| op::update_environment::UpdateEnvironmentOutput::builder().build());
         let rolled_back =
             aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::update_environment)
-                .match_requests(|r| r.version_label() == Some("build-1"))
+                .match_requests(move |r| r.version_label() == Some("build-1"))
                 .then_output(|| op::update_environment::UpdateEnvironmentOutput::builder().build());
         let eb = aws_smithy_mocks::mock_client!(
             aws_sdk_elasticbeanstalk,
@@ -1897,23 +1903,23 @@ mod body {
     async fn a_swap_or_abort_that_cannot_happen_is_refused_before_dispatch() {
         for (argv, code, says) in [
             (
-                &["abort", "--env", "api-green"][..],
+                &["abort", "--env", "pre-green"][..],
                 3,
                 "no update to abort",
             ),
             (
-                &["swap", "--env", "api", "--with", "api"][..],
+                &["swap", "--env", "pre", "--with", "pre"][..],
                 2,
                 "swap with itself",
             ),
             (
-                &["swap", "--env", "api", "--with", "gone"][..],
+                &["swap", "--env", "pre", "--with", "gone"][..],
                 2,
                 "'gone' not found",
             ),
             (&["abort", "--env", "gone"][..], 2, "'gone' not found"),
         ] {
-            let f = lifecycle();
+            let f = lifecycle_for("pre", "pre-green");
             let before = crate::audit::delta::mark();
             let r = action(argv, None, Some(f.client)).await;
             assert_eq!(r.code, code, "{argv:?}: {}", r.err);
