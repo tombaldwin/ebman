@@ -34,21 +34,40 @@ impl CertStatus {
     }
 }
 
-/// The certificate ARNs an env's listeners serve, from its option
+/// The ACM certificate ARNs an env's listeners serve, from its option
 /// settings (`aws:elbv2:listener:PORT` `SSLCertificateArns`, comma
-/// separated), each once. Pure.
+/// separated), each once. A listener can also serve an IAM server
+/// certificate (`arn:aws:iam::…:server-certificate/…`), which ACM
+/// cannot describe: those are left out, not reported as unreadable, so
+/// one does not turn every lint run into a coverage gap. Pure.
 pub(crate) fn listener_cert_arns(options: &[(String, String, String)]) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for (ns, name, value) in options {
         if ns.starts_with("aws:elbv2:listener:") && name == "SSLCertificateArns" {
             for arn in value.split(',').map(str::trim).filter(|a| !a.is_empty()) {
-                if !out.iter().any(|a| a == arn) {
+                if is_acm_arn(arn) && !out.iter().any(|a| a == arn) {
                     out.push(arn.to_string());
                 }
             }
         }
     }
     out
+}
+
+/// An ACM certificate ARN, in any partition (`arn:aws:acm:`,
+/// `arn:aws-cn:acm:`, `arn:aws-us-gov:acm:`). Pure.
+fn is_acm_arn(arn: &str) -> bool {
+    let mut parts = arn.splitn(4, ':');
+    parts.next() == Some("arn")
+        && parts.next().is_some_and(|p| p.starts_with("aws"))
+        && parts.next() == Some("acm")
+}
+
+/// Whole days from `now` to `not_after`, rounded down: a certificate
+/// that expired an hour ago is at -1, not 0 ("expires in 0 days").
+/// Pure.
+pub(crate) fn days_until(not_after: DateTime<Utc>, now: DateTime<Utc>) -> i64 {
+    (not_after - now).num_seconds().div_euclid(86_400)
 }
 
 impl AwsClient {
@@ -74,7 +93,7 @@ impl AwsClient {
         Ok(CertStatus {
             arn: arn.to_string(),
             domain: c.domain_name().unwrap_or_default().to_string(),
-            days_left: not_after.map(|t| (t - now).num_days()),
+            days_left: not_after.map(|t| days_until(t, now)),
             not_after,
             status: c
                 .status()

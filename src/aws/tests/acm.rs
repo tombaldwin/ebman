@@ -60,7 +60,9 @@ async fn the_listener_cert_probe_reads_each_certificate_once() {
         aws_smithy_types::DateTime::from_secs((now + chrono::Duration::days(d)).timestamp())
     };
     let soon = mock!(aws_sdk_acm::Client::describe_certificate)
-        .match_requests(|r| r.certificate_arn() == Some("arn:cert/soon"))
+        .match_requests(|r| {
+            r.certificate_arn() == Some("arn:aws:acm:us-east-1:123456789012:certificate/soon")
+        })
         .then_output(move || {
             DescribeCertificateOutput::builder()
                 .certificate(
@@ -81,7 +83,9 @@ async fn the_listener_cert_probe_reads_each_certificate_once() {
                 .build()
         });
     let denied = mock!(aws_sdk_acm::Client::describe_certificate)
-        .match_requests(|r| r.certificate_arn() == Some("arn:cert/denied"))
+        .match_requests(|r| {
+            r.certificate_arn() == Some("arn:aws:acm:us-east-1:123456789012:certificate/denied")
+        })
         .then_error(|| {
             DescribeCertificateError::generic(
                 aws_smithy_types::error::ErrorMetadata::builder()
@@ -104,7 +108,7 @@ async fn the_listener_cert_probe_reads_each_certificate_once() {
         )]
     };
     let probe = crate::lint::inputs::probe_listener_certs;
-    let certs = probe(&client, &opts("arn:cert/soon, arn:cert/soon"), &[], now)
+    let certs = probe(&client, &opts("arn:aws:acm:us-east-1:123456789012:certificate/soon, arn:aws:acm:us-east-1:123456789012:certificate/soon"), &[], now)
         .await
         .expect("read")
         .expect("an HTTPS listener");
@@ -115,19 +119,78 @@ async fn the_listener_cert_probe_reads_each_certificate_once() {
     assert_eq!(c.days_left, Some(12));
     assert_eq!(c.renewal.as_deref(), Some("FAILED"));
     assert!(c.broken(), "a failed renewal");
+    // Read an hour after it expired: -1 days, not "expires in 0 days".
+    let later = now + chrono::Duration::days(12) + chrono::Duration::hours(1);
+    let expired = probe(
+        &client,
+        &opts("arn:aws:acm:us-east-1:123456789012:certificate/soon"),
+        &[],
+        later,
+    )
+    .await
+    .expect("read")
+    .expect("an HTTPS listener");
+    assert_eq!(expired[0].days_left, Some(-1));
 
-    let err = probe(&client, &opts("arn:cert/denied"), &[], now)
-        .await
-        .expect_err("unread");
+    let err = probe(
+        &client,
+        &opts("arn:aws:acm:us-east-1:123456789012:certificate/denied"),
+        &[],
+        now,
+    )
+    .await
+    .expect_err("unread");
     assert!(err.contains("CERTDENIED"), "{err}");
     assert_eq!(
-        probe(&client, &opts("arn:cert/soon"), &["EBL024".into()], now).await,
+        probe(
+            &client,
+            &opts("arn:aws:acm:us-east-1:123456789012:certificate/soon"),
+            &["EBL024".into()],
+            now
+        )
+        .await,
         Ok(None)
     );
     assert_eq!(probe(&client, &[], &[], now).await, Ok(None));
     assert_eq!(
         soon.num_calls(),
-        1,
+        2,
         "nothing asked when off or without HTTPS"
     );
+}
+
+#[test]
+fn only_acm_certificates_are_listed_in_any_partition() {
+    use super::listener_cert_arns;
+    let opt = |v: &str| {
+        (
+            "aws:elbv2:listener:443".to_string(),
+            "SSLCertificateArns".to_string(),
+            v.to_string(),
+        )
+    };
+    let arns = listener_cert_arns(&[opt(
+        "arn:aws:iam::123456789012:server-certificate/legacy, arn:aws:acm:us-east-1:123456789012:certificate/a, arn:aws-cn:acm:cn-north-1:123456789012:certificate/b, arn:aws:acmx:us-east-1:1:certificate/c",
+    )]);
+    assert_eq!(
+        arns,
+        [
+            "arn:aws:acm:us-east-1:123456789012:certificate/a",
+            "arn:aws-cn:acm:cn-north-1:123456789012:certificate/b",
+        ]
+    );
+}
+
+#[test]
+fn days_left_round_down_so_an_expired_certificate_is_negative() {
+    use crate::aws::acm::days_until;
+    let now = chrono::DateTime::parse_from_rfc3339("2026-11-12T12:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    let at = |h: i64| now + chrono::Duration::hours(h);
+    assert_eq!(days_until(at(-1), now), -1, "expired an hour ago");
+    assert_eq!(days_until(at(1), now), 0);
+    assert_eq!(days_until(at(24), now), 1);
+    assert_eq!(days_until(at(47), now), 1);
+    assert_eq!(days_until(at(-25), now), -2);
 }

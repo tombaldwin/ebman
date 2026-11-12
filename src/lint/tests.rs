@@ -1732,16 +1732,30 @@ fn listener_cert_arns_reads_every_https_listener_once() {
         o(
             "aws:elbv2:listener:443",
             "SSLCertificateArns",
-            "arn:a, arn:b",
+            "arn:aws:acm:us-east-1:1:certificate/a, arn:aws:acm:us-east-1:1:certificate/b",
         ),
-        o("aws:elbv2:listener:8443", "SSLCertificateArns", "arn:b"),
-        o("aws:elbv2:listener:443", "SSLPolicy", "arn:not-a-cert"),
+        o(
+            "aws:elbv2:listener:8443",
+            "SSLCertificateArns",
+            "arn:aws:acm:us-east-1:1:certificate/b",
+        ),
+        o(
+            "aws:elbv2:listener:443",
+            "SSLPolicy",
+            "arn:aws:acm:us-east-1:1:certificate/not-a-cert",
+        ),
         o(
             "aws:elasticbeanstalk:application:environment",
             "SSLCertificateArns",
-            "arn:c",
+            "arn:aws:acm:us-east-1:1:certificate/c",
         ),
         o("aws:elbv2:listener:9443", "SSLCertificateArns", ""),
     ]);
-    assert_eq!(arns, ["arn:a", "arn:b"]);
+    assert_eq!(
+        arns,
+        [
+            "arn:aws:acm:us-east-1:1:certificate/a",
+            "arn:aws:acm:us-east-1:1:certificate/b"
+        ]
+    );
 }
