@@ -561,3 +561,28 @@ mod typed_queue_does_not_exist {
         assert!(!chain.contains("unhandled error"), "{chain}");
     }
 }
+
+/// SQS lists one move task unless asked for more: the running one and
+/// the recent ones need its most, ten.
+#[tokio::test]
+async fn list_redrives_asks_for_the_recent_tasks_not_one() {
+    use aws_sdk_sqs::operation::list_message_move_tasks::ListMessageMoveTasksOutput;
+    use aws_sdk_sqs::types::ListMessageMoveTasksResultEntry;
+    let rule = mock!(aws_sdk_sqs::Client::list_message_move_tasks)
+        .match_requests(|r| r.max_results() == Some(10) && r.source_arn() == Some("arn:dlq"))
+        .then_output(|| {
+            let task = |h: &str, st: &str| {
+                ListMessageMoveTasksResultEntry::builder()
+                    .task_handle(h)
+                    .status(st)
+                    .build()
+            };
+            ListMessageMoveTasksOutput::builder()
+                .results(task("t-2", "RUNNING"))
+                .results(task("t-1", "COMPLETED"))
+                .build()
+        });
+    let client = client_with_sqs(mock_client!(aws_sdk_sqs, [&rule]));
+    let tasks = client.list_redrives("arn:dlq").await.expect("lists");
+    assert_eq!(tasks.len(), 2);
+}

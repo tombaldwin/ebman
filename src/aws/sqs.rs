@@ -206,6 +206,8 @@ impl AwsClient {
             .sqs
             .list_message_move_tasks()
             .source_arn(source_arn)
+            // SQS answers one task unless asked for more; ten is its most.
+            .max_results(10)
             .send()
             .await
             .aws_ctx("ListMessageMoveTasks failed")?;
