@@ -4273,7 +4273,7 @@ async fn an_unanswered_ask_denies_when_the_budget_expires() {
 
     let asked = tokio::spawn(async move { s.ask_operator("delete something", None).await });
     // The question goes out...
-    let frame: Value = serde_json::from_str(&rx.recv().await.expect("a frame")).expect("json");
+    let frame: Value = serde_json::from_str(&next_frame(&mut rx, "a frame").await).expect("json");
     assert_eq!(frame["method"], json!("elicitation/create"), "{frame}");
     assert!(
         frame["params"]["message"]
@@ -4313,7 +4313,7 @@ async fn an_answer_is_routed_back_to_the_ask_that_is_waiting() {
         let s = std::sync::Arc::clone(&s);
         tokio::spawn(async move { s.ask_operator("terminate prod", None).await })
     };
-    let frame: Value = serde_json::from_str(&rx.recv().await.expect("frame")).expect("json");
+    let frame: Value = serde_json::from_str(&next_frame(&mut rx, "frame").await).expect("json");
     let id = frame["id"].clone();
 
     let reply = json!({"jsonrpc": "2.0", "id": id, "result": {"action": "accept"}});
@@ -4327,6 +4327,19 @@ async fn an_answer_is_routed_back_to_the_ask_that_is_waiting() {
     // the normal dispatch rather than being swallowed.
     assert!(!s.take_ask_reply(&json!({"jsonrpc":"2.0","id":7,"result":{}})));
     assert!(!s.take_ask_reply(&json!({"jsonrpc":"2.0","id":1,"method":"ping"})));
+}
+
+/// The next frame the server sends, or a failure naming what was
+/// expected. Bounded: a server that never asks would otherwise leave
+/// the test waiting for good, since the server still holds the sender,
+/// and one hung test turns a whole mutation run into a timeout. Under a
+/// paused clock the bound passes as soon as nothing else can run.
+async fn next_frame(rx: &mut tokio::sync::mpsc::Receiver<String>, what: &str) -> String {
+    match tokio::time::timeout(std::time::Duration::from_secs(10), rx.recv()).await {
+        Ok(Some(line)) => line,
+        Ok(None) => panic!("{what}: the channel closed"),
+        Err(_) => panic!("{what}: nothing was sent"),
+    }
 }
 
 /// A demo server whose client can elicit, with a stand-in for the
@@ -5312,7 +5325,7 @@ async fn a_timed_out_ask_tells_the_client_to_withdraw_it() {
     let srv = std::sync::Arc::clone(&s);
     let asking = tokio::spawn(async move { srv.ask_operator("terminate poly-prod", None).await });
 
-    let ask: Value = serde_json::from_str(&rx.recv().await.expect("the ask")).expect("json");
+    let ask: Value = serde_json::from_str(&next_frame(&mut rx, "the ask").await).expect("json");
     let asked_id = ask["id"].clone();
     assert_eq!(ask["method"], json!("elicitation/create"));
 
@@ -5320,7 +5333,7 @@ async fn a_timed_out_ask_tells_the_client_to_withdraw_it() {
     assert_eq!(asking.await.expect("join"), AskOutcome::Unanswered);
 
     let cancel: Value =
-        serde_json::from_str(&rx.recv().await.expect("a cancellation")).expect("json");
+        serde_json::from_str(&next_frame(&mut rx, "a cancellation").await).expect("json");
     assert_eq!(
         cancel["method"],
         json!("notifications/cancelled"),
@@ -5534,7 +5547,7 @@ async fn terminate_and_purge_require_the_operator_to_type_the_name() {
             srv.ask_operator("terminate poly-prod", want.as_deref())
                 .await
         });
-        let frame: Value = serde_json::from_str(&rx.recv().await.expect("ask")).expect("json");
+        let frame: Value = serde_json::from_str(&next_frame(&mut rx, "ask").await).expect("json");
 
         // The schema must actually demand a field when one is required.
         let required = frame["params"]["requestedSchema"]["required"].clone();
