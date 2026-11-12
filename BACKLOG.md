@@ -184,15 +184,6 @@ Tier definitions:
 
 #### Correctness and safety, from the 2026-09-25 reviews
 
-- [ ] **The MCP write family's glob-import cycle.** `role.rs`, `undo.rs`
-  and `mcp/freeze.rs` `use super::writes::*` to reach shared primitives,
-  and `writes.rs` globs `role` and `undo` back. Split `mcp/refusal.rs`
-  (`audited`, `WriteError`: file-level privacy for the one constructor)
-  and `mcp/dialog.rs` (`sanitize`, `Shown`, `ask_summary`, `forecloses`),
-  optionally `writes/dlq.rs` (~500 lines); `writes.rs` drops to ~1600.
-  The `#[path]` test children and `scan::production_source` guards move
-  with them. Half a day to a day. 0.49.0 architecture review.
-
 - [ ] **`role.rs` and `undo.rs` tests as `#[path]` children.**
   `mcp/tests.rs` is ~7000 lines; the role tests sit at its end and the
   undo tests inside `orchestration`. ARCHITECTURE.md's convention is one

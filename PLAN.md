@@ -165,11 +165,38 @@ it.*
 
 ### Next
 
-*Refilled 2026-11-06: the `scan.rs` split is done (archived, "PLAN.md
-items done 2026-11-06"). These three came from BACKLOG, the refactors
-the 0.49.0 review deferred until after the release.*
+*Reordered 2026-11-12 after the Fable review: `PlanRole` and the session
+helpers shrink what `WriteAudit` carries, and the glob-cycle split gives
+it a home (`mcp/refusal.rs`), so `WriteAudit` goes last rather than
+being built twice. Refilled 2026-11-06: the `scan.rs` split is done
+(archived, "PLAN.md items done 2026-11-06").*
 
-3. *(architecture)* **One `WriteAudit` per MCP write** (absorbs `Server::refuse(..)`):
+3. *(architecture)* **`PlanRole` embeds `MappedRole`.** It copies six of its fields;
+   `PlanRole { mapped, assumes }` removes the copy. `PendingWrite::role()`
+   is an accessor over a `pub role`, so there are two ways to read it;
+   nothing outside `role()` reads the field, so making it private ends
+   that. ~1 hour.
+
+4. *(architecture)* **Session plumbing helpers.** `Server::dispatch_client(profile,
+   region, session)` for the session-or-base client (`writes.rs`
+   dispatch, `undo.rs` restore); one function for "extras plus the
+   session's `role=`/`session=`" and the `(&str, &str)` refs conversion
+   (three and five copies); `undo.rs` and `dispatch_dlq_and_audit` read
+   `can_ask` directly where `write_extras` exists so callers don't. ~2 hours.
+
+5. *(architecture)* **The MCP write family's glob-import cycle.** `role.rs`, `undo.rs`
+   and `mcp/freeze.rs` `use super::writes::*` to reach shared primitives,
+   and `writes.rs` globs `role` and `undo` back. Split `mcp/refusal.rs`
+   (`audited`, `WriteError`: file-level privacy for the one constructor)
+   and `mcp/dialog.rs` (`sanitize`, `Shown`, `ask_summary`, `forecloses`),
+   optionally `writes/dlq.rs` (~500 lines); `writes.rs` drops to ~1600.
+   The `#[path]` test children and `scan::production_source` guards move
+   with them. Half a day to a day. 0.49.0 architecture review; moved
+   from BACKLOG 2026-11-12, because `WriteAudit` needs `refusal.rs` as
+   its home.
+
+6. *(architecture)* **One `WriteAudit` per MCP write** (absorbs `Audited::record`'s
+   separate profile and region arguments):
    resolve profile, region, label and env once, at plan time after
    `fetch_envs`, store it on `PendingWrite` and copy it onto
    `DeletedMessage`, and route asked / refused / dispatched / completed
@@ -179,22 +206,11 @@ the 0.49.0 review deferred until after the release.*
    `Server::audit_profile`, the plan client built before the role check,
    `DeletedMessage::plan_region`), which proves the sites agree today, not
    that the next one will. `gate_refusal`'s pin profile is the audit
-   profile (`write_refusal_unaudited` returns the profile it was given):
+   profile (`write_refusal_unaudited`, in `src/cli/write_env.rs`, returns
+   the profile it was given):
    keep them one value. ~1 day, `writes.rs` / `role.rs` /
    `undo.rs`. From the 2026-10-31 design review and the 0.49.0
    architecture review.
-
-4. *(architecture)* **Session plumbing helpers.** `Server::dispatch_client(profile,
-   region, session)` for the session-or-base client (`writes.rs`
-   dispatch, `undo.rs` restore); one function for "extras plus the
-   session's `role=`/`session=`" and the `(&str, &str)` refs conversion
-   (three and five copies); `undo.rs` and `dispatch_dlq_and_audit` read
-   `can_ask` directly where `write_extras` exists so callers don't. ~2 hours.
-
-5. *(architecture)* **`PlanRole` embeds `MappedRole`.** It copies six of its fields;
-   `PlanRole { mapped, assumes }` removes the copy. `PendingWrite::role()`
-   is an accessor over a `pub role`, so there are two ways to read it.
-   ~1 hour.
 
 ### Released
 
