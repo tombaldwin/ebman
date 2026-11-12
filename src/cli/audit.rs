@@ -126,7 +126,7 @@ pub async fn run(args: &[String]) -> Result<()> {
         std::process::exit(code);
     }
     if let Some(tail) = tail {
-        follow(&path, tail).await;
+        follow(&path, tail, std::io::stdout()).await;
     }
     Ok(())
 }
@@ -221,10 +221,10 @@ fn shown_entries(text: &str, filter: &audit_log::AuditFilter<'_>) -> Vec<audit_l
     entries
 }
 
-/// `--tail`: poll the log every second from `tail.offset` and print new
-/// entries, until the process is stopped. A shrink is a rotation.
-async fn follow(path: &std::path::Path, mut tail: Tail) {
-    use std::io::Write;
+/// `--tail`: poll the log every second from `tail.offset` and write new
+/// entries to `out`, until the process is stopped. A shrink is a
+/// rotation.
+async fn follow(path: &std::path::Path, mut tail: Tail, mut out: impl std::io::Write) {
     loop {
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         let Some(chunk) = read_new_lines(path, &mut tail.offset) else {
@@ -234,7 +234,6 @@ async fn follow(path: &std::path::Path, mut tail: Tail) {
         if new_entries.is_empty() {
             continue;
         }
-        let mut out = std::io::stdout().lock();
         let _ = write!(out, "{}", tail_render(&new_entries, tail.args.json));
         let _ = out.flush();
     }
@@ -413,6 +412,55 @@ mod tests {
         };
         let followed = tail_render(&shown_entries(SECRET, &filter), true);
         assert!(!followed.contains("hunter2"), "{followed}");
+    }
+
+    /// A writer the test can read while `follow` holds it.
+    #[derive(Clone, Default)]
+    struct Shared(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+    impl std::io::Write for Shared {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(b);
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn tail_follows_new_lines_filtered_and_redacted() {
+        const SECRET: &str = "2026-10-23T11:00:02+00:00\taccount=1\tprofile=-\tregion=eu-west-2\tstage=dispatched action=SetOption target=worker ns=aws:elasticbeanstalk:application:environment name=API_KEY value=\"sk-hunter2\"";
+        let path = log_with(&[OLD]);
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let (_, tail) = audit_body(
+            &argv(&["audit", "--tail", "--env", "worker", "--json"]),
+            &path,
+            chrono::Utc::now(),
+            &mut out,
+            &mut err,
+        );
+        let buf = Shared::default();
+        let task = tokio::spawn({
+            let (path, buf) = (path.clone(), buf.clone());
+            async move { follow(&path, tail.expect("--tail"), buf).await }
+        });
+        {
+            use std::io::Write;
+            let mut f = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&path)
+                .unwrap();
+            writeln!(f, "{NEW}\n{SECRET}").unwrap();
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        task.abort();
+        let shown = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
+        assert_eq!(shown.lines().count(), 2, "both new worker lines: {shown}");
+        assert!(!shown.contains("api-prod"), "filtered by --env: {shown}");
+        assert!(
+            shown.contains("API_KEY") && !shown.contains("hunter2"),
+            "{shown}"
+        );
     }
 
     #[test]

@@ -485,6 +485,26 @@ fn ebl008_fires_when_live_stack_differs_from_latest() {
 }
 
 #[test]
+fn ebl008_s_fix_is_manual_and_names_the_upgrade_command() {
+    let env = Environment {
+        solution_stack: "64bit Amazon Linux 2 v3.5.1 running Docker".into(),
+        platform_version: String::new(),
+        ..mk_env("prod", "Web", "Green")
+    };
+    let opts: Vec<(String, String, String)> = vec![];
+    let ctx = LintContext::for_env(&env, &opts).with_newer_stack_available("3.6.0");
+    match StalePlatformVersion.fix(&ctx) {
+        Some(FixAction::Manual { instructions }) => {
+            assert!(instructions.contains("`:upgrade`"), "{instructions}")
+        }
+        other => panic!("a manual fix: {other:?}"),
+    }
+    // Nothing to fix on a current platform.
+    let current = LintContext::for_env(&env, &opts);
+    assert!(StalePlatformVersion.fix(&current).is_none());
+}
+
+#[test]
 fn ebl008_skips_when_newer_unknown() {
     // No newer_stack_available → best-effort skip (don't
     // false-positive on every env).
