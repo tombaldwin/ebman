@@ -41,9 +41,9 @@ Tier definitions:
 - [ ] **An undo whose delete's role session expired loses the message.**
   *(Tier 5, ruling needed; from the 2026-11-02 slices 3-5 review.)* The
   undo window runs on a monotonic clock that stops in sleep; the 900s
-  STS session does not. Since 2026-11-02 such an undo says why it
-  cannot restore and drops the entry (D4: the undo assumes no role of
-  its own), so the body is gone from ebman. Options: (a) leave it; (b)
+  STS session does not. Such an undo says why it cannot restore (D4:
+  the undo assumes no role of its own); the entry stays listed, marked,
+  until its window closes and then goes, so the body is gone from ebman. Options: (a) leave it; (b)
   on expiry only, a fresh AssumeRole of the delete's role for the undo,
   which D4's ruling chose against for the STS-degraded case; (c) hand
   the body back to the agent to re-send, only where `mcp.peek_bodies`
@@ -178,7 +178,7 @@ Tier definitions:
   `draw_action` (one function per `ActionFlow` arm).
   **Blocked on a ruling for `draw_action`:**
   `every_render_surface_is_accounted_for` counts top-level `fn draw_*`
-  NAMES (`KNOWN = 41`), so extracting `draw_action_menu` means raising
+  NAMES (`KNOWN = 42`), so extracting `draw_action_menu` means raising
   `KNOWN` — a stop condition. Should it count dispatch-reachable
   surfaces, or should helpers be named `render_*`?
 

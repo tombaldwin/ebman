@@ -9,12 +9,12 @@ the AI-assisted-contributor rules see [`CLAUDE.md`](CLAUDE.md).
 
 ## Shape of the crate
 
-`ebman` is lib + bin, but the library is not a general-purpose API. The
-public surface is **212 items** as `cargo public-api` counts them with
-no flags — 67 once auto-derived and blanket impls are omitted. In
-hand-written terms: `App` plus its seven methods, the ten
-`cli::*::run` entry points, `config::load`, and one function each from a
-handful of other modules. Everything else is `pub(crate)`.
+`ebman` is lib + bin, but the library is not a general-purpose API. In
+hand-written terms the public surface is `App` and a few of its methods,
+the `cli::*::run` entry points, `config::load`, and one function each
+from a handful of other modules. Everything else is `pub(crate)`.
+`cargo +nightly public-api` gives today's count; this file stopped
+carrying one because it rotted (212 items here, 133 measured).
 
 Count items, not modules. This section used to say "only the nine
 modules `src/main.rs` needs are public", which was true and misleading —
@@ -350,6 +350,12 @@ name is *wrong*. `every_confirmation_gate_names_its_test` in
 comparison **and every `confirm_*` state field** in production is
 classified, a gate has to name the test that covers it, and "not a gate"
 has to say why.
+
+The typed name is a property of the TUI and MCP, not of the write. The
+CLI's `ebman action terminate --env NAME --yes` takes the flag instead,
+on purpose: a script has nobody to type, and a `--confirm-name NAME`
+would be one more argument the same script supplies. Pins, freezes and
+read-only refuse it there exactly as anywhere else.
 
 It grew that second half the hard way. It originally covered only typed
 comparisons, and the saved-configs delete confirm — a y/n gate — sat
