@@ -726,6 +726,12 @@ mod run_tests {
         let (out, err) = run(refused(), false).await;
         let row = out.lines().nth(1).expect("the listing stands");
         assert_eq!(row.split('\t').nth(7), Some("?"));
+        // One region: no REGION column, so a script's columns stay put.
+        assert!(
+            out.lines().next().is_some_and(|h| h.ends_with("\tALARMS")),
+            "{out}"
+        );
+        assert_eq!(row.split('\t').count(), 8, "{row}");
         assert!(err.contains("could not check for firing alarms"), "{err}");
 
         let (out, _) = run(refused(), true).await;

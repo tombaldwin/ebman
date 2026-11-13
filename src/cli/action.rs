@@ -1804,7 +1804,7 @@ mod body {
                             EnvironmentDescription::builder()
                                 .environment_name(partner)
                                 .application_name("shop")
-                                .version_label("build-2")
+                                .version_label("build-0")
                                 .status("Ready".into())
                                 .health("Green".into())
                                 .build(),

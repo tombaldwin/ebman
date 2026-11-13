@@ -2733,9 +2733,8 @@ impl AwsClient {
             if !urls.is_empty() && fresh.len() <= urls.len() {
                 break;
             }
-            if fresh.len() > urls.len() {
-                urls = fresh;
-            }
+            // Nothing yet, or more instances than last time.
+            urls = fresh;
             progress(TailProgress::Polling(attempt));
         }
         if urls.is_empty() && skewed {
