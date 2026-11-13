@@ -2095,6 +2095,7 @@ fn only_this_requests_tail_samples_count_newest_per_instance() {
             sample("i-2", "skewed", at(-20)),
             sample("i-3", "untimed", None),
             sample("i-4", "too-old", at(-31)),
+            sample("i-5", "at-the-slack", at(-30)),
         ],
         requested,
     );
@@ -2103,6 +2104,7 @@ fn only_this_requests_tail_samples_count_newest_per_instance() {
         [
             ("i-1".to_string(), "newer".to_string()),
             ("i-2".to_string(), "skewed".to_string()),
+            ("i-5".to_string(), "at-the-slack".to_string()),
         ]
     );
 }

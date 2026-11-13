@@ -1268,6 +1268,13 @@ pub(crate) type TailSample = (String, String, Option<DateTime<Utc>>);
 /// slack for a clock behind EB's, far short of an earlier request's.
 const TAIL_CLOCK_SLACK_SECS: i64 = 30;
 
+/// Whether a sample taken at `taken` answers a request made at
+/// `requested`: no earlier than the request, less the clock slack. The
+/// one cut-off for both keeping a sample and suspecting the clock. Pure.
+fn sample_is_fresh(taken: DateTime<Utc>, requested: DateTime<Utc>) -> bool {
+    taken >= requested - chrono::Duration::seconds(TAIL_CLOCK_SLACK_SECS)
+}
+
 /// This request's samples, newest per instance: one taken before
 /// `requested` (less the clock slack), or with no time, is an earlier
 /// request's — the pre-deploy tail, read as the newest lines. Pure.
@@ -1275,10 +1282,9 @@ pub(crate) fn fresh_samples(
     samples: Vec<TailSample>,
     requested: DateTime<Utc>,
 ) -> Vec<(String, String)> {
-    let since = requested - chrono::Duration::seconds(TAIL_CLOCK_SLACK_SECS);
     let mut newest: Vec<(String, String, DateTime<Utc>)> = Vec::new();
     for (id, url, taken) in samples {
-        let Some(taken) = taken.filter(|t| *t >= since) else {
+        let Some(taken) = taken.filter(|t| sample_is_fresh(*t, requested)) else {
             continue;
         };
         match newest.iter_mut().find(|(i, _, _)| *i == id) {
@@ -2724,9 +2730,11 @@ impl AwsClient {
             match &on_file {
                 None => on_file = Some(all.iter().map(|(_, url, _)| url.clone()).collect()),
                 Some(first) => {
-                    skewed |= all.iter().any(|(_, url, taken)| {
-                        !first.contains(url) && taken.is_some_and(|t| t < requested)
-                    })
+                    // Only read when nothing fresh came: then a dated
+                    // sample new since the first poll was dated too early.
+                    skewed |= all
+                        .iter()
+                        .any(|(_, url, taken)| !first.contains(url) && taken.is_some())
                 }
             }
             let fresh = fresh_samples(all, requested);
