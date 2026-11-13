@@ -104,9 +104,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   events saying a deploy or update succeeded, and refuse when there is
   none.
 - **`:scale`, `:swap` and `:abort` refuse what the CLI and MCP refuse.**
-  `:scale 20000` got past the 10,000-instance cap; `:swap` accepted the
-  env itself; `:abort` opened a confirmation for an env with no update in
-  flight. One set of checks now serves all three surfaces.
+  `:scale 20000` got past the 10,000-instance cap and `:swap` accepted
+  the env itself; one set of checks now serves all three surfaces. (The
+  CLI and MCP also refuse `abort` for an env with no update in flight;
+  the TUI leaves that to EB, since its row's status can be a refresh
+  old.)
 - **`:dlq-redrive` refuses an empty dead-letter queue**, as MCP did, and
   `status` lists the recent move tasks rather than one.
 - **The retiring-branch marker no longer answers for other regions.**

@@ -2429,7 +2429,10 @@ impl Server {
         // Every region at once, each under its own limit inside the
         // call's: one slow region is named in `regions_failed` rather
         // than timing out the call and losing every other answer.
-        let named = arg_str(args, "env");
+        // Only `lint` says when a region does not hold a named env (EB's
+        // event and env listings just come back empty), so only `lint`
+        // can tell absence from an empty answer.
+        let named = arg_str(args, "env").filter(|_| tool == "lint");
         let calls = regions.iter().map(|region| {
             let mut one = single.clone();
             one["region"] = json!(region);

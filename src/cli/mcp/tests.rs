@@ -583,6 +583,17 @@ async fn a_fanned_out_env_is_absent_not_failed_where_it_is_not() {
         .call_tool("lint", &json!({"regions": "eu-west-2", "env": one}))
         .await
         .is_err_and(|e| e.contains("not found in any of eu-west-2")));
+    // Events: an empty region is just empty, as on AWS; no `env_not_in`.
+    let out = s
+        .call_tool(
+            "recent_events",
+            &json!({"regions": "us-east-1,eu-west-2", "env": one}),
+        )
+        .await
+        .expect("answers");
+    let v: Value = serde_json::from_str(&out).expect("json");
+    assert!(v.get("env_not_in").is_none(), "{v}");
+    assert_eq!(v["regions_failed"], json!([]), "{v}");
 }
 
 /// `lint` with `env` lints that env, not another.
