@@ -622,9 +622,9 @@ async fn rollback(
     out: &mut dyn std::io::Write,
     err: &mut dyn std::io::Write,
 ) -> i32 {
-    let current = match aws.list_environments().await {
+    let (current, application) = match aws.list_environments().await {
         Ok(envs) => match envs.into_iter().find(|e| e.name == env) {
-            Some(e) => e.version_label,
+            Some(e) => (e.version_label, e.application),
             None => {
                 let _ = writeln!(err, "ebman action rollback: env '{env}' not found");
                 return 2;
@@ -635,31 +635,36 @@ async fn rollback(
             return 1;
         }
     };
-    let target = match to {
-        Some(label) => label,
+    let events = match &to {
+        Some(_) => Vec::new(),
         None => match aws.list_events_for_env(env, 100).await {
-            Ok(events) => match crate::app::previous_version_label(&events, &current) {
-                Some(prev) => prev,
-                None => {
-                    let _ = writeln!(
-                        err,
-                        "ebman action rollback: no earlier version in {env}'s recent events — name one with --to LABEL"
-                    );
-                    return 3;
-                }
-            },
+            Ok(events) => events,
             Err(e) => {
                 let _ = writeln!(err, "ebman action rollback: list_events_for_env: {e}");
                 return 1;
             }
         },
     };
-    if target == current {
-        let _ = writeln!(
-            err,
-            "ebman action rollback: {target} is already the deployed version"
-        );
-        return 3;
+    // As MCP's plan decides it: refused (3) when there is nothing to roll
+    // back to, a usage error (2) when the version is not there.
+    let target = match crate::app::rollback_target(env, &current, to.as_deref(), &events) {
+        Ok((target, _)) => target,
+        Err(why) => {
+            let _ = writeln!(err, "ebman action rollback: {why}");
+            return 3;
+        }
+    };
+    match aws.list_application_versions(&application).await {
+        Ok(versions) => {
+            if let Err(why) = crate::app::rollback_version_known(&application, &target, &versions) {
+                let _ = writeln!(err, "ebman action rollback: {why}");
+                return 2;
+            }
+        }
+        Err(e) => {
+            let _ = writeln!(err, "ebman action rollback: list_application_versions: {e}");
+            return 1;
+        }
     }
     let _ = writeln!(out, "rollback: {current} -> {target}");
     deploy(
@@ -1806,6 +1811,21 @@ mod body {
                         )
                         .build()
                 });
+        // The application's versions: a rollback's target must be one.
+        let versions = aws_smithy_mocks::mock!(
+            aws_sdk_elasticbeanstalk::Client::describe_application_versions
+        )
+        .then_output(|| {
+            let v = |l: &str| {
+                aws_sdk_elasticbeanstalk::types::ApplicationVersionDescription::builder()
+                    .version_label(l)
+                    .build()
+            };
+            op::describe_application_versions::DescribeApplicationVersionsOutput::builder()
+                .application_versions(v("build-1"))
+                .application_versions(v("build-2"))
+                .build()
+        });
         let events = aws_smithy_mocks::mock!(aws_sdk_elasticbeanstalk::Client::describe_events)
             .then_output(move || {
                 let ev = |v: &str| {
@@ -1851,7 +1871,15 @@ mod body {
         let eb = aws_smithy_mocks::mock_client!(
             aws_sdk_elasticbeanstalk,
             aws_smithy_mocks::RuleMode::MatchAny,
-            [&listing, &events, &aborted, &swapped, &scaled, &rolled_back]
+            [
+                &listing,
+                &events,
+                &versions,
+                &aborted,
+                &swapped,
+                &scaled,
+                &rolled_back
+            ]
         );
         let cfg = aws_config::SdkConfig::builder()
             .region(aws_config::Region::new("us-east-1"))
@@ -1929,6 +1957,19 @@ mod body {
         )
         .await;
         assert_eq!(r.code, 3, "already deployed is a refusal: {}", r.err);
+
+        // A version the application does not have is refused before
+        // anything is dispatched or audited.
+        let f = lifecycle();
+        let r = action(
+            &["rollback", "--env", "api", "--to", "build-typo"],
+            None,
+            Some(f.client),
+        )
+        .await;
+        assert_eq!(r.code, 2, "{}", r.err);
+        assert!(r.err.contains("'build-typo' does not exist"), "{}", r.err);
+        assert_eq!(f.rolled_back.num_calls(), 0);
     }
 
     /// Before a swap or an abort, the checks the TUI and MCP make:

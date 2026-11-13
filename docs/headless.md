@@ -111,7 +111,8 @@ misread them:
   before anything is dispatched: `abort` on an env with no update in
   flight, `swap` across two applications, `rollback` when the recent
   events name no earlier successful version or the target is already
-  deployed. (An env that is not there is a usage error, `2`.)
+  deployed. (An env, or a rollback version, that is not there is a
+  usage error, `2`.)
 - `ebman thaw` refusing to lift a live TUI session's freeze, which only
   that session may lift — or lifting the `ebman freeze` freeze while a
   session's still holds, so the fleet is still frozen.

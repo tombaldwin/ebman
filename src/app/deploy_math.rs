@@ -25,6 +25,62 @@ pub(crate) fn previous_version_label(events: &[EbEvent], current: &str) -> Optio
         .map(|v| v.to_string())
 }
 
+/// Where a rollback's target came from: named by the caller, or read
+/// from the env's recent events.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RollbackSource {
+    Named,
+    Events,
+}
+
+impl RollbackSource {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Named => "named",
+            Self::Events => "events",
+        }
+    }
+}
+
+/// Pure: the version `ebman action rollback` and MCP `rollback` deploy,
+/// or why there is none: `to` when named, else the last successful one in
+/// `events`; never the version already deployed, and only one the
+/// application still has (`known` — retention may have deleted it).
+pub(crate) fn rollback_target(
+    env_name: &str,
+    current: &str,
+    to: Option<&str>,
+    events: &[EbEvent],
+) -> Result<(String, RollbackSource), String> {
+    let (target, source) = match to {
+        Some(to) => (to.to_string(), RollbackSource::Named),
+        None => (
+            previous_version_label(events, current).ok_or_else(|| {
+                format!("no earlier version in '{env_name}''s recent events — name one with --to / 'to'")
+            })?,
+            RollbackSource::Events,
+        ),
+    };
+    if target == current {
+        return Err(format!("{target} is already the deployed version"));
+    }
+    Ok((target, source))
+}
+
+/// Pure: whether `target` is among the application's versions.
+pub(crate) fn rollback_version_known(
+    application: &str,
+    target: &str,
+    versions: &[crate::aws::AppVersion],
+) -> Result<(), String> {
+    if versions.iter().any(|v| v.label == target) {
+        return Ok(());
+    }
+    Err(format!(
+        "version '{target}' does not exist for application '{application}'"
+    ))
+}
+
 /// Pure: an event saying a deploy or environment update finished well:
 /// "New application version was deployed to running EC2 instances.",
 /// "Environment update completed successfully.", or an immutable /

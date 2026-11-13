@@ -2607,3 +2607,37 @@ fn the_spawn_helpers_and_the_fleet_polls_log_inside_a_span() {
         "each span is attached to its task"
     );
 }
+
+#[test]
+fn a_rollback_target_is_named_or_read_and_never_the_current_or_missing() {
+    use crate::app::{rollback_target, rollback_version_known, RollbackSource};
+    let ev = |vl: &str| crate::aws::Event {
+        at: None,
+        env: "e".into(),
+        application: "a".into(),
+        message: "Environment update completed successfully.".into(),
+        severity: "INFO".into(),
+        version_label: Some(vl.into()),
+    };
+    let events = [ev("build-3"), ev("build-2")];
+    assert_eq!(
+        rollback_target("e", "build-3", None, &events),
+        Ok(("build-2".into(), RollbackSource::Events))
+    );
+    assert_eq!(
+        rollback_target("e", "build-3", Some("build-1"), &[]),
+        Ok(("build-1".into(), RollbackSource::Named))
+    );
+    assert!(rollback_target("e", "build-3", Some("build-3"), &[])
+        .is_err_and(|e| e.contains("already the deployed")));
+    assert!(rollback_target("e", "build-3", None, &[ev("build-3")])
+        .is_err_and(|e| e.contains("no earlier version")));
+    let versions = [crate::aws::AppVersion {
+        label: "build-2".into(),
+        description: String::new(),
+        created: None,
+    }];
+    assert!(rollback_version_known("a", "build-2", &versions).is_ok());
+    assert!(rollback_version_known("a", "gone", &versions)
+        .is_err_and(|e| e.contains("'gone' does not exist for application 'a'")));
+}

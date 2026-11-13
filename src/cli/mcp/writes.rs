@@ -1657,37 +1657,28 @@ impl Server {
             }
             WriteVerb::Rollback => {
                 let current = env.version_label.clone();
-                let (target, source) = match arg_str(args, "to") {
-                    Some(to) => (to, "named"),
-                    None => {
-                        let events = match self.backend {
-                            Backend::Demo => demo_fixture::events_for_env(&env.name),
-                            Backend::Aws => self
-                                .client(args)
-                                .await?
-                                .list_events_for_env(&env.name, 100)
-                                .await
-                                .map_err(|e| {
-                                    tool_error(&profile, "list_events_for_env", &e.to_string())
-                                })?,
-                        };
-                        let prev = crate::app::previous_version_label(&events, &current)
-                            .ok_or_else(|| {
-                                format!(
-                                    "no earlier version in '{}''s recent events — name one with 'to'",
-                                    env.name
-                                )
-                            })?;
-                        (prev, "events")
-                    }
+                let to = arg_str(args, "to");
+                let events = match (to.is_some(), &self.backend) {
+                    (true, _) => Vec::new(),
+                    (false, Backend::Demo) => demo_fixture::events_for_env(&env.name),
+                    (false, Backend::Aws) => self
+                        .client(args)
+                        .await?
+                        .list_events_for_env(&env.name, 100)
+                        .await
+                        .map_err(|e| tool_error(&profile, "list_events_for_env", &e.to_string()))?,
                 };
-                if target == current {
-                    return Err(format!("{target} is already the deployed version"));
-                }
-                let known = match self.backend {
+                let (target, source) =
+                    crate::app::rollback_target(&env.name, &current, to.as_deref(), &events)?;
+                let versions = match self.backend {
                     Backend::Demo => demo_fixture::deploys_for_app(&env.application)
                         .iter()
-                        .any(|v| v.label == target),
+                        .map(|v| crate::aws::AppVersion {
+                            label: v.label.clone(),
+                            description: String::new(),
+                            created: None,
+                        })
+                        .collect(),
                     Backend::Aws => self
                         .client(args)
                         .await?
@@ -1695,16 +1686,10 @@ impl Server {
                         .await
                         .map_err(|e| {
                             tool_error(&profile, "list_application_versions", &e.to_string())
-                        })?
-                        .iter()
-                        .any(|v| v.label == target),
+                        })?,
                 };
-                if !known {
-                    return Err(format!(
-                        "version '{target}' does not exist for application '{}'",
-                        env.application
-                    ));
-                }
+                crate::app::rollback_version_known(&env.application, &target, &versions)?;
+                let source = source.as_str();
                 plan_extra = format!(
                     ",\"current_version\":{},\"target_version\":{},\"target_from\":{}{}",
                     util::json_string(&current),
