@@ -585,6 +585,23 @@ async fn a_fanned_out_env_is_absent_not_failed_where_it_is_not() {
         .is_err_and(|e| e.contains("not found in any of eu-west-2")));
 }
 
+/// A web env has no dead-letter queue: `dlq_redrive` says so by the same
+/// check the TUI makes, before looking for queues.
+#[tokio::test]
+async fn dlq_redrive_refuses_a_web_env() {
+    let s = demo_writes_server();
+    let web = demo_fixture::envs()
+        .into_iter()
+        .find(|e| !e.tier.eq_ignore_ascii_case("Worker"))
+        .expect("demo has a web env");
+    let err = s
+        .tool_write_plan(writes::WriteVerb::DlqRedrive, &json!({"env": web.name}))
+        .await
+        .expect_err("refused")
+        .to_string();
+    assert!(err.contains("not a worker env"), "{err}");
+}
+
 /// On demo, `regions` fans a read out: the fleet answers from its one
 /// region, another answers empty, and the answer is an object naming
 /// each row's region.

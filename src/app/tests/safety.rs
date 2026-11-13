@@ -2717,6 +2717,14 @@ async fn managed_apply_is_gated_dispatched_and_reported() {
 /// A mocked worker env for `:dlq-redrive`: its queues, a move task
 /// RUNNING when `running`, and the start and cancel SQS answers.
 fn redrive_app(running: bool) -> (App, aws_smithy_mocks::Rule, aws_smithy_mocks::Rule) {
+    redrive_app_with(running, "5")
+}
+
+/// The same worker env, its queues holding `depth` messages each.
+fn redrive_app_with(
+    running: bool,
+    depth: &'static str,
+) -> (App, aws_smithy_mocks::Rule, aws_smithy_mocks::Rule) {
     use aws_sdk_sqs::operation::get_queue_attributes::GetQueueAttributesOutput;
     use aws_sdk_sqs::types::QueueAttributeName;
     let resources = aws_smithy_mocks::mock!(
@@ -2750,7 +2758,7 @@ fn redrive_app(running: bool) -> (App, aws_smithy_mocks::Rule, aws_smithy_mocks:
             .then_output(move || {
                 let name = url.rsplit('/').next().unwrap_or_default();
                 GetQueueAttributesOutput::builder()
-                    .attributes(QueueAttributeName::ApproximateNumberOfMessages, "5")
+                    .attributes(QueueAttributeName::ApproximateNumberOfMessages, depth)
                     .attributes(
                         QueueAttributeName::QueueArn,
                         format!("arn:aws:sqs:us-east-1:123456789012:{name}"),
@@ -2855,6 +2863,14 @@ async fn dlq_redrive_starts_refuses_and_cancels() {
             && l.contains("task=task-new")),
         "{lines:#?}"
     );
+
+    // An empty dead-letter queue has nothing to move: refused, as MCP's
+    // plan refuses it, though `status` still reads it.
+    let (mut app, start, _) = redrive_app_with(false, "0");
+    app.execute_command("dlq-redrive");
+    let toasts = next_redrive_toast(&mut app).await;
+    assert!(toasts.contains("is empty: nothing to redrive"), "{toasts}");
+    assert_eq!(start.num_calls(), 0);
 
     let (mut app, start, cancel) = redrive_app(true);
     // `status` lists the running task, from the dead-letter queue's ARN.

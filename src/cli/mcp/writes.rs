@@ -1573,6 +1573,7 @@ impl Server {
                 managed_action = Some((action.id, action.description));
             }
             WriteVerb::DlqRedrive => {
+                crate::aws::redrive_tier(env)?;
                 let queues = match self.backend {
                     Backend::Demo => demo_fixture::worker_queues_for_env(&env.name),
                     Backend::Aws => self
@@ -1584,20 +1585,8 @@ impl Server {
                             tool_error(&profile, "describe_worker_queues", &e.to_string())
                         })?,
                 };
-                let (Some(dlq), Some(main)) = (queues.dlq_url.clone(), queues.main_url.clone())
-                else {
-                    return Err(format!(
-                        "'{}' has no dead-letter queue and source queue to redrive between",
-                        env.name
-                    ));
-                };
+                let (dlq, main) = crate::aws::redrive_queues(&env.name, &queues, true)?;
                 let visible = queues.dlq_stats.as_ref().map(|q| q.visible);
-                if visible == Some(0) {
-                    return Err(format!(
-                        "the dead-letter queue of '{}' is empty: nothing to redrive",
-                        env.name
-                    ));
-                }
                 // SQS refuses a second task on the queue; refuse it here,
                 // naming the one that runs, before anyone is asked.
                 if let Backend::Aws = self.backend {

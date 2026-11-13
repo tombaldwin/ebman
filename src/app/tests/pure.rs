@@ -1967,3 +1967,41 @@ fn abort_needs_an_update_and_swap_one_application() {
         swap_allowed(&a, &env("c", "blog", "Ready")).is_err_and(|e| e.contains("'c' in 'blog'"))
     );
 }
+
+#[test]
+fn a_redrive_needs_a_worker_both_queues_and_messages_to_start() {
+    use crate::aws::{redrive_queues, redrive_tier, QueueStats, WorkerQueues};
+    assert!(redrive_tier(&mk_env("w", "shop", "Worker", "Green")).is_ok());
+    assert!(redrive_tier(&mk_env("web", "shop", "WebServer", "Green"))
+        .is_err_and(|e| e.contains("not a worker env")));
+    let queues = |dlq: Option<&str>, visible: Option<i64>| WorkerQueues {
+        main_url: Some("https://sqs/main".into()),
+        dlq_url: dlq.map(String::from),
+        dlq_stats: visible.map(|v| QueueStats {
+            visible: v,
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    assert_eq!(
+        redrive_queues("w", &queues(Some("https://sqs/dlq"), Some(3)), true),
+        Ok((
+            "https://sqs/dlq".to_string(),
+            "https://sqs/main".to_string()
+        ))
+    );
+    assert!(redrive_queues("w", &queues(None, None), false)
+        .is_err_and(|e| e.contains("no dead-letter queue")));
+    assert!(
+        redrive_queues("w", &queues(Some("https://sqs/dlq"), Some(0)), true)
+            .is_err_and(|e| e.contains("empty"))
+    );
+    assert!(
+        redrive_queues("w", &queues(Some("https://sqs/dlq"), Some(0)), false).is_ok(),
+        "status and cancel read an empty queue"
+    );
+    assert!(
+        redrive_queues("w", &queues(Some("https://sqs/dlq"), None), true).is_ok(),
+        "unknown depth is not empty"
+    );
+}

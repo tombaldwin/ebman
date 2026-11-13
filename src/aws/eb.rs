@@ -207,6 +207,39 @@ pub(crate) fn swap_allowed(
     Ok(())
 }
 
+/// Whether `env` has a dead-letter queue to redrive: a worker env. Pure.
+pub(crate) fn redrive_tier(env: &Environment) -> std::result::Result<(), String> {
+    if env.tier.eq_ignore_ascii_case("Worker") {
+        return Ok(());
+    }
+    Err(format!(
+        "{} is not a worker env: there is no dead-letter queue to redrive",
+        env.name
+    ))
+}
+
+/// The `(dead-letter, source)` queue URLs a redrive moves between, or why
+/// there is none; when `starting`, an empty dead-letter queue is refused
+/// too (a status or cancel reads an empty one fine). The TUI and MCP both
+/// decide by this. Pure.
+pub(crate) fn redrive_queues(
+    env_name: &str,
+    queues: &WorkerQueues,
+    starting: bool,
+) -> std::result::Result<(String, String), String> {
+    let (Some(dlq), Some(main)) = (queues.dlq_url.clone(), queues.main_url.clone()) else {
+        return Err(format!(
+            "'{env_name}' has no dead-letter queue and source queue to redrive between"
+        ));
+    };
+    if starting && queues.dlq_stats.as_ref().is_some_and(|q| q.visible == 0) {
+        return Err(format!(
+            "the dead-letter queue of '{env_name}' is empty: nothing to redrive"
+        ));
+    }
+    Ok((dlq, main))
+}
+
 /// An auto-scaling group's min and max, checked as the TUI, the CLI and
 /// MCP take them: neither negative, min no more than max, and max within the
 /// 10,000 instances EB allows. The error names what is wrong.

@@ -8,20 +8,18 @@ use super::*;
 
 /// The worker env's two queues, as their ARNs: the dead-letter queue
 /// the task drains, and the source queue it fills.
+/// `starting` refuses an empty dead-letter queue, as MCP's plan does.
 async fn redrive_arns(
     aws: &crate::aws::AwsClient,
     app_name: &str,
     env_name: &str,
+    starting: bool,
 ) -> Result<(String, String), String> {
     let queues = aws
         .describe_worker_queues(app_name, env_name)
         .await
         .map_err(|e| flatten_err("describe_worker_queues", e))?;
-    let (Some(dlq), Some(main)) = (queues.dlq_url, queues.main_url) else {
-        return Err(format!(
-            "{env_name} has no dead-letter queue and source queue to redrive between"
-        ));
-    };
+    let (dlq, main) = crate::aws::redrive_queues(env_name, &queues, starting)?;
     let dlq_arn = aws
         .queue_arn(&dlq)
         .await
@@ -41,11 +39,8 @@ impl App {
                 Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;
         };
-        if !env.tier.eq_ignore_ascii_case("Worker") {
-            self.error_message = Some(format!(
-                "{} is not a worker env: there is no dead-letter queue to redrive",
-                env.name
-            ));
+        if let Err(e) = crate::aws::redrive_tier(&env) {
+            self.error_message = Some(e);
             return;
         }
         match rest.first().copied() {
@@ -66,7 +61,7 @@ impl App {
             return;
         }
         let label = crate::verb::Verb::DlqRedrive.audit_label();
-        self.spawn_redrive_write(env, label, "Redrive DLQ", |aws, dlq_arn, main_arn| {
+        self.spawn_redrive_write(env, label, "Redrive DLQ", true, |aws, dlq_arn, main_arn| {
             Box::pin(async move {
                 // SQS refuses a second task on a queue; saying which one
                 // is running beats its bare error.
@@ -104,6 +99,7 @@ impl App {
             env,
             "dlq-redrive-cancel",
             "Cancel DLQ redrive",
+            false,
             |aws, dlq_arn, _| {
                 Box::pin(async move {
                     let tasks = aws
@@ -135,6 +131,7 @@ impl App {
         env: &crate::aws::Environment,
         label: &'static str,
         pending_label: &'static str,
+        starting: bool,
         op: impl FnOnce(
                 std::sync::Arc<crate::aws::AwsClient>,
                 String,
@@ -166,7 +163,7 @@ impl App {
         tokio::spawn(async move {
             let result = match client.resolve().await {
                 Err(e) => Err(flatten_err("cached_client", e)),
-                Ok(aws) => match redrive_arns(&aws, &app_name, &env_name).await {
+                Ok(aws) => match redrive_arns(&aws, &app_name, &env_name, starting).await {
                     Err(e) => Err(e),
                     Ok((dlq_arn, main_arn)) => op(aws, dlq_arn, main_arn).await,
                 },
@@ -225,7 +222,7 @@ impl App {
         tokio::spawn(async move {
             let tasks = match client.resolve().await {
                 Err(e) => Err(flatten_err("cached_client", e)),
-                Ok(aws) => match redrive_arns(&aws, &app_name, &env_name).await {
+                Ok(aws) => match redrive_arns(&aws, &app_name, &env_name, false).await {
                     Err(e) => Err(e),
                     Ok((dlq_arn, _)) => aws
                         .list_redrives(&dlq_arn)
