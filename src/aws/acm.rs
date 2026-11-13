@@ -41,11 +41,30 @@ impl CertStatus {
 /// cannot describe: those are left out, not reported as unreadable, so
 /// one does not turn every lint run into a coverage gap. Pure.
 pub(crate) fn listener_cert_arns(options: &[(String, String, String)]) -> Vec<String> {
+    every_listener_cert(options)
+        .into_iter()
+        .filter(|a| is_acm_arn(a))
+        .collect()
+}
+
+/// The certificates a listener serves that ACM cannot describe (IAM
+/// server certificates), each once: `:listeners` names them as not
+/// checked, so their absence from the expiry list is not read as fine.
+/// Pure.
+pub(crate) fn listener_unchecked_cert_arns(options: &[(String, String, String)]) -> Vec<String> {
+    every_listener_cert(options)
+        .into_iter()
+        .filter(|a| !is_acm_arn(a))
+        .collect()
+}
+
+/// Every certificate ARN the env's listeners serve, each once. Pure.
+fn every_listener_cert(options: &[(String, String, String)]) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for (ns, name, value) in options {
         if ns.starts_with("aws:elbv2:listener:") && name == "SSLCertificateArns" {
             for arn in value.split(',').map(str::trim).filter(|a| !a.is_empty()) {
-                if is_acm_arn(arn) && !out.iter().any(|a| a == arn) {
+                if !out.iter().any(|a| a == arn) {
                     out.push(arn.to_string());
                 }
             }

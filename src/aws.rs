@@ -90,7 +90,7 @@ mod waf;
 // several services' calls at once.
 mod discover;
 
-pub(crate) use acm::{listener_cert_arns, CertStatus};
+pub(crate) use acm::{listener_cert_arns, listener_unchecked_cert_arns, CertStatus};
 pub(crate) use cloudwatch::*;
 pub(crate) use cost::*;
 pub(crate) use discover::discover_app;

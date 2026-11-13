@@ -874,7 +874,7 @@ impl App {
         let env_name = env.name.clone();
         self.status_message = Some(format!("fetching listeners for {env_name}…"));
         tokio::spawn(async move {
-            let (result, certs) = match client.resolve().await {
+            let (result, certs, unchecked) = match client.resolve().await {
                 Ok(aws) => {
                     let rows = aws
                         .fetch_env_listeners(&app_name, &env_name)
@@ -882,6 +882,7 @@ impl App {
                         .map_err(|e| flatten_err("fetch_env_listeners", e));
                     // Each certificate a listener serves, with its expiry.
                     let mut certs = Vec::new();
+                    let mut unchecked = Vec::new();
                     if let Ok(rows) = &rows {
                         let options: Vec<(String, String, String)> = rows
                             .iter()
@@ -889,6 +890,7 @@ impl App {
                                 (format!("aws:elbv2:listener:{port}"), opt.clone(), v.clone())
                             })
                             .collect();
+                        unchecked = crate::aws::listener_unchecked_cert_arns(&options);
                         for arn in crate::aws::listener_cert_arns(&options) {
                             certs.push(
                                 aws.describe_certificate(&arn, chrono::Utc::now())
@@ -899,9 +901,9 @@ impl App {
                             );
                         }
                     }
-                    (rows, certs)
+                    (rows, certs, unchecked)
                 }
-                Err(e) => (Err(flatten_err("cached_client", e)), Vec::new()),
+                Err(e) => (Err(flatten_err("cached_client", e)), Vec::new(), Vec::new()),
             };
             let body = match result {
                 Ok(rows) if rows.is_empty() => "No listener config found.\n\n\
@@ -924,7 +926,7 @@ impl App {
                         }
                         body.push_str(&format!("  {opt:<32}  {value}\n"));
                     }
-                    body.push_str(&format_listener_certs(&certs));
+                    body.push_str(&format_listener_certs(&certs, &unchecked));
                     body.push_str(
                         "\n`:set-option aws:elbv2:listener:<PORT> <KEY> <VALUE>` to change a setting.\n\
                          esc / q to close",
@@ -1027,11 +1029,21 @@ impl App {
 /// `:listeners`' certificate section: each certificate's domain, expiry
 /// and renewal state, or why it could not be read. Pure. Empty when no
 /// listener serves one.
-pub(crate) fn format_listener_certs(certs: &[Result<crate::aws::CertStatus, String>]) -> String {
-    if certs.is_empty() {
+/// `unchecked` are certificates ACM cannot describe (IAM server
+/// certificates), named so the list is not read as covering them.
+pub(crate) fn format_listener_certs(
+    certs: &[Result<crate::aws::CertStatus, String>],
+    unchecked: &[String],
+) -> String {
+    if certs.is_empty() && unchecked.is_empty() {
         return String::new();
     }
     let mut out = String::from("\n── certificates ──\n");
+    for arn in unchecked {
+        out.push_str(&format!(
+            "  {arn}  not checked: an IAM server certificate, which ACM cannot read\n"
+        ));
+    }
     for c in certs {
         match c {
             Err(e) => out.push_str(&format!("  could not read: {e}\n")),

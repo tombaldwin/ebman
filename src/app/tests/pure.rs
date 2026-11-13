@@ -1872,43 +1872,46 @@ fn the_listeners_overlay_names_each_certificates_expiry() {
     use crate::app::cmd_inspect::format_listener_certs;
     use crate::aws::CertStatus;
     assert_eq!(
-        format_listener_certs(&[]),
+        format_listener_certs(&[], &[]),
         "",
         "no HTTPS listener, no section"
     );
     let at = chrono::Utc::now() + chrono::Duration::days(12);
-    let text = format_listener_certs(&[
-        Ok(CertStatus {
-            domain: "api.example.com".into(),
-            not_after: Some(at),
-            days_left: Some(12),
-            status: "ISSUED".into(),
-            renewal: Some("PENDING_VALIDATION".into()),
-            ..Default::default()
-        }),
-        Ok(CertStatus {
-            domain: "old.example.com".into(),
-            not_after: Some(at),
-            days_left: Some(-3),
-            status: "EXPIRED".into(),
-            ..Default::default()
-        }),
-        Ok(CertStatus {
-            domain: "today.example.com".into(),
-            not_after: Some(at),
-            days_left: Some(0),
-            status: "ISSUED".into(),
-            ..Default::default()
-        }),
-        Ok(CertStatus {
-            domain: "far.example.com".into(),
-            not_after: Some(at),
-            days_left: Some(200),
-            status: "ISSUED".into(),
-            ..Default::default()
-        }),
-        Err("arn:x: AccessDenied".into()),
-    ]);
+    let text = format_listener_certs(
+        &[
+            Ok(CertStatus {
+                domain: "api.example.com".into(),
+                not_after: Some(at),
+                days_left: Some(12),
+                status: "ISSUED".into(),
+                renewal: Some("PENDING_VALIDATION".into()),
+                ..Default::default()
+            }),
+            Ok(CertStatus {
+                domain: "old.example.com".into(),
+                not_after: Some(at),
+                days_left: Some(-3),
+                status: "EXPIRED".into(),
+                ..Default::default()
+            }),
+            Ok(CertStatus {
+                domain: "today.example.com".into(),
+                not_after: Some(at),
+                days_left: Some(0),
+                status: "ISSUED".into(),
+                ..Default::default()
+            }),
+            Ok(CertStatus {
+                domain: "far.example.com".into(),
+                not_after: Some(at),
+                days_left: Some(200),
+                status: "ISSUED".into(),
+                ..Default::default()
+            }),
+            Err("arn:x: AccessDenied".into()),
+        ],
+        &["arn:aws:iam::123456789012:server-certificate/legacy".to_string()],
+    );
     assert!(
         text.contains("api.example.com") && text.contains("in 12 days"),
         "{text}"
@@ -1917,6 +1920,14 @@ fn the_listeners_overlay_names_each_certificates_expiry() {
     assert!(
         text.contains("(in 0 days)"),
         "day 0 expires later today: {text}"
+    );
+    assert!(
+        text.contains("server-certificate/legacy  not checked"),
+        "an IAM certificate is named, not silently left out: {text}"
+    );
+    assert!(
+        !format_listener_certs(&[], &["arn:aws:iam::1:server-certificate/x".into()]).is_empty(),
+        "an IAM certificate alone still gets the section"
     );
     assert!(
         text.contains("EXPIRED") && text.contains("3 days ago"),

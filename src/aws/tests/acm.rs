@@ -179,6 +179,13 @@ fn only_acm_certificates_are_listed_in_any_partition() {
             "arn:aws-cn:acm:cn-north-1:123456789012:certificate/b",
         ]
     );
+    let opts = [opt(
+        "arn:aws:iam::123456789012:server-certificate/legacy, arn:aws:acm:us-east-1:123456789012:certificate/a",
+    )];
+    assert_eq!(
+        super::listener_unchecked_cert_arns(&opts),
+        ["arn:aws:iam::123456789012:server-certificate/legacy"]
+    );
 }
 
 #[test]
