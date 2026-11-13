@@ -3806,3 +3806,26 @@ async fn an_unattended_result_leaves_the_operators_form_open() {
     assert_eq!(app.mode, Mode::Form, "still editing");
     assert!(app.form.is_some());
 }
+
+/// `:capacity`'s own form holds min and max to `scale_bounds`: pinned
+/// through the command, since the check keys on the fields' names and a
+/// renamed key would drop it silently.
+#[tokio::test]
+async fn the_capacity_form_refuses_max_below_min() {
+    let mut app = test_app();
+    app.environments = vec![mk_env("cap-probe", "poly", "WebServer", "Green")];
+    app.rebuild_view();
+    app.table_state.select(Some(0));
+    app.execute_command("capacity");
+    let form = app.form.as_mut().expect(":capacity opens a form");
+    let at = |form: &crate::form::Form, key: &str| {
+        form.fields
+            .iter()
+            .position(|f| f.key == key)
+            .unwrap_or_else(|| panic!("no `{key}` field"))
+    };
+    let (min, max) = (at(form, "min"), at(form, "max"));
+    form.fields[min].value = "4".into();
+    form.fields[max].value = "2".into();
+    assert_eq!(form.validate(), Err(vec![max]));
+}
