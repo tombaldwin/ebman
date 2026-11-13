@@ -214,6 +214,22 @@ impl Form {
                 }
             };
         }
+        // A form with an ASG's `min` and `max` (`:capacity`) is held to
+        // the bounds `:scale`, the CLI and MCP are: min no more than max.
+        let int = |id: &str| {
+            self.fields
+                .iter()
+                .position(|f| f.key == id)
+                .and_then(|i| Some((i, self.fields[i].value.trim().parse::<i64>().ok()?)))
+        };
+        if let (Some((_, min)), Some((max_at, max))) = (int("min"), int("max")) {
+            if let Err(e) = crate::aws::scale_bounds(min, max) {
+                if !failing.contains(&max_at) {
+                    failing.push(max_at);
+                    self.fields[max_at].error = Some(e);
+                }
+            }
+        }
         if failing.is_empty() {
             Ok(())
         } else {
@@ -543,6 +559,31 @@ mod tests {
             Some(100),
             allow_empty,
         )
+    }
+
+    /// A form with an ASG's min and max refuses max below min, as
+    /// `:scale`, the CLI and MCP do; either alone, or in order, passes.
+    #[test]
+    fn a_min_above_max_is_refused_on_the_max_field() {
+        let int =
+            |key: &str| FormField::integer(key, key, None::<String>, Some(1), Some(10_000), false);
+        let mut form = Form::loading(
+            "capacity".to_string(),
+            "e".to_string(),
+            "us-east-1".to_string(),
+            "capacity update".to_string(),
+            vec![int("min"), int("max")],
+            FormSubmit::OptionSettings { mappings: vec![] },
+        );
+        form.fields[0].value = "5".into();
+        form.fields[1].value = "3".into();
+        assert_eq!(form.validate(), Err(vec![1]));
+        assert!(form.fields[1]
+            .error
+            .as_deref()
+            .is_some_and(|e| e.contains("more than max")));
+        form.fields[1].value = "5".into();
+        assert_eq!(form.validate(), Ok(()));
     }
 
     #[test]
