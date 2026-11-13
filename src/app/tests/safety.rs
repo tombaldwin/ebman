@@ -2892,9 +2892,16 @@ async fn dlq_redrive_starts_refuses_and_cancels() {
         }
     };
     assert!(body.contains("RUNNING  3 of 5 moved"), "{body}");
+    let running_at = crate::audit::delta::mark();
     app.execute_command("dlq-redrive");
     let toasts = next_redrive_toast(&mut app).await;
     assert!(toasts.contains("already running"), "{toasts}");
+    assert!(
+        !crate::audit::delta::lines_for(&running_at, "redrive-probe-wk")
+            .iter()
+            .any(|l| l.contains("stage=dispatched") && l.contains("action=DlqRedrive")),
+        "a refused start is not audited as dispatched"
+    );
     assert_eq!(start.num_calls(), 0, "SQS would refuse a second task");
     app.toasts.clear();
     app.execute_command("dlq-redrive cancel");

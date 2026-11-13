@@ -63,19 +63,6 @@ impl App {
         let label = crate::verb::Verb::DlqRedrive.audit_label();
         self.spawn_redrive_write(env, label, "Redrive DLQ", true, |aws, dlq_arn, main_arn| {
             Box::pin(async move {
-                // SQS refuses a second task on a queue; saying which one
-                // is running beats its bare error.
-                let tasks = aws
-                    .list_redrives(&dlq_arn)
-                    .await
-                    .map_err(|e| flatten_err("list_redrives", e))?;
-                if let Some(t) = tasks.iter().find(|t| t.in_progress()) {
-                    return Err(format!(
-                        "a redrive is already {} ({} moved) — `:dlq-redrive cancel` stops it",
-                        t.status.to_lowercase(),
-                        t.moved
-                    ));
-                }
                 let handle = aws
                     .start_redrive(&dlq_arn, &main_arn)
                     .await
@@ -161,6 +148,24 @@ impl App {
                 Ok(aws) => redrive_arns(&aws, &app_name, &env_name, starting)
                     .await
                     .map(|arns| (aws, arns)),
+            };
+            // SQS refuses a second task on a queue; saying which one is
+            // running beats its bare error, and saying it before the
+            // dispatched line keeps a refused start out of the log as MCP's
+            // plan does.
+            let checked = match checked {
+                Ok((aws, arns)) if starting => match aws.list_redrives(&arns.0).await {
+                    Err(e) => Err(flatten_err("list_redrives", e)),
+                    Ok(tasks) => match tasks.iter().find(|t| t.in_progress()) {
+                        Some(t) => Err(format!(
+                            "a redrive is already {} ({} moved) — `:dlq-redrive cancel` stops it",
+                            t.status.to_lowercase(),
+                            t.moved
+                        )),
+                        None => Ok((aws, arns)),
+                    },
+                },
+                other => other,
             };
             let (aws, (dlq_arn, main_arn)) = match checked {
                 Ok(ready) => ready,
