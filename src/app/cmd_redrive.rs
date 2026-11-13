@@ -146,14 +146,6 @@ impl App {
             name: env_name,
         } = self.env_key(env);
         let app_name = env.application.clone();
-        crate::audit::append_action_dispatched(
-            self.context.account_id.as_deref(),
-            self.context.profile.as_deref(),
-            &region,
-            label,
-            &env_name,
-            &[],
-        );
         let pending = self.push_pending(pending_label, env_name.clone());
         let client = self.client_for_region(&region);
         let tx = self.msg_tx.clone();
@@ -161,13 +153,36 @@ impl App {
         let account = self.context.account_id.clone();
         let profile = self.context.profile.clone();
         tokio::spawn(async move {
-            let result = match client.resolve().await {
+            // The queues first: an env with none, or an empty dead-letter
+            // queue to start from, is refused before anything is audited
+            // as dispatched, as MCP refuses it at plan time.
+            let checked = match client.resolve().await {
                 Err(e) => Err(flatten_err("cached_client", e)),
-                Ok(aws) => match redrive_arns(&aws, &app_name, &env_name, starting).await {
-                    Err(e) => Err(e),
-                    Ok((dlq_arn, main_arn)) => op(aws, dlq_arn, main_arn).await,
-                },
+                Ok(aws) => redrive_arns(&aws, &app_name, &env_name, starting)
+                    .await
+                    .map(|arns| (aws, arns)),
             };
+            let (aws, (dlq_arn, main_arn)) = match checked {
+                Ok(ready) => ready,
+                Err(e) => {
+                    let _ = tx.send(AppMsg::RedriveDone {
+                        gen,
+                        pending,
+                        env_name,
+                        result: Err(e),
+                    });
+                    return;
+                }
+            };
+            crate::audit::append_action_dispatched(
+                account.as_deref(),
+                profile.as_deref(),
+                &region,
+                label,
+                &env_name,
+                &[],
+            );
+            let result = op(aws, dlq_arn, main_arn).await;
             let task = result.as_ref().map(|(h, _)| h.clone()).unwrap_or_default();
             let extras: Vec<(&str, &str)> = if task.is_empty() {
                 Vec::new()

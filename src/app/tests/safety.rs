@@ -2867,10 +2867,17 @@ async fn dlq_redrive_starts_refuses_and_cancels() {
     // An empty dead-letter queue has nothing to move: refused, as MCP's
     // plan refuses it, though `status` still reads it.
     let (mut app, start, _) = redrive_app_with(false, "0");
+    let empty_at = crate::audit::delta::mark();
     app.execute_command("dlq-redrive");
     let toasts = next_redrive_toast(&mut app).await;
     assert!(toasts.contains("is empty: nothing to redrive"), "{toasts}");
     assert_eq!(start.num_calls(), 0);
+    assert!(
+        !crate::audit::delta::lines_for(&empty_at, "redrive-probe-wk")
+            .iter()
+            .any(|l| l.contains("stage=dispatched")),
+        "refused before anything is audited as dispatched"
+    );
 
     let (mut app, start, cancel) = redrive_app(true);
     // `status` lists the running task, from the dead-letter queue's ARN.
