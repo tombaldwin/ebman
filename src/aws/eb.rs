@@ -2708,14 +2708,30 @@ impl AwsClient {
         let requested = Utc::now();
         self.request_env_info_tail(env_name).await?;
         progress(TailProgress::Polling(0));
+        // Instances upload at their own pace: once one has, keep polling
+        // until a poll brings no new instance (or attempts run out), so
+        // the answer is not the first instance alone.
         let mut urls: Vec<(String, String)> = Vec::new();
+        let mut saw_stale = false;
         for attempt in 1..=attempts {
             tokio::time::sleep(interval).await;
-            urls = fresh_samples(self.retrieve_env_info_tail(env_name).await?, requested);
-            if !urls.is_empty() {
+            let all = self.retrieve_env_info_tail(env_name).await?;
+            let seen = all.len();
+            let fresh = fresh_samples(all, requested);
+            saw_stale |= seen > fresh.len();
+            if !urls.is_empty() && fresh.len() <= urls.len() {
                 break;
             }
+            if fresh.len() > urls.len() {
+                urls = fresh;
+            }
             progress(TailProgress::Polling(attempt));
+        }
+        if urls.is_empty() && saw_stale {
+            return Err(eyre!(
+                "EB had tail samples on file, but all taken before this request — is this \
+                 machine's clock more than {TAIL_CLOCK_SLACK_SECS}s ahead of AWS's?"
+            ));
         }
         if urls.is_empty() {
             return Err(eyre!(

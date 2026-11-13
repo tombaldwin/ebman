@@ -1983,6 +1983,15 @@ async fn the_tail_driver_polls_then_fetches_each_instance() {
             ))
             .build()
     };
+    // Nothing yet; then i-1 alone (beside its stale sample); then i-2 as
+    // well; then no one new, which ends the polling.
+    let both = move || {
+        RetrieveEnvironmentInfoOutput::builder()
+            .environment_info(info("i-1", "https://s3/stale", 3600))
+            .environment_info(info("i-1", "https://s3/one", 0))
+            .environment_info(info("i-2", "https://s3/two", 0))
+            .build()
+    };
     let retrieve = mock!(Client::retrieve_environment_info)
         .sequence()
         .output(|| RetrieveEnvironmentInfoOutput::builder().build())
@@ -1990,9 +1999,10 @@ async fn the_tail_driver_polls_then_fetches_each_instance() {
             RetrieveEnvironmentInfoOutput::builder()
                 .environment_info(info("i-1", "https://s3/stale", 3600))
                 .environment_info(info("i-1", "https://s3/one", 0))
-                .environment_info(info("i-2", "https://s3/two", 0))
                 .build()
         })
+        .output(both)
+        .output(both)
         .build();
     let client = client_with_eb(mock_client!(
         aws_sdk_elasticbeanstalk,
@@ -2016,7 +2026,10 @@ async fn the_tail_driver_polls_then_fetches_each_instance() {
         .await
         .expect("collects");
     use super::TailProgress::{Fetching, Polling};
-    assert_eq!(heard, [Polling(0), Polling(1), Fetching]);
+    assert_eq!(
+        heard,
+        [Polling(0), Polling(1), Polling(2), Polling(3), Fetching]
+    );
     assert_eq!(
         out,
         [
@@ -2026,8 +2039,8 @@ async fn the_tail_driver_polls_then_fetches_each_instance() {
     );
     assert_eq!(
         retrieve.num_calls(),
-        2,
-        "stops polling once a sample is on file"
+        4,
+        "polls on while instances keep arriving, and stops when none does"
     );
 }
 
@@ -2092,4 +2105,44 @@ fn only_this_requests_tail_samples_count_newest_per_instance() {
             ("i-2".to_string(), "skewed".to_string()),
         ]
     );
+}
+
+/// Samples on file, every one older than the request: the clock, not
+/// the instance role, is the likelier cause, and the error says so.
+#[tokio::test(start_paused = true)]
+async fn an_all_stale_tail_names_the_clock() {
+    use aws_sdk_elasticbeanstalk::operation::request_environment_info::RequestEnvironmentInfoOutput;
+    use aws_sdk_elasticbeanstalk::operation::retrieve_environment_info::RetrieveEnvironmentInfoOutput;
+    use aws_sdk_elasticbeanstalk::types::EnvironmentInfoDescription;
+    let request = mock!(Client::request_environment_info)
+        .then_output(|| RequestEnvironmentInfoOutput::builder().build());
+    let retrieve = mock!(Client::retrieve_environment_info).then_output(|| {
+        RetrieveEnvironmentInfoOutput::builder()
+            .environment_info(
+                EnvironmentInfoDescription::builder()
+                    .ec2_instance_id("i-1")
+                    .message("https://s3/old")
+                    .sample_timestamp(aws_smithy_types::DateTime::from_secs(
+                        chrono::Utc::now().timestamp() - 3600,
+                    ))
+                    .build(),
+            )
+            .build()
+    });
+    let client = client_with_eb(mock_client!(
+        aws_sdk_elasticbeanstalk,
+        aws_smithy_mocks::RuleMode::MatchAny,
+        [&request, &retrieve]
+    ));
+    let err = client
+        .collect_env_tail(
+            "api",
+            2,
+            std::time::Duration::from_secs(2),
+            |_| {},
+            |_| async { Ok(String::new()) },
+        )
+        .await
+        .expect_err("all stale");
+    assert!(err.to_string().contains("clock"), "{err}");
 }
