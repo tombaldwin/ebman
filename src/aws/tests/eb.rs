@@ -2075,6 +2075,10 @@ fn only_this_requests_tail_samples_count_newest_per_instance() {
             sample("i-1", "pre-deploy", at(-3600)),
             sample("i-1", "first", at(5)),
             sample("i-1", "newer", at(9)),
+            // Read after the newest but taken before it: not newer.
+            sample("i-1", "older-later", at(7)),
+            // Taken at the same moment as the newest: the first is kept.
+            sample("i-1", "tied", at(9)),
             sample("i-2", "skewed", at(-20)),
             sample("i-3", "untimed", None),
             sample("i-4", "too-old", at(-31)),

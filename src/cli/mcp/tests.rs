@@ -585,6 +585,28 @@ async fn a_fanned_out_env_is_absent_not_failed_where_it_is_not() {
         .is_err_and(|e| e.contains("not found in any of eu-west-2")));
 }
 
+/// `lint` with `env` lints that env, not another.
+#[tokio::test]
+async fn lint_with_env_lints_that_env() {
+    let s = demo_server();
+    let mut findings = 0;
+    for e in &demo_fixture::envs() {
+        let out = s
+            .call_tool("lint", &json!({"env": e.name}))
+            .await
+            .expect("answers");
+        let v: Value = serde_json::from_str(&out).expect("json");
+        for issue in v["issues"].as_array().expect("issues") {
+            assert_eq!(issue["env"], e.name.as_str(), "{v}");
+            findings += 1;
+        }
+    }
+    assert!(
+        findings > 0,
+        "some demo env has findings, or the check is vacuous"
+    );
+}
+
 /// A web env has no dead-letter queue: `dlq_redrive` says so by the same
 /// check the TUI makes, before looking for queues.
 #[tokio::test]
