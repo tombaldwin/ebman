@@ -2107,42 +2107,70 @@ fn only_this_requests_tail_samples_count_newest_per_instance() {
     );
 }
 
-/// Samples on file, every one older than the request: the clock, not
-/// the instance role, is the likelier cause, and the error says so.
+/// Old samples on file are the ordinary case (earlier requests leave
+/// them), and nothing new arriving points at the instance role. A sample
+/// that arrives after the first poll yet dated before the request points
+/// at the clock, and the error says which.
 #[tokio::test(start_paused = true)]
-async fn an_all_stale_tail_names_the_clock() {
+async fn a_tail_that_never_arrives_names_the_likelier_cause() {
     use aws_sdk_elasticbeanstalk::operation::request_environment_info::RequestEnvironmentInfoOutput;
     use aws_sdk_elasticbeanstalk::operation::retrieve_environment_info::RetrieveEnvironmentInfoOutput;
     use aws_sdk_elasticbeanstalk::types::EnvironmentInfoDescription;
-    let request = mock!(Client::request_environment_info)
-        .then_output(|| RequestEnvironmentInfoOutput::builder().build());
-    let retrieve = mock!(Client::retrieve_environment_info).then_output(|| {
-        RetrieveEnvironmentInfoOutput::builder()
-            .environment_info(
-                EnvironmentInfoDescription::builder()
-                    .ec2_instance_id("i-1")
-                    .message("https://s3/old")
-                    .sample_timestamp(aws_smithy_types::DateTime::from_secs(
-                        chrono::Utc::now().timestamp() - 3600,
-                    ))
-                    .build(),
+    let sample = |url: &str, ago: i64| {
+        EnvironmentInfoDescription::builder()
+            .ec2_instance_id("i-1")
+            .message(url)
+            .sample_timestamp(aws_smithy_types::DateTime::from_secs(
+                chrono::Utc::now().timestamp() - ago,
+            ))
+            .build()
+    };
+    let run = |retrieve: aws_smithy_mocks::Rule| async move {
+        let request = mock!(Client::request_environment_info)
+            .then_output(|| RequestEnvironmentInfoOutput::builder().build());
+        let client = client_with_eb(mock_client!(
+            aws_sdk_elasticbeanstalk,
+            aws_smithy_mocks::RuleMode::MatchAny,
+            [&request, &retrieve]
+        ));
+        client
+            .collect_env_tail(
+                "api",
+                2,
+                std::time::Duration::from_secs(2),
+                |_| {},
+                |_| async { Ok(String::new()) },
             )
+            .await
+            .expect_err("nothing fresh")
+            .to_string()
+    };
+    // An hour-old sample from an earlier request, and nothing new.
+    let old = mock!(Client::retrieve_environment_info).then_output(move || {
+        RetrieveEnvironmentInfoOutput::builder()
+            .environment_info(sample("https://s3/old", 3600))
             .build()
     });
-    let client = client_with_eb(mock_client!(
-        aws_sdk_elasticbeanstalk,
-        aws_smithy_mocks::RuleMode::MatchAny,
-        [&request, &retrieve]
-    ));
-    let err = client
-        .collect_env_tail(
-            "api",
-            2,
-            std::time::Duration::from_secs(2),
-            |_| {},
-            |_| async { Ok(String::new()) },
-        )
-        .await
-        .expect_err("all stale");
-    assert!(err.to_string().contains("clock"), "{err}");
+    let err = run(old).await;
+    assert!(
+        err.contains("s3:PutObject") && !err.contains("clock"),
+        "{err}"
+    );
+    // A new sample turns up, dated before the request: a clock ahead.
+    let skew = mock!(Client::retrieve_environment_info)
+        .sequence()
+        .output(move || {
+            RetrieveEnvironmentInfoOutput::builder()
+                .environment_info(sample("https://s3/old", 3600))
+                .build()
+        })
+        .output(move || {
+            RetrieveEnvironmentInfoOutput::builder()
+                .environment_info(sample("https://s3/old", 3600))
+                .environment_info(sample("https://s3/new", 60))
+                .build()
+        })
+        .build();
+    let err = run(skew).await;
+    assert!(err.contains("clock"), "{err}");
 }

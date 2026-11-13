@@ -165,12 +165,46 @@ it.*
 
 ### Next
 
-*Refilled 2026-11-12 from the Fable review (fixes and refactors 3–6
-done, archived "PLAN.md items done 2026-11-12"). Tom asked for all of
-it as one release. Ranked by operator value; each is a feature item
-(build, self-review, tests, mutation-proven guards). Writes go through
-the shared gate, two-phase on MCP, audited, with an undo where one
-exists.*
+*Refilled 2026-11-13 from the 0.50.0 release reviews: what they found
+and the release deferred. Items 7–16 of the previous window shipped
+(archived in `docs/backlog/archive.md`).*
+
+3. **Two rulings for the maintainer** *(design — Tom's call)*
+   - **A deploy-mapped MCP role does not cover `rollback`.** Roles are
+     keyed by tool name (`role.rs`), and a rollback audits as `Deploy`,
+     so a role listing `deploy` leaves `rollback` under the base identity
+     unless `require_role` is set. Map `rollback` to `deploy`'s role, or
+     keep tools separate and say so in the role docs?
+   - **A freeze blocks `:dlq-redrive cancel` and `abort`**, the two writes
+     that reduce damage mid-incident. Exempt them from the freeze, or
+     keep the freeze total?
+
+4. **`deny_write` takes the audit label** *(refactor, M — ~25 call sites)*
+   `REFUSAL_ACTION_LABELS` maps a toast verb to its dispatch label and
+   falls back to the toast text when a verb is missing, and only one
+   direction of the table is guarded: `managed-apply` and `dlq-redrive`
+   shipped unmapped this cycle. Passing the label (or a `Verb`) at the
+   call deletes the table and the gap. Touches more than three modules,
+   which is why the release did not take it mid-run.
+
+5. **Write preconditions in their own module** *(refactor, S)*
+   `scale_bounds`, `abort_allowed`, `swap_allowed`, `redrive_tier` and
+   `redrive_queues` are pure write rules living in `aws/eb.rs`, the SDK
+   adapter; `src/preconditions.rs` beside `write_gate.rs` is their home
+   (not `write_gate.rs` itself, whose wording is deliberately unshared).
+
+6. **`resolve_plan_details` per verb** *(refactor, M)* — one 389-line
+   match filling a ten-`Option` `PlanDetails`; a per-verb enum and one
+   function per verb, with `plan_extra` built by `json!`.
+
+7. **Split `src/cli/mcp/tools.rs` by family** *(refactor, M)* — +610
+   lines this cycle; the region fan-out and the logs/events tools are the
+   first moves out.
+
+8. **One platform-branch lookup** *(refactor, S)* — `envs.rs`
+   `branch_state` and `aws::platform_lifecycle` both look the branch up;
+   the second becomes "any state" with the deprecated/retired filter on
+   top.
 
 ### Released
 

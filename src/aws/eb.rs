@@ -2712,13 +2712,24 @@ impl AwsClient {
         // until a poll brings no new instance (or attempts run out), so
         // the answer is not the first instance alone.
         let mut urls: Vec<(String, String)> = Vec::new();
-        let mut saw_stale = false;
+        // EB keeps earlier requests' samples, so old ones on file are the
+        // ordinary case. A clock running ahead shows differently: a sample
+        // that arrives AFTER the first poll yet is dated before the
+        // request.
+        let mut on_file: Option<Vec<String>> = None;
+        let mut skewed = false;
         for attempt in 1..=attempts {
             tokio::time::sleep(interval).await;
             let all = self.retrieve_env_info_tail(env_name).await?;
-            let seen = all.len();
+            match &on_file {
+                None => on_file = Some(all.iter().map(|(_, url, _)| url.clone()).collect()),
+                Some(first) => {
+                    skewed |= all.iter().any(|(_, url, taken)| {
+                        !first.contains(url) && taken.is_some_and(|t| t < requested)
+                    })
+                }
+            }
             let fresh = fresh_samples(all, requested);
-            saw_stale |= seen > fresh.len();
             if !urls.is_empty() && fresh.len() <= urls.len() {
                 break;
             }
@@ -2727,7 +2738,7 @@ impl AwsClient {
             }
             progress(TailProgress::Polling(attempt));
         }
-        if urls.is_empty() && saw_stale {
+        if urls.is_empty() && skewed {
             return Err(eyre!(
                 "EB had tail samples on file, but all taken before this request — is this \
                  machine's clock more than {TAIL_CLOCK_SLACK_SECS}s ahead of AWS's?"
