@@ -86,6 +86,12 @@ pub(crate) fn env_rows_json(
         .collect()
 }
 
+/// Rendered rows as one JSON array, compact as `render_envs_json`'s.
+/// Pure.
+pub(crate) fn join_rows(rows: &[String]) -> String {
+    format!("[{}]", rows.join(","))
+}
+
 /// `branch name → lifecycle state`, as `ListPlatformBranches` gives it.
 pub(crate) type Lifecycle = std::collections::HashMap<String, String>;
 
@@ -314,7 +320,7 @@ pub(crate) async fn envs_with(
         }
     }
     if json {
-        writeln!(out, "[{}]", json_rows.join(","))?;
+        writeln!(out, "{}", join_rows(&json_rows))?;
     } else {
         let region_col = if multi { "\tREGION" } else { "" };
         writeln!(
@@ -409,7 +415,8 @@ mod envs_json_tests {
         let firing = FiringByEnv::new();
         let rendered = render_envs_json(&[e.clone(), e.clone()], Some(&firing), None).unwrap();
         let rows = env_rows_json(&[e.clone(), e], Some(&firing), None).unwrap();
-        assert_eq!(format!("[{}]", rows.join(",")), rendered);
+        assert_eq!(join_rows(&rows), rendered);
+        assert_eq!(join_rows(&[]), "[]", "no envs is an empty array");
     }
 
     #[test]
