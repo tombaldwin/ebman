@@ -340,17 +340,17 @@ impl App {
         };
         match action {
             Action::SwapCnames => {
-                // Envs in the same application AND region (excluding the
-                // source): EB swaps CNAMEs within one region, and a
-                // same-named app elsewhere is another application.
+                // Envs `swap_allowed` takes (same application, not the
+                // source) in the same region: EB swaps CNAMEs within one
+                // region, and a same-named app elsewhere is another
+                // application.
                 let source_region = self.region_for(&env);
                 let candidates: Vec<String> = self
                     .environments
                     .iter()
                     .filter(|e| {
-                        e.application == env.application
-                            && e.name != env.name
-                            && self.region_for(e) == source_region
+                        self.region_for(e) == source_region
+                            && crate::aws::swap_allowed(&env, e).is_ok()
                     })
                     .map(|e| e.name.clone())
                     .collect();
@@ -428,7 +428,7 @@ impl App {
                 self.mode = Mode::Command;
                 self.command_input = "scale ".into();
                 self.status_message = Some(
-                    "scale N (instances), or `scale min N` / `scale max N`; enter to apply".into(),
+                    "scale N — sets min and max to N instances (0–10000); enter to apply".into(),
                 );
             }
             Action::Capacity => {
