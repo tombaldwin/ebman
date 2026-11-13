@@ -70,16 +70,19 @@ pub(crate) fn render_envs_json(
     serde_json::to_string(&rows)
 }
 
-/// The same rows as values, for a caller that merges several regions'
-/// into one array: built as values rather than rendered and parsed
-/// back, where a parse failure dropped a region's rows without a word.
+/// The same rows, each rendered on its own, for a caller that joins
+/// several regions' into one array. Strings, not values: a `Value`
+/// keeps the schema's key order only while `serde_json`'s
+/// `preserve_order` is on, which this crate never asks for (a dependency,
+/// `aws-smithy-http-client`, turns it on today). Rendering each row keeps
+/// the order whatever the dependency graph does.
 pub(crate) fn env_rows_json(
     envs: &[aws::Environment],
     firing: Option<&FiringByEnv>,
     lifecycle: Option<&Lifecycle>,
-) -> serde_json::Result<Vec<serde_json::Value>> {
+) -> serde_json::Result<Vec<String>> {
     envs.iter()
-        .map(|e| serde_json::to_value(EnvRow::of(e, firing, lifecycle)))
+        .map(|e| serde_json::to_string(&EnvRow::of(e, firing, lifecycle)))
         .collect()
 }
 
@@ -254,7 +257,7 @@ pub(crate) async fn envs_with(
     // listing: env names repeat across regions, so they are never merged
     // into one map.
     let multi = clients.len() > 1;
-    let mut json_rows: Vec<serde_json::Value> = Vec::new();
+    let mut json_rows: Vec<String> = Vec::new();
     let mut text_rows: Vec<String> = Vec::new();
     let mut failed: Vec<String> = Vec::new();
     for aws in clients {
@@ -311,7 +314,7 @@ pub(crate) async fn envs_with(
         }
     }
     if json {
-        writeln!(out, "{}", serde_json::Value::Array(json_rows))?;
+        writeln!(out, "[{}]", json_rows.join(","))?;
     } else {
         let region_col = if multi { "\tREGION" } else { "" };
         writeln!(
@@ -398,17 +401,15 @@ mod envs_json_tests {
     /// not tell a worker from a web env except by guessing at the name,
     /// and had no timestamp to tell a sixteen-hour-old condition from a
     /// live one.
-    /// The merged path's rows are exactly the single-region JSON's.
+    /// The merged path's rows are exactly the single-region JSON's,
+    /// byte for byte: key order included.
     #[test]
-    fn row_values_match_the_rendered_json() {
+    fn joined_rows_match_the_rendered_json() {
         let e = env();
         let firing = FiringByEnv::new();
-        let rendered: serde_json::Value = serde_json::from_str(
-            &render_envs_json(std::slice::from_ref(&e), Some(&firing), None).unwrap(),
-        )
-        .unwrap();
-        let rows = env_rows_json(&[e], Some(&firing), None).unwrap();
-        assert_eq!(serde_json::Value::Array(rows), rendered);
+        let rendered = render_envs_json(&[e.clone(), e.clone()], Some(&firing), None).unwrap();
+        let rows = env_rows_json(&[e.clone(), e], Some(&firing), None).unwrap();
+        assert_eq!(format!("[{}]", rows.join(",")), rendered);
     }
 
     #[test]
