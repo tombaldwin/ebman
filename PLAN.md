@@ -208,6 +208,15 @@ and the release deferred. Items 7–16 of the previous window shipped
 
 ### Released
 
+**0.50.0 (2026-11-13)**: ten features from the Fable review, as one
+release: env health in `why`, platform lifecycle (EBL021), managed
+updates, whole-DLQ redrive, rollback/abort/swap/scale on the CLI and
+MCP, event cursor and `wait_for_env`, version retention (EBL022/023),
+listener certificate expiry (EBL024), every region in one read, and an
+EB-tail fallback for `recent_logs`. Two release reviews ran three
+rounds; the fixes include a rollback that could redeploy a failed
+version and a `:version-lifecycle` pin bypass.
+
 **0.49.0 (2026-11-06)**: MCP writes can go out under a narrower role
 (`mcp.role.*`), with `role=` and `session=` in the audit lines; redaction
 covers EB's `EnvironmentVariables` template echo, reported from a Demo
