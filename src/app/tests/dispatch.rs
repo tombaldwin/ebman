@@ -2441,10 +2441,11 @@ mod mutants_found_these {
         assert_eq!(modal.target_env, "api-prod");
     }
 
-    /// `:abort`, `:swap` and `:scale` refuse what the CLI and MCP refuse,
-    /// by the same checks, before a modal opens.
+    /// `:swap` and `:scale` refuse what the CLI and MCP refuse, by the
+    /// same checks, before a modal opens. `:abort` does not pre-check: its
+    /// row's status can be a refresh old.
     #[tokio::test]
-    async fn abort_swap_and_scale_refuse_what_the_other_surfaces_do() {
+    async fn swap_and_scale_refuse_what_the_other_surfaces_do() {
         let mut app = test_app();
         app.environments = vec![
             mk_env("api-prod", "poly", "WebServer", "Green"),
@@ -2458,7 +2459,6 @@ mod mutants_found_these {
             .position(|&i| app.environments[i].name == "api-prod")
             .expect("listed");
         for (cmd, says) in [
-            ("abort", "no update to abort"),
             ("swap api-prod", "with itself"),
             ("swap blog-prod", "within one application"),
             ("scale 20000", "10000 instances"),
@@ -2479,6 +2479,15 @@ mod mutants_found_these {
         app.table_state.select(Some(row));
         app.execute_command("scale 10000");
         assert!(app.action_flow.is_some(), "the cap itself is allowed");
+        // A row the last refresh saw Ready still opens `:abort`: the
+        // update may have started since.
+        app.action_flow = None;
+        app.table_state.select(Some(row));
+        app.execute_command("abort");
+        assert!(
+            app.action_flow.is_some(),
+            ":abort is not refused on a cached status"
+        );
     }
 
     /// Lint begins only `if !self.demo_mode && action != Action::SsmRun`.

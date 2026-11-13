@@ -409,15 +409,11 @@ impl App {
     }
 
     pub(crate) fn cmd_abort(&mut self) {
-        // A refusal outranks it: the gate in the modal path says why
-        // nothing may be written before this says there is nothing to.
-        let gated = |app: &Self, name: &str| app.demo_mode || app.is_read_only_for(name);
-        if let Some(env) = self.pointed_env().filter(|e| !gated(self, &e.name)) {
-            if let Err(e) = crate::aws::abort_allowed(&env) {
-                self.error_message = Some(e);
-                return;
-            }
-        }
+        // No `abort_allowed` here, unlike the CLI and MCP: they list the
+        // env live, and this row's status is as old as the last refresh.
+        // An operator aborting a deploy that just went wrong must not be
+        // told there is nothing to abort by a table that has not caught
+        // up; EB answers for itself.
         self.open_parameterised_action(Action::AbortUpdate, ParameterisedAction::default());
     }
 
