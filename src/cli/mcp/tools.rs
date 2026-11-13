@@ -972,7 +972,9 @@ pub(super) fn render_tail_logs_json(
         "events": events,
         "note": "this env streams no logs to CloudWatch: these are EB's own tail of each instance's \
                  log files (`group` is the file, `stream` the instance). Lines carry no timestamp, \
-                 so since_minutes does not apply; filter is a plain substring; limit is per instance",
+                 so since_minutes does not apply; filter is a plain substring; limit is per instance. \
+                 Instances upload at their own pace and ebman stops waiting once one poll brings \
+                 no new one, so a slow instance can be missing: `stream` names those present",
     })
 }
 
