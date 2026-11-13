@@ -84,7 +84,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   (`cloudwatch` or `eb_tail`); tail lines have no timestamp, so the
   window does not apply.
 
+### Changed
+
+- **`ebman action` refuses a flag its verb does not take.** `rollback
+  --version v2` used to ignore `--version` and roll back to whatever the
+  events named; `deploy --to`, `restart --min` and the like were dropped
+  the same way. Each is now a usage error (exit 2).
+- **`:region all` order is the same everywhere.** `ebman envs --regions
+  all` and MCP `regions: "all"` list the configured extra regions and the
+  home region sorted, as `:region all` always has.
+
 ### Fixed
+
+- **A rollback no longer picks a version that failed to deploy.** The
+  target was the first event version that differed from the current one,
+  and a failed deploy's events carry the version that failed: rolling
+  back after a failed v3 left on v2 redeployed v3. The TUI's `:undo`
+  fallback, `ebman action rollback` and MCP `rollback` now read only
+  events saying a deploy or update succeeded, and refuse when there is
+  none.
+- **`:scale`, `:swap` and `:abort` refuse what the CLI and MCP refuse.**
+  `:scale 20000` got past the 10,000-instance cap; `:swap` accepted the
+  env itself; `:abort` opened a confirmation for an env with no update in
+  flight. One set of checks now serves all three surfaces.
+- **`:dlq-redrive` refuses an empty dead-letter queue**, as MCP did, and
+  `status` lists the recent move tasks rather than one.
+- **The retiring-branch marker no longer answers for other regions.**
+  Under `:region all` rows elsewhere were marked from the home region's
+  branch listing.
 
 - **Two lint rules suggested commands that do not exist.** EBL008
   (stale platform) named `:upgrade-platform` and EBL012 (Green with no
