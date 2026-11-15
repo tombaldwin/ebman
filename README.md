@@ -6,6 +6,7 @@
 [![license](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 [![homebrew](https://img.shields.io/badge/homebrew-tombaldwin%2Ftap-orange.svg)](https://github.com/tombaldwin/homebrew-tap)
 [![by Polymorphism](https://img.shields.io/badge/by-Polymorphism-1E3776.svg)](https://www.poly.io/products/ebman/)
+[![EBMan on StartupScores](https://startupscores.com/badge/ebman.svg?style=shield&v=combo&theme=dark)](https://startupscores.com/open-source/ebman)
 
 **A k9s-style TUI for AWS Elastic Beanstalk.** Triage red envs, stream logs, edit option settings, deploy new versions — all from the keyboard. If you've used k9s with Kubernetes, the muscle memory carries: `:` for commands, `/` to filter, `Enter` to drill in, `?` for context-aware help.
 
